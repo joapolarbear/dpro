@@ -330,12 +330,8 @@ if args.option == "critical":
 		path_length = 0
 		for (u, v) in nx.utils.pairwise(critical_path):
 			path_length += G[u][v].get(weight, default_weight)
-		if local_rank == -1:
-			prefix = "Critical Path of the Entire Graph: "
-		else:
-			prefix = "Critical Path of GPU-%d: " % local_rank
-		logger.info(prefix + str(critical_path) + " => %12.4f ms" % path_length)
-
+		prefix = "Critical Path of " + ("the Entire Graph: " if local_rank == -1 else "GPU-%d: " % local_rank)
+		logger.info(prefix + str(critical_path) + " => " + prefix + "%12.4f ms" % path_length)
 	#! used to store all dags generated from GPUs
 	graphs = []
 	for _dir in dirs:

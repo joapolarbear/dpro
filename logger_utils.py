@@ -7,7 +7,8 @@ def get_logger(args):
 	logger = logging.getLogger(__name__)
 	logger.setLevel(level=args.logging_level)
 
-	handler = logging.FileHandler(os.path.join(os.path.dirname(args.path), args.option + "_" + args.logging_file))
+	dirname = args.path if os.path.isdir(args.path) else os.path.dirname(args.path)
+	handler = logging.FileHandler(os.path.join(dirname, args.option + "_" + args.logging_file))
 	handler.setLevel(args.logging_level)
 	formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
 	handler.setFormatter(formatter)
