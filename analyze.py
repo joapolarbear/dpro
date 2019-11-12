@@ -245,7 +245,7 @@ if args.option == "statistic":
 		export2xlsx(name2sta, '/'.join(args.path.split('/')[:-1]))
 
 	# Group by category
-	logger.info()
+	logger.info("")
 	logger.info("Group by category")
 	logger.info("===================")
 	line_cnt = 0
