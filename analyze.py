@@ -10,7 +10,8 @@ import logger_utils
 parser = argparse.ArgumentParser(description="Trace Analysis",
 		formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 # parser.add_argument("-s", action="store_true", help="sort the output result")
-parser.add_argument("--option", type=str, default="statistic", 
+parser.add_argument("--option", type=str, 
+					choices=["statistic", "graph", "combine", "compare", "critical"],
 					help="The type of analysis to process. including:\n" + 
 						"* statistic: show the statistic results\n" + 
 						"* graph: show the dependency graph\n")
