@@ -22,12 +22,27 @@ parser.add_argument("--path2", type=str, required=False, help="The path of the f
 parser.add_argument("--sort", type=bool, default=True, help="Sorted in descending order")
 parser.add_argument("--head", type=int, default=None, help="Print the first few lines")
 parser.add_argument("--xlsx", type=bool, default=False, help="Output XLSX file of the statistic results")
-
+parser.add_argument("--del_queue", action="store_true", help="If set True, delete the queue time in communicateion traces. ")
 parser.add_argument("--logging_level", type=int, default="20", help="Logging level")
 parser.add_argument("--logging_file", type=str, default="log.txt", help="Logging file")
 
 args = parser.parse_args()
 logger = logger_utils.get_logger(args)
+logger.info(args)
+
+QueueType = [
+  "COORDINATE_REDUCE",
+  "REDUCE",
+  "COPYD2H",
+  "PCIE_REDUCE",
+  "COORDINATE_PUSH",
+  "PUSH",
+  "PULL",
+  "COPYH2D",
+  "COORDINATE_BROADCAST",
+  "BROADCAST",
+  "QUEUE_NUM_AND_NOT_A_REAL_QUEUE_TYPE_AND_MUST_BE_THE_LAST"
+]
 
 def read_traces(traces_path):
 	with open(traces_path, 'r') as fp:
@@ -58,7 +73,6 @@ def return_stat(traces):
 				# "cat": event["cat"] 
 				"cat": event["name"].split(".")[0]
 				}
-
 	"""calculate the avg """
 	for name, statistic in name2sta.items():
 		statistic["avg"] = statistic["time"] / statistic["cnt"]
@@ -70,16 +84,41 @@ def return_stat(traces):
 				cat2sta[cat]["max_name"] = name
 		else:
 			cat2sta[cat] = {"max_t": statistic["avg"], "max_name": name}
-
 	"""calculate the variance"""
 	for event in traces:
 		name = event["name"]
 		name2sta[name]["var"] += pow(event["dur"] / 1000.0 - name2sta[name]["avg"], 2)
-
 	for name, statistic in name2sta.items():
 		statistic["var"] = statistic["var"] / float(statistic["cnt"])
-
 	return name2sta, cat2sta
+
+def visualize_gml(graph, layout="circular"):
+	import matplotlib.pyplot as plt
+	if layout == "spectral":
+		pos = nx.spectral_layout(graph, dim=2, scale=0.5)
+	elif layout == "circular":
+		pos = nx.circular_layout(graph)
+	elif layout == "random":
+		pos = nx.random_layout(graph)
+	nx.draw(graph, pos, with_labels=True, font_size=6)
+	plt.show()
+	# import matplotlib.pyplot as plt; plt.ion()
+	# import netgraph
+	# netgraph.draw(graph)
+	# plot_instance = netgraph.InteractiveGraph(graph, node_positions=pos)
+	# node_positions = plot_instance.node_positions
+
+def return_time_line(traces):
+	name2time_line = {}
+	for event in traces:
+		name = event["name"]
+		if name in name2time_line:
+			name2time_line[name].append([(event["ts"], event["dur"])])
+		else:
+			name2time_line[name] = [(event["ts"], event["dur"])]
+	for name in name2time_line:
+		name2time_line[name].sort()
+	return name2time_line
 
 def export2xlsx(_dict, _dir, _order=False):
 	workbook = xlsxwriter.Workbook(_dir + '/statistic.xlsx')
@@ -164,7 +203,7 @@ def gen_dag_from_gml_and_traces(trace_path, gml_path, rank=0):
 	mygraph = nx.read_gml(gml_path)
 	dag = nx.DiGraph()
 
-	def _read_stat(node_name):
+	def _read_stat(node_name, _assert=False):
 		#! delete rank
 		node_name = '.'.join(node_name.split('.')[1:])
 		return name2sta[node_name]["avg"] if node_name in name2sta else 0.0
@@ -180,8 +219,28 @@ def gen_dag_from_gml_and_traces(trace_path, gml_path, rank=0):
 		if "var" in mygraph.nodes[name] and mygraph.nodes[name]["var"] != '[]':
 			for comm_node in mygraph.nodes[name]["var"]:
 				comm_node = add_rank(comm_node)
-				dag.add_edge(add_bw_prefix(name), comm_node, weight=_read_stat(add_bw_prefix(name)))
-				dag.add_edge(comm_node, "Sync", weight=_read_stat(comm_node))
+				if args.del_queue == True:
+					#! Add all the sub-tasks to the dag.
+					prev_node = None
+					for suffix in QueueType[:-1]:
+						cur_node = comm_node + '.' + suffix
+						if _read_stat(cur_node) == 0:
+							continue
+						if prev_node:
+							dag.add_edge(prev_node, cur_node, weight=_read_stat(prev_node, _assert=False))
+						else:
+							dag.add_edge(add_bw_prefix(name), cur_node, weight=_read_stat(add_bw_prefix(name)))
+						prev_node = cur_node
+					if prev_node is None:
+						#! There is no subtask events, by default, take all the subtasks as one event.
+						dag.add_edge(add_bw_prefix(name), comm_node, weight=_read_stat(add_bw_prefix(name)))
+						dag.add_edge(comm_node, "Sync", weight=_read_stat(comm_node))
+					else:
+						dag.add_edge(prev_node, "Sync", weight=_read_stat(prev_node, _assert=False))
+				else:
+					#! Take all the subtasks as one event.
+					dag.add_edge(add_bw_prefix(name), comm_node, weight=_read_stat(add_bw_prefix(name)))
+					dag.add_edge(comm_node, "Sync", weight=_read_stat(comm_node))
 
 	#! Add FW, BW nodes, add BW-->Comm edges (no need to add Comm nodes, auto add)
 	for _node in mygraph.nodes:
@@ -193,8 +252,6 @@ def gen_dag_from_gml_and_traces(trace_path, gml_path, rank=0):
 	for (src, dest) in mygraph.edges:
 		dag.add_edge(add_fwd_prefix(src), add_fwd_prefix(dest), weight=_read_stat(add_fwd_prefix(src)))
 		dag.add_edge(add_bw_prefix(dest), add_bw_prefix(src), weight=_read_stat(add_bw_prefix(dest)))
-		# handel_comm_node(src)
-		# handel_comm_node(dest)
 
 	#! Add a output node with avg time 0.0
 	#! \TODO, automatically generate an output/softmax node when generating traces
@@ -207,7 +264,25 @@ def gen_dag_from_gml_and_traces(trace_path, gml_path, rank=0):
 	
 	for e in dag.edges.data("weight"):
 		logger.debug(e)
+	# visualize_gml(dag, layout="circular")
 	return dag
+
+def return_path_dict(root_path):
+	#! Map the paths of each file from its name
+	_, _, files = list(os.walk(root_path))[0]
+	path_dict = {}
+	for file in files:
+		cur_path = os.path.join(root, _dir, file)
+		if "bps_trace" in file:
+			path_dict["trace_path"] = cur_path		
+		elif file == 'dag.gml':
+			# mygraph = nx.read_gml(cur_path)
+			path_dict['gml_path'] = cur_path
+		elif file == 'temp.json':
+			pass
+		else:
+			pass
+	return path_dict
 
 if args.option == "statistic":
 	""" Read traces """
@@ -258,13 +333,7 @@ if args.option == "statistic":
 
 if args.option == "graph":
 	mygraph = nx.read_gml(args.path)
-	import matplotlib.pyplot as plt
-	# import pylab as plt
-	# nx.draw(mygraph, with_labels=False, font_weight='bold')
-	# pos = nx.circular_layout(mygraph)
-	pos = nx.spectral_layout(mygraph, dim=2, scale=0.5)
-	nx.draw(mygraph, pos, with_labels=True, font_size=6)
-	plt.show()
+	visualize_gml(mygraph)
 
 if args.option == "combine":
 	traces = read_traces(args.path)
@@ -328,40 +397,38 @@ if args.option == "critical":
 
 	def dag_longest_path(G, local_rank, weight='weight', default_weight=0):
 		critical_path = nx.algorithms.dag.dag_longest_path(G, weight=weight, default_weight=default_weight)
+		prefix = "Critical Path of " + ("the Entire Graph: " if local_rank == -1 else "GPU-%d: " % local_rank)
+		logger.info(prefix + " => ")
 		path_length = 0
 		for (u, v) in nx.utils.pairwise(critical_path):
 			path_length += G[u][v].get(weight, default_weight)
-		prefix = "Critical Path of " + ("the Entire Graph: " if local_rank == -1 else "GPU-%d: " % local_rank)
-		logger.info(prefix + str(critical_path) + " => " + prefix + "%12.4f ms" % path_length)
+			logger.info("%s -> %s: %f ms" % (u, v, G[u][v].get(weight, default_weight)))
+		# logger.info(prefix + str(critical_path) + " => " + prefix + "%12.4f ms" % path_length)
+		logger.info("Length of the " + prefix + "%12.4f ms\n" % path_length)
 	#! used to store all dags generated from GPUs
 	graphs = []
 	for _dir in dirs:
-		_, _, files = list(os.walk(os.path.join(root, _dir)))[0]
+		path_dict = return_path_dict(os.path.join(root, _dir))
 		local_rank = int(_dir)
-
-		#! Map the paths of each file from its name
-		path_dic = {}
-		for file in files:
-			cur_path = os.path.join(root, _dir, file)
-			if "bps_trace" in file:
-				path_dic["trace_path"] = cur_path		
-			elif file == 'dag.gml':
-				# mygraph = nx.read_gml(cur_path)
-				path_dic['gml_path'] = cur_path
-			elif file == 'temp.json':
-				pass
-			else:
-				pass
-		# traces = read_traces(path_dic["trace_path"])
+		# traces = read_traces(path_dict["trace_path"])
 		# graphs.append(gen_dag_from_traces(traces, local_rank))
-		dag = gen_dag_from_gml_and_traces(path_dic["trace_path"], path_dic["gml_path"], local_rank)
+		dag = gen_dag_from_gml_and_traces(path_dict["trace_path"], path_dict["gml_path"], local_rank)
 		graphs.append(dag)
 		dag_longest_path(dag, local_rank, weight="weight", default_weight=0)
 
 	graph = nx.compose_all(graphs)
 	dag_longest_path(graph, -1, weight="weight", default_weight=0)
 
-
+if args.option == "time_line":
+	path_dict = return_path_dict(args.path)
+	if "/" == args.path[-1]:
+		local_rank = int(args.path.split("/")[-2])
+	else:
+		local_rank = int(args.path.split("/")[-1])
+	dag = gen_dag_from_gml_and_traces(path_dict["trace_path"], path_dict["gml_path"], local_rank)
+	traces = read_traces(path_dict["trace_path"])
+	name2sta, cat2sta = return_stat(traces)
+	time_line_dag = nx.DiGraph()
 
 
 
