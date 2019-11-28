@@ -11,7 +11,7 @@ parser = argparse.ArgumentParser(description="Trace Analysis",
 		formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 # parser.add_argument("-s", action="store_true", help="sort the output result")
 parser.add_argument("--option", type=str, 
-					choices=["statistic", "graph", "combine", "compare", "critical"],
+					choices=["statistic", "graph", "combine", "compare", "critical", "timeline"],
 					help="The type of analysis to process. including:\n" + 
 						"* statistic: show the statistic results\n" + 
 						"* graph: show the dependency graph\n")
@@ -45,6 +45,9 @@ QueueType = [
 ]
 
 def read_traces(traces_path):
+	'''
+	Return: a list of traces
+	'''
 	with open(traces_path, 'r') as fp:
 		_traces = json.load(fp)
 	if isinstance(_traces, dict):
@@ -324,16 +327,56 @@ if args.option == "critical":
 	graph = nx.compose_all(graphs)
 	dag_longest_path(graph, -1, weight="weight", default_weight=0)
 
-if args.option == "time_line":
-	path_dict = return_path_dict(args.path)
-	if "/" == args.path[-1]:
-		local_rank = int(args.path.split("/")[-2])
-	else:
-		local_rank = int(args.path.split("/")[-1])
-	dag = gen_dag_from_gml_and_traces(path_dict["trace_path"], path_dict["gml_path"], local_rank)
-	traces = read_traces(path_dict["trace_path"])
-	name2sta, cat2sta = return_stat(traces)
-	time_line_dag = nx.DiGraph()
+if args.option == "timeline":
+	traces = read_traces(args.path)
+	traces = sorted(traces, key=lambda x: (x["ts"], x["name"]), reverse=False)
+	max_para_degree = 1
+	in_process_events = []
+	first = True
+	start_time = None
+	pid = None
+	def relative_time(time):
+		return (time - start_time) / 1000.0
+	for event in traces:
+		if first:
+			logger.info("The first event - name: %s, ts: %s, dur: %s" %
+				(event["name"], str(event["ts"]), str(event["dur"])))
+			start_time = event["ts"]
+			first = False
+		#! only consider FW and BW nodes
+		if event["cat"] != "operator":
+			continue
+		#! Deduplication: only collect one process of computation nodes
+		if pid is None:
+			pid = event["pid"]
+		elif pid != event["pid"]:
+			continue
+
+		for name, prev_ts, prev_te in in_process_events:
+			assert event["ts"] >= prev_ts
+			if event["ts"] >= prev_te:
+				#! prev event has ended, should be deleted from in_process_events
+				in_process_events.remove((name, prev_ts, prev_te))
+		if len(in_process_events) + 1 > max_para_degree:
+			max_para_degree = len(in_process_events) + 1
+
+		def in_process_events2str():
+			s = ''
+			for _n, _ts, _te in in_process_events:
+				s += "\n\t\t\t\t%-60s: %s~%s (%-13.4f ~ %-13.4f)" % (_n, str(_ts), str(_te), relative_time(_ts), relative_time(_te))
+			return s
+		if len(in_process_events) > 0:
+			logger.info("%s (%-13.4f): D=%d => %-60s%s" %
+				(event["ts"], relative_time(event["ts"]),
+					len(in_process_events)+1,
+					event["name"], 
+					in_process_events2str()))
+
+		in_process_events.append((event["name"], event["ts"], event["ts"] + event["dur"]))
+
+	logger.info("max_para_degree: %d" % max_para_degree)
+
+
 
 
 
