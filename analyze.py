@@ -142,126 +142,33 @@ def export2xlsx(_dict, _dir, _order=False):
 			worksheet.write(row, col, statistic[key])
 	workbook.close()
 
-def gen_dag_from_traces(traces, rank=0):
-	dag = nx.DiGraph()
-	#! Add a output node with avg time 0.0
-	#! \TODO, automatically generate an output/softmax node when generating traces
-	dag.add_node("OUTPUT", time=0.0)
-	name2sta, cat2sta = return_stat(traces)
-	for event in traces:
-		name = event["name"]
-		event_args = event["args"]
-		if name != event_args["name"]:
-			# -- ignore nodes which are sub-tasks of communication nodes
-			continue
-		node_name = "rank%d_"%rank + name
-		avg_time = name2sta[name]["avg"]
-		if node_name not in dag.nodes: 
-			dag.add_node(node_name, time=avg_time)
-
-		if "BW" in name and len(event_args.items()) == 1:
-			#! this is the first BW node
-			#  add edge:(FW. --> OUTPUT) first
-			value = "FW." + name.split("BW.")[1]
-			value_name = "rank%d_"%rank + value
-			value_avg_time = name2sta[value]["avg"] if value in name2sta else 0.0
-			if value_name not in dag.nodes:
-				dag.add_node(value_name, time=value_avg_time)
-			if (value_name, "OUTPUT") not in dag.edges:
-				dag.add_edge(value_name, "OUTPUT", weight=value_avg_time)
-
-			#!  add edge:(OUTPUT, BW) then
-			if ("OUTPUT", node_name) not in dag.edges:
-				dag.add_edge("OUTPUT", node_name, weight=0.0)
-			continue
-
-		#! for other normal nodes, create edges for each `input0`
-		for key, value in event_args.items():
-			#! \TODO, delete arg
-			if "input" not in key and "arg" not in key:
-				continue
-			value_name = "rank%d_"%rank + value
-			#! \TODO: why some vulues don't exist.
-			value_avg_time = name2sta[value]["avg"] if value in name2sta else 0.0
-			if value_name not in dag.nodes:
-				dag.add_node(value_name, time=value_avg_time)
-			
-			#! If this edge has exist, ignore it
-			if "Comm." in value:
-				if (value_name, 'Sync') not in dag.edges:
-					# -- for the edge from Comm to FW., assume there is a Sync node for all GPU cards.
-					dag.add_edge(value_name, 'Sync', weight=value_avg_time)
-					#~ Delete edges from Sync to FW. nodes or this graph will not be an directed *acyclic* graph
-					# dag.add_edge('Sync', node_name)
-			elif (value_name, node_name) not in dag.edges:
-				dag.add_edge(value_name, node_name, weight=value_avg_time)
-	return dag
-
 def gen_dag_from_gml_and_traces(trace_path, gml_path, rank=0):
 	traces = read_traces(trace_path)
 	name2sta, cat2sta = return_stat(traces)
 	mygraph = nx.read_gml(gml_path)
 	dag = nx.DiGraph()
-
-	def _read_stat(node_name, _assert=False):
-		#! delete rank
-		node_name = '.'.join(node_name.split('.')[1:])
-		return name2sta[node_name]["avg"] if node_name in name2sta else 0.0
-	def add_fwd_prefix(name):
-		return "rank%d.FW."%rank + name
-	def add_bw_prefix(name):
-		return "rank%d.BW."%rank + name
-	def add_rank(name):
+	def add_prefix(name):
 		return "rank%d."%rank + name
+	def _read_stat(node_name, _assert=False):
+		return name2sta[node_name]["avg"] if node_name in name2sta else 0.0
 
-	#! Add edges from BW nodes to Comm nodes.
-	def handel_comm_node(name):
-		if "var" in mygraph.nodes[name] and mygraph.nodes[name]["var"] != '[]':
-			for comm_node in mygraph.nodes[name]["var"]:
-				comm_node = add_rank(comm_node)
-				if args.del_queue == True:
-					#! Add all the sub-tasks to the dag.
-					prev_node = None
-					for suffix in QueueType[:-1]:
-						cur_node = comm_node + '.' + suffix
-						if _read_stat(cur_node) == 0:
-							continue
-						if prev_node:
-							dag.add_edge(prev_node, cur_node, weight=_read_stat(prev_node, _assert=False))
-						else:
-							dag.add_edge(add_bw_prefix(name), cur_node, weight=_read_stat(add_bw_prefix(name)))
-						prev_node = cur_node
-					if prev_node is None:
-						#! There is no subtask events, by default, take all the subtasks as one event.
-						dag.add_edge(add_bw_prefix(name), comm_node, weight=_read_stat(add_bw_prefix(name)))
-						dag.add_edge(comm_node, "Sync", weight=_read_stat(comm_node))
-					else:
-						dag.add_edge(prev_node, "Sync", weight=_read_stat(prev_node, _assert=False))
-				else:
-					#! Take all the subtasks as one event.
-					dag.add_edge(add_bw_prefix(name), comm_node, weight=_read_stat(add_bw_prefix(name)))
-					dag.add_edge(comm_node, "Sync", weight=_read_stat(comm_node))
-
-	#! Add FW, BW nodes, add BW-->Comm edges (no need to add Comm nodes, auto add)
-	for _node in mygraph.nodes:
-		dag.add_node(add_fwd_prefix(_node))
-		dag.add_node(add_bw_prefix(_node))
-		handel_comm_node(_node)
-
-	#! Add all edges with weight
-	for (src, dest) in mygraph.edges:
-		dag.add_edge(add_fwd_prefix(src), add_fwd_prefix(dest), weight=_read_stat(add_fwd_prefix(src)))
-		dag.add_edge(add_bw_prefix(dest), add_bw_prefix(src), weight=_read_stat(add_bw_prefix(dest)))
-
-	#! Add a output node with avg time 0.0
-	#! \TODO, automatically generate an output/softmax node when generating traces
-	dag.add_node(add_rank("OUTPUT"))
-	for _node in dag.nodes:
-		if len(list(dag.successors(_node))) == 0 and "FW." in _node:
-			_bw_node = '.'.join(_node.split('.')[2:])
-			dag.add_edge(_node, add_rank("OUTPUT"), weight=_read_stat(_node))
-			dag.add_edge(add_rank("OUTPUT"), add_bw_prefix(_bw_node), weight=0.0)
-	
+	for u, v in mygraph.edges:
+		if "Comm" in u:
+			if args.del_queue == True:
+				prev_nodes = [_u for _u, _ in mygraph.in_edges(u)]
+				assert len(prev_nodes) == 1
+				prev_node = prev_nodes[0]
+				for suffix in QueueType[-1:]:
+					cur_node = u + '.' + suffix
+					if _read_stat(cur_node) == 0:
+						continue
+					dag.add_edge(add_prefix(prev_node), add_prefix(cur_node), weight=_read_stat(prev_node))
+					prev_node = cur_node
+				dag.add_edge(add_prefix(prev_node), "Sync", weight=_read_stat(prev_node))
+			else:
+				dag.add_edge(add_prefix(u), "Sync", weight=_read_stat(u))
+		else:
+			dag.add_edge(add_prefix(u), add_prefix(v), weight= _read_stat(u))	
 	for e in dag.edges.data("weight"):
 		logger.debug(e)
 	# visualize_gml(dag, layout="circular")
@@ -410,8 +317,6 @@ if args.option == "critical":
 	for _dir in dirs:
 		path_dict = return_path_dict(os.path.join(root, _dir))
 		local_rank = int(_dir)
-		# traces = read_traces(path_dict["trace_path"])
-		# graphs.append(gen_dag_from_traces(traces, local_rank))
 		dag = gen_dag_from_gml_and_traces(path_dict["trace_path"], path_dict["gml_path"], local_rank)
 		graphs.append(dag)
 		dag_longest_path(dag, local_rank, weight="weight", default_weight=0)
