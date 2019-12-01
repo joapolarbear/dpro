@@ -334,7 +334,6 @@ if args.option == "timeline":
 	in_process_events = []
 	first = True
 	start_time = None
-	pid = None
 	def relative_time(time):
 		return (time - start_time) / 1000.0
 	for event in traces:
@@ -345,11 +344,6 @@ if args.option == "timeline":
 			first = False
 		#! only consider FW and BW nodes
 		if event["cat"] != "operator":
-			continue
-		#! Deduplication: only collect one process of computation nodes
-		if pid is None:
-			pid = event["pid"]
-		elif pid != event["pid"]:
 			continue
 
 		for name, prev_ts, prev_te in in_process_events:
