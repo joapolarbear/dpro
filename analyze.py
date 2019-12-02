@@ -7,7 +7,7 @@ import traceback
 
 import logger_utils
 from trace_utils import read_traces, return_stat, export2xlsx
-from dag_utils import gen_dag_from_gml_and_traces, dag_longest_path, visualize_gml
+from dag_utils import gen_dag_from_gml_and_traces, dag_longest_path, visualize_gml, gen_gpu_dag
 
 parser = argparse.ArgumentParser(description="Trace Analysis",
 		formatter_class=argparse.ArgumentDefaultsHelpFormatter)
@@ -26,6 +26,7 @@ parser.add_argument("--xlsx", type=bool, default=False, help="Output XLSX file o
 parser.add_argument("--del_queue", action="store_true", help="If set True, delete the queue time in communicateion traces. ")
 parser.add_argument("--logging_level", type=int, default="20", help="Logging level")
 parser.add_argument("--clean", action="store_true", help="Flush the log file")
+parser.add_argument("--gen_step_num", type=int, default="1", help="Default step numbers to reproduce.")
 args = parser.parse_args()
 
 logger = logger_utils.get_logger(args)
@@ -142,9 +143,132 @@ if args.option == "reproduce":
 		--comm_delay: 
 		--gen_step_num: number of steps we want to generate.
 	'''
-	raise NotImplementedError()
-	dag = gen_dag_from_gml_and_traces(name2sta, path_dict["gml_path"], args.del_queue, path_dict["local_rank"], logger)
-	synthetic_traces = gen_timeline_from_dag(dag)
+	gpu_dag, max_para_degree = gen_gpu_dag(traces, name2sta, path_dict, args.del_queue, logger)
+	rst_traces = []
+
+	def _del_prefix(name):
+		return ".".join(name.split(".")[1:])
+
+	#! Use set to avoid repeated node names.
+	finished_nodes = set()
+	next_nodes = {"rank%d."%path_dict["local_rank"] + "I/O"}
+	_successors = set()
+	_running_nodes = set()
+	_pre_depend_nodes = set()
+
+
+	def check_dependency(name):
+		assert "rank" in name or "Sync" in name
+		# if "bertmodel0_word_embed_embedding0" in name:
+		# 	print([u for u, _ in gpu_dag.in_edges(name)])
+		ret = None
+		_start_time = 0
+		for u, v in gpu_dag.in_edges(name):
+			if _del_prefix(u) in name2sta and "arrive" in name2sta[_del_prefix(u)] and name2sta[_del_prefix(u)]["arrive"] == 1:
+				try:
+					_start_time = max(_start_time, name2sta[_del_prefix(u)]["latest_end"])
+				except:
+					print(u)
+					raise ValueError()
+				continue
+			else:
+				_pre_depend_nodes.add(u)
+				ret = False
+		if ret is None:
+			ret = True
+		return ret, _start_time
+
+	def record_end_time(_name, _start_time):
+		#! Used for calculate the _start_time 
+		if _name not in name2sta:
+			name2sta[_name] = {"latest_end" : _start_time}
+		else:
+			name2sta[_name]["latest_end"] = _start_time + 1000 * name2sta[_name]["avg"]
+		return 0
+	def execute_one_node(cur_node_name, _start_time):
+		raw_name = _del_prefix(cur_node_name)
+		_running_nodes.add(cur_node_name)
+
+		if "I/O" in cur_node_name:
+			pid = cat = tid = "I/O"
+		elif "Comm" in cur_node_name:
+			cat = "Comm"
+			pid = cur_node_name
+			# TODO for each partition.
+			tid = "total"
+		elif "FW" in cur_node_name or "BW" in cur_node_name:
+			pid = "operator"
+			cat = "operator"
+			tid = "tmp"
+			if raw_name not in name2sta or "avg" not in name2sta[raw_name]:
+				logger.warning("%s is not in name2sta" % cur_node_name)
+				record_end_time(raw_name, _start_time)
+				return 0
+		elif "OUTPUT" in cur_node_name:
+			#! No event is generated
+			_successors.update(set(gpu_dag.successors(cur_node_name)))
+			record_end_time(raw_name, _start_time)
+			return 0
+		elif cur_node_name == "Sync":
+			#! No event is generated, no successors nodes
+			return 0			
+		else:
+			raise ValueError("Unknown node name" + cur_node_name)
+
+		rst_traces.append({
+				"name": cur_node_name,
+				"ts": _start_time,
+				"dur": 1000 * name2sta[raw_name]["avg"],
+				"pid": pid,
+				"cat": cat,
+				"ph": "X",
+				"tid": tid
+			})
+
+		record_end_time(raw_name, _start_time)
+		_successors.update(set(gpu_dag.successors(cur_node_name)))
+
+	for _ in range(args.gen_step_num):
+		while len(next_nodes) > 0:
+			#! check the op in the `next_nodes`, if the dependency can be met
+			#  these OPs can be executed in parallel
+			# TODO: take max_para_degree into account
+			for name in next_nodes:
+				is_run, start_time = check_dependency(name)
+				if is_run:
+					execute_one_node(name, start_time)
+
+			#! if some nodes' successors are in `_running_nodes`, 
+			#	then the dependency of these sunccesors should not be satisfied, conflict.
+			assert len(_running_nodes.intersection(_successors)) == 0
+		
+			# #! if `_running_nodes` is empty, infinite loop
+			# assert len(_running_nodes) != 0
+			for _name in _running_nodes:
+				if _del_prefix(_name) not in name2sta:
+					name2sta[_del_prefix(_name)] = {"arrive" : 1}
+				else:
+					name2sta[_del_prefix(_name)]["arrive"] = 1
+
+			prev_len = len(next_nodes)
+			finished_nodes.update(_running_nodes)
+			_pre_depend_nodes.difference_update(finished_nodes)
+			next_nodes.difference_update(_running_nodes)
+			next_nodes.update(_successors)
+			next_nodes.update(_pre_depend_nodes)
+
+			assert not (len(next_nodes) == prev_len and len(_running_nodes) == 0)
+
+			_running_nodes = set()
+			_successors = set()
+			_pre_depend_nodes = set()
+	#! Output the synthetic traces.
+	rst = {
+		"traceEvents": rst_traces,
+		"displayTimeUnit": "ms"
+	}
+	with open(os.path.join(args.path, "synthetic.json"), 'w') as f:
+		json.dump(rst, f, indent=4)
 
 if args.option == "gpu_graph":
 	''' Construct the real graph running on GPU
@@ -152,87 +276,8 @@ if args.option == "gpu_graph":
 	Args:
 		--path: the root path for one GPU
 	'''
-	traces = sorted(traces, key=lambda x: (x["ts"], x["name"]), reverse=False)
-	mygraph = gen_dag_from_gml_and_traces(name2sta, path_dict["gml_path"], args.del_queue, path_dict["local_rank"], logger)
-	prefix = "rank%d."%path_dict["local_rank"]
-
-	in_process_events = []
-	max_para_degree = 1
-	first = True
-	start_time = None
-	def relative_time(time):
-		return (time - start_time) / 1000.0
-	gpu_dag = nx.DiGraph()
-	input_node_raw_names = [".".join(name.split(".")[2:]) for name in mygraph.successors(prefix + "I/O")]
+	gpu_dag = gen_gpu_dag(traces, name2sta, path_dict, args.del_queue, logger)
 	
-	#! Go through one step of traces
-	for event in traces:
-		if first:
-			logger.info("The first event - name: %s, ts: %s, dur: %s" %
-				(event["name"], str(event["ts"]), str(event["dur"])))
-			start_time = event["ts"]
-			first = False
-
-		#! only consider FW and BW nodes
-		if event["cat"] != "operator":
-			continue
-
-		i = 0
-		while True:
-			if i >= len(in_process_events):
-					break
-			prev_event = in_process_events[i]
-			assert event["ts"] >= prev_event["ts"]
-			if event["ts"] >= prev_event["ts"] + prev_event["dur"]:
-				#! prev event has ended, should be deleted from in_process_events
-				del in_process_events[i]
-				#! TODO: only add once, to verify
-				gpu_dag.add_edge(prefix + prev_event["name"], prefix + event["name"], weight=name2sta[prev_event["name"]]["avg"])
-			else:
-				parent_list_of_prev = [(u, gpu_dag.edges[(u, v)]["weight"]) for u, v in gpu_dag.in_edges(prefix + prev_event["name"])]
-				for u, w in parent_list_of_prev:
-					gpu_dag.add_edge(u, prefix + event["name"], weight=w)
-				i += 1
-
-		if len(in_process_events) + 1 > max_para_degree:
-			max_para_degree = len(in_process_events) + 1
-
-		def in_process_events2str():
-			s = ''
-			for _event in in_process_events:
-				_n, _ts, _te = _event["name"], _event["ts"], _event["ts"] + _event["dur"]
-				s += "\n\t\t\t\t%-60s: %s~%s (%-13.4f ~ %-13.4f)" % (_n, str(_ts), str(_te), relative_time(_ts), relative_time(_te))
-			return s
-
-		if len(in_process_events) > 0:
-			logger.info("%s (%-13.4f): D=%d => %-60s%s" %
-				(event["ts"], relative_time(event["ts"]),
-					len(in_process_events)+1,
-					event["name"], 
-					in_process_events2str()))
-
-		#! Only go through one step
-		if "BW" in event["name"] and event["name"].split("BW.")[1] in input_node_raw_names:
-			#! the last computation nodes in one step
-			pass
-		else:
-			in_process_events.append(event)
-		if len(in_process_events) == 0:
-			break
-
-	logger.info("max_para_degree: %d" % max_para_degree)
-
-	#! Then, read IO, Comm, OUTPUT, and Sync nodes
-	def is_computation_node(_node):
-		return "BW" in _node or "FW" in _node
-	for u, v in mygraph.edges:
-		if is_computation_node(u) and is_computation_node(v):
-			#! ignore edges whose u v are both computation nodes
-			continue
-		gpu_dag.add_edge(u, v, weight=mygraph.edges[(u, v)]["weight"])
-
-	dag_longest_path(gpu_dag, path_dict["local_rank"], logger, weight="weight", default_weight=0)
-
 
 '''below options use special --path'''
 # TODO

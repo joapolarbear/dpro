@@ -76,3 +76,88 @@ def gen_dag_from_gml_and_traces(name2sta, gml_path, rank, del_queue, logger):
     logger.debug(e)
   # visualize_gml(dag, layout="circular")
   return dag
+
+def gen_gpu_dag(traces, name2sta, path_dict, del_queue, logger):
+  traces = sorted(traces, key=lambda x: (x["ts"], x["name"]), reverse=False)
+  mygraph = gen_dag_from_gml_and_traces(name2sta, path_dict["gml_path"], del_queue, path_dict["local_rank"], logger)
+  prefix = "rank%d."%path_dict["local_rank"]
+
+  in_process_events = []
+  max_para_degree = 1
+  first = True
+  start_time = None
+  def relative_time(time):
+    return (time - start_time) / 1000.0
+  gpu_dag = nx.DiGraph()
+  input_node_raw_names = [".".join(name.split(".")[2:]) for name in mygraph.successors(prefix + "I/O")]
+  
+  #! Go through one step of traces
+  for event in traces:
+    if first:
+      logger.info("The first event - name: %s, ts: %s, dur: %s" %
+        (event["name"], str(event["ts"]), str(event["dur"])))
+      start_time = event["ts"]
+      first = False
+
+    #! only consider FW and BW nodes
+    if event["cat"] != "operator":
+      continue
+
+    i = 0
+    while True:
+      if i >= len(in_process_events):
+          break
+      prev_event = in_process_events[i]
+      assert event["ts"] >= prev_event["ts"]
+      if event["ts"] >= prev_event["ts"] + prev_event["dur"]:
+        #! prev event has ended, should be deleted from in_process_events
+        del in_process_events[i]
+        #! TODO: only add once, to verify
+        gpu_dag.add_edge(prefix + prev_event["name"], prefix + event["name"], weight=name2sta[prev_event["name"]]["avg"])
+      else:
+        parent_list_of_prev = [(u, gpu_dag.edges[(u, v)]["weight"]) for u, v in gpu_dag.in_edges(prefix + prev_event["name"])]
+        for u, w in parent_list_of_prev:
+          gpu_dag.add_edge(u, prefix + event["name"], weight=w)
+        i += 1
+
+    if len(in_process_events) + 1 > max_para_degree:
+      max_para_degree = len(in_process_events) + 1
+
+    def in_process_events2str():
+      s = ''
+      for _event in in_process_events:
+        _n, _ts, _te = _event["name"], _event["ts"], _event["ts"] + _event["dur"]
+        s += "\n\t\t\t\t%-60s: %s~%s (%-13.4f ~ %-13.4f)" % (_n, str(_ts), str(_te), relative_time(_ts), relative_time(_te))
+      return s
+
+    if len(in_process_events) > 0:
+      logger.info("%s (%-13.4f): D=%d => %-60s%s" %
+        (event["ts"], relative_time(event["ts"]),
+          len(in_process_events)+1,
+          event["name"], 
+          in_process_events2str()))
+
+    #! Only go through one step
+    if "BW" in event["name"] and event["name"].split("BW.")[1] in input_node_raw_names:
+      #! the last computation nodes in one step
+      pass
+    else:
+      in_process_events.append(event)
+    if len(in_process_events) == 0:
+      break
+
+  logger.info("max_para_degree: %d" % max_para_degree)
+
+  #! Then, read IO, Comm, OUTPUT, and Sync nodes
+  def is_computation_node(_node):
+    return "BW" in _node or "FW" in _node
+  for u, v in mygraph.edges:
+    if is_computation_node(u) and is_computation_node(v):
+      #! ignore edges whose u v are both computation nodes
+      continue
+    gpu_dag.add_edge(u, v, weight=mygraph.edges[(u, v)]["weight"])
+
+  dag_longest_path(gpu_dag, path_dict["local_rank"], logger, weight="weight", default_weight=0)
+
+  return gpu_dag, max_para_degree
+
