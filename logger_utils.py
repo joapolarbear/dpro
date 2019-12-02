@@ -3,12 +3,15 @@ import os
 LOG_LEVEL_NAME = ["DEBUG", "INFO", "WARNING", "ERROR", "FATAL"]
 
 def get_logger(args):
+	dirname = args.path if os.path.isdir(args.path) else os.path.dirname(args.path)
+	logfile = os.path.join(dirname, "log_option-" + args.option + ".txt")
+	if args.clean == True and os.path.exists(logfile):
+		os.remove(logfile)
 	#! config logging
 	logger = logging.getLogger(__name__)
 	logger.setLevel(level=args.logging_level)
 
-	dirname = args.path if os.path.isdir(args.path) else os.path.dirname(args.path)
-	handler = logging.FileHandler(os.path.join(dirname, args.option + "_" + args.logging_file))
+	handler = logging.FileHandler(logfile)
 	handler.setLevel(args.logging_level)
 	formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
 	handler.setFormatter(formatter)
