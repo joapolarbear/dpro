@@ -237,7 +237,7 @@ if args.option == "gpu_graph":
 '''below options use special --path'''
 # TODO
 if args.option == "combine":
-	traces = read_traces(args.path1)
+	traces = read_traces(args.path)
 	traces2 = read_traces(args.path2)
 	rank = args.path.split('/')[-2]
 	rank2 = args.path2.split('/')[-2]
