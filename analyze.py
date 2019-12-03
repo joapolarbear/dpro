@@ -156,7 +156,6 @@ if args.option == "reproduce":
 	_running_nodes = set()
 	_pre_depend_nodes = set()
 
-
 	def check_dependency(name):
 		assert "rank" in name or "Sync" in name
 		# if "bertmodel0_word_embed_embedding0" in name:
@@ -178,12 +177,12 @@ if args.option == "reproduce":
 			ret = True
 		return ret, _start_time
 
-	def record_end_time(_name, _start_time):
-		#! Used for calculate the _start_time 
+	def record_end_time(_name, _end_time):
+		#! Used for calculate the _end_time 
 		if _name not in name2sta:
-			name2sta[_name] = {"latest_end" : _start_time}
+			name2sta[_name] = {"latest_end" : _end_time}
 		else:
-			name2sta[_name]["latest_end"] = _start_time + 1000 * name2sta[_name]["avg"]
+			name2sta[_name]["latest_end"] = _end_time
 		return 0
 	def execute_one_node(cur_node_name, _start_time):
 		raw_name = _del_prefix(cur_node_name)
@@ -225,7 +224,7 @@ if args.option == "reproduce":
 				"tid": tid
 			})
 
-		record_end_time(raw_name, _start_time)
+		record_end_time(raw_name, _start_time + 1000 * name2sta[raw_name]["avg"])
 		_successors.update(set(gpu_dag.successors(cur_node_name)))
 
 	for _ in range(args.gen_step_num):

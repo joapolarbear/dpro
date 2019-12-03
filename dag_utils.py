@@ -89,7 +89,10 @@ def gen_gpu_dag(traces, name2sta, path_dict, del_queue, logger):
   def relative_time(time):
     return (time - start_time) / 1000.0
   gpu_dag = nx.DiGraph()
-  input_node_raw_names = [".".join(name.split(".")[2:]) for name in mygraph.successors(prefix + "I/O")]
+  arrive_dict = set()
+  for node in mygraph.nodes:
+    if "FW" in node or "BW" in node:
+      arrive_dict.add(".".join(node.split(".")[1:]))
   
   #! Go through one step of traces
   for event in traces:
@@ -102,6 +105,18 @@ def gen_gpu_dag(traces, name2sta, path_dict, del_queue, logger):
     #! only consider FW and BW nodes
     if event["cat"] != "operator":
       continue
+
+    node_name = event["name"]
+    if node_name in arrive_dict:
+      arrive_dict.remove(node_name)
+      if len(arrive_dict) == 0:
+        break
+    else:
+      continue
+
+    # if "embedding0" in event["name"]:
+    #   print(event["name"], str(in_process_events))
+    #   print("\n")
 
     i = 0
     while True:
@@ -136,15 +151,7 @@ def gen_gpu_dag(traces, name2sta, path_dict, del_queue, logger):
           len(in_process_events)+1,
           event["name"], 
           in_process_events2str()))
-
-    #! Only go through one step
-    if "BW" in event["name"] and event["name"].split("BW.")[1] in input_node_raw_names:
-      #! the last computation nodes in one step
-      pass
-    else:
-      in_process_events.append(event)
-    if len(in_process_events) == 0:
-      break
+    in_process_events.append(event)
 
   logger.info("max_para_degree: %d" % max_para_degree)
 
