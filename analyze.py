@@ -141,7 +141,6 @@ if args.option == "reproduce":
 	graph with time for each node.
 	Args:
 		--path: the root path for one GPU
-		--para_degree: required parallelism degree.
 		--compute_delay:
 		--comm_delay: 
 		--gen_step_num: number of steps we want to generate.
