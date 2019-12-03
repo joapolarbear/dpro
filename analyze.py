@@ -263,12 +263,17 @@ if args.option == "reproduce":
 		step_end_time = 0.0
 		finished_nodes = set()
 		next_nodes = {"rank%d."%path_dict["local_rank"] + "I/O"}
+
+		# Statitic
 		step_start_t = time.time()
+		cnt = 0
+
 		while len(next_nodes) > 0:
 			#! check the op in the `next_nodes`, if the dependency can be met
 			#  these OPs can be executed in parallel
 			# TODO: take max_para_degree into account
 			for name in next_nodes:
+				cnt += 1
 				is_run, start_time = check_dependency(name, overall_time)
 				if is_run:
 					_node_end_time = execute_one_node(name, start_time)
@@ -300,7 +305,9 @@ if args.option == "reproduce":
 			_pre_depend_nodes = set()
 
 		#! prepare for the next step
-		logger.info("Time to geenrate one step of traces: %f s" % (time.time() - step_start_t))
+		logger.info("One step of statistic: %f s, %d loops" % 
+			(time.time() - step_start_t,
+				cnt))
 		overall_time = step_end_time
 		for _, v in name2sta.items():
 			v["arrive"] = 0
