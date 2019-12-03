@@ -1,6 +1,21 @@
 import json
 import xlsxwriter
 
+QueueType = [
+    "COORDINATE_REDUCE",
+    "REDUCE",
+    "COPYD2H",
+    "PCIE_REDUCE",
+    "COORDINATE_PUSH",
+    "PUSH",
+    "PULL",
+    "COPYH2D",
+    "COORDINATE_BROADCAST",
+    "BROADCAST",
+    "QUEUE_NUM_AND_NOT_A_REAL_QUEUE_TYPE_AND_MUST_BE_THE_LAST"
+]
+
+
 def read_traces(traces_path):
 	'''
 	Return: a list of traces
@@ -33,6 +48,9 @@ def return_stat(traces):
 				# "cat": event["cat"] 
 				"cat": event["name"].split(".")[0]
 				}
+		if "Comm" in name and event["args"]["name"] != name:
+			#! partition nodes, record tid
+			
 	"""calculate the avg """
 	for name, statistic in name2sta.items():
 		statistic["avg"] = statistic["time"] / statistic["cnt"]
