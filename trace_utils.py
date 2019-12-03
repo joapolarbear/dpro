@@ -36,6 +36,19 @@ def return_stat(traces):
 	cat2sta = {}
 	for event in traces:
 		name = event["name"]
+		if "Comm" in name and event["args"]["name"] != name:
+			#! sub-task comm nodes, add partition key to the name
+			main_task_name = ".".join(name.split(".")[:-1])
+			name += "." + event["tid"]
+			#! record the partition keys in the main-task node
+			#	for the ease of looking up partition keys
+			if main_task_name in name2sta:
+				if "key" in name2sta[main_task_name]:
+					name2sta[main_task_name]["key"].add(event["tid"])
+				else:
+					name2sta[main_task_name]["key"] = {event["tid"]}
+			else:
+				name2sta[main_task_name] = {"key" : {event["tid"]}}
 		if name in name2sta:
 			name2sta[name]["cnt"] += 1
 			name2sta[name]["time"] += event["dur"] / 1000.0
@@ -48,8 +61,6 @@ def return_stat(traces):
 				# "cat": event["cat"] 
 				"cat": event["name"].split(".")[0]
 				}
-		if "Comm" in name and event["args"]["name"] != name:
-			#! partition nodes, record tid
 			
 	"""calculate the avg """
 	for name, statistic in name2sta.items():

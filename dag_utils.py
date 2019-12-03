@@ -57,17 +57,21 @@ def gen_dag_from_gml_and_traces(name2sta, gml_path, rank, del_queue, logger):
 
     for u, v in mygraph.edges:
         if "Comm" in u:
-            if del_queue == True:
+            if del_queue == True:    
                 prev_nodes = [_u for _u, _ in mygraph.in_edges(u)]
-                assert len(prev_nodes) == 1
-                prev_node = prev_nodes[0]
-                for suffix in QueueType[-1:]:
-                    cur_node = u + '.' + suffix
-                    if _read_stat(cur_node) == 0:
-                        continue
-                    dag.add_edge(add_prefix(prev_node), add_prefix(cur_node), weight=_read_stat(prev_node))
-                    prev_node = cur_node
-                dag.add_edge(add_prefix(prev_node), "Sync", weight=_read_stat(prev_node))
+                assert len(prev_nodes) == 1        
+                #! further to divide the partition key and QueueType
+                #   sub-task node name in mygraph is in the form of Comm.rawname.QueueType.key
+                key_list = name2sta[u]["key"]
+                for key in key_list:
+                    prev_node = prev_nodes[0]
+                    for suffix in QueueType[-1:]:
+                        cur_node = u + '.' + suffix + "." + key
+                        if _read_stat(cur_node) == 0:
+                            continue
+                        dag.add_edge(add_prefix(prev_node), add_prefix(cur_node), weight=_read_stat(prev_node))
+                        prev_node = cur_node
+                    dag.add_edge(add_prefix(prev_node), "Sync", weight=_read_stat(prev_node))
             else:
                 dag.add_edge(add_prefix(u), "Sync", weight=_read_stat(u))
         else:
