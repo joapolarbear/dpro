@@ -77,7 +77,7 @@ def gen_dag_from_gml_and_traces(name2sta, gml_path, rank, del_queue, logger):
   # visualize_gml(dag, layout="circular")
   return dag
 
-def gen_gpu_dag(traces, name2sta, path_dict, del_queue, logger):
+def gen_gpu_dag(traces, name2sta, path_dict, del_queue, logger, _pretty=False):
   traces = sorted(traces, key=lambda x: (x["ts"], x["name"]), reverse=False)
   mygraph = gen_dag_from_gml_and_traces(name2sta, path_dict["gml_path"], del_queue, path_dict["local_rank"], logger)
   prefix = "rank%d."%path_dict["local_rank"]
@@ -93,6 +93,7 @@ def gen_gpu_dag(traces, name2sta, path_dict, del_queue, logger):
   for node in mygraph.nodes:
     if "FW" in node or "BW" in node:
       arrive_dict.add(".".join(node.split(".")[1:]))
+  logger.info("Total number of operators: %d" % len(arrive_dict))
   
   #! Go through one step of traces
   for event in traces:
@@ -113,10 +114,6 @@ def gen_gpu_dag(traces, name2sta, path_dict, del_queue, logger):
         break
     else:
       continue
-
-    # if "embedding0" in event["name"]:
-    #   print(event["name"], str(in_process_events))
-    #   print("\n")
 
     i = 0
     while True:
@@ -145,7 +142,7 @@ def gen_gpu_dag(traces, name2sta, path_dict, del_queue, logger):
         s += "\n\t\t\t\t%-60s: %s~%s (%-13.4f ~ %-13.4f)" % (_n, str(_ts), str(_te), relative_time(_ts), relative_time(_te))
       return s
 
-    if len(in_process_events) > 0:
+    if not _pretty and len(in_process_events) > 0:
       logger.info("%s (%-13.4f): D=%d => %-60s%s" %
         (event["ts"], relative_time(event["ts"]),
           len(in_process_events)+1,
@@ -164,7 +161,8 @@ def gen_gpu_dag(traces, name2sta, path_dict, del_queue, logger):
       continue
     gpu_dag.add_edge(u, v, weight=mygraph.edges[(u, v)]["weight"])
 
-  dag_longest_path(gpu_dag, path_dict["local_rank"], logger, weight="weight", default_weight=0)
+  if not _pretty:
+    dag_longest_path(gpu_dag, path_dict["local_rank"], logger, weight="weight", default_weight=0)
 
   return gpu_dag, max_para_degree
 
