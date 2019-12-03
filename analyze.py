@@ -38,6 +38,8 @@ def return_path_dict(root_path):
 	Args:
 		root_path: the root path for one GPU
 	'''
+	assert os.path.isdir(root_path)
+	root_path = os.path.abspath(root_path)
 	__root, _, files = list(os.walk(root_path))[0]
 	path_dict = {}
 	for __file in files:
