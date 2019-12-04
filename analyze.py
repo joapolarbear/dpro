@@ -59,7 +59,7 @@ def return_path_dict(root_path):
 
 assert os.path.isdir(args.path)
 
-""" Read traces """
+""" Read traces and prepare statitic info"""
 if args.option != 'critical' and args.option != 'combine' and args.option != 'compare':
 	path_dict = return_path_dict(args.path)
 	traces = read_traces(path_dict["trace_path"])
@@ -137,6 +137,119 @@ if args.option == "critical":
 if args.option == "timeline":
 	raise NotImplementedError()
 
+def _del_prefix(name):
+	#! delete the prefix rank0.
+	return ".".join(name.split(".")[1:])
+
+def record_end_time(_name, _end_time):
+	''' Record the latest end time for current node
+	Args:
+		_name: the name of the node we want to record
+		_end_time: the latest end time
+	'''
+	if _name not in name2sta:
+		name2sta[_name] = {"latest_end" : _end_time}
+	else:
+		name2sta[_name]["latest_end"] = _end_time
+	return 0
+
+def _has_arrived(raw_name):
+	return raw_name in name2sta and "arrive" in name2sta[raw_name] and name2sta[raw_name]["arrive"] == 1
+
+def _has_finished(raw_name):
+	return _has_arrived(raw_name) and "latest_end" in name2sta[raw_name] and name2sta[raw_name]["latest_end"] >= 0
+
+step_end_time = 0
+loop_cnt = 0
+
+def _reproduce_one_op(gpu_dag, name, next_nodes_list, reserve=False, FIXED_GAP_us=10):
+	'''
+	Args:
+		reserve: child call its parents
+			!!!require the graph ends with one node (otherwise some nodes may be missed)!!!
+			!!!A dense graph (or the recursion depth is too large)!!!
+		FIXED_GAP_us: fixed gap between two steps
+	'''
+	logger.debug("Name: %s, call parents?: %s" % (name, "True" if reserve else "False"))
+	raw_name = _del_prefix(name)
+	#! avoid repeated processing
+	if _has_arrived(raw_name):
+		#! When being re-called from its successors, this node must have finished
+		#! Directly return the end time of the node
+		return name2sta[raw_name]["latest_end"]
+	else:
+		#! mark arrival here
+		if raw_name not in name2sta:
+			name2sta[raw_name] = {"arrive" : 1}
+		else:
+			name2sta[raw_name]["arrive"] = 1
+
+	global step_end_time, loop_cnt
+	loop_cnt += 1
+	_last_end_time = step_end_time
+	for u, v in gpu_dag.in_edges(name):
+		if _has_arrived(_del_prefix(u)):
+			_last_end_time = max(_last_end_time, name2sta[_del_prefix(u)]["latest_end"])
+		else:
+			#! Use recursive/dfs to process parents, be
+			_last_end_time = max(_last_end_time, _reproduce_one_op(gpu_dag, u, next_nodes_list, reserve=True))
+
+	def call_successor(_name):
+		if not reserve:
+			for _succ in gpu_dag.successors(_name):
+				# assert not _has_finished(_succ)
+				next_nodes_list.add(_succ)
+
+	#! All dependent nodes have been processed
+	if "I/O" in name:
+		pid = cat = tid = "I/O"
+	elif "Comm" in name:
+		cat = "Comm"
+		_name_split = name.split(".")
+		assert len(_name_split) >= 2
+		if _name_split[-2] in QueueType:
+			#! sub-task
+			pid = ".".join(_name_split[:-2])
+			tid = _name_split[-1]
+		else:
+			#! main task
+			pid = name
+			tid = "total"
+	elif "FW" in name or "BW" in name:
+		pid = "operator"
+		cat = "operator"
+		tid = "tmp"
+		if raw_name not in name2sta or "avg" not in name2sta[raw_name]:
+			logger.warning("%s is not in name2sta" % name)
+			record_end_time(raw_name, _last_end_time)
+			call_successor(name)
+			return _last_end_time
+	elif "OUTPUT" in name:
+		#! No event is generated
+		record_end_time(raw_name, _last_end_time)
+		call_successor(name)
+		return _last_end_time
+	elif name == "Sync":
+		#! No event is generated, no successors nodes
+		step_end_time = _last_end_time
+		return _last_end_time			
+	else:
+		raise ValueError("Unknown node name" + name)
+
+	_dur = 1000 * name2sta[raw_name]["avg"]
+	rst_traces.append({
+			"name": name,
+			"ts": _last_end_time + FIXED_GAP_us ,
+			"dur": _dur,
+			"pid": pid,
+			"cat": cat,
+			"ph": "X",
+			"tid": tid
+		})
+	record_end_time(raw_name, _last_end_time + FIXED_GAP_us + _dur)
+	call_successor(name)
+	return _last_end_time + FIXED_GAP_us + _dur
+
 if args.option == "reproduce":
 	''' Re-generate the timeline according to the dependency 
 	graph with time for each node.
@@ -149,173 +262,19 @@ if args.option == "reproduce":
 	gpu_dag, max_para_degree = gen_gpu_dag(traces, name2sta, path_dict, args.del_queue, logger, _pretty=True)
 	rst_traces = []
 
-	def _del_prefix(name):
-		return ".".join(name.split(".")[1:])
-
-	#! Use set to avoid repeated node names.
-	_successors = set()
-	_running_nodes = set()
-	_pre_depend_nodes = set()
-
-	FIXED_GAP_us = 10
-	
-
-	def check_dependency(name, _overall_time = 0):
-		''' Check whether all the parents of `name` has finished.
-		If not, add corresponding parent to `_pre_depend_nodes.
-		Args:
-			name: the name of node
-			_overall_time: used when the node has no dependency
-		Return:
-			ret: if set True, all the parents of `name` has finished.
-			_last_end_time: the end time of last finished parents
-		'''
-		assert "rank" in name or "Sync" in name
-		# if "bertmodel0_word_embed_embedding0" in name:
-		# 	print([u for u, _ in gpu_dag.in_edges(name)])
-		ret = None
-		_last_end_time = 0
-		if len(gpu_dag.in_edges(name)) == 0:
-			#! I/O or other nodes with no parents
-			return True, _overall_time
-		for u, v in gpu_dag.in_edges(name):
-			if _del_prefix(u) in name2sta and "arrive" in name2sta[_del_prefix(u)] and name2sta[_del_prefix(u)]["arrive"] == 1:
-				try:
-					_last_end_time = max(_last_end_time, name2sta[_del_prefix(u)]["latest_end"])
-				except:
-					raise ValueError(u)
-				continue
-			else:
-				_pre_depend_nodes.add(u)
-				ret = False
-		if ret is None:
-			ret = True
-		return ret, _last_end_time
-
-	def record_end_time(_name, _end_time):
-		''' Record the latest end time for current node
-		Args:
-			_name: the name of the node we want to record
-			_end_time: the latest end time
-		'''
-		if _name not in name2sta:
-			name2sta[_name] = {"latest_end" : _end_time}
-		else:
-			name2sta[_name]["latest_end"] = _end_time
-		return 0
-
-	def execute_one_node(_cur_name, _start_time):
-		''' Execute one node, generate a trace, 
-		* add this node to `_running_nodes`,
-		* add the successors of this node to `_successors`
-		Args:
-			_cur_name: the name of the node to be executed
-			_start_time: the start time of this node, **excluding the gap**
-		'''
-		raw_name = _del_prefix(_cur_name)
-		_running_nodes.add(_cur_name)
-
-		if "I/O" in _cur_name:
-			pid = cat = tid = "I/O"
-		elif "Comm" in _cur_name:
-			cat = "Comm"
-			_name_split = _cur_name.split(".")
-			assert len(_name_split) >= 2
-			if _name_split[-2] in QueueType:
-				pid = ".".join(_name_split[:-2])
-				tid = _name_split[-1]
-			else:
-				# main task
-				pid = _cur_name
-				tid = "total"
-		elif "FW" in _cur_name or "BW" in _cur_name:
-			pid = "operator"
-			cat = "operator"
-			tid = "tmp"
-			if raw_name not in name2sta or "avg" not in name2sta[raw_name]:
-				logger.warning("%s is not in name2sta" % _cur_name)
-				record_end_time(raw_name, _start_time)
-				return _start_time
-		elif "OUTPUT" in _cur_name:
-			#! No event is generated
-			_successors.update(set(gpu_dag.successors(_cur_name)))
-			record_end_time(raw_name, _start_time)
-			return _start_time
-		elif _cur_name == "Sync":
-			#! No event is generated, no successors nodes
-			return _start_time			
-		else:
-			raise ValueError("Unknown node name" + _cur_name)
-
-		_dur = 1000 * name2sta[raw_name]["avg"]
-		rst_traces.append({
-				"name": _cur_name,
-				"ts": _start_time + FIXED_GAP_us ,
-				"dur": _dur,
-				"pid": pid,
-				"cat": cat,
-				"ph": "X",
-				"tid": tid
-			})
-
-		record_end_time(raw_name, _start_time + FIXED_GAP_us + _dur)
-		_successors.update(set(gpu_dag.successors(_cur_name)))
-		return _start_time + FIXED_GAP_us + _dur
-
-	overall_time = 0.0
-	
-	for _ in range(args.gen_step_num):
-		step_end_time = 0.0
-		finished_nodes = set()
+	for step_idx in range(args.gen_step_num):
+		time_before_gen = time.time()
 		next_nodes = {"rank%d."%path_dict["local_rank"] + "I/O"}
-
-		# Statitic
-		step_start_t = time.time()
-		cnt = 0
-
 		while len(next_nodes) > 0:
-			#! check the op in the `next_nodes`, if the dependency can be met
-			#  these OPs can be executed in parallel
-			# TODO: take max_para_degree into account
-			for name in next_nodes:
-				cnt += 1
-				is_run, start_time = check_dependency(name, overall_time)
-				if is_run:
-					_node_end_time = execute_one_node(name, start_time)
-					step_end_time = max(step_end_time, _node_end_time)
-
-			#! if some nodes' successors are in `_running_nodes`, 
-			#	then the dependency of these sunccesors should not be satisfied, conflict.
-			assert len(_running_nodes.intersection(_successors)) == 0
-		
-			# #! if `_running_nodes` is empty, infinite loop
-			# assert len(_running_nodes) != 0
-			for _name in _running_nodes:
-				if _del_prefix(_name) not in name2sta:
-					name2sta[_del_prefix(_name)] = {"arrive" : 1}
-				else:
-					name2sta[_del_prefix(_name)]["arrive"] = 1
-
-			prev_len = len(next_nodes)
-			finished_nodes.update(_running_nodes)
-			_pre_depend_nodes.difference_update(finished_nodes)
-			next_nodes.difference_update(_running_nodes)
-			next_nodes.update(_successors)
-			next_nodes.update(_pre_depend_nodes)
-
-			assert not (len(next_nodes) == prev_len and len(_running_nodes) == 0)
-
-			_running_nodes = set()
-			_successors = set()
-			_pre_depend_nodes = set()
-
+			_reproduce_one_op(gpu_dag, next_nodes.pop(), next_nodes)
 		#! prepare for the next step
-		logger.info("One step of statistic: %f s, %d loops" % 
-			(time.time() - step_start_t,
-				cnt))
-		overall_time = step_end_time
+		if step_idx == 0:
+			logger.info("One step time: %f ms" % (step_end_time / 1000.0))
 		for _, v in name2sta.items():
 			v["arrive"] = 0
+		logger.info("One step of statistic: %f s, %d loops, %d events" % 
+			(time.time() - time_before_gen, loop_cnt, len(rst_traces)))
+		loop_cnt = 0
 
 	#! Output the synthetic traces.
 	rst = {
