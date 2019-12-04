@@ -1,21 +1,6 @@
 import json
 import xlsxwriter
 
-QueueType = [
-    "COORDINATE_REDUCE",
-    "REDUCE",
-    "COPYD2H",
-    "PCIE_REDUCE",
-    "COORDINATE_PUSH",
-    "PUSH",
-    "PULL",
-    "COPYH2D",
-    "COORDINATE_BROADCAST",
-    "BROADCAST",
-    "QUEUE_NUM_AND_NOT_A_REAL_QUEUE_TYPE_AND_MUST_BE_THE_LAST"
-]
-
-
 def read_traces(traces_path):
 	'''
 	Return: a list of traces
@@ -73,7 +58,7 @@ def return_stat(traces):
 				cat2sta[cat]["max_name"] = name
 		else:
 			cat2sta[cat] = {"max_t": statistic["avg"], "max_name": name}
-			
+
 	"""calculate the variance"""
 	for event in traces:
 		name = event["name"]

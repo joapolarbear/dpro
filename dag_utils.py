@@ -114,7 +114,7 @@ def gen_gpu_dag(traces, name2sta, path_dict, del_queue, logger, _pretty=False):
             arrive_dict.add(".".join(node.split(".")[1:]))
     logger.info("Total number of operators: %d" % len(arrive_dict))
   
-    #! Go through one step of traces
+    #! For FW and BW nodes, go through one step of traces
     for event in traces:
         if first:
             logger.info("The first event - name: %s, ts: %s, dur: %s" %

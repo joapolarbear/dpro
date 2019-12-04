@@ -9,6 +9,7 @@ import time
 import logger_utils
 from trace_utils import read_traces, return_stat, export2xlsx
 from dag_utils import gen_dag_from_gml_and_traces, dag_longest_path, visualize_gml, gen_gpu_dag
+from dag_utils import QueueType
 
 parser = argparse.ArgumentParser(description="Trace Analysis",
 		formatter_class=argparse.ArgumentDefaultsHelpFormatter)
@@ -182,8 +183,7 @@ if args.option == "reproduce":
 				try:
 					_last_end_time = max(_last_end_time, name2sta[_del_prefix(u)]["latest_end"])
 				except:
-					print(u)
-					raise ValueError()
+					raise ValueError(u)
 				continue
 			else:
 				_pre_depend_nodes.add(u)
@@ -219,9 +219,15 @@ if args.option == "reproduce":
 			pid = cat = tid = "I/O"
 		elif "Comm" in _cur_name:
 			cat = "Comm"
-			pid = _cur_name
-			# TODO for each partition.
-			tid = "total"
+			_name_split = _cur_name.split(".")
+			assert len(_name_split) >= 2
+			if _name_split[-2] in QueueType:
+				pid = ".".join(_name_split[:-2])
+				tid = _name_split[-1]
+			else:
+				# main task
+				pid = _cur_name
+				tid = "total"
 		elif "FW" in _cur_name or "BW" in _cur_name:
 			pid = "operator"
 			cat = "operator"
