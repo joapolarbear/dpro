@@ -45,8 +45,16 @@ def dag_longest_path(G, local_rank, logger, weight='weight', default_weight=0):
 
 def gen_dag_from_gml_and_traces(name2sta, gml_path, rank, del_queue, logger):
     '''
-    Return: A dag, containing FW, BW, OUTPUT, Comm, I/O and Sync nodes
-    node names start with 'rank{id}.'
+    Args:
+        gml_path: stores the dag output by byteprofile
+            TODO, all Comm OPs of one single gradients are considered as one node.
+        del_queue: if set True, `BW -> Comm_main_task -> FW` edges will 
+            be substituded with `BW -> Comm_sub_task1 -> Comm_sub_task2 ... -> FW` edges
+    Return: A dag, which
+        * is **weighted**;
+        * containing FW, BW, OUTPUT, Comm, I/O and Sync nodes;
+        * node names start with 'rank{id}.';
+        * partition Comm nodes into sub-task nodes if needed.
     '''
     mygraph = nx.read_gml(gml_path)
     dag = nx.DiGraph()
@@ -57,15 +65,15 @@ def gen_dag_from_gml_and_traces(name2sta, gml_path, rank, del_queue, logger):
 
     for u, v in mygraph.edges:
         if "Comm" in u:
-            if del_queue == True:    
-                prev_nodes = [_u for _u, _ in mygraph.in_edges(u)]
-                assert len(prev_nodes) == 1        
-                #! further to divide the partition key and QueueType
+            if del_queue == True:
+                prev_fw_nodes = [_u for _u, _ in mygraph.in_edges(u)]
+                assert len(prev_fw_nodes) == 1
+                #! further to divide according to the partition key and QueueType.
                 #   sub-task node name in mygraph is in the form of Comm.rawname.QueueType.key
                 key_list = name2sta[u]["key"]
                 for key in key_list:
-                    prev_node = prev_nodes[0]
-                    for suffix in QueueType[-1:]:
+                    prev_node = prev_fw_nodes[0]
+                    for suffix in QueueType[:-1]:
                         cur_node = u + '.' + suffix + "." + key
                         if _read_stat(cur_node) == 0:
                             continue
@@ -74,8 +82,12 @@ def gen_dag_from_gml_and_traces(name2sta, gml_path, rank, del_queue, logger):
                     dag.add_edge(add_prefix(prev_node), "Sync", weight=_read_stat(prev_node))
             else:
                 dag.add_edge(add_prefix(u), "Sync", weight=_read_stat(u))
+        elif "BW" in u and "Comm" in v and del_queue == True:
+            #! if del_queue is set True, delete edges from BW to Comm main task.
+            pass
         else:
-            dag.add_edge(add_prefix(u), add_prefix(v), weight= _read_stat(u)) 
+            dag.add_edge(add_prefix(u), add_prefix(v), weight= _read_stat(u))
+
     for e in dag.edges.data("weight"):
         logger.debug(e)
     # visualize_gml(dag, layout="circular")
@@ -86,7 +98,7 @@ def gen_gpu_dag(traces, name2sta, path_dict, del_queue, logger, _pretty=False):
     which we call gpu_dag.
     '''
     traces = sorted(traces, key=lambda x: (x["ts"], x["name"]), reverse=False)
-    mygraph = gen_dag_from_gml_and_traces(name2sta, path_dict["gml_path"], del_queue, path_dict["local_rank"], logger)
+    mygraph = gen_dag_from_gml_and_traces(name2sta, path_dict["gml_path"], path_dict["local_rank"], del_queue, logger)
     prefix = "rank%d."%path_dict["local_rank"]
 
     in_process_events = []

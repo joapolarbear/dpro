@@ -73,10 +73,14 @@ def return_stat(traces):
 				cat2sta[cat]["max_name"] = name
 		else:
 			cat2sta[cat] = {"max_t": statistic["avg"], "max_name": name}
+			
 	"""calculate the variance"""
 	for event in traces:
 		name = event["name"]
+		if "Comm" in name and event["args"]["name"] != name:
+			name += "." + event["tid"]
 		name2sta[name]["var"] += pow(event["dur"] / 1000.0 - name2sta[name]["avg"], 2)
+
 	for name, statistic in name2sta.items():
 		statistic["var"] = statistic["var"] / float(statistic["cnt"])
 	return name2sta, cat2sta

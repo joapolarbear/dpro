@@ -126,7 +126,7 @@ if args.option == "critical":
 		path_dict = return_path_dict(os.path.join(root, _dir))
 		traces = read_traces(path_dict["trace_path"])
 		name2sta, cat2sta = return_stat(traces)
-		dag = gen_dag_from_gml_and_traces(name2sta, path_dict["gml_path"], args.del_queue, local_rank, logger)
+		dag = gen_dag_from_gml_and_traces(name2sta, path_dict["gml_path"], local_rank, args.del_queue, logger)
 		dag_longest_path(dag, local_rank, logger, weight="weight", default_weight=0)
 		graphs.append(dag)
 
