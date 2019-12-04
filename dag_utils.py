@@ -109,10 +109,14 @@ def gen_gpu_dag(traces, name2sta, path_dict, del_queue, logger, _pretty=False):
         return (time - start_time) / 1000.0
     gpu_dag = nx.DiGraph()
     arrive_dict = set()
+    comm_cnt = 0
     for node in mygraph.nodes:
         if "FW" in node or "BW" in node:
             arrive_dict.add(".".join(node.split(".")[1:]))
+        elif "Comm" in node:
+            comm_cnt += 1
     logger.info("Total number of operators: %d" % len(arrive_dict))
+    logger.info("Total number of Comm OPs: %d" % comm_cnt)
   
     #! For FW and BW nodes, go through one step of traces
     for event in traces:
