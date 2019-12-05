@@ -121,7 +121,7 @@ def gen_gpu_dag(traces, name2sta, path_dict, del_queue, logger, _pretty=False):
     #! For FW and BW nodes, go through one step of traces
     for event in traces:
         if first:
-            logger.info("The first event - name: %s, ts: %s, dur: %s" %
+            logger.info("The first event - name: %s, ts: %s us, dur: %s us" %
                 (event["name"], str(event["ts"]), str(event["dur"])))
             start_time = event["ts"]
             first = False
@@ -173,7 +173,7 @@ def gen_gpu_dag(traces, name2sta, path_dict, del_queue, logger, _pretty=False):
                     in_process_events2str()))
         in_process_events.append(event)
 
-    logger.info("max_para_degree: %d" % max_para_degree)
+    logger.info("Maximum parallelism degree: %d" % max_para_degree)
 
     #! Then, read IO, Comm, OUTPUT, and Sync nodes
     def is_computation_node(_node):

@@ -270,10 +270,10 @@ if args.option == "reproduce":
 		#! prepare for the next step
 		if step_idx == 0:
 			logger.info("One step time: %f ms" % (step_end_time / 1000.0))
+			logger.info("Take %f s and %d loops to produce %d events" % 
+			(time.time() - time_before_gen, loop_cnt, len(rst_traces)))
 		for _, v in name2sta.items():
 			v["arrive"] = 0
-		logger.info("One step of statistic: %f s, %d loops, %d events" % 
-			(time.time() - time_before_gen, loop_cnt, len(rst_traces)))
 		loop_cnt = 0
 
 	#! Output the synthetic traces.
