@@ -29,6 +29,7 @@ parser.add_argument("--del_queue", action="store_true", help="If set True, delet
 parser.add_argument("--logging_level", type=int, default="20", help="Logging level")
 parser.add_argument("--clean", action="store_true", help="Flush the log file")
 parser.add_argument("--step_num", type=int, default="1", help="Default step numbers to reproduce.")
+parser.add_argument("--pretty", action="store_true", help="Output necessary info if set")
 args = parser.parse_args()
 
 logger = logger_utils.get_logger(args)
@@ -294,25 +295,16 @@ if args.option == "reproduce":
 	
 	all_name2sta = {"traces": []}
 
+	dirs = sorted(dirs)
+
 	for _dir in dirs:
 		local_rank = int(_dir)
 		path_dict = return_path_dict(os.path.join(root, _dir))
 		traces = read_traces(path_dict["trace_path"])
 		name2sta, cat2sta = return_stat(traces)
-		gpu_dag, max_para_degree = gen_gpu_dag(traces, name2sta, path_dict, args.del_queue, logger, _pretty=True)
+		gpu_dag, max_para_degree = gen_gpu_dag(traces, name2sta, path_dict, args.del_queue, logger, _pretty=args.pretty)
 		worker_dag_list.append(gpu_dag)
 		all_name2sta["traces"].append(name2sta)
-
-	# debug
-	# sta0, sta1 = all_name2sta["traces"][0], all_name2sta["traces"][1]
-	# for k0, v0 in sta0.items():
-	# 	if "Comm" in k0 and "key" in v0:
-	# 		try:
-	# 			assert len(v0["key"].difference(sta1[k0]["key"])) == 0
-	# 		except:
-	# 			logger.warning("%s: %s - %s" % (k0, str(v0["key"]), str(sta1[k0]["key"])))
-
-	# raise
 
 	def _name2rootname(_all_name2sta, _name, _QueueType, _root_rank):
 		name_split = _name.split(".")

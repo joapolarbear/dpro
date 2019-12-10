@@ -85,6 +85,9 @@ def gen_dag_from_gml_and_traces(name2sta, gml_path, rank, del_queue, logger):
         elif "BW" in u and "Comm" in v and del_queue == True:
             #! if del_queue is set True, delete edges from BW to Comm main task.
             pass
+        elif "STEP" in u and "FW" in v:
+            #! ignore nodes from STEP to FW, avoid cycle
+            pass
         else:
             dag.add_edge(add_prefix(u), add_prefix(v), weight= _read_stat(u))
 
@@ -127,7 +130,7 @@ def gen_gpu_dag(traces, name2sta, path_dict, del_queue, logger, _pretty=False):
             first = False
 
         #! only consider FW and BW nodes
-        if event["cat"] != "operator":
+        if event["cat"] != "operator" or "STEP" in event["name"]:
             continue
 
         node_name = event["name"]
