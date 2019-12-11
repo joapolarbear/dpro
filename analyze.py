@@ -7,9 +7,9 @@ import time
 
 
 import logger_utils
-from trace_utils import read_traces, return_stat, export2xlsx
+from trace_utils import read_traces, return_stat, export2xlsx, lookup_stat
 from dag_utils import gen_dag_from_gml_and_traces, dag_longest_path, visualize_gml, gen_gpu_dag
-from dag_utils import QueueType
+from replay import Replayer
 
 parser = argparse.ArgumentParser(description="Trace Analysis",
 		formatter_class=argparse.ArgumentDefaultsHelpFormatter)
@@ -138,148 +138,6 @@ if args.option == "critical":
 if args.option == "timeline":
 	raise NotImplementedError()
 
-def _del_prefix(name):
-	#! delete the prefix rank0.
-	return ".".join(name.split(".")[1:])
-
-def split_name(_name):
-	try:
-		name_split = _name.split(".")
-		_local_rank = int(name_split[0].split("rank")[1])
-		raw_name = ".".join(name_split[1:])
-	except:
-		print(_name)
-		raise
-	return _local_rank, raw_name
-
-def record_end_time(_all_name2sta, _name, _end_time):
-	''' Record the latest end time for current node
-	Args:
-		_name: the name of the node we want to record
-		_end_time: the latest end time
-	'''
-	if "rank" not in _name:
-		if _name not in _all_name2sta:
-			_all_name2sta[_name] = {"latest_end" : _end_time}
-		else:
-			_all_name2sta[_name]["latest_end"] = _end_time
-		return 0
-
-	_local_rank, _raw_name = split_name(_name)
-	_name2sta = _all_name2sta["traces"][_local_rank]
-	if _raw_name not in _name2sta:
-		_name2sta[_raw_name] = {"latest_end" : _end_time}
-	else:
-		_name2sta[_raw_name]["latest_end"] = _end_time
-	return 0
-
-def has_arrived(_all_name2sta, _name):
-	'''The node may be in other GPUs, so use _all_name2sta
-	'''
-	if "rank" not in _name:
-		return _name in _all_name2sta and "latest_end" in _all_name2sta[_name] and _all_name2sta[_name]["latest_end"] >= 0
-	_local_rank, _raw_name = split_name(_name)
-	_name2sta = _all_name2sta["traces"][_local_rank]
-	return _raw_name in _name2sta and "latest_end" in _name2sta[_raw_name] and _name2sta[_raw_name]["latest_end"] >= 0
-
-def lookup_stat(_all_name2sta, _name, _field="avg"):
-	''' look up data from the entire worker stat info
-	'''
-	if "rank" not in _name:
-		return _all_name2sta[_name][_field]
-	_local_rank, _raw_name = split_name(_name)
-	return _all_name2sta["traces"][_local_rank][_raw_name][_field]
-
-step_end_time = 0
-loop_cnt = 0
-
-def _reproduce_one_op(_rst_traces, _all_name2sta, _wk_dag, name, next_nodes_list, reserve=False, FIXED_GAP_us=10):
-	'''
-	Args:
-		reserve: child call its parents
-			!!!require the graph ends with one node (otherwise some nodes may be missed)!!!
-			!!!A dense graph (or the recursion depth is too large)!!!
-		FIXED_GAP_us: fixed gap between two steps
-	'''
-	logger.debug("Name: %s, call parents?: %s" % (name, "True" if reserve else "False"))
-	
-	#! avoid repeated processing
-	if has_arrived(_all_name2sta, name):
-		#! When being re-called from its successors, this node must have finished
-		#! Directly return the end time of the node
-		return lookup_stat(_all_name2sta, name, "latest_end")
-
-	global step_end_time, loop_cnt
-	loop_cnt += 1
-	_last_end_time = step_end_time
-	for u, v in _wk_dag.in_edges(name):
-		if has_arrived(_all_name2sta, u):
-			_last_end_time = max(_last_end_time, lookup_stat(_all_name2sta, u, "latest_end"))
-		else:
-			#! Use recursive/dfs to process parents, be
-			_last_end_time = max(_last_end_time, _reproduce_one_op(_rst_traces, _all_name2sta, _wk_dag, u, next_nodes_list, reserve=True))
-
-	def call_successor(_name):
-		if not reserve:
-			for _succ in _wk_dag.successors(_name):
-				next_nodes_list.add(_succ)
-	if "I/O" in name or "Comm" in name or "FW" in name or "BW" in name:
-		_local_rank, raw_name = split_name(name)
-		_name2sta = _all_name2sta["traces"][_local_rank]
-
-	#! All dependent nodes have been processed
-	if "I/O" in name:
-		cat = tid = "I/O"
-		pid = name
-	elif "Comm" in name:
-		cat = "Comm"
-		_name_split = name.split(".")
-		assert len(_name_split) >= 2
-		if _name_split[-2] in QueueType:
-			#! sub-task
-			pid = ".".join(_name_split[:-2])
-			tid = _name_split[-1]
-		else:
-			#! main task
-			pid = name
-			tid = "total"
-	elif "FW" in name or "BW" in name:
-		pid = "rank%d.operator"%_local_rank
-		cat = "operator"
-		tid = "tmp"
-	elif "OUTPUT" in name or "Sync" in name:
-		#! No event is generated
-		record_end_time(_all_name2sta, name, _last_end_time)
-		call_successor(name)
-		return _last_end_time
-	elif name == "END":
-		#! No event is generated, no successors nodes
-		step_end_time = _last_end_time
-		return _last_end_time			
-	else:
-		raise ValueError("Unknown node name: " + name)
-
-	
-	if raw_name not in _name2sta or "avg" not in _name2sta[raw_name]:
-		logger.warning("%s is not in _name2sta" % name)
-		record_end_time(_all_name2sta, name, _last_end_time)
-		call_successor(name)
-		return _last_end_time
-
-	_dur = 1000 * _name2sta[raw_name]["avg"]
-	_rst_traces.append({
-			"name": name,
-			"ts": _last_end_time + FIXED_GAP_us ,
-			"dur": _dur,
-			"pid": pid,
-			"cat": cat,
-			"ph": "X",
-			"tid": tid
-		})
-	record_end_time(_all_name2sta, name, _last_end_time + FIXED_GAP_us + _dur)
-	call_successor(name)
-	return _last_end_time + FIXED_GAP_us + _dur
-
 if args.option == "reproduce":
 	''' Re-generate the timeline according to the dependency 
 	graph with time for each node.
@@ -288,13 +146,11 @@ if args.option == "reproduce":
 		--compute_delay:
 		--comm_delay: 
 		--step_num: number of steps we want to generate.
-	'''
-	root, dirs, _ = list(os.walk(args.path))[0]
+	'''	
 	#! used to store all dags generated from GPUs
 	worker_dag_list = []
-	
 	all_name2sta = {"traces": []}
-
+	root, dirs, _ = list(os.walk(args.path))[0]
 	dirs = sorted(dirs)
 
 	for _dir in dirs:
@@ -307,6 +163,8 @@ if args.option == "reproduce":
 		all_name2sta["traces"].append(name2sta)
 
 	def _name2rootname(_all_name2sta, _name, _QueueType, _root_rank):
+		''' Find the corresponding op name in the root GPU
+		'''
 		name_split = _name.split(".")
 		_local_rank = int(name_split[0].split("rank")[1])
 		name_split[0] = "rank%d"%_root_rank
@@ -336,33 +194,9 @@ if args.option == "reproduce":
 			wk_dag.add_edge(u, sync_name, weight=lookup_stat(all_name2sta, u))
 			wk_dag.add_edge(sync_name, v, weight=0.0)
 
-	rst_traces = []
-	for step_idx in range(args.step_num):
-		time_before_gen = time.time()
-		next_nodes = set(["rank%d."%i + "I/O" for i in range(len(dirs))])
-		while len(next_nodes) > 0:
-			_reproduce_one_op(rst_traces, all_name2sta, wk_dag, next_nodes.pop(), next_nodes)
-		#! prepare for the next step
-		if step_idx == 0:
-			logger.info("One step time: %f ms" % (step_end_time / 1000.0))
-			logger.info("Take %f s and %d loops to produce %d events" % 
-			(time.time() - time_before_gen, loop_cnt, len(rst_traces)))
-		for key, value in all_name2sta.items():
-			if key == "traces":
-				for _name2sta in value:
-					for _, _v in _name2sta.items():
-						_v["latest_end"] = -1
-			else:
-				value["latest_end"] = -1
-		loop_cnt = 0
-
-	#! Output the synthetic traces.
-	rst = {
-		"traceEvents": rst_traces,
-		"displayTimeUnit": "ms"
-	}
-	with open(os.path.join(args.path, "synthetic.json"), 'w') as f:
-		json.dump(rst, f, indent=4)
+	#! Replay traces
+	replayer = Replayer(_all_name2sta=all_name2sta, _local_size=len(dirs), _wk_dag=wk_dag, _step_num=args.step_num, _path=args.path, _logger=logger)
+	replayer.replay()
 
 if args.option == "gpu_graph":
 	''' Construct the real graph running on GPU

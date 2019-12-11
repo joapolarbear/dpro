@@ -1,5 +1,6 @@
 import json
 import xlsxwriter
+import traceback
 
 def read_traces(traces_path):
 	'''
@@ -91,3 +92,25 @@ def export2xlsx(_dict, _dir, _order=False):
 			col += 1
 			worksheet.write(row, col, statistic[key])
 	workbook.close()
+
+def split_name(_name):
+	try:
+		name_split = _name.split(".")
+		_local_rank = int(name_split[0].split("rank")[1])
+		raw_name = ".".join(name_split[1:])
+	except:
+		raise ValueError("split_name error: " + _name)
+	return _local_rank, raw_name
+
+def lookup_stat(_all_name2sta, _name, _field="avg"):
+	''' look up data from the entire worker stat info
+	'''
+	if "rank" not in _name:
+		return _all_name2sta[_name][_field]
+	_local_rank, _raw_name = split_name(_name)
+	return _all_name2sta["traces"][_local_rank][_raw_name][_field]
+
+def _del_prefix(name):
+	#! delete the prefix rank0.
+	return ".".join(name.split(".")[1:])
+

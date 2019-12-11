@@ -38,7 +38,7 @@ def dag_longest_path(G, local_rank, logger, weight='weight', default_weight=0):
     path_length = 0
     for (u, v) in nx.utils.pairwise(critical_path):
         path_length += G[u][v].get(weight, default_weight)
-        logger.info("%s -> %s: %f ms" % (u, v, G[u][v].get(weight, default_weight)))
+        logger.info("%-80s: %f ms" % (u, G[u][v].get(weight, default_weight)))
     # logger.info(prefix + str(critical_path) + " => " + prefix + "%12.4f ms" % path_length)
     logger.info("Length of the " + prefix + "%12.4f ms\n" % path_length)
 
@@ -52,7 +52,7 @@ def gen_dag_from_gml_and_traces(name2sta, gml_path, rank, del_queue, logger):
             be substituded with `BW -> Comm_sub_task1 -> Comm_sub_task2 ... -> FW` edges
     Return: A dag, which
         * is **weighted**;
-        * containing FW, BW, OUTPUT, Comm, I/O and END nodes;
+        * containing FW, BW, OUTPUT, Comm, I/O and STEP nodes;
         * node names start with 'rank{id}.';
         * partition Comm nodes into sub-task nodes if needed.
     '''
@@ -79,9 +79,9 @@ def gen_dag_from_gml_and_traces(name2sta, gml_path, rank, del_queue, logger):
                             continue
                         dag.add_edge(add_prefix(prev_node), add_prefix(cur_node), weight=_read_stat(prev_node))
                         prev_node = cur_node
-                    dag.add_edge(add_prefix(prev_node), "END", weight=_read_stat(prev_node))
+                    dag.add_edge(add_prefix(prev_node), add_prefix("STEP"), weight=_read_stat(prev_node))
             else:
-                dag.add_edge(add_prefix(u), "END", weight=_read_stat(u))
+                dag.add_edge(add_prefix(u), add_prefix("STEP"), weight=_read_stat(u))
         elif "BW" in u and "Comm" in v and del_queue == True:
             #! if del_queue is set True, delete edges from BW to Comm main task.
             pass
@@ -178,7 +178,7 @@ def gen_gpu_dag(traces, name2sta, path_dict, del_queue, logger, _pretty=False):
 
     logger.info("Maximum parallelism degree: %d" % max_para_degree)
 
-    #! Then, read IO, Comm, OUTPUT, and END nodes
+    #! Then, read IO, Comm, OUTPUT, and STEP nodes
     def is_computation_node(_node):
         return "BW" in _node or "FW" in _node
     for u, v in mygraph.edges:
