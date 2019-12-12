@@ -7,15 +7,15 @@ import time
 
 
 import logger_utils
-from trace_utils import read_traces, return_stat, export2xlsx, lookup_stat
-from dag_utils import gen_dag_from_gml_and_traces, dag_longest_path, visualize_gml, gen_gpu_dag
+from trace_utils import read_traces, return_stat, export2xlsx, lookup_stat, return_path_dict
+from dag_utils import DAGManager, dag_longest_path, visualize_gml
 from replay import Replayer
 
 parser = argparse.ArgumentParser(description="Trace Analysis",
 		formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 # parser.add_argument("-s", action="store_true", help="sort the output result")
 parser.add_argument("--option", type=str, 
-					choices=["statistic", "graph", "combine", "compare", "critical", "timeline", "gpu_graph", "reproduce"],
+					choices=["statistic", "graph", "combine", "compare", "critical", "timeline", "reproduce"],
 					help="The type of analysis to process. including:\n" + 
 						"* statistic: show the statistic results\n" + 
 						"* graph: show the dependency graph\n")
@@ -35,29 +35,6 @@ args = parser.parse_args()
 
 logger = logger_utils.get_logger(args)
 logger.info(args)
-
-def return_path_dict(root_path):
-	''' Map the paths of each file from its name
-	Args:
-		root_path: the root path for one GPU
-	'''
-	assert os.path.isdir(root_path)
-	root_path = os.path.abspath(root_path)
-	__root, _, files = list(os.walk(root_path))[0]
-	path_dict = {}
-	for __file in files:
-		cur_path = os.path.join(__root, __file)
-		if "bps_trace" in __file:
-			path_dict["trace_path"] = cur_path		
-		elif __file == 'dag.gml':
-			# mygraph = nx.read_gml(cur_path)
-			path_dict['gml_path'] = cur_path
-		elif __file == 'temp.json':
-			pass
-		else:
-			pass
-	path_dict["local_rank"] = int(__root.split("/")[-1])
-	return path_dict
 
 assert os.path.isdir(args.path)
 
@@ -126,12 +103,10 @@ if args.option == "critical":
 	graphs = []
 	for _dir in dirs:
 		local_rank = int(_dir)
-		path_dict = return_path_dict(os.path.join(root, _dir))
-		traces = read_traces(path_dict["trace_path"])
-		name2sta, cat2sta = return_stat(traces)
-		dag = gen_dag_from_gml_and_traces(name2sta, path_dict["gml_path"], local_rank, args.del_queue, logger)
-		dag_longest_path(dag, local_rank, logger, weight="weight", default_weight=0)
-		graphs.append(dag)
+		dagmanager = DAGManager(os.path.join(root, _dir), local_rank, logger, args.del_queue)
+		dagmanager.gen_dag_from_gml_and_traces()
+		dag_longest_path(dagmanager.dag, local_rank, logger, weight="weight", default_weight=0)
+		graphs.append(dagmanager.dag)
 
 	graph = nx.compose_all(graphs)
 	dag_longest_path(graph, -1, logger, weight="weight", default_weight=0)
@@ -156,12 +131,10 @@ if args.option == "reproduce":
 
 	for _dir in dirs:
 		local_rank = int(_dir)
-		path_dict = return_path_dict(os.path.join(root, _dir))
-		traces = read_traces(path_dict["trace_path"])
-		name2sta, cat2sta = return_stat(traces)
-		gpu_dag, max_para_degree = gen_gpu_dag(traces, name2sta, path_dict, args.del_queue, logger, _pretty=args.pretty)
-		worker_dag_list.append(gpu_dag)
-		all_name2sta["traces"].append(name2sta)
+		dagmanager = DAGManager(os.path.join(root, _dir), local_rank, logger, args.del_queue)
+		max_para_degree = dagmanager.gen_gpu_dag(_pretty=args.pretty)
+		worker_dag_list.append(dagmanager.gpu_dag)
+		all_name2sta["traces"].append(dagmanager.name2sta)
 
 	def _name2rootname(_all_name2sta, _name, _QueueType, _root_rank):
 		''' Find the corresponding op name in the root GPU
@@ -198,16 +171,7 @@ if args.option == "reproduce":
 	#! Replay traces
 	replayer = Replayer(_all_name2sta=all_name2sta, _local_size=len(dirs), _wk_dag=wk_dag, _step_num=args.step_num, _path=args.path, _logger=logger)
 	replayer.replay()
-
-if args.option == "gpu_graph":
-	''' Construct the real graph running on GPU
-	and calculate the maximum parallelism degree.
-	Args:
-		--path: the root path for one GPU
-	'''
-	gpu_dag = gen_gpu_dag(traces, name2sta, path_dict, args.del_queue, logger)
 	
-
 '''below options use special --path'''
 # TODO
 if args.option == "combine":

@@ -1,3 +1,4 @@
+import os
 import json
 import xlsxwriter
 import traceback
@@ -114,3 +115,25 @@ def _del_prefix(name):
 	#! delete the prefix rank0.
 	return ".".join(name.split(".")[1:])
 
+def return_path_dict(root_path):
+	''' Map the paths of each file from its name
+	Args:
+		root_path: the root path for one GPU
+	'''
+	assert os.path.isdir(root_path)
+	root_path = os.path.abspath(root_path)
+	__root, _, files = list(os.walk(root_path))[0]
+	path_dict = {}
+	for __file in files:
+		cur_path = os.path.join(__root, __file)
+		if "bps_trace" in __file:
+			path_dict["trace_path"] = cur_path		
+		elif __file == 'dag.gml':
+			# mygraph = nx.read_gml(cur_path)
+			path_dict['gml_path'] = cur_path
+		elif __file == 'temp.json':
+			pass
+		else:
+			pass
+	path_dict["local_rank"] = int(__root.split("/")[-1])
+	return path_dict
