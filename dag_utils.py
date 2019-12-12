@@ -55,15 +55,27 @@ class DAGManager:
         self.traces = read_traces(self.path_dict["trace_path"])
         self.logger = logger
         self.name2sta, cat2sta = return_stat(self.traces)
-        self.dag = self.gpu_dag = None
+        self.dag = self.gpu_dag = self._fw_bw_dag = None
         self.local_rank = local_rank
         self.del_queue = del_queue
+
+        # TODO: delete
+        tmp = []
+        for trace in self.traces:
+            if trace["ts"] is not None:
+                tmp.append(trace)
+        self.traces = tmp
+            
+        self.traces = sorted(self.traces, key=lambda x: (x["ts"], x["name"]), reverse=False)
+
+        self._topo_sort = []
+        self.topo_sorts = []
 
     def add_prefix(self, name):
         return "rank%d."%self.local_rank + name
 
     def gen_dag_from_gml_and_traces(self):
-        ''' Gen a weighted dag from the original graph.
+        ''' Gen a dag from the original graph with weighted edges.
         Args:
             gml_path: stores the dag output by byteprofile
                 TODO, all Comm OPs of one single gradients are considered as one node.
@@ -113,7 +125,7 @@ class DAGManager:
             self.logger.debug(e)
         # visualize_gml(self.dag, layout="circular")
 
-    def add_computation_nodes(self, _pretty):
+    def _add_computation_nodes(self, _pretty):
         in_process_events = []
         max_para_degree = 1
         first = True
@@ -142,14 +154,15 @@ class DAGManager:
             if event["cat"] != "operator" or "STEP" in event["name"]:
                 continue
 
-            #! TODO(huhanpeng)
+            #! TODO(huhanpeng): will never break, since some BW nodes do not exist.
+            #! but can still avoid repeated processing
             node_name = event["name"]
             if node_name in arrive_dict:
                 arrive_dict.remove(node_name)
                 if len(arrive_dict) == 0:
-                    raise ValueError("hhhh")
                     break
             else:
+                #! ignore some trival nodes or the nodes which appears for the second time.
                 continue
 
             i = 0
@@ -190,28 +203,81 @@ class DAGManager:
         self.logger.info("Maximum parallelism degree: %d" % max_para_degree)
         return max_para_degree
 
+    def is_computation_node(self, _node):
+        return "BW" in _node or "FW" in _node
+    
     def gen_gpu_dag(self, _pretty=False):
         ''' Get the processing order and construct a new graph running on GPU
         which we call gpu_dag.
         '''
-        self.traces = sorted(self.traces, key=lambda x: (x["ts"], x["name"]), reverse=False)
         self.gen_dag_from_gml_and_traces()
-        
         self.gpu_dag = nx.DiGraph()
 
-        max_para_degree = self.add_computation_nodes(_pretty)
+        max_para_degree = self._add_computation_nodes(_pretty)
 
         #! Then, read IO, Comm, OUTPUT, and STEP nodes
-        def is_computation_node(_node):
-            return "BW" in _node or "FW" in _node
         for u, v in self.dag.edges:
-            if is_computation_node(u) and is_computation_node(v):
+            if self.is_computation_node(u) and self.is_computation_node(v):
                 #! ignore edges whose u v are both computation nodes
                 continue
             self.gpu_dag.add_edge(u, v, weight=self.dag.edges[(u, v)]["weight"])
 
+        #！til now, all the edges for one GPU have been added.
         if not _pretty:
             dag_longest_path(self.gpu_dag, self.local_rank, self.logger, weight="weight", default_weight=0)
 
         return max_para_degree
+
+    def add_nodes_weight(self):
+        for n in self.gpu_dag:
+            assert "rank" in n
+            rawname = ".".join(n.split(".")[1:])
+            self.gpu_dag.node[u]["avg"] = self.name2sta[rawname]["avg"] if rawname in self.name2sta else 0.0
+            self.gpu_dag.node[u]["in_degree"] = self.gpu_dag.in_degree(n)
+            self.gpu_dag.node[u]["visited"] = False
+
+    def all_topo_sorts(self):
+        flag = False
+
+        for n in self._fw_bw_dag.nodes:
+            if self._fw_bw_dag.node[n]["in_degree"] == 0 and not self._fw_bw_dag.node[n]["visited"]:
+                #! All its successors 
+                for next_n in self._fw_bw_dag.successors(n):
+                    self._fw_bw_dag.node[next_n]["in_degree"] -= 1
+
+                self._topo_sort.append(n)
+                self._fw_bw_dag.node[n]["visited"] = True
+                self.all_topo_sorts()
+
+                self._fw_bw_dag.node[n]["visited"] = False
+                self._topo_sort.pop()
+
+                #! retrive dependency
+                for next_n in self._fw_bw_dag.successors(n):
+                    self._fw_bw_dag.node[next_n]["in_degree"] += 1
+
+                flag = True
+
+        if flag == False:
+            # self.logger.info(str(self._topo_sort))
+            self.topo_sorts.append(self._topo_sort)
+            self.logger.info(self._topo_sort)
+
+    def gen_fw_bw_dag(self):
+        self._fw_bw_dag = nx.DiGraph()
+        self.gen_dag_from_gml_and_traces()
+        for u, v, _dict in self.dag.edges.data():
+            if self.is_computation_node(u) and self.is_computation_node(v): 
+                self._fw_bw_dag.add_edge(u, v, **_dict)
+        for n, _dict in self._fw_bw_dag.nodes.data():
+            _dict["in_degree"] = self._fw_bw_dag.in_degree(n)
+            _dict["visited"] = False
+
+        self.logger.info(list(self._fw_bw_dag.nodes))
+        # self.all_topo_sorts()
+        self.logger.info(len(self.topo_sorts))
+
+
+
+
 

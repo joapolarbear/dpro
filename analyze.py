@@ -4,7 +4,7 @@ import argparse
 import networkx as nx
 import traceback
 import time
-
+import sys
 
 import logger_utils
 from trace_utils import read_traces, return_stat, export2xlsx, lookup_stat, return_path_dict
@@ -15,7 +15,7 @@ parser = argparse.ArgumentParser(description="Trace Analysis",
 		formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 # parser.add_argument("-s", action="store_true", help="sort the output result")
 parser.add_argument("--option", type=str, 
-					choices=["statistic", "graph", "combine", "compare", "critical", "timeline", "reproduce"],
+					choices=["statistic", "graph", "combine", "compare", "critical", "timeline", "reproduce", "topo_sort"],
 					help="The type of analysis to process. including:\n" + 
 						"* statistic: show the statistic results\n" + 
 						"* graph: show the dependency graph\n")
@@ -37,9 +37,10 @@ logger = logger_utils.get_logger(args)
 logger.info(args)
 
 assert os.path.isdir(args.path)
+sys.setrecursionlimit(1000000)
 
 """ Read traces and prepare statitic info"""
-if args.option not in ['critical', 'combine', 'compare', "reproduce"]:
+if args.option not in ['critical', 'combine', 'compare', "reproduce", "topo_sort"]:
 	path_dict = return_path_dict(args.path)
 	traces = read_traces(path_dict["trace_path"])
 	name2sta, cat2sta = return_stat(traces)
@@ -172,6 +173,11 @@ if args.option == "reproduce":
 	replayer = Replayer(_all_name2sta=all_name2sta, _local_size=len(dirs), _wk_dag=wk_dag, _step_num=args.step_num, _path=args.path, _logger=logger)
 	replayer.replay()
 	
+if args.option == "topo_sort":
+	local_rank = int(os.path.abspath(args.path).split("/")[-1])
+	dagmanager = DAGManager(args.path, local_rank, logger, args.del_queue)
+	dagmanager.gen_fw_bw_dag()
+
 '''below options use special --path'''
 # TODO
 if args.option == "combine":
