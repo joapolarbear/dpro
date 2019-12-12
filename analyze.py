@@ -25,11 +25,12 @@ parser.add_argument("--path2", type=str, required=False, help="The path of the f
 parser.add_argument("--sort", type=bool, default=True, help="Sorted in descending order")
 parser.add_argument("--head", type=int, default=None, help="Print the first few lines")
 parser.add_argument("--xlsx", type=bool, default=False, help="Output XLSX file of the statistic results")
-parser.add_argument("--del_queue", action="store_true", help="If set True, delete the queue time in communicateion traces. ")
+parser.add_argument("--del_queue", action="store_true", help="If set True, delete the queue time in communication traces. ")
 parser.add_argument("--logging_level", type=int, default="20", help="Logging level")
 parser.add_argument("--clean", action="store_true", help="Flush the log file")
 parser.add_argument("--step_num", type=int, default="1", help="Default step numbers to reproduce.")
 parser.add_argument("--pretty", action="store_true", help="Output necessary info if set")
+parser.add_argument("--filter", type=str, default=None, help="Used to show part of communication operations, seperated with `,`.")
 args = parser.parse_args()
 
 logger = logger_utils.get_logger(args)
@@ -210,19 +211,35 @@ if args.option == "gpu_graph":
 '''below options use special --path'''
 # TODO
 if args.option == "combine":
-	traces = read_traces(args.path)
-	traces2 = read_traces(args.path2)
-	rank = args.path.split('/')[-2]
-	rank2 = args.path2.split('/')[-2]
-
-	rst_path = '/'.join(args.path.split("/")[:-2]) + '/' + "combined.json"
+	comm_filter = args.filter.split(",") if args.filter is not None else None
+	rst_path = None
 	rst_traces = {"traceEvents": []}
-	for event in traces:
-		event['pid'] = rank + '.' + str(event['pid'])
-		rst_traces["traceEvents"].append(event)
-	for event in traces2:
-		event['pid'] = rank2 + '.' + str(event['pid'])
-		rst_traces["traceEvents"].append(event)
+	def add_traces(_traces, _local_rank):
+		for event in _traces:
+			if event["cat"] == "Comm" and comm_filter is not None and event["args"]["name"] not in comm_filter:
+				continue
+			event['pid'] = "rank%d."%_local_rank + str(event['pid'])
+			rst_traces["traceEvents"].append(event)
+
+	if os.path.isdir(args.path):
+		root, dirs, _ = list(os.walk(args.path))[0]
+		dirs = sorted(dirs)
+		rst_path = os.path.join(root, "combined.json")
+		for _dir in dirs:
+			path_dict = return_path_dict(os.path.join(root, _dir))
+			local_rank = path_dict["local_rank"]
+			traces = read_traces(path_dict["trace_path"])
+			add_traces(traces, local_rank)
+	else:
+		rst_path = '/'.join(args.path.split("/")[:-2]) + '/' + "combined.json"
+			
+		traces = read_traces(args.path)
+		local_rank = args.path.split('/')[-2]		
+		add_traces(traces, local_rank)
+
+		traces2 = read_traces(args.path2)
+		local_rank2 = args.path2.split('/')[-2]
+		add_traces(traces2, local_rank2)
 
 	with open(rst_path, 'w') as f:
 		json.dump(rst_traces, f, indent=4)
