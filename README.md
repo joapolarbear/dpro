@@ -12,14 +12,14 @@ Set arg `--option statistic` to show the statistic results, and arg `--path` mus
 Set arg `--option graph`, visualize the dependency dag graph. and arg `--path` must be set to the exact DAG path (ending with `.gml`).
 
 ## Combine Trace Files
-Set arg `--option combine`, this can be used to combine several trace files into one file, e.g., one worker may has two GPUs, each of which generates a trace file, you can use this option and list the paths of these two files using `--path` and `--path2`.
+Set arg `--option combine`, this can be used to combine several trace files into one file, e.g., one worker may has two GPUs, each of which generates a trace file, you can use this option and list the paths of these two files using `--path`.
 
 There are two options to define the trace paths.
 
-1. If you want to combine all the trace files on one worker, you can pass the trace directory path to `--path`, and the combined trace file will be stored under the same directory.
-2. If you want to combine two specific trace files, you should use both `--path` and `--path2` to specify the exact trace file path. By default, the combined trace file will be store under the same directory as `--path`.
+1. Use file paths. In this case, `--path` should be a list of file paths, each of which denotes a trace file. The combined trace file will be stored under the same directory as the first trace file.
+2. Use directory paths. In this case, `--path` is a list of directory paths, each of which denotes one worker and contains trace directories of GPUs on this worker. By default, the combined trace file will be store under the first directory.
 
-**About the path, all of them must be paths of files or all of them must be paths of diretories.**
+**Note: please ensure that all of paths are file paths or all of them are diretory paths.**
 
 
 If you do not want combine all the traces, you can use `--filter` to give a list communication operations seperated with comma, then only these communication operations will appear in the combined trace file. For now, the filter only supports communication nodes.  An example is shown below.
