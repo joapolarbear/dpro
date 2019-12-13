@@ -19,6 +19,9 @@ There are two options to define the trace paths.
 1. If you want to combine all the trace files on one worker, you can pass the trace directory path to `--path`, and the combined trace file will be stored under the same directory.
 2. If you want to combine two specific trace files, you should use both `--path` and `--path2` to specify the exact trace file path. By default, the combined trace file will be store under the same directory as `--path`.
 
+**About the path, all of them must be paths of files or all of them must be paths of diretories.**
+
+
 If you do not want combine all the traces, you can use `--filter` to give a list communication operations seperated with comma, then only these communication operations will appear in the combined trace file. For now, the filter only supports communication nodes.  An example is shown below.
 
 ```bash

@@ -3,7 +3,8 @@ import os
 LOG_LEVEL_NAME = ["DEBUG", "INFO", "WARNING", "ERROR", "FATAL"]
 
 def get_logger(args):
-	dirname = args.path if os.path.isdir(args.path) else os.path.dirname(args.path)
+	path = args.path.split(',')[0]
+	dirname = path if os.path.isdir(path) else os.path.dirname(path)
 	logfile = os.path.join(dirname, "log_option-" + args.option + ".txt")
 	if args.clean == True and os.path.exists(logfile):
 		os.remove(logfile)

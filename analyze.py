@@ -19,8 +19,7 @@ parser.add_argument("--option", type=str,
 					help="The type of analysis to process. including:\n" + 
 						"* statistic: show the statistic results\n" + 
 						"* graph: show the dependency graph\n")
-parser.add_argument("--path", type=str, required=True, help="The path of the dir you want to analyze. Must be a dirctory.")
-parser.add_argument("--path2", type=str, required=False, help="The path of the file you want to analyze.")
+parser.add_argument("--path", type=str, required=True, help="The paths of traces you want to analyze, support multiple paths seperated with comma.")
 
 parser.add_argument("--sort", type=bool, default=True, help="Sorted in descending order")
 parser.add_argument("--head", type=int, default=None, help="Print the first few lines")
@@ -30,18 +29,19 @@ parser.add_argument("--logging_level", type=int, default="20", help="Logging lev
 parser.add_argument("--clean", action="store_true", help="Flush the log file")
 parser.add_argument("--step_num", type=int, default="1", help="Default step numbers to reproduce.")
 parser.add_argument("--pretty", action="store_true", help="Output necessary info if set")
-parser.add_argument("--filter", type=str, default=None, help="Used to show part of communication operations, seperated with `,`.")
+parser.add_argument("--filter", type=str, default=None, help="Used to show part of communication operations, seperated with comma.")
 args = parser.parse_args()
 
 logger = logger_utils.get_logger(args)
 logger.info(args)
 
-assert os.path.isdir(args.path)
+
 sys.setrecursionlimit(1000000)
 
+path_list = args.path.split(',')
 """ Read traces and prepare statitic info"""
 if args.option not in ['critical', 'combine', 'compare', "reproduce", "topo_sort"]:
-	path_dict = return_path_dict(args.path)
+	path_dict = return_path_dict(path_list[0])
 	traces = read_traces(path_dict["trace_path"])
 	name2sta, cat2sta = return_stat(traces)
 
@@ -98,7 +98,7 @@ if args.option == "critical":
 		-- args.path: the dir of a worker, which contains multiple folders 
 						storing traces of GPUs of this worker
 	'''
-	root, dirs, _ = list(os.walk(args.path))[0]
+	root, dirs, _ = list(os.walk(path_list[0]))[0]
 
 	#! used to store all dags generated from GPUs
 	graphs = []
@@ -127,7 +127,7 @@ if args.option == "reproduce":
 	#! used to store all dags generated from GPUs
 	worker_dag_list = []
 	all_name2sta = {"traces": []}
-	root, dirs, _ = list(os.walk(args.path))[0]
+	root, dirs, _ = list(os.walk(path_list[0]))[0]
 	dirs = sorted(dirs)
 
 	for _dir in dirs:
@@ -170,12 +170,12 @@ if args.option == "reproduce":
 			wk_dag.add_edge(sync_name, v, weight=0.0)
 
 	#! Replay traces
-	replayer = Replayer(_all_name2sta=all_name2sta, _local_size=len(dirs), _wk_dag=wk_dag, _step_num=args.step_num, _path=args.path, _logger=logger)
+	replayer = Replayer(_all_name2sta=all_name2sta, _local_size=len(dirs), _wk_dag=wk_dag, _step_num=args.step_num, _path=path_list[0], _logger=logger)
 	replayer.replay()
 	
 if args.option == "topo_sort":
-	local_rank = int(os.path.abspath(args.path).split("/")[-1])
-	dagmanager = DAGManager(args.path, local_rank, logger, args.del_queue)
+	local_rank = int(os.path.abspath(path_list[0]).split("/")[-1])
+	dagmanager = DAGManager(path_list[0], local_rank, logger, args.del_queue)
 	dagmanager.gen_fw_bw_dag()
 
 '''below options use special --path'''
@@ -195,6 +195,7 @@ if args.option == "combine":
 		tmp_traces = []
 		_path = os.path.abspath(_path)
 		if os.path.isdir(_path):
+			#! If its a directory of a worker, read all traces of all GPUs
 			root, dirs, _ = list(os.walk(_path))[0]
 			dirs = sorted(dirs)		
 			for _dir in dirs:
@@ -203,52 +204,48 @@ if args.option == "combine":
 				traces = read_traces(path_dict["trace_path"])
 				add_traces(traces, local_rank, tmp_traces)
 		else:
+			#! Or, read just one trace file
 			traces = read_traces(_path)
 			local_rank = _path.split('/')[-2]		
 			add_traces(traces, local_rank, tmp_traces)
 		return tmp_traces
 
-	tmp_traces = process_one_path(args.path)
-
-	if args.path2 is not None:
-		tmp_traces2 = process_one_path(args.path2)
-		if os.path.isdir(args.path):
-			#! if path is dir, combine two worker files, need to align before merge
-			tmp_traces = sorted(tmp_traces, key=lambda x: x["ts"], reverse=False)
-			tmp_traces2 = sorted(tmp_traces2, key=lambda x: x["ts"], reverse=False)
-			first_pull_name = None
-			first_pull_time = None
-			bias = None
+	first_pull_name = None
+	first_pull_time = None
+	for idx, path in enumerate(path_list):
+		bias = None
+		tmp_traces = process_one_path(path_list[idx])
+		tmp_traces = sorted(tmp_traces, key=lambda x: x["ts"], reverse=False)
+		if idx == 0:
 			for event in tmp_traces:
 				if first_pull_name is None and "PULL" in event["name"]:
 					first_pull_name = event["name"]
 					first_pull_time = event["ts"] + event["dur"]
-					break
+				event["pid"] = "wk%d."%idx + event["pid"]
 			if first_pull_name is None:
 				raise ValueError("These two files are not distributed training traces.")
-			for event in tmp_traces2:
+		else:
+			for event in tmp_traces:
 				if event["name"] == first_pull_name:
 					bias = event["ts"] + event["dur"] - first_pull_time
 					break
 			assert bias is not None
-			for event in tmp_traces2:
+			for event in tmp_traces:
 				event["ts"] -= bias
-				event["pid"] = "wk2." + event["pid"]
-		rst_traces["traceEvents"] += tmp_traces2
+				event["pid"] = "wk%d."%idx + event["pid"]
+		rst_traces["traceEvents"] += tmp_traces
 
-	rst_traces["traceEvents"] += tmp_traces
-
-	if os.path.isdir(args.path):
-		rst_path = os.path.join(args.path, "combined.json")
+	if os.path.isdir(path_list[0]):
+		rst_path = os.path.join(path_list[0], "combined.json")
 	else:
-		rst_path = os.path.join(os.path.dirname(os.path.dirname(args.path)), "combined.json")
+		rst_path = os.path.join(os.path.dirname(os.path.dirname(path_list[0])), "combined.json")
 	with open(rst_path, 'w') as f:
 		json.dump(rst_traces, f, indent=4)
 
 if args.option == "compare":
-	if not (args.path and args.path2):
+	if len(path_list) < 2:
 		raise ValueError("To compare two files, two paths must be given")
-	traces = [read_traces(args.path), read_traces(args.path2)]
+	traces = [read_traces(path_list[0]), read_traces(path_list[1])]
 	name2sta = [return_stat(_traces)[0] for _traces in traces]
 	name2compare = {}
 	for name, statistic in name2sta[0].items():
@@ -265,8 +262,8 @@ if args.option == "compare":
 		sort_sta = name2compare.items()
 
 	print("Compare following two files:")
-	print("File 1: " + args.path)
-	print("File 2: " + args.path2)
+	print("File 1: " + path_list[0])
+	print("File 2: " + path_list[1])
 	print("===================")
 	print("%-60s\t Absolute Avg Time Increase (ms)\t Relative Avg Time Increase" % "Name")
 	line_cnt = 0
