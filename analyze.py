@@ -184,33 +184,64 @@ if args.option == "combine":
 	comm_filter = args.filter.split(",") if args.filter is not None else None
 	rst_path = None
 	rst_traces = {"traceEvents": []}
-	def add_traces(_traces, _local_rank):
+	def add_traces(_traces, _local_rank, _tmp_traces):
 		for event in _traces:
 			if event["cat"] == "Comm" and comm_filter is not None and event["args"]["name"] not in comm_filter:
 				continue
 			event['pid'] = "rank%d."%_local_rank + str(event['pid'])
-			rst_traces["traceEvents"].append(event)
+			_tmp_traces.append(event)
+
+	def process_one_path(_path):
+		tmp_traces = []
+		_path = os.path.abspath(_path)
+		if os.path.isdir(_path):
+			root, dirs, _ = list(os.walk(_path))[0]
+			dirs = sorted(dirs)		
+			for _dir in dirs:
+				path_dict = return_path_dict(os.path.join(root, _dir))
+				local_rank = path_dict["local_rank"]
+				traces = read_traces(path_dict["trace_path"])
+				add_traces(traces, local_rank, tmp_traces)
+		else:
+			traces = read_traces(_path)
+			local_rank = _path.split('/')[-2]		
+			add_traces(traces, local_rank, tmp_traces)
+		return tmp_traces
+
+	tmp_traces = process_one_path(args.path)
+
+	if args.path2 is not None:
+		tmp_traces2 = process_one_path(args.path2)
+		if os.path.isdir(args.path):
+			#! if path is dir, combine two worker files, need to align before merge
+			tmp_traces = sorted(tmp_traces, key=lambda x: x["ts"], reverse=False)
+			tmp_traces2 = sorted(tmp_traces2, key=lambda x: x["ts"], reverse=False)
+			first_pull_name = None
+			first_pull_time = None
+			bias = None
+			for event in tmp_traces:
+				if first_pull_name is None and "PULL" in event["name"]:
+					first_pull_name = event["name"]
+					first_pull_time = event["ts"] + event["dur"]
+					break
+			if first_pull_name is None:
+				raise ValueError("These two files are not distributed training traces.")
+			for event in tmp_traces2:
+				if event["name"] == first_pull_name:
+					bias = event["ts"] + event["dur"] - first_pull_time
+					break
+			assert bias is not None
+			for event in tmp_traces2:
+				event["ts"] -= bias
+				event["pid"] = "wk2." + event["pid"]
+		rst_traces["traceEvents"] += tmp_traces2
+
+	rst_traces["traceEvents"] += tmp_traces
 
 	if os.path.isdir(args.path):
-		root, dirs, _ = list(os.walk(args.path))[0]
-		dirs = sorted(dirs)
-		rst_path = os.path.join(root, "combined.json")
-		for _dir in dirs:
-			path_dict = return_path_dict(os.path.join(root, _dir))
-			local_rank = path_dict["local_rank"]
-			traces = read_traces(path_dict["trace_path"])
-			add_traces(traces, local_rank)
+		rst_path = os.path.join(args.path, "combined.json")
 	else:
-		rst_path = '/'.join(args.path.split("/")[:-2]) + '/' + "combined.json"
-			
-		traces = read_traces(args.path)
-		local_rank = args.path.split('/')[-2]		
-		add_traces(traces, local_rank)
-
-		traces2 = read_traces(args.path2)
-		local_rank2 = args.path2.split('/')[-2]
-		add_traces(traces2, local_rank2)
-
+		rst_path = os.path.join(os.path.dirname(os.path.dirname(args.path)), "combined.json")
 	with open(rst_path, 'w') as f:
 		json.dump(rst_traces, f, indent=4)
 
