@@ -132,6 +132,8 @@ class Replayer:
 		if "I/O" in name:
 			cat = tid = "I/O"
 			pid = name
+			delay = 0.0
+			ratio = 1.0
 		elif "Comm" in name:
 			cat = "Comm"
 			_name_split = name.split(".")
@@ -144,10 +146,14 @@ class Replayer:
 				#! main task
 				pid = name
 				tid = "total"
+			delay = 0
+			ratio = 1.0
 		elif "FW" in name or "BW" in name or "STEP" in name:
 			pid = "rank%d.operator"%_local_rank
 			cat = "operator"
 			tid = "tmp"
+			delay = 0
+			ratio = 1.0
 		elif "OUTPUT" in name or "Sync" in name:
 			#! No event is generated, but has successors
 			self.record_end_time(name, _last_end_time)
@@ -163,7 +169,7 @@ class Replayer:
 			call_successor(name)
 			return _last_end_time
 
-		_dur = 1000 * _name2sta[raw_name]["avg"]
+		_dur = (1000.0 * _name2sta[raw_name]["avg"] + delay) * ratio
 		self.rst_traces.append({
 				"name": name,
 				"ts": _last_end_time + FIXED_GAP_us ,
