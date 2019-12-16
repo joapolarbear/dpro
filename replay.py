@@ -34,11 +34,13 @@ class Replayer:
 		self.step_num = _step_num
 		self.path = _path
 		self.logger = _logger
+		self.local_size = _local_size
 
 		#! Inital next_nodes, start replay from I/O nodes of each GPU
-		self.next_nodes = set(["rank%d."%i + "I/O" for i in range(_local_size)])
+		self.next_nodes = None
 		self.rst_traces = []
 		self.loop_cnt = 0
+		self.delay_dict = None
 
 	def record_end_time(self, _name, _end_time):
 		''' Record the latest end time for current node
@@ -65,10 +67,15 @@ class Replayer:
 			_name2sta[_raw_name]["latest_end"] = _end_time
 		return 0
 
-	def has_arrived(self, _name):
+	def has_arrived(self, _name, level=0):
 		'''Check whether a node has been replayed.
 		The node may be in other GPUs, so use all_name2sta
-
+		
+		Parameters
+		----------
+		level: int
+			If set to 0, return arrive_flag as True only if the OP has been output
+			Else if set to -1, return arrive_flag as True if the OP has been accessed
 		Return
 		------
 		_arrive: bool
@@ -82,6 +89,7 @@ class Replayer:
 		step_end_time: int
 			The latest step end time of current GPU.
 		'''
+		assert level == 0 or level == -1
 		if "rank" not in _name:
 			#! shared nodes across GPUs
 			_arrive = _name in self.all_name2sta and "latest_end" in self.all_name2sta[_name] and self.all_name2sta[_name]["latest_end"] >= 0
@@ -99,7 +107,7 @@ class Replayer:
 
 		Parameters
 		----------
-		reserve: bool
+		reserve: bool --> TODO, to be deleted
 			If this is set True, denotes this is a call from a child node to its parent node
 				!!!require the graph ends with one node (otherwise some nodes may be missed)!!!
 				!!!A dense graph (or the recursion depth is too large)!!!
@@ -115,6 +123,8 @@ class Replayer:
 			return lookup_stat(self.all_name2sta, name, "latest_end")
 
 		self.loop_cnt += 1
+		#! Mark as arrival with -1
+		self.record_end_time(name, -1)
 		for u, v in self.wk_dag.in_edges(name):
 			arrive_flag, _, _, _, _ = self.has_arrived(u)
 			if arrive_flag:
@@ -124,16 +134,23 @@ class Replayer:
 				_last_end_time = max(_last_end_time, self._reproduce_one_op(u, reserve=True))
 
 		def call_successor(_name):
-			if not reserve:
-				for _succ in self.wk_dag.successors(_name):
+			# if not reserve: 
+			for _succ in self.wk_dag.successors(_name):
+				arrive_flag, _, _, _, _ = self.has_arrived(_succ, level=-1)
+				if not arrive_flag:
 					self.next_nodes.add(_succ)
+
+		if self.delay_dict is not None and name in self.delay_dict:
+			delay = self.delay_dict[name]["delay"]
+			ratio = self.delay_dict[name]["ratio"]
+		else:
+			delay = 0
+			ratio = 1.0
 
 		#! All dependent nodes have been processed
 		if "I/O" in name:
 			cat = tid = "I/O"
 			pid = name
-			delay = 0.0
-			ratio = 1.0
 		elif "Comm" in name:
 			cat = "Comm"
 			_name_split = name.split(".")
@@ -146,14 +163,10 @@ class Replayer:
 				#! main task
 				pid = name
 				tid = "total"
-			delay = 0
-			ratio = 1.0
 		elif "FW" in name or "BW" in name or "STEP" in name:
 			pid = "rank%d.operator"%_local_rank
 			cat = "operator"
 			tid = "tmp"
-			delay = 0
-			ratio = 1.0
 		elif "OUTPUT" in name or "Sync" in name:
 			#! No event is generated, but has successors
 			self.record_end_time(name, _last_end_time)
@@ -169,7 +182,7 @@ class Replayer:
 			call_successor(name)
 			return _last_end_time
 
-		_dur = (1000.0 * _name2sta[raw_name]["avg"] + delay) * ratio
+		_dur = (1000.0 * (_name2sta[raw_name]["avg"] + delay)) * ratio
 		self.rst_traces.append({
 				"name": name,
 				"ts": _last_end_time + FIXED_GAP_us ,
@@ -180,17 +193,18 @@ class Replayer:
 				"tid": tid
 			})
 		
+		self.record_end_time(name, _last_end_time + FIXED_GAP_us + _dur)
 		if "STEP" in name:
 			#! current STEP of this GPU ends
 			self.step_end_time[_local_rank] = _last_end_time + FIXED_GAP_us + _dur
-			return self.step_end_time[_local_rank]	
 		else:
-			self.record_end_time(name, _last_end_time + FIXED_GAP_us + _dur)
 			call_successor(name)
-			return _last_end_time + FIXED_GAP_us + _dur
+		return _last_end_time + FIXED_GAP_us + _dur
 
 	def replay(self):
+		self.delay_dict = None
 		for step_idx in range(self.step_num):
+			self.resetReplayer()
 			time_before_gen = time.time()
 			while len(self.next_nodes) > 0:
 				self._reproduce_one_op(self.next_nodes.pop())
@@ -199,15 +213,10 @@ class Replayer:
 				self.logger.info("One step time: %s ms" % (str([_t / 1000.0 for _t in self.step_end_time])))
 				self.logger.info("Take %f s and %d loops to produce %d events" % 
 				(time.time() - time_before_gen, self.loop_cnt, len(self.rst_traces)))
-			for key, value in self.all_name2sta.items():
-				if key == "traces":
-					for _name2sta in value:
-						for _, _v in _name2sta.items():
-							_v["latest_end"] = -1
-				else:
-					value["latest_end"] = -1
-			self.loop_cnt = 0
+			
+		self.outputTraces()
 
+	def outputTraces(self):
 		#! Output the synthetic traces.
 		rst = {
 			"traceEvents": self.rst_traces,
@@ -215,3 +224,28 @@ class Replayer:
 		}
 		with open(os.path.join(self.path, "synthetic.json"), 'w') as f:
 			json.dump(rst, f, indent=4)
+
+	def resetReplayer(self, _continue=True):
+		self.next_nodes = set(["rank%d."%i + "I/O" for i in range(self.local_size)])
+		for key, value in self.all_name2sta.items():
+			if key == "traces":
+				for _name2sta in value:
+					for _, _v in _name2sta.items():
+						_v["latest_end"] = -2
+			else:
+				value["latest_end"] = -2
+		self.loop_cnt = 0
+		if not _continue:
+			self.step_end_time = [0.0 for _ in self.step_end_time]
+
+	def replayAndDelay(self, delay_dict):
+		self.delay_dict = delay_dict
+		self.resetReplayer(_continue=False)
+		while len(self.next_nodes) > 0:
+			self._reproduce_one_op(self.next_nodes.pop())
+		#! prepare for the next step
+		self.resetReplayer()
+		# self.outputTraces()
+		return [_t / 1000.0 for _t in self.step_end_time]
+
+

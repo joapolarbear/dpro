@@ -30,6 +30,7 @@ parser.add_argument("--clean", action="store_true", help="Flush the log file")
 parser.add_argument("--step_num", type=int, default="1", help="Default step numbers to reproduce.")
 parser.add_argument("--pretty", action="store_true", help="Output necessary info if set")
 parser.add_argument("--filter", type=str, default=None, help="Used to show part of communication operations, seperated with comma.")
+parser.add_argument("--delay", type=str, default=None, help="Add delay to each of the OP")
 args = parser.parse_args()
 
 logger = logger_utils.get_logger(args)
@@ -120,8 +121,6 @@ if args.option == "reproduce":
 	graph with time for each node.
 	Args:
 		--path: the root path for one GPU
-		--compute_delay:
-		--comm_delay: 
 		--step_num: number of steps we want to generate.
 	'''	
 	#! used to store all dags generated from GPUs
@@ -172,6 +171,13 @@ if args.option == "reproduce":
 	#! Replay traces
 	replayer = Replayer(_all_name2sta=all_name2sta, _local_size=len(dirs), _wk_dag=wk_dag, _step_num=args.step_num, _path=path_list[0], _logger=logger)
 	replayer.replay()
+	if args.delay is not None:
+		for nodename in wk_dag.nodes():
+			delay_dict = {nodename: {"delay": 10, "ratio": 1.0}}
+			step_end_time = replayer.replayAndDelay(delay_dict)
+			logger.info("Delay %s ==> %s" % (nodename, str(step_end_time)))
+			break
+		
 	
 if args.option == "topo_sort":
 	local_rank = int(os.path.abspath(path_list[0]).split("/")[-1])
