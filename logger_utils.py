@@ -18,6 +18,9 @@ def get_logger(args):
 	handler.setFormatter(formatter)
 	logger.addHandler(handler)
 
+	if args.progress:
+		return logger
+		
 	console = logging.StreamHandler()
 	console.setLevel(logging.INFO)
 	console.setFormatter(formatter)

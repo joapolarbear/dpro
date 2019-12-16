@@ -31,6 +31,7 @@ parser.add_argument("--step_num", type=int, default="1", help="Default step numb
 parser.add_argument("--pretty", action="store_true", help="Output necessary info if set")
 parser.add_argument("--filter", type=str, default=None, help="Used to show part of communication operations, seperated with comma.")
 parser.add_argument("--delay", type=str, default=None, help="Add delay to each of the OP")
+parser.add_argument("--progress", action="store_true", help="Show the progress bar if it is set, disable the std output")
 args = parser.parse_args()
 
 logger = logger_utils.get_logger(args)
@@ -171,14 +172,23 @@ if args.option == "reproduce":
 	#! Replay traces
 	replayer = Replayer(_all_name2sta=all_name2sta, _local_size=len(dirs), _wk_dag=wk_dag, _step_num=args.step_num, _path=path_list[0], _logger=logger)
 	replayer.replay()
-	if args.delay is not None:
-		for nodename in wk_dag.nodes():
+	if args.delay is not None:	
+		node_lists = list(wk_dag.nodes())
+		total_len = len(node_lists)
+		idx = 0
+		while idx < total_len:
+			nodename = node_lists[idx]
 			delay_dict = {nodename: {"delay": 10, "ratio": 1.0}}
 			step_end_time = replayer.replayAndDelay(delay_dict)
 			logger.info("Delay %s ==> %s" % (nodename, str(step_end_time)))
-			break
+			if args.progress:
+				percent = idx / float(total_len)
+				total = 100
+				finish = int(100 * percent)
+				sys.stdout.write("\r[" + "=" * finish + "-" * (total-finish) + "] %f" % (100 * percent))
+				sys.stdout.flush()
+			idx += 10
 		
-	
 if args.option == "topo_sort":
 	local_rank = int(os.path.abspath(path_list[0]).split("/")[-1])
 	dagmanager = DAGManager(path_list[0], local_rank, logger, args.del_queue)
