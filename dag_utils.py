@@ -42,6 +42,7 @@ def dag_longest_path(G, local_rank, logger, weight='weight', default_weight=0):
         logger.info("%-80s: %f ms" % (u, G[u][v].get(weight, default_weight)))
     # logger.info(prefix + str(critical_path) + " => " + prefix + "%12.4f ms" % path_length)
     logger.info("Length of the " + prefix + "%12.4f ms\n" % path_length)
+    return critical_path
 
 class DAGManager:
     '''
@@ -213,6 +214,7 @@ class DAGManager:
         self.gen_dag_from_gml_and_traces()
         self.gpu_dag = nx.DiGraph()
 
+        critical_path = None
         max_para_degree = self._add_computation_nodes(_pretty)
 
         #! Then, read IO, Comm, OUTPUT, and STEP nodes
@@ -224,9 +226,9 @@ class DAGManager:
 
         #！til now, all the edges for one GPU have been added.
         if not _pretty:
-            dag_longest_path(self.gpu_dag, self.local_rank, self.logger, weight="weight", default_weight=0)
+            critical_path = dag_longest_path(self.gpu_dag, self.local_rank, self.logger, weight="weight", default_weight=0)
 
-        return max_para_degree
+        return max_para_degree, critical_path
 
     def add_nodes_weight(self):
         for n in self.gpu_dag:

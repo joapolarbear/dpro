@@ -10,6 +10,7 @@ import logger_utils
 from trace_utils import read_traces, return_stat, export2xlsx, lookup_stat, return_path_dict
 from dag_utils import DAGManager, dag_longest_path, visualize_gml
 from replay import Replayer
+from progress_utils import progressBar
 
 parser = argparse.ArgumentParser(description="Trace Analysis",
 		formatter_class=argparse.ArgumentDefaultsHelpFormatter)
@@ -130,12 +131,15 @@ if args.option == "reproduce":
 	root, dirs, _ = list(os.walk(path_list[0]))[0]
 	dirs = sorted(dirs)
 
+	critical_path = []
 	for _dir in dirs:
 		local_rank = int(_dir)
 		dagmanager = DAGManager(os.path.join(root, _dir), local_rank, logger, args.del_queue)
-		max_para_degree = dagmanager.gen_gpu_dag(_pretty=args.pretty)
+		max_para_degree, _critical_path = dagmanager.gen_gpu_dag(_pretty=args.pretty)
 		worker_dag_list.append(dagmanager.gpu_dag)
 		all_name2sta["traces"].append(dagmanager.name2sta)
+		if _critical_path is not None:
+			critical_path += _critical_path
 
 	def _name2rootname(_all_name2sta, _name, _QueueType, _root_rank):
 		''' Find the corresponding op name in the root GPU
@@ -175,18 +179,15 @@ if args.option == "reproduce":
 	if args.delay is not None:	
 		node_lists = list(wk_dag.nodes())
 		total_len = len(node_lists)
+		pgsbar = progressBar(start=0, end=total_len)
 		idx = 0
 		while idx < total_len:
 			nodename = node_lists[idx]
 			delay_dict = {nodename: {"delay": 10, "ratio": 1.0}}
 			step_end_time = replayer.replayAndDelay(delay_dict)
-			logger.info("Delay %s ==> %s" % (nodename, str(step_end_time)))
+			logger.info("Delay %s ==> %s ==> %s critical path." % (nodename, str(step_end_time), "in" if nodename in critical_path else "not in"))
 			if args.progress:
-				percent = idx / float(total_len)
-				total = 100
-				finish = int(100 * percent)
-				sys.stdout.write("\r[" + "=" * finish + "-" * (total-finish) + "] %f" % (100 * percent))
-				sys.stdout.flush()
+				pgsbar.showBar(idx)
 			idx += 10
 		
 if args.option == "topo_sort":
