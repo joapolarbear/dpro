@@ -7,8 +7,8 @@ import time
 import sys
 
 import logger_utils
-from trace_utils import read_traces, return_stat, export2xlsx, lookup_stat, return_path_dict
-from dag_utils import DAGManager, dag_longest_path, visualize_gml
+from trace_utils import *
+from dag_utils import *
 from replay import Replayer
 from progress_utils import progressBar
 
