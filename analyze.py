@@ -20,6 +20,7 @@ parser.add_argument("--option", type=str,
 					help="The type of analysis to process. including:\n" + 
 						"* statistic: show the statistic results\n" + 
 						"* graph: show the dependency graph\n")
+parser.add_argument("--sub_option", type=str, default=None, help="Sub options for each option")
 parser.add_argument("--path", type=str, required=True, help="The paths of traces you want to analyze, support multiple paths seperated with comma.")
 
 parser.add_argument("--sort", type=bool, default=True, help="Sorted in descending order")
@@ -31,7 +32,6 @@ parser.add_argument("--clean", action="store_true", help="Flush the log file")
 parser.add_argument("--step_num", type=int, default="1", help="Default step numbers to reproduce.")
 parser.add_argument("--pretty", action="store_true", help="Output necessary info if set")
 parser.add_argument("--filter", type=str, default=None, help="Used to show part of communication operations, seperated with comma.")
-parser.add_argument("--delay", type=str, default=None, help="Add delay to each of the OP")
 parser.add_argument("--progress", action="store_true", help="Show the progress bar if it is set, disable the std output")
 args = parser.parse_args()
 
@@ -78,7 +78,7 @@ if args.option == "statistic":
 		sort_sta = name2sta.items()
 	output(sort_sta)
 	if args.xlsx:
-		export2xlsx(name2sta, '/'.join(args.path.split('/')[:-1]))
+		export2xlsx([name2sta], os.path.dirname(path_dict["trace_path"]))
 
 	# Group by category
 	logger.info("")
@@ -175,8 +175,15 @@ if args.option == "reproduce":
 
 	#! Replay traces
 	replayer = Replayer(_all_name2sta=all_name2sta, _local_size=len(dirs), _wk_dag=wk_dag, _step_num=args.step_num, _path=path_list[0], _logger=logger)
-	replayer.replay()
-	if args.delay is not None:	
+	if args.sub_option is None:
+		''' Directly replay '''
+		replayer.replay()
+	elif args.sub_option == "smlt_delay":
+		''' Replay with some delays'''
+		delay_dict = {"DELAY_ALL_CMP": {"delay": 0, "ratio": 1.1}}
+		step_end_time = replayer.replayAndDelay(delay_dict, _ouput=True)
+	elif args.sub_option == "map_delay":
+		''' Replay and add delays to each node respectively.'''
 		node_lists = list(wk_dag.nodes())
 		total_len = len(node_lists)
 		pgsbar = progressBar(start=0, end=total_len)
@@ -184,7 +191,7 @@ if args.option == "reproduce":
 		while idx < total_len:
 			nodename = node_lists[idx]
 			delay_dict = {nodename: {"delay": 10, "ratio": 1.0}}
-			step_end_time = replayer.replayAndDelay(delay_dict)
+			step_end_time = replayer.replayAndDelay(delay_dict, _ouput=False)
 			logger.info("Delay %s ==> %s ==> %s critical path." % (nodename, str(step_end_time), "in" if nodename in critical_path else "not in"))
 			if args.progress:
 				pgsbar.showBar(idx)
@@ -290,6 +297,9 @@ if args.option == "compare":
 		print("%-60s\t %24.4f\t %24.4f" %
 				(name, compare["avg_absolute"], compare["avg_relative"]))
 		line_cnt += 1
+
+	if args.xlsx:
+		export2xlsx(name2sta.append(name2compare), os.path.dirname(path_list[0]), filename="compare")
 
 
 

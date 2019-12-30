@@ -140,12 +140,22 @@ class Replayer:
 				if not arrive_flag:
 					self.next_nodes.add(_succ)
 
-		if self.delay_dict is not None and name in self.delay_dict:
-			delay = self.delay_dict[name]["delay"]
-			ratio = self.delay_dict[name]["ratio"]
-		else:
-			delay = 0
-			ratio = 1.0
+		#! Get the delay parameters.
+		delay = 0
+		ratio = 1.0
+		if self.delay_dict is not None:
+			if name in self.delay_dict:
+				delay = self.delay_dict[name]["delay"]
+				ratio = self.delay_dict[name]["ratio"]
+			elif "DELAY_ALL" in self.delay_dict:
+				delay = self.delay_dict["DELAY_ALL"]["delay"]
+				ratio = self.delay_dict["DELAY_ALL"]["ratio"]
+			elif "DELAY_ALL_CMP" in self.delay_dict and ("FW" in name or "BW" in name or "STEP" in name):
+				delay = self.delay_dict["DELAY_ALL_CMP"]["delay"]
+				ratio = self.delay_dict["DELAY_ALL_CMP"]["ratio"]
+			elif "DELAY_ALL_COMM" in self.delay_dict and "Comm" in name:
+				delay = self.delay_dict["DELAY_ALL_COMM"]["delay"]
+				ratio = self.delay_dict["DELAY_ALL_COMM"]["ratio"]
 
 		#! All dependent nodes have been processed
 		if "I/O" in name:
@@ -202,17 +212,19 @@ class Replayer:
 		return _last_end_time + FIXED_GAP_us + _dur
 
 	def replay(self):
-		self.delay_dict = None
+		self.resetReplayer(_continue=False)
 		for step_idx in range(self.step_num):
-			self.resetReplayer()
 			time_before_gen = time.time()
 			while len(self.next_nodes) > 0:
 				self._reproduce_one_op(self.next_nodes.pop())
-			#! prepare for the next step
+
 			if step_idx == 0:
 				self.logger.info("One step time: %s ms" % (str([_t / 1000.0 for _t in self.step_end_time])))
 				self.logger.info("Take %f s and %d loops to produce %d events" % 
 				(time.time() - time_before_gen, self.loop_cnt, len(self.rst_traces)))
+
+			#! prepare for the next step
+			self.resetReplayer()
 			
 		self.outputTraces()
 
@@ -226,6 +238,12 @@ class Replayer:
 			json.dump(rst, f, indent=4)
 
 	def resetReplayer(self, _continue=True):
+		''' Reset the replayer to prepare for a new step.
+		Parameters
+		----------
+		_continue: bool
+			if set True, do not reset the time counter, continue for the next step
+		'''
 		self.next_nodes = set(["rank%d."%i + "I/O" for i in range(self.local_size)])
 		for key, value in self.all_name2sta.items():
 			if key == "traces":
@@ -238,14 +256,26 @@ class Replayer:
 		if not _continue:
 			self.step_end_time = [0.0 for _ in self.step_end_time]
 
-	def replayAndDelay(self, delay_dict):
+	def replayAndDelay(self, delay_dict, _output=True):
+		''' Replay one step with latency
+		Parameters
+		----------
+		delay_dict: dict
+			E.g. {nodename: {"delay": 10, "ratio": 1.0}}
+			The key should be the node name to which we want to add delay.
+			The value is a dict, the final time of this op is `(t + delay) * ratio`
+			`delay` means the absolute time (in ms) you want to delay.
+			`ratio` denotes the relative times of time you want to delay, 1.0 means the same.
+			If nodename == DELAY_ALL, all nodes whould be delayed
+		'''
 		self.delay_dict = delay_dict
 		self.resetReplayer(_continue=False)
 		while len(self.next_nodes) > 0:
 			self._reproduce_one_op(self.next_nodes.pop())
 		#! prepare for the next step
 		self.resetReplayer()
-		# self.outputTraces()
+		if _output:
+			self.outputTraces()
 		return [_t / 1000.0 for _t in self.step_end_time]
 
 

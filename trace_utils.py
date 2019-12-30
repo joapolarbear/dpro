@@ -72,26 +72,38 @@ def return_stat(traces):
 		statistic["var"] = statistic["var"] / float(statistic["cnt"])
 	return name2sta, cat2sta
 
-def export2xlsx(_dict, _dir, _order=False):
-	workbook = xlsxwriter.Workbook(_dir + '/statistic.xlsx')
-	worksheet = workbook.add_worksheet()
-	row = 0
-	header = []
-	for name, statistic in _dict.items():
-		if row == 0:
-			# -- Output the header of the sheet
+def export2xlsx(_stats, _dir, _order=False, filename=None):
+	''' Export the statitic results to an XLSX file
+
+	Parameters
+	----------
+	_stats: list
+		A list of statitic results
+	_dir: str
+		The directory to store the XLSX file
+	_order: bool
+		TODO(huhanpeng): delete
+	'''
+	workbook = xlsxwriter.Workbook(os.path.join(_dir, 'statistic.xlsx' if filename is None else filename + ".xlsx"))
+	for _stat in _stats:
+		worksheet = workbook.add_worksheet()
+		row = 0
+		header = []
+		for name, statistic in _stat.items():
+			if row == 0:
+				# -- Output the header of the sheet
+				col = 0
+				worksheet.write(row, col, "Name")
+				for key in statistic:
+					col += 1
+					header.append(key)
+					worksheet.write(row, col, key)
+			row += 1
 			col = 0
-			worksheet.write(row, col, "Name")
-			for key in statistic:
+			worksheet.write(row, col, name)
+			for key in header:
 				col += 1
-				header.append(key)
-				worksheet.write(row, col, key)
-		row += 1
-		col = 0
-		worksheet.write(row, col, name)
-		for key in header:
-			col += 1
-			worksheet.write(row, col, statistic[key])
+				worksheet.write(row, col, statistic[key])
 	workbook.close()
 
 def split_name(_name):
