@@ -23,9 +23,9 @@ parser.add_argument("--option", type=str,
 parser.add_argument("--sub_option", type=str, default=None, help="Sub options for each option")
 parser.add_argument("--path", type=str, required=True, help="The paths of traces you want to analyze, support multiple paths seperated with comma.")
 
-parser.add_argument("--sort", type=bool, default=True, help="Sorted in descending order")
+parser.add_argument("--sort", action="store_true", help="Sorted in descending order")
 parser.add_argument("--head", type=int, default=None, help="Print the first few lines")
-parser.add_argument("--xlsx", type=bool, default=False, help="Output XLSX file of the statistic results")
+parser.add_argument("--xlsx", action="store_true", help="Output XLSX file of the statistic results")
 parser.add_argument("--del_queue", action="store_true", help="If set True, delete the queue time in communication traces. ")
 parser.add_argument("--logging_level", type=int, default="20", help="Logging level")
 parser.add_argument("--clean", action="store_true", help="Flush the log file")
@@ -208,47 +208,24 @@ if args.option == "combine":
 	comm_filter = args.filter.split(",") if args.filter is not None else None
 	rst_path = None
 	rst_traces = {"traceEvents": []}
-	def add_traces(_traces, _local_rank, _tmp_traces):
-		for event in _traces:
-			if event["cat"] == "Comm" and comm_filter is not None and event["args"]["name"] not in comm_filter:
-				continue
-			event['pid'] = "rank%d."%_local_rank + str(event['pid'])
-			_tmp_traces.append(event)
-
-	def process_one_path(_path):
-		tmp_traces = []
-		_path = os.path.abspath(_path)
-		if os.path.isdir(_path):
-			#! If its a directory of a worker, read all traces of all GPUs
-			root, dirs, _ = list(os.walk(_path))[0]
-			dirs = sorted(dirs)		
-			for _dir in dirs:
-				path_dict = return_path_dict(os.path.join(root, _dir))
-				local_rank = path_dict["local_rank"]
-				traces = read_traces(path_dict["trace_path"])
-				add_traces(traces, local_rank, tmp_traces)
-		else:
-			#! Or, read just one trace file
-			traces = read_traces(_path)
-			local_rank = _path.split('/')[-2]		
-			add_traces(traces, local_rank, tmp_traces)
-		return tmp_traces
 
 	first_pull_name = None
 	first_pull_time = None
 	for idx, path in enumerate(path_list):
 		bias = None
-		tmp_traces = process_one_path(path_list[idx])
+		tmp_traces = combine_process_one_path(path, _comm_filter=comm_filter)
 		tmp_traces = sorted(tmp_traces, key=lambda x: x["ts"], reverse=False)
+		#! To align the clock
+		#! TODO(huhanpeng): now only use the first pull time to align
 		if idx == 0:
 			for event in tmp_traces:
 				if first_pull_name is None and "PULL" in event["name"]:
 					first_pull_name = event["name"]
 					first_pull_time = event["ts"] + event["dur"]
 				event["pid"] = "wk%d."%idx + event["pid"]
+		else:
 			if first_pull_name is None:
 				raise ValueError("These two files are not distributed training traces.")
-		else:
 			for event in tmp_traces:
 				if event["name"] == first_pull_name:
 					bias = event["ts"] + event["dur"] - first_pull_time
@@ -269,7 +246,10 @@ if args.option == "combine":
 if args.option == "compare":
 	if len(path_list) < 2:
 		raise ValueError("To compare two files, two paths must be given")
-	traces = [read_traces(path_list[0]), read_traces(path_list[1])]
+	if os.path.isfile(path_list[0]):
+		traces = [read_traces(path_list[0]), read_traces(path_list[1])]
+	else:
+		traces = [combine_process_one_path(path_list[0]), combine_process_one_path(path_list[1])]
 	name2sta = [return_stat(_traces)[0] for _traces in traces]
 	name2compare = {}
 	for name, statistic in name2sta[0].items():
@@ -289,17 +269,18 @@ if args.option == "compare":
 	print("File 1: " + path_list[0])
 	print("File 2: " + path_list[1])
 	print("===================")
-	print("%-60s\t Absolute Avg Time Increase (ms)\t Relative Avg Time Increase" % "Name")
+	print("%-80s\t Absolute Avg Time Increase (ms)\t Relative Avg Time Increase" % "Name")
 	line_cnt = 0
 	for name, compare in sort_sta:
 		if (args.head and line_cnt >= args.head):
 			break	
-		print("%-60s\t %24.4f\t %24.4f" %
+		print("%-80s\t %24.4f\t %24.4f" %
 				(name, compare["avg_absolute"], compare["avg_relative"]))
 		line_cnt += 1
 
+	name2sta.append(name2compare)
 	if args.xlsx:
-		export2xlsx(name2sta.append(name2compare), os.path.dirname(path_list[0]), filename="compare")
+		export2xlsx(name2sta, os.path.dirname(path_list[0]), filename="compare")
 
 
 

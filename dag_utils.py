@@ -1,21 +1,7 @@
 import os
 import networkx as nx
 import matplotlib.pyplot as plt
-from trace_utils import read_traces, return_stat, return_path_dict
-
-QueueType = [
-    "COORDINATE_REDUCE",
-    "REDUCE",
-    "COPYD2H",
-    "PCIE_REDUCE",
-    "COORDINATE_PUSH",
-    "PUSH",
-    "PULL",
-    "COPYH2D",
-    "COORDINATE_BROADCAST",
-    "BROADCAST",
-    "QUEUE_NUM_AND_NOT_A_REAL_QUEUE_TYPE_AND_MUST_BE_THE_LAST"
-]
+from trace_utils import read_traces, return_stat, return_path_dict, QueueType
 
 def visualize_gml(graph, layout="circular"):
     if layout == "spectral":

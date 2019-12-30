@@ -3,6 +3,20 @@ import json
 import xlsxwriter
 import traceback
 
+QueueType = [
+    "COORDINATE_REDUCE",
+    "REDUCE",
+    "COPYD2H",
+    "PCIE_REDUCE",
+    "COORDINATE_PUSH",
+    "PUSH",
+    "PULL",
+    "COPYH2D",
+    "COORDINATE_BROADCAST",
+    "BROADCAST",
+    "QUEUE_NUM_AND_NOT_A_REAL_QUEUE_TYPE_AND_MUST_BE_THE_LAST"
+]
+
 def read_traces(traces_path):
 	'''
 	Return: a list of traces
@@ -17,13 +31,16 @@ def read_traces(traces_path):
 		raise ValueError("The output file not follow the stardard chrome tracing format!: " + traces_path)
 	return traces
 
+def _comm_is_subtask(comm_name):
+	return comm_name.split(".")[-1] in QueueType
+
 def return_stat(traces):
 	""" Basic Statistic """
 	name2sta = {}
 	cat2sta = {}
 	for event in traces:
 		name = event["name"]
-		if "Comm" in name and event["args"]["name"] != name:
+		if "Comm" in name and _comm_is_subtask(name):
 			#! sub-task comm nodes, add partition key to the name
 			main_task_name = ".".join(name.split(".")[:-1])
 			name += "." + event["tid"]
@@ -64,7 +81,7 @@ def return_stat(traces):
 	"""calculate the variance"""
 	for event in traces:
 		name = event["name"]
-		if "Comm" in name and event["args"]["name"] != name:
+		if "Comm" in name and _comm_is_subtask(name):
 			name += "." + event["tid"]
 		name2sta[name]["var"] += pow(event["dur"] / 1000.0 - name2sta[name]["avg"], 2)
 
@@ -149,3 +166,37 @@ def return_path_dict(root_path):
 			pass
 	path_dict["local_rank"] = int(__root.split("/")[-1])
 	return path_dict
+
+def combine_add_traces(_traces, _local_rank, _tmp_traces, _comm_filter=None):
+	for event in _traces:
+		if event["cat"] == "Comm" and _comm_filter is not None and event["args"]["name"] not in _comm_filter:
+			#! Only show the communication nodes belonging to comm_filter if comm_filter is set
+			continue
+		event['pid'] = "rank%d."%_local_rank + str(event['pid'])
+		event['name'] = "rank%d."%_local_rank + str(event['name'])
+		_tmp_traces.append(event)
+
+def combine_process_one_path(_path, _comm_filter=None):
+	tmp_traces = []
+	_path = os.path.abspath(_path)
+	if os.path.isdir(_path):
+		#! If its a directory of a worker, read all traces of all GPUs
+		root, dirs, _ = list(os.walk(_path))[0]
+		#! avoid that directory is like `worker/0/`
+		if len(dirs) == 0:
+			raise ValueError("Given path should be the root directory of a worker traces"
+				" or the path of one trace TXT file")
+		dirs = sorted(dirs)		
+		for _dir in dirs:
+			path_dict = return_path_dict(os.path.join(root, _dir))
+			local_rank = path_dict["local_rank"]
+			traces = read_traces(path_dict["trace_path"])
+			combine_add_traces(traces, local_rank, tmp_traces, _comm_filter=_comm_filter)
+	else:
+		#! Or, read just one trace file
+		traces = read_traces(_path)
+		local_rank = _path.split('/')[-2]		
+		combine_add_traces(traces, local_rank, tmp_traces, _comm_filter=_comm_filter)
+	return tmp_traces
+
+

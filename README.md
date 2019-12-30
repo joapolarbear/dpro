@@ -34,7 +34,9 @@ An example of combined timeline of 2 GPUs visualized by [chrome trace tool](chro
 <img src="https://user-images.githubusercontent.com/17765864/68109805-764b5780-ff26-11e9-86ac-17d85394f8cf.png" width="720" height="440">
 
 ## Compare two trace files
-Set arg `--option compare`.
+Set arg `--option compare`. Similar to option `combine`, the argument `--path` could be a list of worker trace directories or a list of trace files. When a list of directories is given, traces on one worker will automatically be merged.
+
+Besides, you can set `--xlsx` to export the comparison results to an XLSX file.
 
 ## Calculate the Critical Path of the DAG
 Set arg `--option critical`, here `--path` should be the root trace directory, by default, it's `BYTEPS_TRACE_DIR`. 
