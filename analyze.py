@@ -269,12 +269,12 @@ if args.option == "compare":
 	print("File 1: " + path_list[0])
 	print("File 2: " + path_list[1])
 	print("===================")
-	print("%-80s\t Absolute Avg Time Increase (ms)\t Relative Avg Time Increase" % "Name")
+	print("%-100s\t Absolute Avg Time Increase (ms)\t Relative Avg Time Increase" % "Name")
 	line_cnt = 0
 	for name, compare in sort_sta:
 		if (args.head and line_cnt >= args.head):
 			break	
-		print("%-80s\t %24.4f\t %24.4f" %
+		print("%-100s\t %24.4f\t %24.4f" %
 				(name, compare["avg_absolute"], compare["avg_relative"]))
 		line_cnt += 1
 
