@@ -265,6 +265,10 @@ if args.option == "compare":
 	else:
 		sort_sta = name2compare.items()
 
+	name2sta.append(name2compare)
+	if args.xlsx:
+		export2xlsx(name2sta, os.path.dirname(path_list[0]), filename="compare")
+
 	print("Compare following two files:")
 	print("File 1: " + path_list[0])
 	print("File 2: " + path_list[1])
@@ -277,20 +281,6 @@ if args.option == "compare":
 		print("%-100s\t %24.4f\t %24.4f" %
 				(name, compare["avg_absolute"], compare["avg_relative"]))
 		line_cnt += 1
-
-	name2sta.append(name2compare)
-	if args.xlsx:
-		export2xlsx(name2sta, os.path.dirname(path_list[0]), filename="compare")
-
-
-
-
-
-
-
-
-
-
 
 
 
