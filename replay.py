@@ -16,8 +16,8 @@ class Replayer:
 		A dict storing all static info on onw worker.
 		The value of key "traces" is list of dict, 
 		The i th dict element stores the name2sta of the GPU with local_rank=i
-	_local_size: int
-		The number of GPUs on one worker.
+	_dirs: list
+		The list of GPU folder on this worker.
 	_wk_dag: networkx.classes.digraph.DiGraph
 		The combined execution order graph on one worker.
 	_step_num: int
@@ -27,14 +27,14 @@ class Replayer:
 	_logger:logging.Logger
 		The logger used to output logging
 	'''
-	def __init__(self, _all_name2sta, _local_size, _wk_dag, _step_num, _path, _logger):
+	def __init__(self, _all_name2sta, _dirs, _wk_dag, _step_num, _path, _logger):
 		self.all_name2sta = _all_name2sta
-		self.step_end_time = [0.0] * _local_size
 		self.wk_dag = _wk_dag
 		self.step_num = _step_num
 		self.path = _path
 		self.logger = _logger
-		self.local_size = _local_size
+		self._dirs = _dirs
+		self.step_end_time = dict([(int(_d), 0.0) for _d in self._dirs])
 
 		#! Inital next_nodes, start replay from I/O nodes of each GPU
 		self.next_nodes = None
@@ -147,15 +147,15 @@ class Replayer:
 			if name in self.delay_dict:
 				delay = self.delay_dict[name]["delay"]
 				ratio = self.delay_dict[name]["ratio"]
-			elif "DELAY_ALL" in self.delay_dict:
-				delay = self.delay_dict["DELAY_ALL"]["delay"]
-				ratio = self.delay_dict["DELAY_ALL"]["ratio"]
 			elif "DELAY_ALL_CMP" in self.delay_dict and ("FW" in name or "BW" in name or "STEP" in name):
 				delay = self.delay_dict["DELAY_ALL_CMP"]["delay"]
 				ratio = self.delay_dict["DELAY_ALL_CMP"]["ratio"]
 			elif "DELAY_ALL_COMM" in self.delay_dict and "Comm" in name:
 				delay = self.delay_dict["DELAY_ALL_COMM"]["delay"]
 				ratio = self.delay_dict["DELAY_ALL_COMM"]["ratio"]
+			elif "DELAY_ALL" in self.delay_dict:
+				delay = self.delay_dict["DELAY_ALL"]["delay"]
+				ratio = self.delay_dict["DELAY_ALL"]["ratio"]
 
 		#! All dependent nodes have been processed
 		if "I/O" in name:
@@ -219,7 +219,7 @@ class Replayer:
 				self._reproduce_one_op(self.next_nodes.pop())
 
 			if step_idx == 0:
-				self.logger.info("One step time: %s ms" % (str([_t / 1000.0 for _t in self.step_end_time])))
+				self.logger.info("One step time: %s ms" % (str([_t / 1000.0 for _t in self.step_end_time.values()])))
 				self.logger.info("Take %f s and %d loops to produce %d events" % 
 				(time.time() - time_before_gen, self.loop_cnt, len(self.rst_traces)))
 
@@ -244,17 +244,17 @@ class Replayer:
 		_continue: bool
 			if set True, do not reset the time counter, continue for the next step
 		'''
-		self.next_nodes = set(["rank%d."%i + "I/O" for i in range(self.local_size)])
+		self.next_nodes = set(["rank%s."%i + "I/O" for i in self._dirs])
 		for key, value in self.all_name2sta.items():
 			if key == "traces":
-				for _name2sta in value:
+				for _name2sta in value.values():
 					for _, _v in _name2sta.items():
 						_v["latest_end"] = -2
 			else:
 				value["latest_end"] = -2
 		self.loop_cnt = 0
 		if not _continue:
-			self.step_end_time = [0.0 for _ in self.step_end_time]
+			self.step_end_time = dict([(int(_d), 0.0) for _d in self._dirs])
 
 	def replayAndDelay(self, delay_dict, _output=True):
 		''' Replay one step with latency
@@ -276,6 +276,6 @@ class Replayer:
 		self.resetReplayer()
 		if _output:
 			self.outputTraces()
-		return [_t / 1000.0 for _t in self.step_end_time]
+		return [_t / 1000.0 for _t in self.step_end_time.values()]
 
 

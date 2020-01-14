@@ -122,12 +122,12 @@ if args.option == "reproduce":
 	''' Re-generate the timeline according to the dependency 
 	graph with time for each node.
 	Args:
-		--path: the root path for one GPU
+		--path: the root path for one worker
 		--step_num: number of steps we want to generate.
 	'''	
 	#! used to store all dags generated from GPUs
 	worker_dag_list = []
-	all_name2sta = {"traces": []}
+	all_name2sta = {"traces": {}}
 	root, dirs, _ = list(os.walk(path_list[0]))[0]
 	dirs = sorted(dirs)
 
@@ -137,7 +137,7 @@ if args.option == "reproduce":
 		dagmanager = DAGManager(os.path.join(root, _dir), local_rank, logger, args.del_queue)
 		max_para_degree, _critical_path = dagmanager.gen_gpu_dag(_pretty=args.pretty)
 		worker_dag_list.append(dagmanager.gpu_dag)
-		all_name2sta["traces"].append(dagmanager.name2sta)
+		all_name2sta["traces"][int(_dir)] = dagmanager.name2sta
 		if _critical_path is not None:
 			critical_path += _critical_path
 
@@ -155,7 +155,7 @@ if args.option == "reproduce":
 
 	#! Combine all worker_dag_list on one worker, build the dependency
 	wk_dag = nx.compose_all(worker_dag_list)
-	root_rank = len(dirs) - 1
+	root_rank = int(dirs[-1])
 	sync_edges = []
 	for u, v in wk_dag.edges:
 		if "COORDINATE_PUSH" in u and "COPYH2D" in v:
@@ -174,7 +174,7 @@ if args.option == "reproduce":
 			wk_dag.add_edge(sync_name, v, weight=0.0)
 
 	#! Replay traces
-	replayer = Replayer(_all_name2sta=all_name2sta, _local_size=len(dirs), _wk_dag=wk_dag, _step_num=args.step_num, _path=path_list[0], _logger=logger)
+	replayer = Replayer(_all_name2sta=all_name2sta, _dirs=dirs, _wk_dag=wk_dag, _step_num=args.step_num, _path=path_list[0], _logger=logger)
 	if args.sub_option is None:
 		''' Directly replay '''
 		replayer.replay()

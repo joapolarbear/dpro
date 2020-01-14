@@ -42,3 +42,6 @@ Besides, you can set `--xlsx` to export the comparison results to an XLSX file.
 Set arg `--option critical`, here `--path` should be the root trace directory, by default, it's `BYTEPS_TRACE_DIR`. 
 
 **Note that, you must use the latest version of byteprofile to run this option.**
+
+## Replay based on the traces
+Set arg `--option replay`, 
