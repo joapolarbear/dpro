@@ -44,4 +44,5 @@ Set arg `--option critical`, here `--path` should be the root trace directory, b
 **Note that, you must use the latest version of byteprofile to run this option.**
 
 ## Replay based on the traces
-Set arg `--option replay`, 
+Set arg `--option reproduce` to reproduce the traces for one worker. 
+Use `--path` to specify the path where the worker traces are stored, give `--del_queue` to include each partition and QueueType for communication traces.

@@ -274,8 +274,10 @@ class Replayer:
 			self._reproduce_one_op(self.next_nodes.pop())
 		#! prepare for the next step
 		self.resetReplayer()
+		step_end_time = [_t / 1000.0 for _t in self.step_end_time.values()]
 		if _output:
 			self.outputTraces()
-		return [_t / 1000.0 for _t in self.step_end_time.values()]
+			self.logger.info("One step time: %s ms" % (str(step_end_time)))
+		return step_end_time
 
 

@@ -156,12 +156,24 @@ def return_path_dict(root_path):
 	for __file in files:
 		cur_path = os.path.join(__root, __file)
 		if "bps_trace" in __file:
-			path_dict["trace_path"] = cur_path		
+			path_dict["trace_path"] = cur_path
 		elif __file == 'dag.gml':
 			# mygraph = nx.read_gml(cur_path)
 			path_dict['gml_path'] = cur_path
 		elif __file == 'temp.json':
-			pass
+			path_dict["temp"] = cur_path
+		elif __file == 'comm.json':
+			path_dict["comm"] = cur_path
+		elif __file == 'io.json':
+			path_dict["io"] = cur_path
+		elif "loss" in __file:
+			idx = int(__file.split("loss")[1].split(".")[0])
+			if "loss" not in path_dict:
+				path_dict["loss"] = {idx: cur_path}
+			else:
+				path_dict["loss"][idx] = cur_path
+		elif __file == 'symbol_debug_str.txt':
+			path_dict["symbol_debug_str"] = cur_path
 		else:
 			pass
 	path_dict["local_rank"] = int(__root.split("/")[-1])

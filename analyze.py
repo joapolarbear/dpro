@@ -9,6 +9,7 @@ import sys
 import logger_utils
 from trace_utils import *
 from dag_utils import *
+from collect import Collector
 from replay import Replayer
 from progress_utils import progressBar
 
@@ -16,7 +17,7 @@ parser = argparse.ArgumentParser(description="Trace Analysis",
 		formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 # parser.add_argument("-s", action="store_true", help="sort the output result")
 parser.add_argument("--option", type=str, 
-					choices=["statistic", "graph", "combine", "compare", "critical", "timeline", "reproduce", "topo_sort"],
+					choices=["statistic", "graph", "combine", "compare", "critical", "timeline", "reproduce", "topo_sort", "collect"],
 					help="The type of analysis to process. including:\n" + 
 						"* statistic: show the statistic results\n" + 
 						"* graph: show the dependency graph\n")
@@ -33,6 +34,7 @@ parser.add_argument("--step_num", type=int, default="1", help="Default step numb
 parser.add_argument("--pretty", action="store_true", help="Output necessary info if set")
 parser.add_argument("--filter", type=str, default=None, help="Used to show part of communication operations, seperated with comma.")
 parser.add_argument("--progress", action="store_true", help="Show the progress bar if it is set, disable the std output")
+parser.add_argument("--delay_ratio", type=float, default=1.1, help="delay ratio")
 args = parser.parse_args()
 
 logger = logger_utils.get_logger(args)
@@ -180,8 +182,9 @@ if args.option == "reproduce":
 		replayer.replay()
 	elif args.sub_option == "smlt_delay":
 		''' Replay with some delays'''
-		delay_dict = {"DELAY_ALL_CMP": {"delay": 0, "ratio": 1.1}}
-		step_end_time = replayer.replayAndDelay(delay_dict, _ouput=True)
+		# delay_dict = {"DELAY_ALL_CMP": {"delay": 0, "ratio": args.delay_ratio}}
+		delay_dict = {"DELAY_ALL_COMM": {"delay": 0, "ratio": args.delay_ratio}}
+		step_end_time = replayer.replayAndDelay(delay_dict, _output=True)
 	elif args.sub_option == "map_delay":
 		''' Replay and add delays to each node respectively.'''
 		node_lists = list(wk_dag.nodes())
@@ -281,6 +284,12 @@ if args.option == "compare":
 		print("%-100s\t %24.4f\t %24.4f" %
 				(name, compare["avg_absolute"], compare["avg_relative"]))
 		line_cnt += 1
+
+if  args.option == "collect":
+	clct = Collector(_path_dict=path_dict)
+	clct.update_final_traces(_operator=True)
+
+
 
 
 
