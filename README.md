@@ -46,3 +46,6 @@ Set arg `--option critical`, here `--path` should be the root trace directory, b
 ## Replay based on the traces
 Set arg `--option reproduce` to reproduce the traces for one worker. 
 Use `--path` to specify the path where the worker traces are stored, give `--del_queue` to include each partition and QueueType for communication traces.
+
+## Update final traces
+Set arg `--option collect` to update the final traces. In the meanwhile, the average iteration time would be outputed. `--path` should be the root directory of a worker or a GPU.

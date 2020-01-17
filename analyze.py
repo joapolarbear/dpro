@@ -45,7 +45,7 @@ sys.setrecursionlimit(1000000)
 
 path_list = args.path.split(',')
 """ Read traces and prepare statitic info"""
-if args.option not in ['critical', 'combine', 'compare', "reproduce", "topo_sort"]:
+if args.option not in ['critical', 'combine', 'compare', "reproduce", "topo_sort", "collect"]:
 	path_dict = return_path_dict(path_list[0])
 	traces = read_traces(path_dict["trace_path"])
 	name2sta, cat2sta = return_stat(traces)
@@ -272,22 +272,30 @@ if args.option == "compare":
 	if args.xlsx:
 		export2xlsx(name2sta, os.path.dirname(path_list[0]), filename="compare")
 
-	print("Compare following two files:")
-	print("File 1: " + path_list[0])
-	print("File 2: " + path_list[1])
-	print("===================")
-	print("%-100s\t Absolute Avg Time Increase (ms)\t Relative Avg Time Increase" % "Name")
+	logger.info("Compare following two files:")
+	logger.info("File 1: " + path_list[0])
+	logger.info("File 2: " + path_list[1])
+	logger.info("===================")
+	logger.info("%-100s\t Absolute Avg Time Increase (ms)\t Relative Avg Time Increase" % "Name")
 	line_cnt = 0
 	for name, compare in sort_sta:
 		if (args.head and line_cnt >= args.head):
 			break	
-		print("%-100s\t %24.4f\t %24.4f" %
+		logger.info("%-100s\t %24.4f\t %24.4f" %
 				(name, compare["avg_absolute"], compare["avg_relative"]))
 		line_cnt += 1
 
-if  args.option == "collect":
-	clct = Collector(_path_dict=path_dict)
-	clct.update_final_traces(_operator=True)
+if args.option == "collect":
+	def loop_collect(_root_dir):
+		root, dirs, files = list(os.walk(_root_dir))[0]
+		if "dag.gml" in files:
+			path_dict = return_path_dict(root)
+			clct = Collector(logger, _path_dict=path_dict)
+			clct.update_final_traces(_operator=True)
+		else:
+			for _dir in dirs:
+				loop_collect(os.path.join(root, _dir))
+	loop_collect(path_list[0])
 
 
 
