@@ -182,8 +182,8 @@ if args.option == "reproduce":
 		replayer.replay()
 	elif args.sub_option == "smlt_delay":
 		''' Replay with some delays'''
-		# delay_dict = {"DELAY_ALL_CMP": {"delay": 0, "ratio": args.delay_ratio}}
-		delay_dict = {"DELAY_ALL_COMM": {"delay": 0, "ratio": args.delay_ratio}}
+		delay_dict = {"DELAY_ALL_CMP": {"delay": 0, "ratio": args.delay_ratio}}
+		# delay_dict = {"DELAY_ALL_COMM": {"delay": 0, "ratio": args.delay_ratio}}
 		step_end_time = replayer.replayAndDelay(delay_dict, _output=True)
 	elif args.sub_option == "map_delay":
 		''' Replay and add delays to each node respectively.'''
