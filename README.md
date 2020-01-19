@@ -49,3 +49,6 @@ Use `--path` to specify the path where the worker traces are stored, give `--del
 
 ## Update final traces
 Set arg `--option collect` to update the final traces. In the meanwhile, the average iteration time would be outputed. `--path` should be the root directory of a worker or a GPU.
+
+## `--option 3dcompare`
+Ignore partition id

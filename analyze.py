@@ -17,7 +17,7 @@ parser = argparse.ArgumentParser(description="Trace Analysis",
 		formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 # parser.add_argument("-s", action="store_true", help="sort the output result")
 parser.add_argument("--option", type=str, 
-					choices=["statistic", "graph", "combine", "compare", "critical", "timeline", "reproduce", "topo_sort", "collect"],
+					choices=["statistic", "graph", "combine", "compare", "critical", "timeline", "reproduce", "topo_sort", "collect", "3dcompare"],
 					help="The type of analysis to process. including:\n" + 
 						"* statistic: show the statistic results\n" + 
 						"* graph: show the dependency graph\n")
@@ -45,7 +45,7 @@ sys.setrecursionlimit(1000000)
 
 path_list = args.path.split(',')
 """ Read traces and prepare statitic info"""
-if args.option not in ['critical', 'combine', 'compare', "reproduce", "topo_sort", "collect"]:
+if args.option not in ['critical', 'combine', 'compare', "reproduce", "topo_sort", "collect", "3dcompare"]:
 	path_dict = return_path_dict(path_list[0])
 	traces = read_traces(path_dict["trace_path"])
 	name2sta, cat2sta = return_stat(traces)
@@ -270,7 +270,9 @@ if args.option == "compare":
 
 	name2sta.append(name2compare)
 	if args.xlsx:
-		export2xlsx(name2sta, os.path.dirname(path_list[0]), filename="compare")
+		export2xlsx(name2sta, 
+			os.path.abspath(path_list[0]) if os.path.isdir(path_list[0]) else os.path.dirname(path_list[0]), 
+			filename="compare")
 
 	logger.info("Compare following two files:")
 	logger.info("File 1: " + path_list[0])
@@ -284,6 +286,66 @@ if args.option == "compare":
 		logger.info("%-100s\t %24.4f\t %24.4f" %
 				(name, compare["avg_absolute"], compare["avg_relative"]))
 		line_cnt += 1
+
+if args.option == "3dcompare":
+	# if len(path_list) < 2:
+	# 	raise ValueError("To compare two files, two paths must be given")
+	plot = False
+	if plot is True:
+		pass
+	else:
+		from mpl_toolkits.mplot3d import Axes3D
+		import matplotlib.pyplot as plt
+		import numpy as np
+		fig = plt.figure()
+		ax = fig.add_subplot(111, projection='3d')
+	x_names = None
+	x_split_by_cat = []
+	color = ['r', 'g', 'b', 'y']
+	for _idx, _path in enumerate(path_list):
+		assert os.path.isdir(_path)
+		root, dirs, files = list(os.walk(_path))[0]
+		_dir = sorted(dirs)[0]
+		_traces = combine_process_one_path(os.path.join(root, _dir))
+		name2sta = return_stat(_traces, ign_partion=True)[0]
+
+		#! if first, sort names by group
+		if x_names is None:
+			x_names = list(name2sta.keys())
+			cat_list = [_n.split(".")[1] for _n in x_names]
+			x_names = sorted(zip(cat_list, x_names), key=lambda x: (x[0], x[1]))
+			# grouped by cat
+			prev_cat = None
+			for _i, (cur_cat, _n) in enumerate(x_names):
+				if prev_cat is None:
+					prev_cat = cur_cat
+					x_split_by_cat.append((prev_cat, _i))
+				elif cur_cat != prev_cat:
+					x_split_by_cat.append((prev_cat, _i))
+					x_split_by_cat.append((cur_cat, _i))
+					prev_cat = cur_cat
+			x_split_by_cat.append((prev_cat, len(x_names)))
+			assert len(x_split_by_cat) % 2 == 0
+			print(x_split_by_cat)
+
+		_i = 0
+		logger.info(_path)
+		while _i < len(x_split_by_cat):
+			cur_cat, start_idx = x_split_by_cat[_i]
+			_, end_idx = x_split_by_cat[_i + 1]
+			if plot is True:
+				hist = [name2sta[_n]["avg"] for _, _n in x_names[start_idx:end_idx]]
+				xs = list(range(start_idx, end_idx))
+				color_idx = (int(_i/2)) % len(color)
+				ax.bar(xs, hist, zs=_idx, zdir='y', color=color[color_idx], ec=color[color_idx], alpha=0.8)
+			else:
+				avg_dur = sum([name2sta[_n]["avg"] for _, _n in x_names[start_idx:end_idx]]) / (end_idx - start_idx)
+				logger.info("Cat %s: %f ms" % (cur_cat, avg_dur))
+			_i += 2
+
+	if plot is True:
+		plt.xlabel("Operations")
+		plt.show()
 
 if args.option == "collect":
 	def loop_collect(_root_dir):

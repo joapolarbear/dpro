@@ -34,7 +34,7 @@ def read_traces(traces_path):
 def _comm_is_subtask(comm_name):
 	return comm_name.split(".")[-1] in QueueType
 
-def return_stat(traces):
+def return_stat(traces, ign_partion=False):
 	""" Basic Statistic """
 	name2sta = {}
 	cat2sta = {}
@@ -43,7 +43,8 @@ def return_stat(traces):
 		if "Comm" in name and _comm_is_subtask(name):
 			#! sub-task comm nodes, add partition key to the name
 			main_task_name = ".".join(name.split(".")[:-1])
-			name += "." + event["tid"]
+			if ign_partion is False:
+				name += "." + event["tid"]
 			#! record the partition keys in the main-task node
 			#	for the ease of looking up partition keys
 			if main_task_name in name2sta:
@@ -81,7 +82,7 @@ def return_stat(traces):
 	"""calculate the variance"""
 	for event in traces:
 		name = event["name"]
-		if "Comm" in name and _comm_is_subtask(name):
+		if "Comm" in name and _comm_is_subtask(name) and ign_partion is False:
 			name += "." + event["tid"]
 		name2sta[name]["var"] += pow(event["dur"] / 1000.0 - name2sta[name]["avg"], 2)
 
