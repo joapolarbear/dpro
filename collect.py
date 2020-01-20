@@ -35,7 +35,16 @@ class Collector(object):
         assert "symbol_debug_str" in self.path_dict
         self.dag = nx.read_gml(self.path_dict["gml_path"])
 
-        self.gradient_name_list = None # !!!! need to handle this          
+        def read_list(path):
+            with open(path, 'r') as f:
+                l = f.read().split("\n")
+            l = l[:-1] if l[-1] == '' else l
+            return l
+        if "gradient_name_list" in self.path_dict:
+            self.gradient_name_list = read_list(self.path_dict["gradient_name_list"])   
+        else:
+            self.gradient_name_list = None
+            self.logger.warning("gradient_name_list" + " not exists")
 
     def byteps_collect_io(self):
         with open(self.path_dict["io"], 'r') as f:
@@ -80,7 +89,6 @@ class Collector(object):
             self.byteps_collect_io()
 
         if _comm is True:
-            raise NotImplementedError("gradient_name_list has not be recorded.")
             self.delete_traces("Comm")
             self.byteps_collect_comm()
 
@@ -89,7 +97,7 @@ class Collector(object):
             self.byteps_collect_computation()
 
         get_iter_time(self.time_dict, self.logger)
-        
+
         with open(self.path_dict["trace_path"], 'w') as f:
             json.dump(self.time_dict, f, indent=4)
 
@@ -98,13 +106,16 @@ class Collector(object):
         _rst_traces["traceEvents"] = [_trace for _trace in self.time_dict["traceEvents"] if _trace["cat"] != _cat]
         self.time_dict = _rst_traces
 
-    def save_trace(self):
+    def recombine_final_traces(self):
+        self.logger.info("Recombining " + self.path_dict["trace_path"])
+        assert self.gradient_name_list is not None
+        self.time_dict = {"traceEvents":[]}
         #! Apply dependencies in self.dag to the mxnet traces.
         self.byteps_collect_computation()
         #! Collect communication traces, IO traces and STEP traces and apply dependency
         self.byteps_collect_io()
         self.byteps_collect_comm()
-        self.byteps_collect_update() 
+        get_iter_time(self.time_dict, self.logger)
         with open(self.path_dict["trace_path"], 'w') as f:
             json.dump(self.time_dict, f, indent=4)
 

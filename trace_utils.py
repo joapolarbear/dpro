@@ -175,6 +175,8 @@ def return_path_dict(root_path):
 				path_dict["loss"][idx] = cur_path
 		elif __file == 'symbol_debug_str.txt':
 			path_dict["symbol_debug_str"] = cur_path
+		elif __file == 'gradient_name_list.txt':
+			path_dict["gradient_name_list"] = cur_path
 		else:
 			pass
 	path_dict["local_rank"] = int(__root.split("/")[-1])

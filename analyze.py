@@ -353,7 +353,8 @@ if args.option == "collect":
 		if "dag.gml" in files:
 			path_dict = return_path_dict(root)
 			clct = Collector(logger, _path_dict=path_dict)
-			clct.update_final_traces(_operator=True)
+			# clct.update_final_traces(_operator=True)
+			clct.recombine_final_traces()
 		else:
 			for _dir in dirs:
 				loop_collect(os.path.join(root, _dir))
