@@ -212,4 +212,52 @@ def combine_process_one_path(_path, _comm_filter=None):
 		combine_add_traces(traces, local_rank, tmp_traces, _comm_filter=_comm_filter)
 	return tmp_traces
 
+def _get_operator_trace_one_GPU(traces):
+	ret_dict = {}
+	def _get_rank(_name):
+		if "rank" in event["name"]:
+			_rank_str = _name.split(".")[0]
+		else:
+			_rank_str = "rank?"
+
+		if _rank_str not in ret_dict:
+			ret_dict[_rank_str] = []
+		return _rank_str
+	for event in traces:
+		if event["cat"] == "operator":
+			ret_dict[_get_rank(event["name"])].append(event)
+	return ret_dict
+
+def get_iter_time(traces, logger):
+	if isinstance(traces, dict):
+		traces = traces["traceEvents"]
+	else:
+		assert isinstance(traces, list)
+	operator_traces_list = _get_operator_trace_one_GPU(traces)
+
+	ret = []
+	for _rank, operator_traces in operator_traces_list.items():
+		start_ts = None
+		cur_iter_time = 0
+		fw_bw_list = []
+		iter_list = []
+		operator_traces = sorted(operator_traces, key=lambda x: x["ts"])
+		for event in operator_traces:
+			if start_ts is None:
+				start_ts = event['ts']
+			if "STEP" in event["name"]:
+				fw_bw_list.append((cur_iter_time - start_ts) / 1000.0)
+			cur_iter_time = event['ts'] + event['dur']
+			if "STEP" in event["name"]:
+				iter_list.append((cur_iter_time - start_ts) / 1000.0)
+				start_ts = None
+		fw_bw_time = sum(fw_bw_list) / float(len(fw_bw_list))
+		iter_time = sum(iter_list) / float(len(iter_list))
+		ret.append((_rank, fw_bw_time, iter_time))
+		logger.info("<%s> fw + bw: %f ms -- iteration time: %f ms" % (_rank,
+                fw_bw_time, iter_time))
+	return ret
+
+
+
 

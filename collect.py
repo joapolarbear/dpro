@@ -13,7 +13,7 @@ import networkx as nx
 import threading
 import time
 
-from trace_utils import return_path_dict
+from trace_utils import return_path_dict, get_iter_time
 
 class Collector(object):
     #! class used to collect trace info
@@ -88,6 +88,8 @@ class Collector(object):
             self.delete_traces("operator")
             self.byteps_collect_computation()
 
+        get_iter_time(self.time_dict, self.logger)
+        
         with open(self.path_dict["trace_path"], 'w') as f:
             json.dump(self.time_dict, f, indent=4)
 
@@ -247,13 +249,9 @@ class Collector(object):
                         }
                     })
 
-                iteration_time["iteration"].append((_trace["ts"] + _trace["dur"] - iteration_time["ts"]) / 1000.0)
+                iteration_time["iteration"].append((_step_ts + _step_dur - iteration_time["ts"]) / 1000.0)
                 iteration_time["ts"] = None
 
-        self.logger.info("fw + bw: %f ms -- iteration time: %f ms" % (
-                sum(iteration_time["fw_bw"]) / float(len(iteration_time["fw_bw"])), 
-                sum(iteration_time["iteration"]) / float(len(iteration_time["iteration"]))
-                ))
         self.time_dict["traceEvents"] += rst_traces["traceEvents"]
 
 

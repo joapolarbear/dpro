@@ -5,7 +5,7 @@ import traceback
 import time
 
 from dag_utils import QueueType
-from trace_utils import lookup_stat, split_name
+from trace_utils import *
 
 class Replayer:
 	'''Used to replay distributed training
@@ -150,7 +150,7 @@ class Replayer:
 			elif "DELAY_ALL_CMP" in self.delay_dict and ("FW" in name or "BW" in name or "STEP" in name):
 				delay = self.delay_dict["DELAY_ALL_CMP"]["delay"]
 				ratio = self.delay_dict["DELAY_ALL_CMP"]["ratio"]
-			elif "DELAY_ALL_COMM" in self.delay_dict and "Comm" in name:
+			elif "DELAY_ALL_COMM" in self.delay_dict and ("PUSH" in name or "PULL" in name):
 				delay = self.delay_dict["DELAY_ALL_COMM"]["delay"]
 				ratio = self.delay_dict["DELAY_ALL_COMM"]["ratio"]
 			elif "DELAY_ALL" in self.delay_dict:
@@ -234,6 +234,7 @@ class Replayer:
 			"traceEvents": self.rst_traces,
 			"displayTimeUnit": "ms"
 		}
+		get_iter_time(self.rst_traces, self.logger)
 		with open(os.path.join(self.path, "synthetic.json"), 'w') as f:
 			json.dump(rst, f, indent=4)
 
