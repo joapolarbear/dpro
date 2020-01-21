@@ -180,10 +180,13 @@ if args.option == "reproduce":
 	if args.sub_option is None:
 		''' Directly replay '''
 		replayer.replay()
-	elif args.sub_option == "smlt_delay":
-		''' Replay with some delays'''
+	elif args.sub_option == "smlt_delay_cmp":
+		''' Replay with computation delays'''
 		delay_dict = {"DELAY_ALL_CMP": {"delay": 0, "ratio": args.delay_ratio}}
-		# delay_dict = {"DELAY_ALL_COMM": {"delay": 0, "ratio": args.delay_ratio}}
+		step_end_time = replayer.replayAndDelay(delay_dict, _output=True)
+	elif args.sub_option == "smlt_delay_comm":
+		''' Replay with communication delays'''
+		delay_dict = {"DELAY_ALL_COMM": {"delay": 0, "ratio": args.delay_ratio}}
 		step_end_time = replayer.replayAndDelay(delay_dict, _output=True)
 	elif args.sub_option == "map_delay":
 		''' Replay and add delays to each node respectively.'''
