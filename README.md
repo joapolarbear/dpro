@@ -17,7 +17,7 @@ Set arg `--option combine`, this can be used to combine several trace files into
 There are two options to define the trace paths.
 
 1. Use file paths. In this case, `--path` should be a list of file paths, each of which denotes a trace file. The combined trace file will be stored under the same directory as the first trace file.
-2. Use directory paths. In this case, `--path` is a list of directory paths, each of which denotes one worker and contains trace directories of GPUs on this worker. By default, the combined trace file will be store under the first directory.
+2. Use directory paths. In this case, `--path` is a list of directory paths, each of which denotes one worker and contains trace directories of GPUs on this worker. By default, the combined trace file will be stored under the first directory.
 
 **Note: please ensure that all of paths are file paths or all of them are diretory paths.**
 
