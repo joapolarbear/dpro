@@ -90,7 +90,7 @@ def return_stat(traces, ign_partion=False):
 		statistic["var"] = statistic["var"] / float(statistic["cnt"])
 	return name2sta, cat2sta
 
-def export2xlsx(_stats, _dir, _order=False, filename=None):
+def export2xlsx(_stats, _dir, filename=None, sheet_name=None):
 	''' Export the statitic results to an XLSX file
 
 	Parameters
@@ -99,12 +99,10 @@ def export2xlsx(_stats, _dir, _order=False, filename=None):
 		A list of statitic results
 	_dir: str
 		The directory to store the XLSX file
-	_order: bool
-		TODO(huhanpeng): delete
 	'''
 	workbook = xlsxwriter.Workbook(os.path.join(_dir, 'statistic.xlsx' if filename is None else filename + ".xlsx"))
-	for _stat in _stats:
-		worksheet = workbook.add_worksheet()
+	for idx, _stat in enumerate(_stats):
+		worksheet = workbook.add_worksheet(sheet_name[idx] if sheet_name is not None else None)
 		row = 0
 		header = []
 		for name, statistic in _stat.items():
@@ -214,7 +212,7 @@ def combine_process_one_path(_path, _comm_filter=None):
 		combine_add_traces(traces, local_rank, tmp_traces, _comm_filter=_comm_filter)
 	return tmp_traces
 
-def _get_operator_trace_one_GPU(traces):
+def _operator_trace_group_by_GPU(traces):
 	ret_dict = {}
 	def _get_rank(_name):
 		if "rank" in event["name"]:
@@ -235,7 +233,7 @@ def get_iter_time(traces, logger):
 		traces = traces["traceEvents"]
 	else:
 		assert isinstance(traces, list)
-	operator_traces_list = _get_operator_trace_one_GPU(traces)
+	operator_traces_list = _operator_trace_group_by_GPU(traces)
 
 	ret = []
 	for _rank, operator_traces in operator_traces_list.items():
@@ -260,6 +258,8 @@ def get_iter_time(traces, logger):
                 fw_bw_time, iter_time))
 	return ret
 
-
+def is_leaf_folder(_dir):
+	root, dirs, files = list(os.walk(_dir))[0]
+	return "dag.gml" in files
 
 

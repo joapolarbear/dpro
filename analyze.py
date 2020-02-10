@@ -273,9 +273,17 @@ if args.option == "compare":
 
 	name2sta.append(name2compare)
 	if args.xlsx:
+		def gen_sheet_name(l):
+			if len(l) >= 31:
+				l = l[-31:]
+			return "_".join(l.split("/")[1:])
+
+		sheet_name = [gen_sheet_name(l) for l in path_list]
+		sheet_name.append("comparison")
 		export2xlsx(name2sta, 
 			os.path.abspath(path_list[0]) if os.path.isdir(path_list[0]) else os.path.dirname(path_list[0]), 
-			filename="compare")
+			filename="compare",
+			sheet_name=sheet_name)
 
 	logger.info("Compare following two files:")
 	logger.info("File 1: " + path_list[0])
@@ -353,7 +361,7 @@ if args.option == "3dcompare":
 if args.option == "collect":
 	def loop_collect(_root_dir):
 		root, dirs, files = list(os.walk(_root_dir))[0]
-		if "dag.gml" in files:
+		if is_leaf_folder(_root_dir):
 			path_dict = return_path_dict(root)
 			clct = Collector(logger, _path_dict=path_dict)
 			if args.sub_option == "iter_time":
@@ -368,7 +376,6 @@ if args.option == "collect":
 			for _dir in dirs:
 				loop_collect(os.path.join(root, _dir))
 	loop_collect(path_list[0])
-
 
 
 
