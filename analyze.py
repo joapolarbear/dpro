@@ -17,7 +17,7 @@ parser = argparse.ArgumentParser(description="Trace Analysis",
 		formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 # parser.add_argument("-s", action="store_true", help="sort the output result")
 parser.add_argument("--option", type=str, 
-					choices=["statistic", "graph", "combine", "compare", "critical", "timeline", "reproduce", "topo_sort", "collect", "3dcompare"],
+					choices=["statistic", "graph", "combine", "compare", "critical", "timeline", "replay", "topo_sort", "collect", "3dcompare"],
 					help="The type of analysis to process. including:\n" + 
 						"* statistic: show the statistic results\n" + 
 						"* graph: show the dependency graph\n")
@@ -30,7 +30,7 @@ parser.add_argument("--xlsx", action="store_true", help="Output XLSX file of the
 parser.add_argument("--del_queue", action="store_true", help="If set True, delete the queue time in communication traces. ")
 parser.add_argument("--logging_level", type=int, default="20", help="Logging level")
 parser.add_argument("--clean", action="store_true", help="Flush the log file")
-parser.add_argument("--step_num", type=int, default="1", help="Default step numbers to reproduce.")
+parser.add_argument("--step_num", type=int, default="1", help="Default step numbers to replay.")
 parser.add_argument("--pretty", action="store_true", help="Output necessary info if set")
 parser.add_argument("--filter", type=str, default=None, help="Used to show part of communication operations, seperated with comma.")
 parser.add_argument("--progress", action="store_true", help="Show the progress bar if it is set, disable the std output")
@@ -45,7 +45,7 @@ sys.setrecursionlimit(1000000)
 
 path_list = args.path.split(',')
 """ Read traces and prepare statitic info"""
-if args.option not in ['critical', 'combine', 'compare', "reproduce", "topo_sort", "collect", "3dcompare"]:
+if args.option not in ['critical', 'combine', 'compare', "replay", "topo_sort", "collect", "3dcompare"]:
 	path_dict = return_path_dict(path_list[0])
 	traces = read_traces(path_dict["trace_path"])
 	name2sta, cat2sta = return_stat(traces)
@@ -120,7 +120,7 @@ if args.option == "critical":
 if args.option == "timeline":
 	raise NotImplementedError()
 
-if args.option == "reproduce":
+if args.option == "replay":
 	''' Re-generate the timeline according to the dependency 
 	graph with time for each node.
 	Args:
