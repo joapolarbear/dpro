@@ -177,6 +177,8 @@ def return_path_dict(root_path):
 			path_dict["gradient_name_list"] = cur_path
 		else:
 			pass
+	if "trace_path" not in path_dict:
+		path_dict["trace_path"] = os.path.join(__root, "bps_trace_final.json")
 	path_dict["local_rank"] = int(__root.split("/")[-1])
 	return path_dict
 
