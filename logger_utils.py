@@ -24,10 +24,11 @@ class SingleLogger:
         self.logger = logging.getLogger(name)
         self.logger.setLevel(level=logging_level)
 
+        formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+
         #! bind some file stream
         handler = logging.FileHandler(logfile)
         handler.setLevel(logging_level)
-        formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
         handler.setFormatter(formatter)
         self.logger.addHandler(handler)
 
@@ -49,5 +50,8 @@ class SingleLogger:
 
     def warn(self, msg, extra=None):
         self.logger.warn(msg, extra=extra)
+
+    def warning(self, msg, extra=None):
+        self.logger.warning(msg, extra=extra)
 
 

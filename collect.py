@@ -27,13 +27,8 @@ class Collector(object):
             assert _trace_dir is not None
             self.trace_dir = _trace_dir
             self.path_dict = return_path_dict(self.trace_dir)
-        assert "trace_path" in self.path_dict
+            
         assert "gml_path" in self.path_dict
-        assert "temp" in self.path_dict
-        assert "comm" in self.path_dict
-        assert "io" in self.path_dict
-        assert "loss" in self.path_dict
-        assert "symbol_debug_str" in self.path_dict
         self.dag = nx.read_gml(self.path_dict["gml_path"])
 
         def read_list(path):
@@ -48,11 +43,19 @@ class Collector(object):
             self.logger.warning("gradient_name_list" + " not exists")
 
     def byteps_collect_io(self):
+        if "io" not in self.path_dict or not os.path.exists(self.path_dict["io"]):
+            self.logger.warn("'io.json' not exists.")
+            return
+
         with open(self.path_dict["io"], 'r') as f:
             rst_traces = json.load(f)
         self.time_dict["traceEvents"] += rst_traces["traceEvents"]
 
     def byteps_collect_comm(self):
+        if "comm" not in self.path_dict or not os.path.exists(self.path_dict["comm"]):
+            self.logger.warn("'comm.json' not exists.")
+            return
+
         #! read communication traces offline
         with open(self.path_dict["comm"], 'r') as f:
             rst_traces = json.load(f)
@@ -82,6 +85,7 @@ class Collector(object):
 
     def update_final_traces(self, _io=False, _comm=False, _operator=False):
         self.logger.info("Updating " + self.path_dict["trace_path"])
+        assert os.path.exists(self.path_dict["trace_path"])
         with open(self.path_dict["trace_path"], 'r') as f:
             self.time_dict = json.load(f)
 
@@ -133,6 +137,10 @@ class Collector(object):
         rst_traces : dict
             A dict containing MXNet trace results combined with dependency info.
         '''
+        
+        if "temp" not in self.path_dict or not os.path.exists(self.path_dict["temp"]):
+            self.logger.warn("'temp.json' not exists.")
+            return
 
         ''' Output trace resutls '''
         with open(self.path_dict["temp"], 'r') as f:
