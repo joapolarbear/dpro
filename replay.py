@@ -3,7 +3,6 @@ import json
 import networkx as nx
 import traceback
 import time
-import threading
 import bisect
 
 from dag_utils import QueueType
@@ -12,11 +11,8 @@ from progress_utils import progressBar
 
 FIXED_GAP_us = 10
 
-class Deivce(threading.Thread):
+class Deivce:
 	def __init__(self, device_name, _replayer, _virtual=False):
-		threading.Thread.__init__(self)
-		self.op_queue = []
-		self.op_queue_lock = threading.Lock()
 		self.replayer = _replayer
 		self.device_time = 0
 		self.device_name = device_name
@@ -24,81 +20,53 @@ class Deivce(threading.Thread):
 		self.virtual = _virtual
 
 	def reset(self):
-		self.op_queue = []
 		self.device_time = 0
 
-	def push(self, node_name, start_time):
-		# TODO
-		ts_push = time.time()
+	def exet(self, name, _last_end_time):
+		#! for debug
+		_ts = time.time()
 
-		self.op_queue_lock.acquire()
-		self.op_queue.append((node_name, start_time))
-		self.op_queue_lock.release()
+		if not self.virtual:
+			_last_end_time = max(_last_end_time, self.device_time)
 
-		self.replayer.debug_record("push", ts_push, self.device_name, "push")
+		if "OUTPUT" in name or "Sync" in name:
+			#! No event is generated, but has successors
+			self.mark_as_exct(name, _last_end_time)
+			return 
 
-	def run(self):
-		# TODO: debug
+		#! The name of below nodes contain "rank"
+		local_rank, raw_name, _name2sta = self.get_name2sta(name)
+
+		#! Some BW nodes of dag is not profiled, ignore them.
+		if raw_name not in _name2sta or "avg" not in _name2sta[raw_name]:
+			self.replayer.logger.warning("%s is not in _name2sta" % name)
+			self.mark_as_exct(name, _last_end_time)
+			return
+
+		#! really start to execute
+		cat, pid, tid = self.cat_pid_tid(name, local_rank)
+		delay, ratio = self.get_delay_para()
+		_dur = (1000.0 * (_name2sta[raw_name]["avg"] + delay)) * ratio
+		self.replayer.rst_traces.append({
+				"name": name,
+				"ts": _last_end_time + FIXED_GAP_us ,
+				"dur": _dur,
+				"pid": pid,
+				"cat": cat,
+				"ph": "X",
+				"tid": tid
+			})
+
+		self.mark_as_exct(name, _last_end_time + FIXED_GAP_us + _dur)
+		if "STEP" in name:
+			#! current STEP of this GPU ends
+			self.replayer.step_end_time[local_rank] = _last_end_time + FIXED_GAP_us + _dur
+
+		#! TODO: for debug
+		self.replayer.debug_record(name, _ts, self.device_name, "run")
 		ts_wait = time.time()
-		while True:
-			self.op_queue_lock.acquire()
-			len_op_queue = len(self.op_queue)
-			self.op_queue_lock.release()
-			if len_op_queue == 0:
-				continue
-
-			# TODO:
-			self.replayer.debug_record("wait", ts_wait, self.device_name, "wait")
-
-			name, _last_end_time = self.op_queue.pop(0)
-			if name == "END_REPLAY":
-				break
-			
-			#! for debug
-			_ts = time.time()
-
-			if not self.virtual:
-				_last_end_time = max(_last_end_time, self.device_time)
-
-			if "OUTPUT" in name or "Sync" in name:
-				#! No event is generated, but has successors
-				self.mark_as_exct(name, _last_end_time)
-				continue 
-
-			#! The name of below nodes contain "rank"
-			local_rank, raw_name, _name2sta = self.get_name2sta(name)
-
-			#! Some BW nodes of dag is not profiled, ignore them.
-			if raw_name not in _name2sta or "avg" not in _name2sta[raw_name]:
-				self.replayer.logger.warning("%s is not in _name2sta" % name)
-				self.mark_as_exct(name, _last_end_time)
-				continue
-
-			#! really start to execute
-			cat, pid, tid = self.cat_pid_tid(name, local_rank)
-			delay, ratio = self.get_delay_para()
-			_dur = (1000.0 * (_name2sta[raw_name]["avg"] + delay)) * ratio
-			self.replayer.rst_traces.append({
-					"name": name,
-					"ts": _last_end_time + FIXED_GAP_us ,
-					"dur": _dur,
-					"pid": pid,
-					"cat": cat,
-					"ph": "X",
-					"tid": tid
-				})
-
-			self.mark_as_exct(name, _last_end_time + FIXED_GAP_us + _dur)
-			if "STEP" in name:
-				#! current STEP of this GPU ends
-				self.replayer.step_end_time[local_rank] = _last_end_time + FIXED_GAP_us + _dur
-
-			#! TODO: for debug
-			self.replayer.debug_record(name, _ts, self.device_name, "run")
-			ts_wait = time.time()
 
 	def mark_as_exct(self, name, _end_time):
-		self.replayer.lock.acquire()
 		self.device_time = _end_time
 		self.replayer.node_status.pop(name)
 		for _succ in self.replayer.wk_dag.successors(name):
@@ -108,7 +76,6 @@ class Deivce(threading.Thread):
 				_status["last_end"] = _end_time if _status["last_end"] is None else max(_end_time, _status["last_end"])
 				if _status["in_degree"] == 0:
 					self.replayer.insert_next_node(_succ, _status["last_end"])
-		self.replayer.lock.release()
 
 	def cat_pid_tid(self, name, _local_rank):
 		#! All dependent nodes have been processed
@@ -179,17 +146,16 @@ class Replayer:
 		self.accessed = set()
 		self.next_nodes = []
 
-		self.lock = threading.Lock()
-		self.lock_next_nodes = threading.Lock()
-
 		self.rst_traces = []
 		self.init_device_dict()
 
-		#! debug:
+		#! Used for debug
 		self.debug_traces = []
 
-	# TODO for debug
 	def debug_record(self, name, _ts, pid, tid):
+		''' Used for debug, collect traces while replaying
+			* to optimize the replay algorithm
+		'''
 		self.debug_traces.append({
 					"name": name,
 					"ts": _ts * 10e6,
@@ -211,54 +177,27 @@ class Replayer:
 	
 	def replay_one_iter(self):	
 		self.pre_prepare()
-		self.launch_devices()
-
 		bar = progressBar(start=len(self.node_status), end=0)
-
-		# TODO
-		ts_wait = time.time()
-
-		while len(self.node_status) > 0:
-
-			if len(self.next_nodes) == 0:
-				continue
-
-			# TODO
-			ts_showbar = time.time()
-
+		assert len(self.next_nodes) != 0
+		for (n, t) in self.next_nodes:
 			bar.showBar(len(self.node_status))
-
-			# TODO
-			self.debug_record("showbar", ts_showbar, "main", "showbar")
-			self.debug_record("wait", ts_wait, "main", "wait")
-			_ts = time.time()
-
-
-			self.lock_next_nodes.acquire()
-			for (n, t) in self.next_nodes:
-				device = self.name2device(n)
-				device.push(n, t)
-			self.next_nodes = []
-			self.lock_next_nodes.release()
-
-			#TODO
-			self.debug_record("push", _ts, "main", "push")
-			ts_wait = time.time()
-
-		self.join_devices()
+			device = self.name2device(n)
+			# device.push(n, t)
+			device.exet(n, t)
+		assert len(self.node_status) == 0
 
 	def replay(self):
-		_st = time.time()
+		_ts = time.time()
 		for step_idx in range(self.step_num):
 			self.replay_one_iter()
-		self.logger.info("Take %f s to replay one iteration" % ((time.time() - _st)/float(self.step_num)))
+		self.logger.info("Take %f s to replay one iteration" % ((time.time() - _ts)/float(self.step_num)))
 		self.end_replayer()
 
 	def insert_next_node(self, n, t):
-		self.lock_next_nodes.acquire()
 		self.accessed.add(n)
+		#! TODO (huhanpeng): if OPs are ranked, 
+		# just to substitute key to compare their ranks.
 		self.insort_right(self.next_nodes, (n, t), key=lambda x: x[1])
-		self.lock_next_nodes.release()
 
 	def insort_right(self, a, x, lo=0, hi=None, key=None):
 		"""Insert item x in list a, and keep it sorted assuming a is sorted.
@@ -307,16 +246,6 @@ class Replayer:
 		d = Deivce(device_name, self, _virtual=_virtual)
 		return d
 
-	def launch_devices(self):
-		for k, _device in self.device_dict.items():
-			_device.start()
-
-	def join_devices(self):
-		for k, _device in self.device_dict.items():
-			_device.push("END_REPLAY", 0)
-			_device.join()
-			self.logger.info("device-%s joins" % (str(_device.device_name)))
-
 	def end_replayer(self, _output=True):
 		if _output:
 			self.output_traces()
@@ -326,7 +255,6 @@ class Replayer:
 		self.step_end_time = dict([(int(_d), 0.0) for _d in self._dirs])
 		self.rst_traces = []
 
-	
 	def output_traces(self):
 		#! Output the synthetic traces.
 		rst = {
@@ -338,11 +266,11 @@ class Replayer:
 			json.dump(rst, f, indent=4)
 
 		# TODO
-		with open(os.path.join(self.path, "debug.json"), 'w') as f:
-			json.dump({
-			"traceEvents": self.debug_traces,
-			"displayTimeUnit": "ms"
-				}, f, indent=4)
+		if len(self.debug_traces) > 0:
+			with open(os.path.join(self.path, "debug.json"), 'w') as f:
+				json.dump({"traceEvents": self.debug_traces,
+							"displayTimeUnit": "ms"
+								}, f, indent=4)
 
 """
 class Replayer:
