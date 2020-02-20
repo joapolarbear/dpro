@@ -37,7 +37,10 @@ parser.add_argument("--progress", action="store_true", help="Show the progress b
 parser.add_argument("--delay_ratio", type=float, default=1.1, help="delay ratio")
 args = parser.parse_args()
 
-logger = logger_utils.get_logger(args)
+logger = logger_utils.SingleLogger(args.path.split(',')[0], 
+	args.option, args.logging_level, 
+	is_clean=args.clean, 
+	show_progress=args.progress)
 logger.info(args)
 
 
@@ -109,7 +112,7 @@ if args.option == "critical":
 	graphs = []
 	for _dir in dirs:
 		local_rank = int(_dir)
-		dagmanager = DAGManager(os.path.join(root, _dir), local_rank, logger, args.del_queue)
+		dagmanager = DAGManager(os.path.join(root, _dir), local_rank, args.del_queue)
 		dagmanager.gen_dag_from_gml_and_traces()
 		dag_longest_path(dagmanager.dag, local_rank, logger, weight="weight", default_weight=0)
 		graphs.append(dagmanager.dag)
@@ -136,7 +139,7 @@ if args.option == "replay":
 	critical_path = []
 	for _dir in dirs:
 		local_rank = int(_dir)
-		dagmanager = DAGManager(os.path.join(root, _dir), local_rank, logger, args.del_queue)
+		dagmanager = DAGManager(os.path.join(root, _dir), local_rank, args.del_queue)
 		max_para_degree, _critical_path = dagmanager.gen_gpu_dag(_pretty=args.pretty)
 		worker_dag_list.append(dagmanager.gpu_dag)
 		all_name2sta["traces"][int(_dir)] = dagmanager.name2sta
@@ -176,7 +179,7 @@ if args.option == "replay":
 			wk_dag.add_edge(sync_name, v, weight=0.0)
 
 	#! Replay traces
-	replayer = Replayer(_all_name2sta=all_name2sta, _dirs=dirs, _wk_dag=wk_dag, _step_num=args.step_num, _path=path_list[0], _logger=logger)
+	replayer = Replayer(_all_name2sta=all_name2sta, _dirs=dirs, _wk_dag=wk_dag, _step_num=args.step_num, _path=path_list[0])
 	if args.sub_option is None:
 		''' Directly replay '''
 		replayer.replay()
@@ -205,7 +208,7 @@ if args.option == "replay":
 		
 if args.option == "topo_sort":
 	local_rank = int(os.path.abspath(path_list[0]).split("/")[-1])
-	dagmanager = DAGManager(path_list[0], local_rank, logger, args.del_queue)
+	dagmanager = DAGManager(path_list[0], local_rank, args.del_queue)
 	dagmanager.gen_fw_bw_dag()
 
 '''below options use special --path'''
@@ -363,7 +366,7 @@ if args.option == "collect":
 		root, dirs, files = list(os.walk(_root_dir))[0]
 		if is_leaf_folder(_root_dir):
 			path_dict = return_path_dict(root)
-			clct = Collector(logger, _path_dict=path_dict)
+			clct = Collector(_path_dict=path_dict)
 			if args.sub_option == "iter_time":
 				logger.info(path_dict["trace_path"])
 				traces = read_traces(path_dict["trace_path"])

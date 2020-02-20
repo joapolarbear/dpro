@@ -1,6 +1,7 @@
 import os
 import networkx as nx
 import matplotlib.pyplot as plt
+import logger_utils
 from trace_utils import read_traces, return_stat, return_path_dict, QueueType
 
 def visualize_gml(graph, layout="circular"):
@@ -37,10 +38,10 @@ class DAGManager:
     path: str
         Root path for one GPU
     '''
-    def __init__(self, path, local_rank, logger, del_queue):
+    def __init__(self, path, local_rank, del_queue):
         self.path_dict = return_path_dict(path)
         self.traces = read_traces(self.path_dict["trace_path"])
-        self.logger = logger
+        self.logger = logger_utils.SingleLogger()
         self.name2sta, cat2sta = return_stat(self.traces)
         self.dag = self.gpu_dag = self._fw_bw_dag = None
         self.local_rank = local_rank

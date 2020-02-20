@@ -2,6 +2,7 @@ import os
 import json
 import xlsxwriter
 import traceback
+import logger_utils
 
 QueueType = [
     "COORDINATE_REDUCE",
@@ -178,6 +179,8 @@ def return_path_dict(root_path):
 		else:
 			pass
 	if "trace_path" not in path_dict:
+		logger = logger_utils.SingleLogger()
+		logger.warn("'bps_trace_final.json' is not in the directory: %s" % (__root))
 		path_dict["trace_path"] = os.path.join(__root, "bps_trace_final.json")
 	path_dict["local_rank"] = int(__root.split("/")[-1])
 	return path_dict

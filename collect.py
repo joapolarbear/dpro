@@ -12,13 +12,14 @@ import json
 import networkx as nx
 import threading
 import time
+import logger_utils
 
 from trace_utils import return_path_dict, get_iter_time
 
 class Collector(object):
     #! class used to collect trace info
-    def __init__(self, _logger, _trace_dir=None, _path_dict=None):
-        self.logger = _logger
+    def __init__(self, _trace_dir=None, _path_dict=None):
+        self.logger = logger_utils.SingleLogger()
         self.time_dict = {"traceEvents":[]}
         if _path_dict is not None:
             self.path_dict = _path_dict

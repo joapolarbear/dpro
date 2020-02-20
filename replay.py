@@ -8,6 +8,7 @@ import bisect
 from dag_utils import QueueType
 from trace_utils import *
 from progress_utils import progressBar
+import logger_utils
 
 FIXED_GAP_us = 10
 
@@ -130,12 +131,12 @@ class Deivce:
 			return _local_rank, _raw_name, _name2sta
 
 class Replayer:
-	def __init__(self, _all_name2sta, _dirs, _wk_dag, _step_num, _path, _logger):
+	def __init__(self, _all_name2sta, _dirs, _wk_dag, _step_num, _path):
 		self.all_name2sta = _all_name2sta
 		self.wk_dag = _wk_dag
 		self.step_num = _step_num
 		self.path = _path
-		self.logger = _logger
+		self.logger = logger_utils.SingleLogger()
 		self._dirs = _dirs
 		self.step_end_time = dict([(int(_d), 0.0) for _d in self._dirs])
 
