@@ -181,7 +181,8 @@ class Collector(object):
         IGNORE_OP = ["DeleteVariable", "sum", "_plus_scalar", 
                 "_copyto_GPU2GPU", "broadcast_add", 
                 "Reshape", "Cast", "_arange", "elemwise_add",
-                "_ones", "SyncCopyGPU2CPU", "_mul_scalar"]
+                "_ones", "SyncCopyGPU2CPU", "_mul_scalar",
+                "CopyGPU2CPU", "CopyCPU2GPU"]
 
         def real_last_bw_name():
             statue = "init"
