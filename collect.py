@@ -27,20 +27,10 @@ class Collector(object):
             assert _trace_dir is not None
             self.trace_dir = _trace_dir
             self.path_dict = return_path_dict(self.trace_dir)
-            
+        
+        # dag is necessary.
         assert "gml_path" in self.path_dict
         self.dag = nx.read_gml(self.path_dict["gml_path"])
-
-        def read_list(path):
-            with open(path, 'r') as f:
-                l = f.read().split("\n")
-            l = l[:-1] if l[-1] == '' else l
-            return l
-        if "gradient_name_list" in self.path_dict:
-            self.gradient_name_list = read_list(self.path_dict["gradient_name_list"])   
-        else:
-            self.gradient_name_list = None
-            self.logger.warning("gradient_name_list" + " not exists")
 
     def byteps_collect_io(self):
         if "io" not in self.path_dict or not os.path.exists(self.path_dict["io"]):
@@ -52,30 +42,88 @@ class Collector(object):
         self.time_dict["traceEvents"] += rst_traces["traceEvents"]
 
     def byteps_collect_comm(self):
-        if "comm" not in self.path_dict or not os.path.exists(self.path_dict["comm"]):
-            self.logger.warn("'comm.json' not exists.")
-            return
+        if "comm" not in self.path_dict or not os.path.exists(self.path_dict["comm"]):   
+            _p = os.path.join(os.path.dirname(self.path_dict["root"]), "comm.json")
+            if os.path.exists(_p):
+                self.logger.warn("find 'comm.json' at %s instead" % _p)
+                self.path_dict["comm"] = _p
+            else:
+                self.logger.warn("'comm.json' not exists.")
+                return
+
+        self.gradient_name_list = {}
 
         #! read communication traces offline
         with open(self.path_dict["comm"], 'r') as f:
-            rst_traces = json.load(f)
-        for trace in rst_traces["traceEvents"]:
-            if "byteps.gradient_" not in trace["args"]["name"]:
-                continue
-            para_index = int(trace["args"]["name"].split("_")[-1])
-            para_name = self.gradient_name_list[para_index]
-            if trace["name"] != trace["args"]["name"]:
-                #! subtask
-                trace["name"] = "Comm." + para_name + "." + trace["name"].split(".")[-1]
+            json_str = f.read()
+        # fix the json file
+        if json_str[-1] != ']':
+            json_str_lines = json_str.split("\n")
+            if json_str_lines[-1] == '':
+                json_str_lines = json_str_lines[:-1]
+            if json_str_lines[-1][-1] == ',':
+                json_str_lines[-1] = json_str_lines[-1][:-1]+']'
+            json_str = "\n".join(json_str_lines)
+        rst_traces = json.loads(json_str)
+
+        for trace in rst_traces:
+            if trace["ph"] == "M":
+                if trace["name"] == "process_name":
+                    assert trace["pid"] not in self.gradient_name_list
+                    _split_name = trace["args"]["name"].split(".")
+                    # ignore the traces whose names end with purly digits
+                    if str.isdigit(_split_name[-1]):
+                        continue
+                    raw_name = ".".join(_split_name[1:])
+                    prefix = _split_name[0]
+                    if "horovod_" not in prefix:
+                        raise ValueError("comm.json format error, "
+                            "trace args name should start with "
+                            "horovod_broadcast or horovod_allreduce: %s" % trace["args"]["name"])
+                    process_name = "Comm." + raw_name
+                    self.gradient_name_list[trace["pid"]] = {
+                            "process_name": process_name,
+                            "tid": prefix,
+                            "list": []
+                            }
+                else:
+                    pass
+                    
+            elif trace["pid"] in self.gradient_name_list and trace["ph"] == "B":
+                cur_pid = self.gradient_name_list[trace["pid"]]
+                cur_pid["list"].append((trace["name"], trace["ts"]))
+            elif trace["pid"] in self.gradient_name_list and trace["ph"] == "E":
+                cur_pid = self.gradient_name_list[trace["pid"]]
+                name, ts = cur_pid["list"].pop()
+                dur = trace["ts"] - ts
+                process_name = cur_pid["process_name"]
+                input_nodes = [u for u, _ in self.dag.in_edges(process_name)]
+                if len(input_nodes) == 1:
+                    input0 = list(input_nodes)[0]
+                elif len(input_nodes) == 0:
+                    input0 = None
+                    # self.logger.warn("%s has no in edges" % process_name)
+                else:
+                    raise ValueError("Each communication node can not "
+                        "have more than 1 in-edge nodes: %s" % process_name)
+                self.time_dict["traceEvents"].append(
+                    {
+                        "name": name,
+                        "ts": ts,
+                        "dur": dur,
+                        "ph": "X",
+                        "pid": process_name,
+                        "tid": cur_pid["tid"],
+                        "cat": "Comm",
+                        "args":{
+                            "name": process_name,
+                            "input0": input0
+                        }
+
+                    })
             else:
-                #! main task
-                trace["name"] = "Comm." + para_name
-            trace["pid"] = "Comm." + para_name
-            trace["args"]["name"] = "Comm." + para_name
-            input_nodes = [u for u, _ in self.dag.in_edges("Comm." + para_name)]
-            assert len(input_nodes) == 1
-            trace["args"]["input0"] = list(input_nodes)[0]
-            self.time_dict["traceEvents"].append(trace)
+                pass
+
 
     def byteps_collect_update(self):
         raise NotImplementedError()
@@ -113,7 +161,6 @@ class Collector(object):
 
     def recombine_final_traces(self):
         self.logger.info("Recombining " + self.path_dict["trace_path"])
-        assert self.gradient_name_list is not None
         self.time_dict = {"traceEvents":[]}
         #! Apply dependencies in self.dag to the mxnet traces.
         self.byteps_collect_computation()

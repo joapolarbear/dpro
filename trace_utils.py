@@ -152,7 +152,7 @@ def return_path_dict(root_path):
 	assert os.path.isdir(root_path)
 	root_path = os.path.abspath(root_path)
 	__root, _, files = list(os.walk(root_path))[0]
-	path_dict = {}
+	path_dict = {"root": __root}
 	for __file in files:
 		cur_path = os.path.join(__root, __file)
 		if "bps_trace" in __file:
@@ -267,4 +267,8 @@ def is_leaf_folder(_dir):
 	root, dirs, files = list(os.walk(_dir))[0]
 	return "dag.gml" in files
 
-
+def read_list(path):
+    with open(path, 'r') as f:
+        l = f.read().split("\n")
+    l = l[:-1] if l[-1] == '' else l
+    return l
