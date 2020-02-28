@@ -43,6 +43,7 @@ logger = logger_utils.SingleLogger(args.path.split(',')[0],
 	show_progress=args.progress)
 logger.info(args)
 
+QueueType("NCCL")
 
 sys.setrecursionlimit(1000000)
 
@@ -113,7 +114,7 @@ if args.option == "critical":
 	for _dir in dirs:
 		local_rank = int(_dir)
 		dagmanager = DAGManager(os.path.join(root, _dir), local_rank, args.del_queue)
-		dagmanager.gen_dag_from_gml_and_traces()
+		dagmanager.gen_dag_with_rank_weight()
 		dag_longest_path(dagmanager.dag, local_rank, logger, weight="weight", default_weight=0)
 		graphs.append(dagmanager.dag)
 
@@ -146,39 +147,10 @@ if args.option == "replay":
 		if _critical_path is not None:
 			critical_path += _critical_path
 
-	def _name2rootname(_all_name2sta, _name, _QueueType, _root_rank):
-		''' Find the corresponding op name in the root GPU
-		'''
-		name_split = _name.split(".")
-		_local_rank = int(name_split[0].split("rank")[1])
-		name_split[0] = "rank%d"%_root_rank
-		name_split[-2] = _QueueType
-		_raw_name = ".".join(name_split[1:-2])
-		relative = int(name_split[-1]) - int(min(_all_name2sta["traces"][_local_rank][_raw_name]["key"]))
-		name_split[-1] = str(int(min(_all_name2sta["traces"][_root_rank][_raw_name]["key"])) + relative)
-		return  ".".join(name_split)
-
-	#! Combine all worker_dag_list on one worker, build the dependency
+	### Combine all worker_dag_list on one worker, build the dependency
 	wk_dag = nx.compose_all(worker_dag_list)
-	root_rank = int(dirs[-1])
-	sync_edges = []
-	for u, v in wk_dag.edges:
-		if "COORDINATE_PUSH" in u and "COPYH2D" in v:
-			sync_edges.append((u, v, True))
-		elif "REDUCE" in u and ("BROADCAST" in v or "COORDINATE_BROADCAST" in v):
-			sync_edges.append((u, v, False))
-	for u, v, is_distr in sync_edges:
-		if is_distr:
-			wk_dag.add_edge(u, _name2rootname(all_name2sta, u, "PUSH", root_rank), weight=lookup_stat(all_name2sta, u))
-			wk_dag.add_edge(_name2rootname(all_name2sta, u, "PULL", root_rank), v, weight=lookup_stat(all_name2sta, _name2rootname(all_name2sta, u, "PULL", root_rank)))
-		else:
-			name_split = u.split(".")
-			name_split[-2] = "Sync"
-			sync_name = ".".join(name_split[2:])
-			wk_dag.add_edge(u, sync_name, weight=lookup_stat(all_name2sta, u))
-			wk_dag.add_edge(sync_name, v, weight=0.0)
 
-	#! Replay traces
+	### Replay traces
 	replayer = Replayer(_all_name2sta=all_name2sta, _dirs=dirs, _wk_dag=wk_dag, _step_num=args.step_num, _path=path_list[0])
 	if args.sub_option is None:
 		''' Directly replay '''

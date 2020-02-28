@@ -87,7 +87,7 @@ class Deivce:
 			cat = "Comm"
 			_name_split = name.split(".")
 			assert len(_name_split) >= 2
-			if _name_split[-2] in QueueType:
+			if _name_split[-2] in QueueType().ret_list():
 				#! sub-task
 				pid = ".".join(_name_split[:-2])
 				tid = _name_split[-1]

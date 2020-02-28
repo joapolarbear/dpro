@@ -2,7 +2,7 @@ import os
 import networkx as nx
 import matplotlib.pyplot as plt
 import logger_utils
-from trace_utils import read_traces, return_stat, return_path_dict, QueueType
+from trace_utils import read_traces, return_stat, return_path_dict, QueueType, lookup_stat
 
 def visualize_gml(graph, layout="circular"):
     if layout == "spectral":
@@ -60,9 +60,12 @@ class DAGManager:
         self.topo_sorts = []
 
     def add_prefix(self, name):
-        return "rank%d."%self.local_rank + name
+        if "Comm" in name:
+            return name
+        else:
+            return "rank%d."%self.local_rank + name
 
-    def gen_dag_from_gml_and_traces(self):
+    def gen_dag_with_rank_weight(self):
         ''' Gen a dag from the original graph with weighted edges.
         Args:
             gml_path: stores the dag output by byteprofile
@@ -77,29 +80,23 @@ class DAGManager:
         '''
         mygraph = nx.read_gml(self.path_dict["gml_path"])
         self.dag = nx.DiGraph()
-        
-        def _read_stat(node_name):
-            return self.name2sta[node_name]["avg"] if node_name in self.name2sta else 0.0
+        queue_type_list = QueueType().ret_list()
 
         for u, v in mygraph.edges:
             if "Comm" in u:
                 if self.del_queue == True:
                     prev_fw_nodes = [_u for _u, _ in mygraph.in_edges(u)]
                     assert len(prev_fw_nodes) == 1
-                    #! further to divide according to the partition key and QueueType.
-                    #   sub-task node name in mygraph is in the form of Comm.rawname.QueueType.key
-                    key_list = self.name2sta[u]["key"]
-                    for key in key_list:
-                        prev_node = prev_fw_nodes[0]
-                        for suffix in QueueType[:-1]:
-                            cur_node = u + '.' + suffix + "." + key
-                            if _read_stat(cur_node) == 0:
-                                continue
-                            self.dag.add_edge(self.add_prefix(prev_node), self.add_prefix(cur_node), weight=_read_stat(prev_node))
-                            prev_node = cur_node
-                        self.dag.add_edge(self.add_prefix(prev_node), self.add_prefix("STEP"), weight=_read_stat(prev_node))
+                    prev_node = prev_fw_nodes[0]
+                    for suffix in queue_type_list:
+                        cur_node = u + '.' + suffix
+                        if lookup_stat(self.name2sta, cur_node) == 0:
+                            continue
+                        self.dag.add_edge(self.add_prefix(prev_node), self.add_prefix(cur_node), weight=lookup_stat(self.name2sta, prev_node))
+                        prev_node = cur_node
+                    self.dag.add_edge(self.add_prefix(prev_node), self.add_prefix("STEP"), weight=lookup_stat(self.name2sta, prev_node))
                 else:
-                    self.dag.add_edge(self.add_prefix(u), self.add_prefix("STEP"), weight=_read_stat(u))
+                    self.dag.add_edge(self.add_prefix(u), self.add_prefix("STEP"), weight=lookup_stat(self.name2sta, u))
             elif "BW" in u and "Comm" in v and self.del_queue == True:
                 #! if del_queue is set True, delete edges from BW to Comm main task.
                 pass
@@ -107,13 +104,13 @@ class DAGManager:
                 #! ignore nodes from STEP to FW, avoid cycle
                 pass
             else:
-                self.dag.add_edge(self.add_prefix(u), self.add_prefix(v), weight= _read_stat(u))
+                self.dag.add_edge(self.add_prefix(u), self.add_prefix(v), weight=lookup_stat(self.name2sta, u))
 
         for e in self.dag.edges.data("weight"):
             self.logger.debug(e)
         # visualize_gml(self.dag, layout="circular")
 
-    def _add_computation_nodes(self, _pretty):
+    def _add_new_edges_via_order(self, _pretty):
         in_process_events = []
         max_para_degree = 1
         first = True
@@ -163,7 +160,7 @@ class DAGManager:
                     #! prev event has ended, should be deleted from in_process_events
                     del in_process_events[i]
                     #! TODO: only add once, to verify
-                    self.gpu_dag.add_edge(self.add_prefix(prev_event["name"]), self.add_prefix(event["name"]), weight=self.name2sta[prev_event["name"]]["avg"])
+                    self.gpu_dag.add_edge(self.add_prefix(prev_event["name"]), self.add_prefix(event["name"]), weight=lookup_stat(self.name2sta, prev_event))
                 else:
                     parent_list_of_prev = [(u, self.gpu_dag.edges[(u, v)]["weight"]) for u, v in self.gpu_dag.in_edges(self.add_prefix(prev_event["name"]))]
                     for u, w in parent_list_of_prev:
@@ -195,14 +192,14 @@ class DAGManager:
         return "BW" in _node or "FW" in _node
     
     def gen_gpu_dag(self, _pretty=False):
-        ''' Get the processing order and construct a new graph running on GPU
-        which we call gpu_dag.
+        ''' Add edges according to the processing order of FW+BW ops 
+            and construct a new graph running on GPU, which we call gpu_dag.
         '''
-        self.gen_dag_from_gml_and_traces()
+        self.gen_dag_with_rank_weight()
         self.gpu_dag = nx.DiGraph()
 
         critical_path = None
-        max_para_degree = self._add_computation_nodes(_pretty)
+        max_para_degree = self._add_new_edges_via_order(_pretty)
 
         #! Then, read IO, Comm, OUTPUT, and STEP nodes
         for u, v in self.dag.edges:
@@ -254,7 +251,7 @@ class DAGManager:
 
     def gen_fw_bw_dag(self):
         self._fw_bw_dag = nx.DiGraph()
-        self.gen_dag_from_gml_and_traces()
+        self.gen_dag_with_rank_weight()
         for u, v, _dict in self.dag.edges.data():
             if self.is_computation_node(u) and self.is_computation_node(v): 
                 self._fw_bw_dag.add_edge(u, v, **_dict)
