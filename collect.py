@@ -159,7 +159,7 @@ class Collector(object):
         _rst_traces["traceEvents"] = [_trace for _trace in self.time_dict["traceEvents"] if _trace["cat"] != _cat]
         self.time_dict = _rst_traces
 
-    def recombine_final_traces(self):
+    def re_gen_final_traces(self):
         self.logger.info("Recombining " + self.path_dict["trace_path"])
         self.time_dict = {"traceEvents":[]}
         #! Apply dependencies in self.dag to the mxnet traces.

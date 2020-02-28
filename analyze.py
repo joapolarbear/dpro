@@ -222,7 +222,7 @@ if args.option == "combine":
 	first_pull_time = None
 	for idx, path in enumerate(path_list):
 		bias = None
-		tmp_traces = combine_process_one_path(path, _comm_filter=comm_filter)
+		tmp_traces = combine_traces_of_one_path(path, _comm_filter=comm_filter)
 		tmp_traces = sorted(tmp_traces, key=lambda x: x["ts"], reverse=False)
 		#! To align the clock
 		#! TODO(huhanpeng): now only use the first pull time to align
@@ -258,7 +258,7 @@ if args.option == "compare":
 	if os.path.isfile(path_list[0]):
 		traces = [read_traces(path_list[0]), read_traces(path_list[1])]
 	else:
-		traces = [combine_process_one_path(path_list[0]), combine_process_one_path(path_list[1])]
+		traces = [combine_traces_of_one_path(path_list[0]), combine_traces_of_one_path(path_list[1])]
 	name2sta = [return_stat(_traces)[0] for _traces in traces]
 	name2compare = {}
 	for name, statistic in name2sta[0].items():
@@ -320,8 +320,8 @@ if args.option == "3dcompare":
 		assert os.path.isdir(_path)
 		root, dirs, files = list(os.walk(_path))[0]
 		_dir = sorted(dirs)[0]
-		_traces = combine_process_one_path(os.path.join(root, _dir))
-		name2sta = return_stat(_traces, ign_partion=True)[0]
+		_traces = combine_traces_of_one_path(os.path.join(root, _dir))
+		name2sta = return_stat(_traces)[0]
 
 		#! if first, sort names by group
 		if x_names is None:
@@ -374,7 +374,7 @@ if args.option == "collect":
 			elif args.sub_option == "operator":
 				clct.update_final_traces(_operator=True)
 			else:
-				clct.recombine_final_traces()
+				clct.re_gen_final_traces()
 		else:
 			for _dir in dirs:
 				loop_collect(os.path.join(root, _dir))

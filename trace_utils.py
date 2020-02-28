@@ -5,17 +5,10 @@ import traceback
 import logger_utils
 
 QueueType = [
-    "COORDINATE_REDUCE",
-    "REDUCE",
-    "COPYD2H",
-    "PCIE_REDUCE",
-    "COORDINATE_PUSH",
-    "PUSH",
-    "PULL",
-    "COPYH2D",
-    "COORDINATE_BROADCAST",
-    "BROADCAST",
-    "QUEUE_NUM_AND_NOT_A_REAL_QUEUE_TYPE_AND_MUST_BE_THE_LAST"
+    "NEGOTIATE_ALLREDUCE",
+    "ALLREDUCE",
+    "QUEUE",
+    "NCCL_ALLREDUCE"
 ]
 
 def read_traces(traces_path):
@@ -32,29 +25,17 @@ def read_traces(traces_path):
 		raise ValueError("The output file not follow the stardard chrome tracing format!: " + traces_path)
 	return traces
 
-def _comm_is_subtask(comm_name):
-	return comm_name.split(".")[-1] in QueueType
+def _is_comm_trace(trace):
+	return trace["cat"] == "Comm"
 
-def return_stat(traces, ign_partion=False):
+def return_stat(traces):
 	""" Basic Statistic """
 	name2sta = {}
 	cat2sta = {}
 	for event in traces:
 		name = event["name"]
-		if "Comm" in name and _comm_is_subtask(name):
-			#! sub-task comm nodes, add partition key to the name
-			main_task_name = ".".join(name.split(".")[:-1])
-			if ign_partion is False:
-				name += "." + event["tid"]
-			#! record the partition keys in the main-task node
-			#	for the ease of looking up partition keys
-			if main_task_name in name2sta:
-				if "key" in name2sta[main_task_name]:
-					name2sta[main_task_name]["key"].add(event["tid"])
-				else:
-					name2sta[main_task_name]["key"] = {event["tid"]}
-			else:
-				name2sta[main_task_name] = {"key" : {event["tid"]}}
+		if _is_comm_trace(event):
+			name = event["args"]["name"] + "." + event["name"]
 		if name in name2sta:
 			name2sta[name]["cnt"] += 1
 			name2sta[name]["time"] += event["dur"] / 1000.0
@@ -83,8 +64,8 @@ def return_stat(traces, ign_partion=False):
 	"""calculate the variance"""
 	for event in traces:
 		name = event["name"]
-		if "Comm" in name and _comm_is_subtask(name) and ign_partion is False:
-			name += "." + event["tid"]
+		if _is_comm_trace(event):
+			name = event["args"]["name"] + "." + event["name"]
 		name2sta[name]["var"] += pow(event["dur"] / 1000.0 - name2sta[name]["avg"], 2)
 
 	for name, statistic in name2sta.items():
@@ -140,10 +121,6 @@ def lookup_stat(_all_name2sta, _name, _field="avg"):
 	_local_rank, _raw_name = split_name(_name)
 	return _all_name2sta["traces"][_local_rank][_raw_name][_field]
 
-def _del_prefix(name):
-	#! delete the prefix rank0.
-	return ".".join(name.split(".")[1:])
-
 def return_path_dict(root_path):
 	''' Map the paths of each file from its name
 	Args:
@@ -185,7 +162,7 @@ def return_path_dict(root_path):
 	path_dict["local_rank"] = int(__root.split("/")[-1])
 	return path_dict
 
-def combine_add_traces(_traces, _local_rank, _tmp_traces, _comm_filter=None):
+def combine_traces_of_one_GPU(_traces, _local_rank, _tmp_traces, _comm_filter=None):
 	for event in _traces:
 		if event["cat"] == "Comm" and _comm_filter is not None and event["args"]["name"] not in _comm_filter:
 			#! Only show the communication nodes belonging to comm_filter if comm_filter is set
@@ -194,7 +171,10 @@ def combine_add_traces(_traces, _local_rank, _tmp_traces, _comm_filter=None):
 		event['name'] = "rank%d."%_local_rank + str(event['name'])
 		_tmp_traces.append(event)
 
-def combine_process_one_path(_path, _comm_filter=None):
+def combine_traces_of_one_path(_path, _comm_filter=None):
+	''' Combine all traces in one path, add the rank in the form of 'rank0'
+		to their names as prefixes
+	'''
 	tmp_traces = []
 	_path = os.path.abspath(_path)
 	if os.path.isdir(_path):
@@ -209,17 +189,17 @@ def combine_process_one_path(_path, _comm_filter=None):
 			path_dict = return_path_dict(os.path.join(root, _dir))
 			local_rank = path_dict["local_rank"]
 			traces = read_traces(path_dict["trace_path"])
-			combine_add_traces(traces, local_rank, tmp_traces, _comm_filter=_comm_filter)
+			combine_traces_of_one_GPU(traces, local_rank, tmp_traces, _comm_filter=_comm_filter)
 	else:
 		#! Or, read just one trace file
 		traces = read_traces(_path)
 		local_rank = _path.split('/')[-2]		
-		combine_add_traces(traces, local_rank, tmp_traces, _comm_filter=_comm_filter)
+		combine_traces_of_one_GPU(traces, local_rank, tmp_traces, _comm_filter=_comm_filter)
 	return tmp_traces
 
-def _operator_trace_group_by_GPU(traces):
+def group_computation_op_by_rank(traces):
 	ret_dict = {}
-	def _get_rank(_name):
+	def _get_rank_str(_name):
 		if "rank" in event["name"]:
 			_rank_str = _name.split(".")[0]
 		else:
@@ -230,15 +210,20 @@ def _operator_trace_group_by_GPU(traces):
 		return _rank_str
 	for event in traces:
 		if event["cat"] == "operator":
-			ret_dict[_get_rank(event["name"])].append(event)
+			ret_dict[_get_rank_str(event["name"])].append(event)
 	return ret_dict
 
 def get_iter_time(traces, logger):
+	''' print the iteration time and computation time
+	*Note* that this function is strongly dependent on how the bps_trace_final.json
+	is generated based on the temp.json, i.e., which ops of temp.json are used in 
+	the bps_trace_final.json
+	'''
 	if isinstance(traces, dict):
 		traces = traces["traceEvents"]
 	else:
 		assert isinstance(traces, list)
-	operator_traces_list = _operator_trace_group_by_GPU(traces)
+	operator_traces_list = group_computation_op_by_rank(traces)
 
 	ret = []
 	for _rank, operator_traces in operator_traces_list.items():
@@ -250,6 +235,7 @@ def get_iter_time(traces, logger):
 		for event in operator_traces:
 			if start_ts is None:
 				start_ts = event['ts']
+			### here we assume STEP is following the last BP op.
 			if "STEP" in event["name"]:
 				fw_bw_list.append((cur_iter_time - start_ts) / 1000.0)
 			cur_iter_time = event['ts'] + event['dur']
@@ -264,10 +250,14 @@ def get_iter_time(traces, logger):
 	return ret
 
 def is_leaf_folder(_dir):
+	''' whether the given directory stores the traces on one GPU
+	'''
 	root, dirs, files = list(os.walk(_dir))[0]
 	return "dag.gml" in files
 
 def read_list(path):
+	''' read a list from a file
+	'''
     with open(path, 'r') as f:
         l = f.read().split("\n")
     l = l[:-1] if l[-1] == '' else l
