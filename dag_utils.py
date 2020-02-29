@@ -111,23 +111,41 @@ class DAGManager:
         # visualize_gml(self.dag, layout="circular")
 
     def _add_new_edges_via_order(self, _pretty):
+        ''' Add new edges between FW+BW ops, according to their processing order
+            such that we can keep the order when replaying.
+            TODO (huhanpeng)
+        '''
+
+        ### Used to store events currently in processing
         in_process_events = []
+        ### maximum paralillism degree
         max_para_degree = 1
+        ### record the start time of the first op
         first = True
         start_time = None
+
         def relative_time(time):
             return (time - start_time) / 1000.0
-        arrive_dict = set()
+
+        def in_process_events2str():
+            s = ''
+            for _event in in_process_events:
+                _n, _ts, _te = _event["name"], _event["ts"], _event["ts"] + _event["dur"]
+                s += "\n\t\t\t\t%-60s: %s~%s (%-13.4f ~ %-13.4f)" % (_n, str(_ts), str(_te), relative_time(_ts), relative_time(_te))
+            return s
+
+        ### Used to mark the arrival of each FW+BW op
+        fw_bw_arrive = set()
         comm_cnt = 0
         for node in self.dag.nodes:
             if "FW" in node or "BW" in node:
-                arrive_dict.add(".".join(node.split(".")[1:]))
+                fw_bw_arrive.add(".".join(node.split(".")[1:]))
             elif "Comm" in node:
                 comm_cnt += 1
-        self.logger.info("Total number of operators: %d" % len(arrive_dict))
+        self.logger.info("Total number of operators: %d" % len(fw_bw_arrive))
         self.logger.info("Total number of Comm OPs: %d" % comm_cnt)
       
-        #! For FW and BW nodes, go through one step of traces
+        ### For FW and BW nodes, go through one step of traces
         for event in self.traces:
             if first:
                 self.logger.info("The first event - name: %s, ts: %s us, dur: %s us" %
@@ -142,9 +160,9 @@ class DAGManager:
             #! TODO(huhanpeng): will never break, since some BW nodes do not exist.
             #! but can still avoid repeated processing
             node_name = event["name"]
-            if node_name in arrive_dict:
-                arrive_dict.remove(node_name)
-                if len(arrive_dict) == 0:
+            if node_name in fw_bw_arrive:
+                fw_bw_arrive.remove(node_name)
+                if len(fw_bw_arrive) == 0:
                     break
             else:
                 #! ignore some trival nodes or the nodes which appears for the second time.
@@ -153,15 +171,17 @@ class DAGManager:
             i = 0
             while True:
                 if i >= len(in_process_events):
-                        break
+                    break
                 prev_event = in_process_events[i]
                 assert event["ts"] >= prev_event["ts"]
                 if event["ts"] >= prev_event["ts"] + prev_event["dur"]:
-                    #! prev event has ended, should be deleted from in_process_events
+                    ### prev event has ended, should be deleted from in_process_events
                     del in_process_events[i]
                     #! TODO: only add once, to verify
                     self.gpu_dag.add_edge(self.add_prefix(prev_event["name"]), self.add_prefix(event["name"]), weight=lookup_stat(self.name2sta, prev_event))
                 else:
+                    ### if prev event has not ended, current node should share 
+                    ### the parent ops of the prev event
                     parent_list_of_prev = [(u, self.gpu_dag.edges[(u, v)]["weight"]) for u, v in self.gpu_dag.in_edges(self.add_prefix(prev_event["name"]))]
                     for u, w in parent_list_of_prev:
                         self.gpu_dag.add_edge(u, self.add_prefix(event["name"]), weight=w)
@@ -169,13 +189,6 @@ class DAGManager:
 
             if len(in_process_events) + 1 > max_para_degree:
                 max_para_degree = len(in_process_events) + 1
-
-            def in_process_events2str():
-                s = ''
-                for _event in in_process_events:
-                    _n, _ts, _te = _event["name"], _event["ts"], _event["ts"] + _event["dur"]
-                    s += "\n\t\t\t\t%-60s: %s~%s (%-13.4f ~ %-13.4f)" % (_n, str(_ts), str(_te), relative_time(_ts), relative_time(_te))
-                return s
 
             if not _pretty and len(in_process_events) > 0:
                 self.logger.info("%s (%-13.4f): D=%d => %-60s%s" %
@@ -213,14 +226,6 @@ class DAGManager:
             critical_path = dag_longest_path(self.gpu_dag, self.local_rank, self.logger, weight="weight", default_weight=0)
 
         return max_para_degree, critical_path
-
-    def add_nodes_weight(self):
-        for n in self.gpu_dag:
-            assert "rank" in n
-            rawname = ".".join(n.split(".")[1:])
-            self.gpu_dag.node[u]["avg"] = self.name2sta[rawname]["avg"] if rawname in self.name2sta else 0.0
-            self.gpu_dag.node[u]["in_degree"] = self.gpu_dag.in_degree(n)
-            self.gpu_dag.node[u]["visited"] = False
 
     def all_topo_sorts(self):
         flag = False

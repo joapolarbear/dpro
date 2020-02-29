@@ -215,11 +215,13 @@ def combine_traces_of_one_path(_path, _comm_filter=None):
         combine_traces_of_one_GPU(traces, local_rank, tmp_traces, _comm_filter=_comm_filter)
     return tmp_traces
 
-def group_computation_op_by_rank(traces):
+def group_computation_op_by_rank(traces, rank=None):
     ret_dict = {}
     def _get_rank_str(_name):
         if "rank" in event["name"]:
             _rank_str = _name.split(".")[0]
+        elif rank is not None:
+            _rank_str = "rank" + str(rank)
         else:
             _rank_str = "rank?"
 
@@ -231,7 +233,7 @@ def group_computation_op_by_rank(traces):
             ret_dict[_get_rank_str(event["name"])].append(event)
     return ret_dict
 
-def get_iter_time(traces, logger):
+def get_iter_time(traces, logger, rank=None):
     ''' print the iteration time and computation time
     *Note* that this function is strongly dependent on how the bps_trace_final.json
     is generated based on the temp.json, i.e., which ops of temp.json are used in 
@@ -241,7 +243,7 @@ def get_iter_time(traces, logger):
         traces = traces["traceEvents"]
     else:
         assert isinstance(traces, list)
-    operator_traces_list = group_computation_op_by_rank(traces)
+    operator_traces_list = group_computation_op_by_rank(traces, rank)
 
     ret = []
     for _rank, operator_traces in operator_traces_list.items():

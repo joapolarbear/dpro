@@ -196,7 +196,7 @@ if args.option == "combine":
 		bias = None
 		tmp_traces = combine_traces_of_one_path(path, _comm_filter=comm_filter)
 		tmp_traces = sorted(tmp_traces, key=lambda x: x["ts"], reverse=False)
-		#! To align the clock
+		### To align the clock
 		#! TODO(huhanpeng): now only use the first pull time to align
 		if idx == 0:
 			for event in tmp_traces:
@@ -347,6 +347,25 @@ if args.option == "collect":
 				clct.update_final_traces(_operator=True)
 			else:
 				clct.re_gen_final_traces()
+		elif args.sub_option == "combine":
+			rst_traces = {"traceEvents": []}
+			### collect computation traces and IO traces
+			for _dir in dirs:
+				path_dict = return_path_dict(os.path.join(root, _dir))
+				clct = Collector(_path_dict=path_dict)
+				### only read comm.json once
+				if len(rst_traces["traceEvents"]) == 0:
+					clct.re_gen_final_traces()
+					tmp_traces = clct.time_dict
+				else:
+					tmp_traces = clct.re_gen_comp_io_traces()
+				### add a prefix rank<id> to distingush
+				for trace in tmp_traces["traceEvents"]:
+					trace["pid"] = "rank%s."%_dir + str(trace["pid"])
+					rst_traces["traceEvents"].append(trace)
+					
+			with open(os.path.join(root, "bps_traces_host.json"), 'w') as f:
+				json.dump(rst_traces, f, indent=4)
 		else:
 			for _dir in dirs:
 				loop_collect(os.path.join(root, _dir))

@@ -18,21 +18,19 @@ from trace_utils import return_path_dict, get_iter_time
 
 class Collector(object):
     #! class used to collect trace info
-    def __init__(self, _trace_dir=None, _path_dict=None):
+    def __init__(self, _path_dict=None):
         self.logger = logger_utils.SingleLogger()
         self.time_dict = {"traceEvents":[]}
         if _path_dict is not None:
             self.path_dict = _path_dict
         else:
-            assert _trace_dir is not None
-            self.trace_dir = _trace_dir
-            self.path_dict = return_path_dict(self.trace_dir)
+            self.path_dict = {}
         
         # dag is necessary.
-        assert "gml_path" in self.path_dict
-        self.dag = nx.read_gml(self.path_dict["gml_path"])
+        if "gml_path" in self.path_dict:
+            self.dag = nx.read_gml(self.path_dict["gml_path"])
 
-    def byteps_collect_io(self):
+    def bpf_collect_io(self):
         if "io" not in self.path_dict or not os.path.exists(self.path_dict["io"]):
             self.logger.warn("'io.json' not exists.")
             return
@@ -41,7 +39,7 @@ class Collector(object):
             rst_traces = json.load(f)
         self.time_dict["traceEvents"] += rst_traces["traceEvents"]
 
-    def byteps_collect_comm(self):
+    def bpf_collect_comm(self):
         if "comm" not in self.path_dict or not os.path.exists(self.path_dict["comm"]):   
             _p = os.path.join(os.path.dirname(self.path_dict["root"]), "comm.json")
             if os.path.exists(_p):
@@ -50,11 +48,14 @@ class Collector(object):
             else:
                 self.logger.warn("'comm.json' not exists.")
                 return
+        comm_traces = self.parse_comm_traces(self.path_dict["comm"])
+        self.time_dict["traceEvents"] += comm_traces
 
+    def parse_comm_traces(self, path):
         self.gradient_name_list = {}
 
         #! read communication traces offline
-        with open(self.path_dict["comm"], 'r') as f:
+        with open(path, 'r') as f:
             json_str = f.read()
         # fix the json file
         if json_str[-1] != ']':
@@ -64,9 +65,10 @@ class Collector(object):
             if json_str_lines[-1][-1] == ',':
                 json_str_lines[-1] = json_str_lines[-1][:-1]+']'
             json_str = "\n".join(json_str_lines)
-        rst_traces = json.loads(json_str)
+        comm_traces = json.loads(json_str)
 
-        for trace in rst_traces:
+        ret = []
+        for trace in comm_traces:
             if trace["ph"] == "M":
                 if trace["name"] == "process_name":
                     assert trace["pid"] not in self.gradient_name_list
@@ -88,7 +90,7 @@ class Collector(object):
                             }
                 else:
                     pass
-                    
+
             elif trace["pid"] in self.gradient_name_list and trace["ph"] == "B":
                 cur_pid = self.gradient_name_list[trace["pid"]]
                 cur_pid["list"].append((trace["name"], trace["ts"]))
@@ -106,7 +108,7 @@ class Collector(object):
                 else:
                     raise ValueError("Each communication node can not "
                         "have more than 1 in-edge nodes: %s" % process_name)
-                self.time_dict["traceEvents"].append(
+                ret.append(
                     {
                         "name": name,
                         "ts": ts,
@@ -123,9 +125,10 @@ class Collector(object):
                     })
             else:
                 pass
+        return ret
 
 
-    def byteps_collect_update(self):
+    def bpf_collect_update(self):
         raise NotImplementedError()
         with open(self.path_dict["update"], 'r') as f:
             rst_traces = json.load(f)
@@ -139,15 +142,15 @@ class Collector(object):
 
         if _io is True:
             self.delete_traces("I/O")
-            self.byteps_collect_io()
+            self.bpf_collect_io()
 
         if _comm is True:
             self.delete_traces("Comm")
-            self.byteps_collect_comm()
+            self.bpf_collect_comm()
 
         if _operator is True:
             self.delete_traces("operator")
-            self.byteps_collect_computation()
+            self.bpf_collect_computation()
 
         get_iter_time(self.time_dict, self.logger)
 
@@ -162,16 +165,24 @@ class Collector(object):
     def re_gen_final_traces(self):
         self.logger.info("Recombining " + self.path_dict["trace_path"])
         self.time_dict = {"traceEvents":[]}
-        #! Apply dependencies in self.dag to the mxnet traces.
-        self.byteps_collect_computation()
-        #! Collect communication traces, IO traces and STEP traces and apply dependency
-        self.byteps_collect_io()
-        self.byteps_collect_comm()
+        ### Apply dependencies in self.dag to the mxnet traces.
+        self.bpf_collect_computation()
+        ### Collect communication traces, IO traces and STEP traces and apply dependency
+        self.bpf_collect_io()
+        self.bpf_collect_comm()
         get_iter_time(self.time_dict, self.logger)
         with open(self.path_dict["trace_path"], 'w') as f:
             json.dump(self.time_dict, f, indent=4)
 
-    def byteps_collect_computation(self):
+    def re_gen_comp_io_traces(self):
+        self.time_dict = {"traceEvents":[]}
+        ### Apply dependencies in self.dag to the mxnet traces.
+        self.bpf_collect_computation()
+        ### Collect communication traces, IO traces and STEP traces and apply dependency
+        self.bpf_collect_io()
+        return self.time_dict
+
+    def bpf_collect_computation(self):
         '''Apply dependency info to the mxnet trace results
 
         Parameters
