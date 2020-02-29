@@ -16,11 +16,37 @@ import logger_utils
 
 from trace_utils import return_path_dict, get_iter_time
 
+class RunningSpan:
+    def __init__(self, s=None, e=None):
+        self.start = s
+        self.end = e
+
+    def init_start(self, s):
+        if self.start is None:
+            self.start = s
+
+    def init_end(self, e):
+        ### allow to override
+        self.end = e
+
+    def if_start(self, t):
+        if self.start is not None and t < self.start:
+            return False
+        else:
+            return True
+
+    def if_end(self, t):
+        if self.end is not None and t >= self.end:
+            return True
+        else:
+            return False
+
 class Collector(object):
     #! class used to collect trace info
     def __init__(self, _path_dict=None):
         self.logger = logger_utils.SingleLogger()
         self.time_dict = {"traceEvents":[]}
+        self.run_span = RunningSpan()
         if _path_dict is not None:
             self.path_dict = _path_dict
         else:
@@ -29,110 +55,6 @@ class Collector(object):
         # dag is necessary.
         if "gml_path" in self.path_dict:
             self.dag = nx.read_gml(self.path_dict["gml_path"])
-
-    def bpf_collect_io(self):
-        if "io" not in self.path_dict or not os.path.exists(self.path_dict["io"]):
-            self.logger.warn("'io.json' not exists.")
-            return
-
-        with open(self.path_dict["io"], 'r') as f:
-            rst_traces = json.load(f)
-        self.time_dict["traceEvents"] += rst_traces["traceEvents"]
-
-    def bpf_collect_comm(self):
-        if "comm" not in self.path_dict or not os.path.exists(self.path_dict["comm"]):   
-            _p = os.path.join(os.path.dirname(self.path_dict["root"]), "comm.json")
-            if os.path.exists(_p):
-                self.logger.warn("find 'comm.json' at %s instead" % _p)
-                self.path_dict["comm"] = _p
-            else:
-                self.logger.warn("'comm.json' not exists.")
-                return
-        comm_traces = self.parse_comm_traces(self.path_dict["comm"])
-        self.time_dict["traceEvents"] += comm_traces
-
-    def parse_comm_traces(self, path):
-        self.gradient_name_list = {}
-
-        #! read communication traces offline
-        with open(path, 'r') as f:
-            json_str = f.read()
-        # fix the json file
-        if json_str[-1] != ']':
-            json_str_lines = json_str.split("\n")
-            if json_str_lines[-1] == '':
-                json_str_lines = json_str_lines[:-1]
-            if json_str_lines[-1][-1] == ',':
-                json_str_lines[-1] = json_str_lines[-1][:-1]+']'
-            json_str = "\n".join(json_str_lines)
-        comm_traces = json.loads(json_str)
-
-        ret = []
-        for trace in comm_traces:
-            if trace["ph"] == "M":
-                if trace["name"] == "process_name":
-                    assert trace["pid"] not in self.gradient_name_list
-                    _split_name = trace["args"]["name"].split(".")
-                    # ignore the traces whose names end with purly digits
-                    if str.isdigit(_split_name[-1]):
-                        continue
-                    raw_name = ".".join(_split_name[1:])
-                    prefix = _split_name[0]
-                    if "horovod_" not in prefix:
-                        raise ValueError("comm.json format error, "
-                            "trace args name should start with "
-                            "horovod_broadcast or horovod_allreduce: %s" % trace["args"]["name"])
-                    process_name = "Comm." + raw_name
-                    self.gradient_name_list[trace["pid"]] = {
-                            "process_name": process_name,
-                            "tid": prefix,
-                            "list": []
-                            }
-                else:
-                    pass
-
-            elif trace["pid"] in self.gradient_name_list and trace["ph"] == "B":
-                cur_pid = self.gradient_name_list[trace["pid"]]
-                cur_pid["list"].append((trace["name"], trace["ts"]))
-            elif trace["pid"] in self.gradient_name_list and trace["ph"] == "E":
-                cur_pid = self.gradient_name_list[trace["pid"]]
-                name, ts = cur_pid["list"].pop()
-                dur = trace["ts"] - ts
-                process_name = cur_pid["process_name"]
-                input_nodes = [u for u, _ in self.dag.in_edges(process_name)]
-                if len(input_nodes) == 1:
-                    input0 = list(input_nodes)[0]
-                elif len(input_nodes) == 0:
-                    input0 = None
-                    # self.logger.warn("%s has no in edges" % process_name)
-                else:
-                    raise ValueError("Each communication node can not "
-                        "have more than 1 in-edge nodes: %s" % process_name)
-                ret.append(
-                    {
-                        "name": name,
-                        "ts": ts,
-                        "dur": dur,
-                        "ph": "X",
-                        "pid": process_name,
-                        "tid": cur_pid["tid"],
-                        "cat": "Comm",
-                        "args":{
-                            "name": process_name,
-                            "input0": input0
-                        }
-
-                    })
-            else:
-                pass
-        return ret
-
-
-    def bpf_collect_update(self):
-        raise NotImplementedError()
-        with open(self.path_dict["update"], 'r') as f:
-            rst_traces = json.load(f)
-        self.time_dict["traceEvents"] += rst_traces["traceEvents"]
 
     def update_final_traces(self, _io=False, _comm=False, _operator=False):
         self.logger.info("Updating " + self.path_dict["trace_path"])
@@ -207,6 +129,8 @@ class Collector(object):
         pid = None
         rst_traces = {"traceEvents": []}
 
+        ### convert the ph from B/E to X
+        ### TODO(huhanpeng): it's more safe to use a stack style method
         index = 0
         traces = []
         while index < len(mxnet_traces["traceEvents"]):
@@ -226,7 +150,7 @@ class Collector(object):
 
         traces = sorted(traces, key=lambda x: x["ts"], reverse=False)
 
-        def _preprocess(_name):
+        def standar_name(_name):
             '''Fetch and handle the trace name'''
             #! add for mxnet-gluon case
             if "name=" in _name:
@@ -236,12 +160,7 @@ class Collector(object):
             _name = _name.split("_fwd")[0] if "_fwd" in _name else _name
             return _name 
 
-        IGNORE_OP = ["DeleteVariable", "sum", "_plus_scalar", 
-                "_copyto_GPU2GPU", "broadcast_add", 
-                "Reshape", "Cast", "_arange", "elemwise_add",
-                "_ones", "SyncCopyGPU2CPU", "_mul_scalar",
-                "CopyGPU2CPU", "CopyCPU2GPU"]
-
+        ### find the last BP op in the timeline
         def real_last_bw_name():
             statue = "init"
             _index = 0
@@ -249,7 +168,7 @@ class Collector(object):
             while _index < len(traces):
                 trace = traces[_index]
                 _index += 1
-                name = _preprocess(trace["name"])
+                name = standar_name(trace["name"])
                 if name not in self.dag.nodes:
                     continue
                 if statue == "init" and "FW" in name:
@@ -264,24 +183,33 @@ class Collector(object):
                     return tmp
         _real_last_bw_name = real_last_bw_name()
 
+        IGNORE_OP = ["DeleteVariable", "sum", "_plus_scalar", 
+                "_copyto_GPU2GPU", "broadcast_add", 
+                "Reshape", "Cast", "_arange", "elemwise_add",
+                "_ones", "SyncCopyGPU2CPU", "_mul_scalar",
+                "CopyGPU2CPU", "CopyCPU2GPU"]
+
+        ### collect traces of FW + BP OPs and STEP OPs
         index = 0
-        iteration_time = {"ts": None, "fw_bw": [], "iteration": []}
         while index < len(traces):
             trace = traces[index]
             index += 1
-            name = _preprocess(trace["name"])       
+            name = standar_name(trace["name"])       
 
             if name not in self.dag.nodes:
-                #! Only collect nodes in the dag
-                #! TODO: some trvial nodes may also be useful
+                ### Only collect nodes in the dag
+                ### TODO (huhanpeng): some trvial nodes may also be useful
                 continue
 
-            #! deduplication
-            #! TODO: should be careful, only choose one prosess here
+            ### deduplication
+            ### TODO (huhanpeng): should be careful, only choose one prosess here
             if pid is None:
                 pid = trace["pid"]
             elif pid != trace["pid"]:
                 continue
+
+            ### Initialize the start time of the entire running span
+            self.run_span.init_start(trace["ts"])
 
             innodes = [_n for _n, _ in self.dag.in_edges(name)]
             args = {"name": name}
@@ -289,14 +217,11 @@ class Collector(object):
                 args["input%d"%i] = _n
             trace["name"] = name
             trace["args"] = args
-            if iteration_time["ts"] is None:
-                iteration_time["ts"] = trace["ts"]
             rst_traces["traceEvents"].append(trace)
 
-            #! if all STEP-dependent BW nodes have arrived, process traces til FW
+            ### if all STEP-dependent BW nodes have arrived, process traces til FW
             # if len(last_bw_nodes) == 0:
             if name == _real_last_bw_name:
-                iteration_time["fw_bw"].append((trace["ts"] + trace["dur"]- iteration_time["ts"]) / 1000.0)
                 _step_ts = None
                 _step_dur = 0
                 while index < len(traces):
@@ -304,7 +229,7 @@ class Collector(object):
                     if pid != _trace["pid"]:
                         index += 1
                     else:
-                        name = _preprocess(_trace["name"])
+                        name = standar_name(_trace["name"])
                         if name in self.dag.nodes:
                             break
                         index += 1
@@ -327,11 +252,114 @@ class Collector(object):
                             "name":"STEP"
                         }
                     })
-
-                iteration_time["iteration"].append((_step_ts + _step_dur - iteration_time["ts"]) / 1000.0)
-                iteration_time["ts"] = None
+                    ### Initialize the end time of the entire running span
+                    self.run_span.init_end(_step_ts + _step_dur)
 
         self.time_dict["traceEvents"] += rst_traces["traceEvents"]
 
+    def bpf_collect_io(self):
+        if "io" not in self.path_dict or not os.path.exists(self.path_dict["io"]):
+            self.logger.warn("'io.json' not exists.")
+            return
+
+        with open(self.path_dict["io"], 'r') as f:
+            rst_traces = json.load(f)
+        self.time_dict["traceEvents"] += rst_traces["traceEvents"]
+
+    def bpf_collect_comm(self):
+        if "comm" not in self.path_dict or not os.path.exists(self.path_dict["comm"]):   
+            _p = os.path.join(os.path.dirname(self.path_dict["root"]), "comm.json")
+            if os.path.exists(_p):
+                self.logger.warn("find 'comm.json' at %s instead" % _p)
+                self.path_dict["comm"] = _p
+            else:
+                self.logger.warn("'comm.json' not exists.")
+                return
+        comm_traces = self.parse_comm_traces(self.path_dict["comm"])
+        self.time_dict["traceEvents"] += comm_traces
+
+    def parse_comm_traces(self, path):
+        self.gradient_name_list = {}
+
+        #! read communication traces offline
+        with open(path, 'r') as f:
+            json_str = f.read()
+        # fix the json file
+        if json_str[-1] != ']':
+            json_str_lines = json_str.split("\n")
+            if json_str_lines[-1] == '':
+                json_str_lines = json_str_lines[:-1]
+            if json_str_lines[-1][-1] == ',':
+                json_str_lines[-1] = json_str_lines[-1][:-1]+']'
+            json_str = "\n".join(json_str_lines)
+        comm_traces = json.loads(json_str)
+
+        ret = []
+        for trace in comm_traces:
+            if trace["ph"] == "M":
+                if trace["name"] == "process_name":
+                    assert trace["pid"] not in self.gradient_name_list
+                    _split_name = trace["args"]["name"].split(".")
+                    # ignore the traces whose names end with purly digits
+                    if str.isdigit(_split_name[-1]):
+                        continue
+                    raw_name = ".".join(_split_name[1:])
+                    prefix = _split_name[0]
+                    if "horovod_" not in prefix:
+                        raise ValueError("comm.json format error, "
+                            "trace args name should start with "
+                            "horovod_broadcast or horovod_allreduce: %s" % trace["args"]["name"])
+                    process_name = "Comm." + raw_name
+                    self.gradient_name_list[trace["pid"]] = {
+                            "process_name": process_name,
+                            "tid": prefix,
+                            "list": []
+                            }
+                else:
+                    pass
+            elif "ts" in trace and not self.run_span.if_start(trace["ts"]):
+                continue
+            elif "ts" in trace and self.run_span.if_end(trace["ts"]):
+                break
+            elif trace["pid"] in self.gradient_name_list and trace["ph"] == "B":
+                cur_pid = self.gradient_name_list[trace["pid"]]
+                cur_pid["list"].append((trace["name"], trace["ts"]))
+            elif trace["pid"] in self.gradient_name_list and trace["ph"] == "E":
+                cur_pid = self.gradient_name_list[trace["pid"]]
+                name, ts = cur_pid["list"].pop()
+                dur = trace["ts"] - ts
+                process_name = cur_pid["process_name"]
+                input_nodes = [u for u, _ in self.dag.in_edges(process_name)]
+                if len(input_nodes) == 1:
+                    input0 = list(input_nodes)[0]
+                elif len(input_nodes) == 0:
+                    input0 = None
+                    # self.logger.warn("%s has no in edges" % process_name)
+                else:
+                    raise ValueError("Each communication node can not "
+                        "have more than 1 in-edge nodes: %s" % process_name)
+                ret.append(
+                    {
+                        "name": name,
+                        "ts": ts,
+                        "dur": dur,
+                        "ph": "X",
+                        "pid": process_name,
+                        "tid": cur_pid["tid"],
+                        "cat": "Comm",
+                        "args":{
+                            "name": process_name,
+                            "input0": input0
+                        }
+                    })
+            else:
+                pass
+        return ret
+
+    def bpf_collect_update(self):
+        raise NotImplementedError()
+        with open(self.path_dict["update"], 'r') as f:
+            rst_traces = json.load(f)
+        self.time_dict["traceEvents"] += rst_traces["traceEvents"]
 
 
