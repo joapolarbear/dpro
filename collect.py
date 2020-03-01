@@ -57,7 +57,7 @@ class ClockAligner:
             self.ref = None
             return 0
         else:
-            bias = self.ref - self.standard
+            bias = self.standard - self.ref
             self.ref = None
             return bias
 
@@ -302,10 +302,11 @@ class Collector(object):
 
     def bpf_collect_comm(self):
         comm_path = self.pm.search(FileName.COMM)
+        print(comm_path)
         if comm_path is None:   
             return
         if self.dag is None:
-            dag_path = self.pm.search(FileName.DAG) if tmp_pm is None else tmp_pm.search(FileName.DAG)
+            dag_path = self.pm.search(FileName.DAG)
             self.dag = nx.read_gml(dag_path)
         comm_traces = self.parse_comm_traces(comm_path)
         self.time_dict["traceEvents"] += comm_traces
@@ -422,6 +423,7 @@ class Collector(object):
                     worker_traces = []
                     worker_path = os.path.join(self.pm.path, _dir)
                     worker_root, worker_dirs, _ = list(os.walk(worker_path))[0]
+                    worker_dirs = sorted(worker_dirs)
                     for __dir in worker_dirs:
                         self.time_dict = {"traceEvents":[]} 
                         gpu_path = os.path.join(worker_root, __dir)
@@ -438,8 +440,12 @@ class Collector(object):
                             trace["ts"] += bias
                             rst_traces["traceEvents"].append(trace)
                 ### only read comm.json once
+                self.time_dict = {"traceEvents":[]} 
                 self.bpf_collect_comm()
+                rst_traces["traceEvents"] += self.time_dict["traceEvents"]
+
                 self.clock_aligner = None
+
             with open(os.path.join(self.pm.path, FileName.TRACE.value), 'w') as f:
                     json.dump(rst_traces, f, indent=4)
 

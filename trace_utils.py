@@ -189,10 +189,6 @@ def return_path_dict(root_path):
             path_dict[FileName.TENSOR_NAME.value] = cur_path
         else:
             pass
-    if FileName.TRACE.value not in path_dict:
-        logger_utils.SingleLogger().warn("'%s' is not in the directory: %s" % (FileName.TRACE.value, __root))
-        ### TODO (huhanpeng)
-        path_dict[FileName.TRACE.value] = os.path.join(__root, FileName.TRACE.value)
     return path_dict
 
 def combine_traces_of_one_GPU(_traces, _local_rank, _tmp_traces, _comm_filter=None):
@@ -342,14 +338,14 @@ class PathManager:
             if target in self.files:
                 return os.path.join(self.path, target)
             for _dir in self.dirs:
-                sub_root, sub_dirs, sub_files = list(os.walk(os.path.join(self.path, _dir)))[0]
-                if target in sub_files:
-                    return os.path.join(sub_root, target)
+                worker_root, worker_dirs, worker_files = list(os.walk(os.path.join(self.path, _dir)))[0]
+                if target in worker_files:
+                    return os.path.join(worker_root, target)
                 else:
-                    for sub_dir in sub_dirs:
-                        ss_root, ss_dirs, ss_files = list(os.walk(os.path.join(sub_root, sub_dir)))[0]
-                        if target in ss_files:
-                            return os.path.join(ss_root, target)
+                    for worker_dir in worker_dirs:
+                        gpu_root, gpu_dirs, gpu_files = list(os.walk(os.path.join(worker_root, worker_dir)))[0]
+                        if target in gpu_files:
+                            return os.path.join(gpu_root, target)
             SingleLogger().warn("Fail to find %s in path %s" % (str(target), self.path))
             return
 
