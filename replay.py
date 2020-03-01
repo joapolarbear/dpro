@@ -262,7 +262,7 @@ class Replayer:
 			"traceEvents": self.rst_traces,
 			"displayTimeUnit": "ms"
 		}
-		get_iter_time(self.rst_traces, self.logger)
+		get_iter_time(self.rst_traces)
 		with open(os.path.join(self.path, "synthetic.json"), 'w') as f:
 			json.dump(rst, f, indent=4)
 

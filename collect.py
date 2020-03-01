@@ -14,7 +14,7 @@ import threading
 import time
 import logger_utils
 
-from trace_utils import return_path_dict, get_iter_time
+from trace_utils import *
 
 class RunningSpan:
     def __init__(self, s=None, e=None):
@@ -41,89 +41,120 @@ class RunningSpan:
         else:
             return False
 
+class ClockAligner:
+    def __init__(self):
+        self.standard = None
+        self.ref = None
+
+    def mark(self, t):
+        if self.ref is None:
+            self.ref = t
+
+    def align(self):
+        ''' align to the standard time, return the time difference'''
+        if self.standard is None:
+            self.standard = self.ref
+            self.ref = None
+            return 0
+        else:
+            bias = self.ref - self.standard
+            self.ref = None
+            return bias
+
+
+
 class Collector(object):
     #! class used to collect trace info
-    def __init__(self, _path_dict=None):
+    def __init__(self, root_path):
         self.logger = logger_utils.SingleLogger()
-        self.time_dict = {"traceEvents":[]}
+        self.pm = PathManager(root_path)
+        self.time_dict = None
         self.run_span = RunningSpan()
-        if _path_dict is not None:
-            self.path_dict = _path_dict
-        else:
-            self.path_dict = {}
-        
-        # dag is necessary.
-        if "gml_path" in self.path_dict:
-            self.dag = nx.read_gml(self.path_dict["gml_path"])
+        ### Used for clock synchronization when combime traces from multiple machines
+        self.clock_aligner = None
+        ### TODO (huhanpeng): assume different host use the same dag
+        self.dag = None
 
     def update_final_traces(self, _io=False, _comm=False, _operator=False):
-        self.logger.info("Updating " + self.path_dict["trace_path"])
-        assert os.path.exists(self.path_dict["trace_path"])
-        with open(self.path_dict["trace_path"], 'r') as f:
+        trace_path = self.pm.search(FileName.TRACE)
+        assert os.path.exists(trace_path)
+        self.logger.info("Updating " + trace_path) 
+        with open(trace_path, 'r') as f:
             self.time_dict = json.load(f)
 
         if _io is True:
-            self.delete_traces("I/O")
+            self.delete_traces_by_cat("I/O")
             self.bpf_collect_io()
 
         if _comm is True:
-            self.delete_traces("Comm")
+            self.delete_traces_by_cat("Comm")
             self.bpf_collect_comm()
 
         if _operator is True:
-            self.delete_traces("operator")
-            self.bpf_collect_computation()
+            self.delete_traces_by_cat("operator")
+            self.bpf_collect_comp()
 
-        get_iter_time(self.time_dict, self.logger)
+        get_iter_time(self.time_dict)
 
-        with open(self.path_dict["trace_path"], 'w') as f:
+        with open(trace_path, 'w') as f:
             json.dump(self.time_dict, f, indent=4)
 
-    def delete_traces(self, _cat):
+    def delete_traces_by_cat(self, _cat):
         _rst_traces = {"traceEvents": []}
         _rst_traces["traceEvents"] = [_trace for _trace in self.time_dict["traceEvents"] if _trace["cat"] != _cat]
         self.time_dict = _rst_traces
 
     def re_gen_final_traces(self):
-        self.logger.info("Recombining " + self.path_dict["trace_path"])
+        trace_path = self.pm.search(FileName.TRACE)
+        self.logger.info("Recombining " + trace_path)
         self.time_dict = {"traceEvents":[]}
-        ### Apply dependencies in self.dag to the mxnet traces.
-        self.bpf_collect_computation()
+        ### Apply dependencies in dag to the mxnet traces.
+        self.bpf_collect_comp()
         ### Collect communication traces, IO traces and STEP traces and apply dependency
         self.bpf_collect_io()
         self.bpf_collect_comm()
-        get_iter_time(self.time_dict, self.logger)
-        with open(self.path_dict["trace_path"], 'w') as f:
+        get_iter_time(self.time_dict)
+        with open(trace_path, 'w') as f:
             json.dump(self.time_dict, f, indent=4)
 
     def re_gen_comp_io_traces(self):
         self.time_dict = {"traceEvents":[]}
-        ### Apply dependencies in self.dag to the mxnet traces.
-        self.bpf_collect_computation()
+        ### Apply dependencies in dag to the mxnet traces.
+        self.bpf_collect_comp()
         ### Collect communication traces, IO traces and STEP traces and apply dependency
         self.bpf_collect_io()
         return self.time_dict
 
-    def bpf_collect_computation(self):
+    def bpf_collect_non_comm(self, _path):
+        tmp_pm = PathManager(_path)
+        assert tmp_pm.dir_level == DirLevel.GPU
+        self.bpf_collect_comp(tmp_pm)
+        self.bpf_collect_io(tmp_pm)
+
+    def bpf_collect_comp(self, tmp_pm=None):
         '''Apply dependency info to the mxnet trace results
 
         Parameters
         ----------
-        mxnet_traces : dict
-            A dict containing MXNet trace results.
+        _path : dict
+            if _path is not given, use the `pm` of the object
+            or, if _path is given, it should be the computation_path.
 
         Returns
         ----------
         rst_traces : dict
             A dict containing MXNet trace results combined with dependency info.
         '''
-        
-        if "temp" not in self.path_dict or not os.path.exists(self.path_dict["temp"]):
-            self.logger.warn("'temp.json' not exists.")
+        comp_path = self.pm.search(FileName.COMP) if tmp_pm is None else tmp_pm.search(FileName.COMP)
+        if self.dag is None:
+            dag_path = self.pm.search(FileName.DAG) if tmp_pm is None else tmp_pm.search(FileName.DAG)
+            self.dag = nx.read_gml(dag_path)
+
+        if comp_path is None:
             return
 
         ''' Output trace resutls '''
-        with open(self.path_dict["temp"], 'r') as f:
+        with open(comp_path, 'r') as f:
             mxnet_traces = json.load(f)
         
         pid = None
@@ -212,11 +243,11 @@ class Collector(object):
             self.run_span.init_start(trace["ts"])
 
             innodes = [_n for _n, _ in self.dag.in_edges(name)]
-            args = {"name": name}
+            _args = {"name": name}
             for i, _n in enumerate(innodes):
-                args["input%d"%i] = _n
+                _args["input%d"%i] = _n
             trace["name"] = name
-            trace["args"] = args
+            trace["args"] = _args
             rst_traces["traceEvents"].append(trace)
 
             ### if all STEP-dependent BW nodes have arrived, process traces til FW
@@ -241,6 +272,9 @@ class Collector(object):
                                 _step_ts = _trace["ts"]
                             _step_dur = _trace["ts"] + _trace["dur"] - _step_ts
                 if _step_ts is not None:
+                    if self.clock_aligner is not None:
+                        ### register the start time of first STEP
+                        self.clock_aligner.mark(_step_ts)
                     rst_traces["traceEvents"].append({
                         "name": "STEP",
                         "ts": _step_ts,
@@ -257,25 +291,23 @@ class Collector(object):
 
         self.time_dict["traceEvents"] += rst_traces["traceEvents"]
 
-    def bpf_collect_io(self):
-        if "io" not in self.path_dict or not os.path.exists(self.path_dict["io"]):
-            self.logger.warn("'io.json' not exists.")
+    def bpf_collect_io(self, tmp_pm=None):
+        io_path = self.pm.search(FileName.IO) if tmp_pm is None else tmp_pm.search(FileName.IO)
+        if io_path is None:
             return
 
-        with open(self.path_dict["io"], 'r') as f:
+        with open(io_path, 'r') as f:
             rst_traces = json.load(f)
         self.time_dict["traceEvents"] += rst_traces["traceEvents"]
 
     def bpf_collect_comm(self):
-        if "comm" not in self.path_dict or not os.path.exists(self.path_dict["comm"]):   
-            _p = os.path.join(os.path.dirname(self.path_dict["root"]), "comm.json")
-            if os.path.exists(_p):
-                self.logger.warn("find 'comm.json' at %s instead" % _p)
-                self.path_dict["comm"] = _p
-            else:
-                self.logger.warn("'comm.json' not exists.")
-                return
-        comm_traces = self.parse_comm_traces(self.path_dict["comm"])
+        comm_path = self.pm.search(FileName.COMM)
+        if comm_path is None:   
+            return
+        if self.dag is None:
+            dag_path = self.pm.search(FileName.DAG) if tmp_pm is None else tmp_pm.search(FileName.DAG)
+            self.dag = nx.read_gml(dag_path)
+        comm_traces = self.parse_comm_traces(comm_path)
         self.time_dict["traceEvents"] += comm_traces
 
     def parse_comm_traces(self, path):
@@ -362,4 +394,56 @@ class Collector(object):
             rst_traces = json.load(f)
         self.time_dict["traceEvents"] += rst_traces["traceEvents"]
 
+    def loop_collect(self, args):
+        if self.pm.dir_level == DirLevel.GPU:
+            if args.sub_option == "iter_time":
+                self.logger.info(self.pm.search(FileName.TRACE))
+                traces = read_traces(self.pm.search(FileName.TRACE))
+                get_iter_time(traces)
+            elif args.sub_option == "operator":
+                self.update_final_traces(_operator=True)
+            else:
+                self.re_gen_final_traces()
+        elif args.sub_option == "combine":
+            rst_traces = {"traceEvents": []}
+            if self.pm.dir_level == DirLevel.WORKER:
+                ### collect computation traces and IO traces
+                for _dir in self.pm.dirs:
+                    self.time_dict = {"traceEvents":[]} 
+                    gpu_path = os.path.join(self.pm.path, _dir)
+                    self.bpf_collect_non_comm(_path=gpu_path)
+                    for trace in self.time_dict["traceEvents"]:
+                        ### All GPUs on all host machines share the communication traces
+                        trace["pid"] = "rank%s."%_dir + str(trace["pid"])
+                        rst_traces["traceEvents"].append(trace)
+            elif self.pm.dir_level == DirLevel.TRIAL:
+                self.clock_aligner = ClockAligner()
+                for _dir in self.pm.dirs:
+                    worker_traces = []
+                    worker_path = os.path.join(self.pm.path, _dir)
+                    worker_root, worker_dirs, _ = list(os.walk(worker_path))[0]
+                    for __dir in worker_dirs:
+                        self.time_dict = {"traceEvents":[]} 
+                        gpu_path = os.path.join(worker_root, __dir)
+                        self.bpf_collect_non_comm(_path=gpu_path)
+                        for trace in self.time_dict["traceEvents"]:
+                            ### All GPUs on all host machines share the communication traces
+                            trace["pid"] = str(_dir)+".rank%s."%__dir + str(trace["pid"])
+                            worker_traces.append(trace)
+                    bias = self.clock_aligner.align()
+                    if bias == 0:
+                        rst_traces["traceEvents"] += worker_traces
+                    else:
+                        for trace in worker_traces:
+                            trace["ts"] += bias
+                            rst_traces["traceEvents"].append(trace)
+                ### only read comm.json once
+                self.bpf_collect_comm()
+                self.clock_aligner = None
+            with open(os.path.join(self.pm.path, FileName.TRACE.value), 'w') as f:
+                    json.dump(rst_traces, f, indent=4)
 
+        else:
+            for _dir in self.pm.dirs:
+                self.loop_collect(os.path.join(self.path, _dir))
+    

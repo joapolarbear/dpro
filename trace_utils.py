@@ -3,7 +3,7 @@ import json
 import xlsxwriter
 import traceback
 import logger_utils
-from logger_utils import Singleton
+from logger_utils import Singleton, SingleLogger
 
 QUEUETYPE = {
     "NCCL": {
@@ -26,6 +26,21 @@ class QueueType:
 
     def ret_list(self):
         return self.queue_type_list
+
+from enum import Enum
+class DirLevel(Enum):
+    GPU=0
+    WORKER=1
+    TRIAL=2
+
+class FileName(Enum):
+    COMM="comm.json"
+    IO="io.json"
+    DAG="dag.gml"
+    TRACE="bps_trace_final.json"
+    COMP="temp.json"
+    SYMBOL="symbol_debug_str.txt"
+    TENSOR_NAME="gradient_name_list.txt"
 
 def read_traces(traces_path):
     '''
@@ -148,36 +163,36 @@ def return_path_dict(root_path):
     root_path = os.path.abspath(root_path)
     __root, _, files = list(os.walk(root_path))[0]
     path_dict = {"root": __root}
+    path_dict["local_rank"] = int(__root.split("/")[-1])
     for __file in files:
         cur_path = os.path.join(__root, __file)
-        if "bps_trace" in __file:
-            path_dict["trace_path"] = cur_path
-        elif __file == 'dag.gml':
+        if FileName.TRACE.value in __file:
+            path_dict[FileName.TRACE.value] = cur_path
+        elif __file == FileName.DAG.value:
             # mygraph = nx.read_gml(cur_path)
-            path_dict['gml_path'] = cur_path
-        elif __file == 'temp.json':
-            path_dict["temp"] = cur_path
-        elif __file == 'comm.json':
-            path_dict["comm"] = cur_path
-        elif __file == 'io.json':
-            path_dict["io"] = cur_path
+            path_dict[FileName.DAG.value] = cur_path
+        elif __file == FileName.COMP.value:
+            path_dict[FileName.COMP.value] = cur_path
+        elif __file == FileName.COMM.value:
+            path_dict[FileName.COMM.value] = cur_path
+        elif __file == FileName.IO.value:
+            path_dict[FileName.IO.value] = cur_path
         elif "loss" in __file:
             idx = int(__file.split("loss")[1].split(".")[0])
             if "loss" not in path_dict:
                 path_dict["loss"] = {idx: cur_path}
             else:
                 path_dict["loss"][idx] = cur_path
-        elif __file == 'symbol_debug_str.txt':
-            path_dict["symbol_debug_str"] = cur_path
-        elif __file == 'gradient_name_list.txt':
-            path_dict["gradient_name_list"] = cur_path
+        elif __file == FileName.SYMBOL.value:
+            path_dict[FileName.SYMBOL.value] = cur_path
+        elif __file == FileName.TENSOR_NAME.value:
+            path_dict[FileName.TENSOR_NAME.value] = cur_path
         else:
             pass
-    if "trace_path" not in path_dict:
-        logger = logger_utils.SingleLogger()
-        logger.warn("'bps_trace_final.json' is not in the directory: %s" % (__root))
-        path_dict["trace_path"] = os.path.join(__root, "bps_trace_final.json")
-    path_dict["local_rank"] = int(__root.split("/")[-1])
+    if FileName.TRACE.value not in path_dict:
+        logger_utils.SingleLogger().warn("'%s' is not in the directory: %s" % (FileName.TRACE.value, __root))
+        ### TODO (huhanpeng)
+        path_dict[FileName.TRACE.value] = os.path.join(__root, FileName.TRACE.value)
     return path_dict
 
 def combine_traces_of_one_GPU(_traces, _local_rank, _tmp_traces, _comm_filter=None):
@@ -233,7 +248,7 @@ def group_computation_op_by_rank(traces, rank=None):
             ret_dict[_get_rank_str(event["name"])].append(event)
     return ret_dict
 
-def get_iter_time(traces, logger, rank=None):
+def get_iter_time(traces, rank=None):
     ''' print the iteration time and computation time
     *Note* that this function is strongly dependent on how the bps_trace_final.json
     is generated based on the temp.json, i.e., which ops of temp.json are used in 
@@ -265,15 +280,20 @@ def get_iter_time(traces, logger, rank=None):
         fw_bw_time = sum(fw_bw_list) / float(len(fw_bw_list))
         iter_time = sum(iter_list) / float(len(iter_list))
         ret.append((_rank, fw_bw_time, iter_time))
-        logger.info("<%s> fw + bw: %f ms -- iteration time: %f ms" % (_rank,
+        SingleLogger().info("<%s> fw + bw: %f ms -- iteration time: %f ms" % (_rank,
                 fw_bw_time, iter_time))
     return ret
 
-def is_leaf_folder(_dir):
-    ''' whether the given directory stores the traces on one GPU
-    '''
-    root, dirs, files = list(os.walk(_dir))[0]
-    return "dag.gml" in files
+def get_dir_level(_dir):
+    ''' return the level of the current dir '''
+    def recur_look_up(_d):
+        root, dirs, files = list(os.walk(_d))[0]
+        if "dag.gml" in files:
+            return 0
+        else:
+            return 1 + recur_look_up(os.path.join(root, dirs[0]))
+    level = recur_look_up(_dir)
+    return DirLevel(level)
 
 def read_list(path):
     ''' read a list from a file
@@ -282,3 +302,55 @@ def read_list(path):
         l = f.read().split("\n")
     l = l[:-1] if l[-1] == '' else l
     return l
+
+class PathManager:
+    def __init__(self, path):
+        self.path = os.path.abspath(path)
+        self.dir_level = get_dir_level(self.path)
+        ### get the sub files and directories
+        _, self.dirs, self.files = list(os.walk(self.path))[0]
+        self.dirs = sorted(self.dirs)
+        ### only for DirLevel.GPU path
+        self.path_dict = return_path_dict(self.path) if self.dir_level == DirLevel.GPU else None
+
+    def search_comm(self):
+        return self.search(FileName.COMM.value)
+
+    def search(self, target):
+        if isinstance(target, Enum):
+            target = target.value
+        ''' Search the target file, if not exit, return None '''
+        if self.dir_level == DirLevel.GPU: 
+            if target in self.path_dict:
+                return self.path_dict[target]
+            else:
+                ### only allow to traceback to one upper folder
+                parent_path = os.path.dirname(self.path)
+                root, dirs, files = list(os.walk(parent_path))[0]
+                if target in files:
+                    return os.path.join(root, target)
+                else:
+                    SingleLogger().warn("Fail to find %s in path %s" % (str(target), self.path))
+                    return
+        elif self.dir_level == DirLevel.WORKER:
+            if target in self.files:
+                return os.path.join(self.path, target)
+            else:
+                SingleLogger().warn("Fail to find %s in path %s" % (str(target), self.path))
+                return
+        elif self.dir_level == DirLevel.TRIAL:
+            if target in self.files:
+                return os.path.join(self.path, target)
+            for _dir in self.dirs:
+                sub_root, sub_dirs, sub_files = list(os.walk(os.path.join(self.path, _dir)))[0]
+                if target in sub_files:
+                    return os.path.join(sub_root, target)
+                else:
+                    for sub_dir in sub_dirs:
+                        ss_root, ss_dirs, ss_files = list(os.walk(os.path.join(sub_root, sub_dir)))[0]
+                        if target in ss_files:
+                            return os.path.join(ss_root, target)
+            SingleLogger().warn("Fail to find %s in path %s" % (str(target), self.path))
+            return
+
+
