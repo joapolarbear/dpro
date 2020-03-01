@@ -2,7 +2,8 @@ import os
 import networkx as nx
 import matplotlib.pyplot as plt
 import logger_utils
-from trace_utils import read_traces, return_stat, return_path_dict, QueueType, lookup_stat
+from trace_utils import *
+from collect import * 
 
 def visualize_gml(graph, layout="circular"):
     if layout == "spectral":
@@ -39,8 +40,9 @@ class DAGManager:
         Root path for one GPU
     '''
     def __init__(self, path, local_rank, del_queue):
-        self.path_dict = return_path_dict(path)
-        self.traces = read_traces(self.path_dict["trace_path"])
+        self.clct = Collector(path)
+        self.pm = self.clct.pm
+        self.traces = self.clct.read_traces()
         self.logger = logger_utils.SingleLogger()
         self.name2sta, cat2sta = return_stat(self.traces)
         self.dag = self.gpu_dag = self._fw_bw_dag = None
@@ -78,7 +80,7 @@ class DAGManager:
             * node names start with 'rank{id}.';
             * partition Comm nodes into sub-task nodes if needed.
         '''
-        mygraph = nx.read_gml(self.path_dict["gml_path"])
+        mygraph = nx.read_gml(self.pm.search(FileName.DAG))
         self.dag = nx.DiGraph()
         queue_type_list = QueueType().ret_list()
 

@@ -191,58 +191,24 @@ def return_path_dict(root_path):
             pass
     return path_dict
 
-def combine_traces_of_one_GPU(_traces, _local_rank, _tmp_traces, _comm_filter=None):
-    for event in _traces:
-        if event["cat"] == "Comm" and _comm_filter is not None and event["args"]["name"] not in _comm_filter:
-            #! Only show the communication nodes belonging to comm_filter if comm_filter is set
-            continue
-        event['pid'] = "rank%d."%_local_rank + str(event['pid'])
-        event['name'] = "rank%d."%_local_rank + str(event['name'])
-        _tmp_traces.append(event)
-
-def combine_traces_of_one_path(_path, _comm_filter=None):
-    ''' Combine all traces in one path, add the rank in the form of 'rank0'
-        to their names as prefixes
-    '''
-    tmp_traces = []
-    _path = os.path.abspath(_path)
-    if os.path.isdir(_path):
-        #! If its a directory of a worker, read all traces of all GPUs
-        root, dirs, _ = list(os.walk(_path))[0]
-        #! avoid that directory is like `worker/0/`
-        if len(dirs) == 0:
-            raise ValueError("Given path should be the root directory of a worker traces"
-                " or the path of one trace TXT file")
-        dirs = sorted(dirs)
-        for _dir in dirs:
-            path_dict = return_path_dict(os.path.join(root, _dir))
-            local_rank = path_dict["local_rank"]
-            traces = read_traces(path_dict["trace_path"])
-            combine_traces_of_one_GPU(traces, local_rank, tmp_traces, _comm_filter=_comm_filter)
-    else:
-        #! Or, read just one trace file
-        traces = read_traces(_path)
-        local_rank = _path.split('/')[-2]
-        combine_traces_of_one_GPU(traces, local_rank, tmp_traces, _comm_filter=_comm_filter)
-    return tmp_traces
-
-def group_computation_op_by_rank(traces, rank=None):
-    ret_dict = {}
-    def _get_rank_str(_name):
-        if "rank" in event["name"]:
-            _rank_str = _name.split(".")[0]
-        elif rank is not None:
-            _rank_str = "rank" + str(rank)
+def group_computation_op_by_prefix(traces, rank=None):
+    prefix2traces = {}
+    def _get_prefix(e):
+        str_list = e["pid"].split(".")
+        if "rank" in str_list[0]:
+            prefix = str_list[0]
+        elif len(str_list) > 1 and "rank" in str_list[1]:
+            prefix = ".".join(str_list[:2])
         else:
-            _rank_str = "rank?"
+            prefix = "none"
 
-        if _rank_str not in ret_dict:
-            ret_dict[_rank_str] = []
-        return _rank_str
+        if prefix not in prefix2traces:
+            prefix2traces[prefix] = []
+        return prefix
     for event in traces:
         if event["cat"] == "operator":
-            ret_dict[_get_rank_str(event["name"])].append(event)
-    return ret_dict
+            prefix2traces[_get_prefix(event)].append(event)
+    return prefix2traces
 
 def get_iter_time(traces, rank=None):
     ''' print the iteration time and computation time
@@ -254,10 +220,10 @@ def get_iter_time(traces, rank=None):
         traces = traces["traceEvents"]
     else:
         assert isinstance(traces, list)
-    operator_traces_list = group_computation_op_by_rank(traces, rank)
+    operator_traces_list = group_computation_op_by_prefix(traces, rank)
 
     ret = []
-    for _rank, operator_traces in operator_traces_list.items():
+    for prefix, operator_traces in operator_traces_list.items():
         start_ts = None
         cur_iter_time = 0
         fw_bw_list = []
@@ -275,8 +241,8 @@ def get_iter_time(traces, rank=None):
                 start_ts = None
         fw_bw_time = sum(fw_bw_list) / float(len(fw_bw_list))
         iter_time = sum(iter_list) / float(len(iter_list))
-        ret.append((_rank, fw_bw_time, iter_time))
-        SingleLogger().info("<%s> fw + bw: %f ms -- iteration time: %f ms" % (_rank,
+        ret.append((prefix, fw_bw_time, iter_time))
+        SingleLogger().info("<%s> fw + bw: %f ms -- iteration time: %f ms" % (prefix,
                 fw_bw_time, iter_time))
     return ret
 

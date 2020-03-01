@@ -1,7 +1,3 @@
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import warnings
 import os
 
@@ -61,8 +57,6 @@ class ClockAligner:
             self.ref = None
             return bias
 
-
-
 class Collector(object):
     #! class used to collect trace info
     def __init__(self, root_path):
@@ -116,14 +110,6 @@ class Collector(object):
         get_iter_time(self.time_dict)
         with open(trace_path, 'w') as f:
             json.dump(self.time_dict, f, indent=4)
-
-    def re_gen_comp_io_traces(self):
-        self.time_dict = {"traceEvents":[]}
-        ### Apply dependencies in dag to the mxnet traces.
-        self.bpf_collect_comp()
-        ### Collect communication traces, IO traces and STEP traces and apply dependency
-        self.bpf_collect_io()
-        return self.time_dict
 
     def bpf_collect_non_comm(self, _path):
         tmp_pm = PathManager(_path)
@@ -395,61 +381,81 @@ class Collector(object):
             rst_traces = json.load(f)
         self.time_dict["traceEvents"] += rst_traces["traceEvents"]
 
-    def loop_collect(self, args):
+    ### TODO (huhanpeng): delete
+    def loop_collect(self, sub_option):
         if self.pm.dir_level == DirLevel.GPU:
-            if args.sub_option == "iter_time":
-                self.logger.info(self.pm.search(FileName.TRACE))
-                traces = read_traces(self.pm.search(FileName.TRACE))
-                get_iter_time(traces)
-            elif args.sub_option == "operator":
+            if sub_option == "operator":
                 self.update_final_traces(_operator=True)
             else:
                 self.re_gen_final_traces()
-        elif args.sub_option == "combine":
-            rst_traces = {"traceEvents": []}
-            if self.pm.dir_level == DirLevel.WORKER:
-                ### collect computation traces and IO traces
-                for _dir in self.pm.dirs:
+
+    def iter_combine(self):
+        rst_traces = {"traceEvents": []}
+        if self.pm.dir_level == DirLevel.GPU:
+            self.time_dict = {"traceEvents":[]}
+            self.bpf_collect_comp()
+            self.bpf_collect_io()
+            self.bpf_collect_comm()
+            rst_traces["traceEvents"] += self.time_dict["traceEvents"]
+        elif self.pm.dir_level == DirLevel.WORKER:
+            ### collect computation traces and IO traces
+            for _dir in self.pm.dirs:
+                self.time_dict = {"traceEvents":[]} 
+                gpu_path = os.path.join(self.pm.path, _dir)
+                self.bpf_collect_non_comm(_path=gpu_path)
+                for trace in self.time_dict["traceEvents"]:
+                    ### All GPUs on all host machines share the communication traces
+                    trace["pid"] = "rank%s."%_dir + str(trace["pid"])
+                    rst_traces["traceEvents"].append(trace)
+            self.time_dict = {"traceEvents":[]} 
+            self.bpf_collect_comm()
+            rst_traces["traceEvents"] += self.time_dict["traceEvents"]
+
+        elif self.pm.dir_level == DirLevel.TRIAL:
+            self.clock_aligner = ClockAligner()
+            for _dir in self.pm.dirs:
+                worker_traces = []
+                worker_path = os.path.join(self.pm.path, _dir)
+                worker_root, worker_dirs, _ = list(os.walk(worker_path))[0]
+                worker_dirs = sorted(worker_dirs)
+                for __dir in worker_dirs:
                     self.time_dict = {"traceEvents":[]} 
-                    gpu_path = os.path.join(self.pm.path, _dir)
+                    gpu_path = os.path.join(worker_root, __dir)
                     self.bpf_collect_non_comm(_path=gpu_path)
                     for trace in self.time_dict["traceEvents"]:
                         ### All GPUs on all host machines share the communication traces
-                        trace["pid"] = "rank%s."%_dir + str(trace["pid"])
+                        trace["pid"] = str(_dir)+".rank%s."%__dir + str(trace["pid"])
+                        worker_traces.append(trace)
+                bias = self.clock_aligner.align()
+                if bias == 0:
+                    rst_traces["traceEvents"] += worker_traces
+                else:
+                    for trace in worker_traces:
+                        trace["ts"] += bias
                         rst_traces["traceEvents"].append(trace)
-            elif self.pm.dir_level == DirLevel.TRIAL:
-                self.clock_aligner = ClockAligner()
-                for _dir in self.pm.dirs:
-                    worker_traces = []
-                    worker_path = os.path.join(self.pm.path, _dir)
-                    worker_root, worker_dirs, _ = list(os.walk(worker_path))[0]
-                    worker_dirs = sorted(worker_dirs)
-                    for __dir in worker_dirs:
-                        self.time_dict = {"traceEvents":[]} 
-                        gpu_path = os.path.join(worker_root, __dir)
-                        self.bpf_collect_non_comm(_path=gpu_path)
-                        for trace in self.time_dict["traceEvents"]:
-                            ### All GPUs on all host machines share the communication traces
-                            trace["pid"] = str(_dir)+".rank%s."%__dir + str(trace["pid"])
-                            worker_traces.append(trace)
-                    bias = self.clock_aligner.align()
-                    if bias == 0:
-                        rst_traces["traceEvents"] += worker_traces
-                    else:
-                        for trace in worker_traces:
-                            trace["ts"] += bias
-                            rst_traces["traceEvents"].append(trace)
-                ### only read comm.json once
-                self.time_dict = {"traceEvents":[]} 
-                self.bpf_collect_comm()
-                rst_traces["traceEvents"] += self.time_dict["traceEvents"]
+            ### only read comm.json once
+            self.time_dict = {"traceEvents":[]} 
+            self.bpf_collect_comm()
+            rst_traces["traceEvents"] += self.time_dict["traceEvents"]
 
-                self.clock_aligner = None
+            self.clock_aligner = None
 
-            with open(os.path.join(self.pm.path, FileName.TRACE.value), 'w') as f:
-                    json.dump(rst_traces, f, indent=4)
+        with open(os.path.join(self.pm.path, FileName.TRACE.value), 'w') as f:
+                json.dump(rst_traces, f, indent=4)
 
+        return rst_traces["traceEvents"]
+
+    def read_traces(self):
+        trace_path = os.path.join(self.pm.path, self.pm.search(FileName.TRACE))
+        if os.path.exists(trace_path):
+            traces = read_traces(trace_path)
+            return traces
         else:
-            for _dir in self.pm.dirs:
-                self.loop_collect(os.path.join(self.path, _dir))
+            return self.iter_combine()
+
+    def iter_time(self):
+        traces = self.read_traces()
+        get_iter_time(traces)
+        
+        
     

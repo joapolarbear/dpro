@@ -50,8 +50,8 @@ sys.setrecursionlimit(1000000)
 path_list = args.path.split(',')
 """ Read traces and prepare statitic info"""
 if args.option not in ['critical', 'combine', 'compare', "replay", "topo_sort", "collect", "3dcompare"]:
-	path_dict = return_path_dict(path_list[0])
-	traces = read_traces(path_dict["trace_path"])
+	pm = PathManager(path_list[0])
+	traces = read_traces(pm.search(FileName.TRACE))
 	name2sta, cat2sta = return_stat(traces)
 
 if args.option == "statistic":
@@ -98,7 +98,7 @@ if args.option == "statistic":
 		line_cnt += 1
 
 if args.option == "graph":
-	mygraph = nx.read_gml(path_dict["gml_path"])
+	mygraph = nx.read_gml(pm.search(FileName.DAG))
 	visualize_gml(mygraph)
 
 if args.option == "critical":
@@ -107,13 +107,12 @@ if args.option == "critical":
 		-- args.path: the dir of a worker, which contains multiple folders 
 						storing traces of GPUs of this worker
 	'''
-	root, dirs, _ = list(os.walk(path_list[0]))[0]
-
+	assert pm.dir_level == DirLevel.WORKER
 	#! used to store all dags generated from GPUs
 	graphs = []
-	for _dir in dirs:
+	for _dir in pm.dirs:
 		local_rank = int(_dir)
-		dagmanager = DAGManager(os.path.join(root, _dir), local_rank, args.del_queue)
+		dagmanager = DAGManager(os.path.join(pm.path, _dir), local_rank, args.del_queue)
 		dagmanager.gen_dag_with_rank_weight()
 		dag_longest_path(dagmanager.dag, local_rank, logger, weight="weight", default_weight=0)
 		graphs.append(dagmanager.dag)
@@ -134,13 +133,13 @@ if args.option == "replay":
 	#! used to store all dags generated from GPUs
 	worker_dag_list = []
 	all_name2sta = {"traces": {}}
-	root, dirs, _ = list(os.walk(path_list[0]))[0]
-	dirs = sorted(dirs)
+	pm = PathManager(path_list[0])
+	assert pm.dir_level == DirLevel.WORKER
 
 	critical_path = []
-	for _dir in dirs:
+	for _dir in pm.dirs:
 		local_rank = int(_dir)
-		dagmanager = DAGManager(os.path.join(root, _dir), local_rank, args.del_queue)
+		dagmanager = DAGManager(os.path.join(pm.path, _dir), local_rank, args.del_queue)
 		max_para_degree, _critical_path = dagmanager.gen_gpu_dag(_pretty=args.pretty)
 		worker_dag_list.append(dagmanager.gpu_dag)
 		all_name2sta["traces"][int(_dir)] = dagmanager.name2sta
@@ -151,7 +150,7 @@ if args.option == "replay":
 	wk_dag = nx.compose_all(worker_dag_list)
 
 	### Replay traces
-	replayer = Replayer(_all_name2sta=all_name2sta, _dirs=dirs, _wk_dag=wk_dag, _step_num=args.step_num, _path=path_list[0])
+	replayer = Replayer(_all_name2sta=all_name2sta, _dirs=pm.dirs, _wk_dag=wk_dag, _step_num=args.step_num, _path=path_list[0])
 	if args.sub_option is None:
 		''' Directly replay '''
 		replayer.replay()
@@ -179,58 +178,21 @@ if args.option == "replay":
 			idx += 10
 		
 if args.option == "topo_sort":
-	local_rank = int(os.path.abspath(path_list[0]).split("/")[-1])
-	dagmanager = DAGManager(path_list[0], local_rank, args.del_queue)
+	pm = PathManager(path_list[0])
+	assert pm.dir_level == DirLevel.GPU
+	local_rank = int(pm.path.split("/")[-1])
+	dagmanager = DAGManager(pm.path, local_rank, args.del_queue)
 	dagmanager.gen_fw_bw_dag()
 
 '''below options use special --path'''
-# TODO
-if args.option == "combine":
-	comm_filter = args.filter.split(",") if args.filter is not None else None
-	rst_path = None
-	rst_traces = {"traceEvents": []}
-
-	first_pull_name = None
-	first_pull_time = None
-	for idx, path in enumerate(path_list):
-		bias = None
-		tmp_traces = combine_traces_of_one_path(path, _comm_filter=comm_filter)
-		tmp_traces = sorted(tmp_traces, key=lambda x: x["ts"], reverse=False)
-		### To align the clock
-		#! TODO(huhanpeng): now only use the first pull time to align
-		if idx == 0:
-			for event in tmp_traces:
-				if first_pull_name is None and "PULL" in event["name"]:
-					first_pull_name = event["name"]
-					first_pull_time = event["ts"] + event["dur"]
-				event["pid"] = "wk%d."%idx + event["pid"]
-		else:
-			if first_pull_name is None:
-				raise ValueError("These two files are not distributed training traces.")
-			for event in tmp_traces:
-				if event["name"] == first_pull_name:
-					bias = event["ts"] + event["dur"] - first_pull_time
-					break
-			assert bias is not None
-			for event in tmp_traces:
-				event["ts"] -= bias
-				event["pid"] = "wk%d."%idx + event["pid"]
-		rst_traces["traceEvents"] += tmp_traces
-
-	if os.path.isdir(path_list[0]):
-		rst_path = os.path.join(path_list[0], "combined.json")
-	else:
-		rst_path = os.path.join(os.path.dirname(os.path.dirname(path_list[0])), "combined.json")
-	with open(rst_path, 'w') as f:
-		json.dump(rst_traces, f, indent=4)
-
 if args.option == "compare":
 	if len(path_list) < 2:
 		raise ValueError("To compare two files, two paths must be given")
 	if os.path.isfile(path_list[0]):
 		traces = [read_traces(path_list[0]), read_traces(path_list[1])]
 	else:
-		traces = [combine_traces_of_one_path(path_list[0]), combine_traces_of_one_path(path_list[1])]
+		clct = [Collector(path_list[0]), Collector(path_list[1])]
+		traces = [c.iter_combine() for c in clct]
 	name2sta = [return_stat(_traces)[0] for _traces in traces]
 	name2compare = {}
 	for name, statistic in name2sta[0].items():
@@ -273,74 +235,13 @@ if args.option == "compare":
 				(name, compare["avg_absolute"], compare["avg_relative"]))
 		line_cnt += 1
 
-if args.option == "3dcompare":
-	# if len(path_list) < 2:
-	# 	raise ValueError("To compare two files, two paths must be given")
-	plot = False
-	if plot is True:
-		pass
-	else:
-		from mpl_toolkits.mplot3d import Axes3D
-		import matplotlib.pyplot as plt
-		import numpy as np
-		fig = plt.figure()
-		ax = fig.add_subplot(111, projection='3d')
-	x_names = None
-	x_split_by_cat = []
-	color = ['r', 'g', 'b', 'y']
-	for _idx, _path in enumerate(path_list):
-		assert os.path.isdir(_path)
-		root, dirs, files = list(os.walk(_path))[0]
-		_dir = sorted(dirs)[0]
-		_traces = combine_traces_of_one_path(os.path.join(root, _dir))
-		name2sta = return_stat(_traces)[0]
-
-		#! if first, sort names by group
-		if x_names is None:
-			x_names = list(name2sta.keys())
-			cat_list = [_n.split(".")[1] for _n in x_names]
-			x_names = sorted(zip(cat_list, x_names), key=lambda x: (x[0], x[1]))
-			# grouped by cat
-			prev_cat = None
-			for _i, (cur_cat, _n) in enumerate(x_names):
-				if prev_cat is None:
-					prev_cat = cur_cat
-					x_split_by_cat.append((prev_cat, _i))
-				elif cur_cat != prev_cat:
-					x_split_by_cat.append((prev_cat, _i))
-					x_split_by_cat.append((cur_cat, _i))
-					prev_cat = cur_cat
-			x_split_by_cat.append((prev_cat, len(x_names)))
-			assert len(x_split_by_cat) % 2 == 0
-			print(x_split_by_cat)
-
-		_i = 0
-		logger.info(_path)
-		while _i < len(x_split_by_cat):
-			cur_cat, start_idx = x_split_by_cat[_i]
-			_, end_idx = x_split_by_cat[_i + 1]
-			if plot is True:
-				hist = [name2sta[_n]["avg"] for _, _n in x_names[start_idx:end_idx]]
-				xs = list(range(start_idx, end_idx))
-				color_idx = (int(_i/2)) % len(color)
-				ax.bar(xs, hist, zs=_idx, zdir='y', color=color[color_idx], ec=color[color_idx], alpha=0.8)
-			else:
-				avg_dur = sum([name2sta[_n]["avg"] for _, _n in x_names[start_idx:end_idx]]) / (end_idx - start_idx)
-				logger.info("Cat %s: %f ms" % (cur_cat, avg_dur))
-			_i += 2
-
-	if plot is True:
-		plt.xlabel("Operations")
-		plt.show()
-
-
-
-
-
 
 if args.option == "collect":
 	clct = Collector(path_list[0])
-	clct.loop_collect(args)
+	if args.sub_option == "combine":
+		clct.iter_combine()
+	elif args.sub_option == "iter_time":
+		clct.iter_time()
 
 
 
