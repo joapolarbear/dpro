@@ -12,6 +12,6 @@ class progressBar:
 		percent = (idx - self.start) / float(self.total_len)
 		if percent >= self.percent + self.flush:
 			finish = int(self.bar_len * percent)
-			sys.stdout.write("\r[" + "=" * finish + ">" + "." * (self.bar_len-finish) + "] %f %%" % (100 * percent))
+			sys.stdout.write("[" + "=" * finish + ">" + "." * (self.bar_len-finish) + "] %f %%\r" % (100 * percent))
 			sys.stdout.flush()
 			self.percent = percent

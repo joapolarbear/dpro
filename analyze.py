@@ -111,14 +111,13 @@ if args.option == "critical":
 	#! used to store all dags generated from GPUs
 	graphs = []
 	for _dir in pm.dirs:
-		local_rank = int(_dir)
-		dagmanager = DAGManager(os.path.join(pm.path, _dir), local_rank, args.del_queue)
-		dagmanager.gen_dag_with_rank_weight()
-		dag_longest_path(dagmanager.dag, local_rank, logger, weight="weight", default_weight=0)
+		dagmanager = DAGManager(os.path.join(pm.path, _dir))
+		dagmanager.gen_dag_with_prefix_weight()
+		dag_longest_path(dagmanager.dag, dagmanager.pm, weight="weight", default_weight=0)
 		graphs.append(dagmanager.dag)
 
 	graph = nx.compose_all(graphs)
-	dag_longest_path(graph, -1, logger, weight="weight", default_weight=0)
+	dag_longest_path(graph, pm, weight="weight", default_weight=0)
 
 if args.option == "timeline":
 	raise NotImplementedError()
@@ -127,30 +126,24 @@ if args.option == "replay":
 	''' Re-generate the timeline according to the dependency 
 	graph with time for each node.
 	Args:
-		--path: the root path for one worker
+		--path: the root path for 
 		--step_num: number of steps we want to generate.
 	'''	
 	#! used to store all dags generated from GPUs
 	worker_dag_list = []
-	all_name2sta = {"traces": {}}
-	pm = PathManager(path_list[0])
-	assert pm.dir_level == DirLevel.WORKER
-
-	critical_path = []
-	for _dir in pm.dirs:
-		local_rank = int(_dir)
-		dagmanager = DAGManager(os.path.join(pm.path, _dir), local_rank, args.del_queue)
-		max_para_degree, _critical_path = dagmanager.gen_gpu_dag(_pretty=args.pretty)
-		worker_dag_list.append(dagmanager.gpu_dag)
-		all_name2sta["traces"][int(_dir)] = dagmanager.name2sta
-		if _critical_path is not None:
-			critical_path += _critical_path
-
-	### Combine all worker_dag_list on one worker, build the dependency
-	wk_dag = nx.compose_all(worker_dag_list)
-
+	
+	clct = Collector(path_list[0])
+	traceM = clct.collect_traces()
+	logger.info("# Collect DAG")
+	trail_dag = clct.collect_dag(args)
+	
 	### Replay traces
-	replayer = Replayer(_all_name2sta=all_name2sta, _dirs=pm.dirs, _wk_dag=wk_dag, _step_num=args.step_num, _path=path_list[0])
+	logger.info("# Start to Replay")
+	replayer = Replayer(
+				trace_manager=traceM, 
+				collector=clct,
+				dag=trail_dag, 
+				_step_num=args.step_num)
 	if args.sub_option is None:
 		''' Directly replay '''
 		replayer.replay()
@@ -181,7 +174,7 @@ if args.option == "topo_sort":
 	pm = PathManager(path_list[0])
 	assert pm.dir_level == DirLevel.GPU
 	local_rank = int(pm.path.split("/")[-1])
-	dagmanager = DAGManager(pm.path, local_rank, args.del_queue)
+	dagmanager = DAGManager(pm.path, local_rank)
 	dagmanager.gen_fw_bw_dag()
 
 '''below options use special --path'''

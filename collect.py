@@ -11,6 +11,7 @@ import time
 import logger_utils
 
 from trace_utils import *
+from dag_utils import * 
 
 class RunningSpan:
     def __init__(self, s=None, e=None):
@@ -58,7 +59,7 @@ class ClockAligner:
             return bias
 
 class Collector(object):
-    #! class used to collect trace info
+    #! class used to go through the file system and collect info
     def __init__(self, root_path):
         self.logger = logger_utils.SingleLogger()
         self.pm = PathManager(root_path)
@@ -288,7 +289,6 @@ class Collector(object):
 
     def bpf_collect_comm(self):
         comm_path = self.pm.search(FileName.COMM)
-        print(comm_path)
         if comm_path is None:   
             return
         if self.dag is None:
@@ -405,7 +405,8 @@ class Collector(object):
                 self.bpf_collect_non_comm(_path=gpu_path)
                 for trace in self.time_dict["traceEvents"]:
                     ### All GPUs on all host machines share the communication traces
-                    trace["pid"] = "rank%s."%_dir + str(trace["pid"])
+                    # trace["pid"] = "rank%s."%_dir + str(trace["pid"])
+                    trace["pid"] = "rank%s"%_dir
                     rst_traces["traceEvents"].append(trace)
             self.time_dict = {"traceEvents":[]} 
             self.bpf_collect_comm()
@@ -424,7 +425,8 @@ class Collector(object):
                     self.bpf_collect_non_comm(_path=gpu_path)
                     for trace in self.time_dict["traceEvents"]:
                         ### All GPUs on all host machines share the communication traces
-                        trace["pid"] = str(_dir)+".rank%s."%__dir + str(trace["pid"])
+                        # trace["pid"] = str(_dir)+".rank%s."%__dir + str(trace["pid"])
+                        trace["pid"] = str(_dir)+".rank%s"%__dir
                         worker_traces.append(trace)
                 bias = self.clock_aligner.align()
                 if bias == 0:
@@ -445,17 +447,56 @@ class Collector(object):
 
         return rst_traces["traceEvents"]
 
-    def read_traces(self):
+    def collect_traces(self):
         trace_path = os.path.join(self.pm.path, self.pm.search(FileName.TRACE))
         if os.path.exists(trace_path):
             traces = read_traces(trace_path)
-            return traces
+            return TraceManager(traces, self.pm.dir_level)
         else:
-            return self.iter_combine()
+            return TraceManager(self.iter_combine(), self.pm.dir_level)
 
     def iter_time(self):
         traces = self.read_traces()
         get_iter_time(traces)
+
+    def collect_dag(self, args):
+        assert self.pm.dir_level == DirLevel.TRIAL
+        critical_path = []
+        worker_dag_list = []   
+        traceM = self.collect_traces()
+        for _dir in self.pm.dirs:
+            worker_path = os.path.join(self.pm.path, _dir)
+            worker_root, worker_dirs, _ = list(os.walk(worker_path))[0]
+            for worker_dir in worker_dirs:
+                gpu_path = os.path.join(worker_root, worker_dir)
+                self.logger.info("## Collect DAG in %s" % (gpu_path))
+                dagmanager = DAGManager(gpu_path, traceM)
+                max_para_degree, _critical_path = dagmanager.gen_gpu_dag(_pretty=args.pretty)
+                worker_dag_list.append(dagmanager.gpu_dag)
+                if _critical_path is not None:
+                    critical_path += _critical_path
+
+        ### Combine all worker_dag_list on one worker, build the dependency
+        return nx.compose_all(worker_dag_list)
         
+    def all_prefix_list(self):
+        ''' Return all prefixes under the dirctory.
+            * For DirLevel.WORKER, it is a list of rank<id>
+            * For DIrLevel.TRIAL, it is a list of host<id>.rank<id>
+        '''
+        prefixL = []
+        if self.pm.dir_level == DirLevel.TRIAL:
+            for _dir in self.pm.dirs:
+                worker_path = os.path.join(self.pm.path, _dir)
+                worker_root, worker_dirs, _ = list(os.walk(worker_path))[0]
+                for worker_dir in worker_dirs:
+                    prefixL.append("%s.rank%s"%(_dir, worker_dir))
+        elif self.pm.dir_level == DirLevel.WORKER:
+            for _dir in self.pm.dirs:
+                prefixL.append("%s"%(_dir))
+        else:
+            raise ValueError("Do not support DirLevel.GPU")
+        return prefixL
+
         
     

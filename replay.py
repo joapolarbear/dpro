@@ -13,21 +13,31 @@ import logger_utils
 FIXED_GAP_us = 10
 
 class Deivce:
-	def __init__(self, device_name, _replayer, _virtual=False):
+	def __init__(self, device_name, _replayer, infi_para=False):
 		self.replayer = _replayer
 		self.device_time = 0
 		self.device_name = device_name
-		#! virtual devices allow to excute in infinite parallelism
-		self.virtual = _virtual
+		#! infi_para devices allow to excute in infinite parallelism
+		self.infi_para = infi_para
 
 	def reset(self):
 		self.device_time = 0
 
 	def exet(self, name, _last_end_time):
-		#! for debug
+		''' Execute one op on this device 
+
+		Parameters
+		----
+		name: str
+			The name of the op to run
+		_last_end_time: float
+			The time when this op can start to run, 
+			i.e., all the dependent ops have been done
+		'''
+		### for debug
 		_ts = time.time()
 
-		if not self.virtual:
+		if not self.infi_para:
 			_last_end_time = max(_last_end_time, self.device_time)
 
 		if "OUTPUT" in name or "Sync" in name:
@@ -35,72 +45,49 @@ class Deivce:
 			self.mark_as_exct(name, _last_end_time)
 			return 
 
-		#! The name of below nodes contain "rank"
-		local_rank, raw_name, _name2sta = self.get_name2sta(name)
-
 		#! Some BW nodes of dag is not profiled, ignore them.
-		if raw_name not in _name2sta or "avg" not in _name2sta[raw_name]:
+		try:
+			avg = self.replayer.traceM.lookup_stat(None, None, name, with_prefix=True)
+		except:
 			self.replayer.logger.warning("%s is not in _name2sta" % name)
 			self.mark_as_exct(name, _last_end_time)
 			return
 
 		#! really start to execute
-		cat, pid, tid = self.cat_pid_tid(name, local_rank)
+		pid = parse_pid_from_name(name)
+		cat = parse_cat_from_name(name)
+		raw_name = parse_rawname_from_name(name)
 		delay, ratio = self.get_delay_para()
-		_dur = (1000.0 * (_name2sta[raw_name]["avg"] + delay)) * ratio
+		_dur = (1000.0 * (avg + delay)) * ratio
 		self.replayer.rst_traces.append({
-				"name": name,
+				"name": raw_name,
 				"ts": _last_end_time + FIXED_GAP_us ,
 				"dur": _dur,
 				"pid": pid,
 				"cat": cat,
-				"ph": "X",
-				"tid": tid
+				"ph": "X"
 			})
 
 		self.mark_as_exct(name, _last_end_time + FIXED_GAP_us + _dur)
 		if "STEP" in name:
 			#! current STEP of this GPU ends
-			self.replayer.step_end_time[local_rank] = _last_end_time + FIXED_GAP_us + _dur
+			pid = parse_pid_from_name(name)
+			self.replayer.step_end_time[pid] = _last_end_time + FIXED_GAP_us + _dur
 
 		#! TODO: for debug
 		self.replayer.debug_record(name, _ts, self.device_name, "run")
-		ts_wait = time.time()
 
 	def mark_as_exct(self, name, _end_time):
+		''' Mark that the op has been executed '''
 		self.device_time = _end_time
 		self.replayer.node_status.pop(name)
-		for _succ in self.replayer.wk_dag.successors(name):
+		for _succ in self.replayer.dag.successors(name):
 			if _succ in self.replayer.node_status:
 				_status = self.replayer.node_status[_succ]
 				_status["in_degree"] -= 1
 				_status["last_end"] = _end_time if _status["last_end"] is None else max(_end_time, _status["last_end"])
 				if _status["in_degree"] == 0:
 					self.replayer.insert_next_node(_succ, _status["last_end"])
-
-	def cat_pid_tid(self, name, _local_rank):
-		#! All dependent nodes have been processed
-		if "I/O" in name:
-			cat = tid = "I/O"
-			pid = name
-		elif "Comm" in name:
-			cat = "Comm"
-			_name_split = name.split(".")
-			assert len(_name_split) >= 2
-			if _name_split[-2] in QueueType().ret_list():
-				#! sub-task
-				pid = ".".join(_name_split[:-2])
-				tid = _name_split[-1]
-			else:
-				#! main task
-				pid = name
-				tid = "total"
-		elif "FW" in name or "BW" in name or "STEP" in name:
-			pid = "rank%d.operator"%_local_rank
-			cat = "operator"
-			tid = "tmp"
-
-		return cat, pid, tid
 
 	def get_delay_para(self):
 		#! Get the delay parameters.
@@ -131,20 +118,24 @@ class Deivce:
 			return _local_rank, _raw_name, _name2sta
 
 class Replayer:
-	def __init__(self, _all_name2sta, _dirs, _wk_dag, _step_num, _path):
-		self.all_name2sta = _all_name2sta
-		self.wk_dag = _wk_dag
+	def __init__(self, trace_manager, collector, dag, _step_num):
+		self.traceM = trace_manager
+		self.clct = collector
+		self.dag = dag
 		self.step_num = _step_num
-		self.path = _path
+
+		assert self.traceM.dir_level == DirLevel.TRIAL
 		self.logger = logger_utils.SingleLogger()
-		self._dirs = _dirs
-		self.step_end_time = dict([(int(_d), 0.0) for _d in self._dirs])
+		self.leaf_dirs = self.clct.all_prefix_list()
+		self.step_end_time = dict([(_d, 0.0) for _d in self.leaf_dirs])
 
-		self.device_dict = {}
 		self.delay_dict = None
-
+		### maintain devices
+		self.device_dict = {}
+		### maintain node status
 		self.node_status = {}
 		self.accessed = set()
+		### nodes to be executed, in a **partial order**.
 		self.next_nodes = []
 
 		self.rst_traces = []
@@ -168,22 +159,20 @@ class Replayer:
 
 	def pre_prepare(self):
 		self.accessed = set()
-		self.node_status = dict([(n, {"in_degree": self.wk_dag.in_degree(n), "last_end": None}) for n in self.wk_dag.nodes()])
+		self.node_status = dict([(n, {"in_degree": self.dag.in_degree(n), "last_end": None}) for n in self.dag.nodes()])
 		#! prepare next_nodes
 		for n, _status in self.node_status.items():
 			if _status["in_degree"] == 0 and n not in self.accessed:
-				_local_rank, _raw_name = split_name(n)
-				_last_end = self.step_end_time[_local_rank] if _status["last_end"] is None else _status["last_end"]
+				assert "Comm" not in n
+				pid = parse_pid_from_name(n)
+				_last_end = self.step_end_time[pid] if _status["last_end"] is None else _status["last_end"]
 				self.insert_next_node(n, _last_end)
 	
 	def replay_one_iter(self):	
 		self.pre_prepare()
-		bar = progressBar(start=len(self.node_status), end=0)
 		assert len(self.next_nodes) != 0
 		for (n, t) in self.next_nodes:
-			bar.showBar(len(self.node_status))
 			device = self.name2device(n)
-			# device.push(n, t)
 			device.exet(n, t)
 		assert len(self.node_status) == 0
 
@@ -225,26 +214,27 @@ class Replayer:
 		a.insert(lo, x)
 
 	def name2device(self, n):
-		if "PUSH" in n:
-			return self.device_dict["PUSH"]
-		elif "PULL" in n:
-			return self.device_dict["PULL"]
-		elif "Comm" in n:
-			#! for the remaining Comm ops, we assume they can be parallelized infinitely
-			return self.device_dict["virtual"]
-		elif "rank" in n:
-			device_name, _ = split_name(n)
-			return self.device_dict[device_name]		
+		pid = parse_pid_from_name(n)
+		if "Comm" in pid:
+			### communication node
+			if "NEGOTIATE_ALLREDUCE" in n:
+				return self.device_dict["NEGOTIATE_ALLREDUCE"]
+			elif "NCCL_ALLREDUCE" in n or "QUEUE" in n:
+				return self.device_dict["NCCL_ALLREDUCE"]
+			else:
+				raise ValueError("Fail to find devices for %s" % (n))
+		else:
+			return self.device_dict[pid]		
 
 	def init_device_dict(self):
-		self.device_dict["PUSH"] = self.create_device("PUSH")
-		self.device_dict["PULL"] = self.create_device("PULL")
-		for _d in self._dirs:
-			self.device_dict[int(_d)] = self.create_device(int(_d))
-		self.device_dict["virtual"] = self.create_device("virtual", _virtual=True)
+		for _d in self.leaf_dirs:
+			self.device_dict[_d] = self.create_device(_d)
 
-	def create_device(self, device_name, _virtual=False):
-		d = Deivce(device_name, self, _virtual=_virtual)
+		self.device_dict["NEGOTIATE_ALLREDUCE"] = self.create_device("NEGOTIATE_ALLREDUCE", infi_para=True)
+		self.device_dict["NCCL_ALLREDUCE"] = self.create_device("NCCL_ALLREDUCE")
+		
+	def create_device(self, device_name, infi_para=False):
+		d = Deivce(device_name, self, infi_para=infi_para)
 		return d
 
 	def end_replayer(self, _output=True):
@@ -253,7 +243,7 @@ class Replayer:
 		self.reset_replayer()
 
 	def reset_replayer(self):
-		self.step_end_time = dict([(int(_d), 0.0) for _d in self._dirs])
+		self.step_end_time = dict([(_d, 0.0) for _d in self.leaf_dirs])
 		self.rst_traces = []
 
 	def output_traces(self):
@@ -263,12 +253,12 @@ class Replayer:
 			"displayTimeUnit": "ms"
 		}
 		get_iter_time(self.rst_traces)
-		with open(os.path.join(self.path, "synthetic.json"), 'w') as f:
+		with open(os.path.join(self.clct.pm.path, "synthetic.json"), 'w') as f:
 			json.dump(rst, f, indent=4)
 
 		# TODO
 		if len(self.debug_traces) > 0:
-			with open(os.path.join(self.path, "debug.json"), 'w') as f:
+			with open(os.path.join(self.clct.pm.path, "debug.json"), 'w') as f:
 				json.dump({"traceEvents": self.debug_traces,
 							"displayTimeUnit": "ms"
 								}, f, indent=4)
@@ -285,7 +275,7 @@ class Replayer:
 		The i th dict element stores the name2sta of the GPU with local_rank=i
 	_dirs: list
 		The list of GPU folder on this worker.
-	_wk_dag: networkx.classes.digraph.DiGraph
+	_dag: networkx.classes.digraph.DiGraph
 		The combined execution order graph on one worker.
 	_step_num: int
 		The number of steps to replay.
@@ -294,9 +284,9 @@ class Replayer:
 	_logger:logging.Logger
 		The logger used to output logging
 	'''
-	def __init__(self, _all_name2sta, _dirs, _wk_dag, _step_num, _path, _logger):
+	def __init__(self, _all_name2sta, _dirs, _dag, _step_num, _path, _logger):
 		self.all_name2sta = _all_name2sta
-		self.wk_dag = _wk_dag
+		self.dag = _dag
 		self.step_num = _step_num
 		self.path = _path
 		self.logger = _logger
@@ -392,7 +382,7 @@ class Replayer:
 		self.loop_cnt += 1
 		#! Mark as arrival with -1
 		self.record_end_time(name, -1)
-		for u, v in self.wk_dag.in_edges(name):
+		for u, v in self.dag.in_edges(name):
 			arrive_flag, _, _, _, _ = self.has_arrived(u)
 			if arrive_flag:
 				_last_end_time = max(_last_end_time, lookup_stat(self.all_name2sta, u, "latest_end"))
@@ -402,7 +392,7 @@ class Replayer:
 
 		def call_successor(_name):
 			# if not reserve: 
-			for _succ in self.wk_dag.successors(_name):
+			for _succ in self.dag.successors(_name):
 				arrive_flag, _, _, _, _ = self.has_arrived(_succ, level=-1)
 				if not arrive_flag:
 					self.next_nodes.add(_succ)

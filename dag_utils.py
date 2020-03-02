@@ -3,7 +3,6 @@ import networkx as nx
 import matplotlib.pyplot as plt
 import logger_utils
 from trace_utils import *
-from collect import * 
 
 def visualize_gml(graph, layout="circular"):
     if layout == "spectral":
@@ -20,9 +19,10 @@ def visualize_gml(graph, layout="circular"):
     # plot_instance = netgraph.InteractiveGraph(graph, node_positions=pos)
     # node_positions = plot_instance.node_positions
 
-def dag_longest_path(G, local_rank, logger, weight='weight', default_weight=0):
+def dag_longest_path(G, pathM, weight='weight', default_weight=0):
     critical_path = nx.algorithms.dag.dag_longest_path(G, weight=weight, default_weight=default_weight)
-    prefix = "Critical Path of " + ("the Entire Graph: " if local_rank == -1 else "GPU-%d: " % local_rank)
+    prefix = "Critical Path of " + pathM.ret_id_in_tial()
+    logger = SingleLogger()
     logger.info(prefix + " => ")
     path_length = 0
     for (u, v) in nx.utils.pairwise(critical_path):
@@ -39,41 +39,30 @@ class DAGManager:
     path: str
         Root path for one GPU
     '''
-    def __init__(self, path, local_rank, del_queue):
-        self.clct = Collector(path)
-        self.pm = self.clct.pm
-        self.traces = self.clct.read_traces()
+    def __init__(self, path, traceM):
+        self.pm = PathManager(path)
+        ### traceM's DirLevel = TRAIL
+        self.traceM = traceM
         self.logger = logger_utils.SingleLogger()
-        self.name2sta, cat2sta = return_stat(self.traces)
         self.dag = self.gpu_dag = self._fw_bw_dag = None
-        self.local_rank = local_rank
-        self.del_queue = del_queue
 
-        # TODO: delete
-        tmp = []
-        for trace in self.traces:
-            if trace["ts"] is not None:
-                tmp.append(trace)
-        self.traces = tmp
+        self.wk_prefix, self.rank_prefix = self.pm.ret_prefix()
             
-        self.traces = sorted(self.traces, key=lambda x: (x["ts"], x["name"]), reverse=False)
-
         self._topo_sort = []
         self.topo_sorts = []
 
     def add_prefix(self, name):
         if "Comm" in name:
+            ### for communication nodes, name has actually included the pid
             return name
         else:
-            return "rank%d."%self.local_rank + name
+            return "%s.%s%s%s"%(self.wk_prefix, self.rank_prefix, DEL, name)
 
-    def gen_dag_with_rank_weight(self):
+    def gen_dag_with_prefix_weight(self):
         ''' Gen a dag from the original graph with weighted edges.
         Args:
             gml_path: stores the dag output by byteprofile
                 TODO, all Comm OPs of one single gradients are considered as one node.
-            del_queue: if set True, `BW -> Comm_main_task -> FW` edges will 
-                be substituded with `BW -> Comm_sub_task1 -> Comm_sub_task2 ... -> FW` edges
         Return: A dag, which
             * is **weighted**;
             * containing FW, BW, OUTPUT, Comm, I/O and STEP nodes;
@@ -86,27 +75,37 @@ class DAGManager:
 
         for u, v in mygraph.edges:
             if "Comm" in u:
-                if self.del_queue == True:
-                    prev_fw_nodes = [_u for _u, _ in mygraph.in_edges(u)]
-                    assert len(prev_fw_nodes) == 1
-                    prev_node = prev_fw_nodes[0]
-                    for suffix in queue_type_list:
-                        cur_node = u + '.' + suffix
-                        if lookup_stat(self.name2sta, cur_node) == 0:
-                            continue
-                        self.dag.add_edge(self.add_prefix(prev_node), self.add_prefix(cur_node), weight=lookup_stat(self.name2sta, prev_node))
-                        prev_node = cur_node
-                    self.dag.add_edge(self.add_prefix(prev_node), self.add_prefix("STEP"), weight=lookup_stat(self.name2sta, prev_node))
-                else:
-                    self.dag.add_edge(self.add_prefix(u), self.add_prefix("STEP"), weight=lookup_stat(self.name2sta, u))
-            elif "BW" in u and "Comm" in v and self.del_queue == True:
-                #! if del_queue is set True, delete edges from BW to Comm main task.
+                prev_fw_nodes = [_u for _u, _ in mygraph.in_edges(u)]
+                assert len(prev_fw_nodes) == 1
+                prev_node = prev_fw_nodes[0]
+                for suffix in queue_type_list:
+                    ### here u is acctually the pid
+                    cur_node = u + DEL + suffix
+                    if self.traceM.lookup_stat(self.wk_prefix, self.rank_prefix, cur_node) == 0:
+                        continue
+                    self.dag.add_edge(
+                            self.add_prefix(prev_node), 
+                            self.add_prefix(cur_node), 
+                            weight=self.traceM.lookup_stat(self.wk_prefix, self.rank_prefix, prev_node)
+                        )
+                    prev_node = cur_node
+                self.dag.add_edge(
+                        self.add_prefix(prev_node), 
+                        self.add_prefix("STEP"), 
+                        weight=self.traceM.lookup_stat(self.wk_prefix, self.rank_prefix, prev_node)
+                    )
+            elif "BW" in u and "Comm" in v:
+                ### delete edges from BW to Comm main task.
                 pass
             elif "STEP" in u and "FW" in v:
-                #! ignore nodes from STEP to FW, avoid cycle
+                ### ignore nodes from STEP to FW, avoid a circle
                 pass
             else:
-                self.dag.add_edge(self.add_prefix(u), self.add_prefix(v), weight=lookup_stat(self.name2sta, u))
+                self.dag.add_edge(
+                    self.add_prefix(u), 
+                    self.add_prefix(v), 
+                    weight=self.traceM.lookup_stat(self.wk_prefix, self.rank_prefix, u)
+                )
 
         for e in self.dag.edges.data("weight"):
             self.logger.debug(e)
@@ -148,7 +147,7 @@ class DAGManager:
         self.logger.info("Total number of Comm OPs: %d" % comm_cnt)
       
         ### For FW and BW nodes, go through one step of traces
-        for event in self.traces:
+        for event in self.traceM.traces:
             if first:
                 self.logger.info("The first event - name: %s, ts: %s us, dur: %s us" %
                     (event["name"], str(event["ts"]), str(event["dur"])))
@@ -180,7 +179,11 @@ class DAGManager:
                     ### prev event has ended, should be deleted from in_process_events
                     del in_process_events[i]
                     #! TODO: only add once, to verify
-                    self.gpu_dag.add_edge(self.add_prefix(prev_event["name"]), self.add_prefix(event["name"]), weight=lookup_stat(self.name2sta, prev_event))
+                    self.gpu_dag.add_edge(
+                        self.add_prefix(prev_event["name"]), 
+                        self.add_prefix(event["name"]), 
+                        weight=self.traceM.lookup_stat(self.wk_prefix, self.rank_prefix, prev_event["namne"])
+                    )
                 else:
                     ### if prev event has not ended, current node should share 
                     ### the parent ops of the prev event
@@ -203,33 +206,27 @@ class DAGManager:
         self.logger.info("Maximum parallelism degree: %d" % max_para_degree)
         return max_para_degree
 
-    def is_computation_node(self, _node):
-        return "BW" in _node or "FW" in _node
+    def is_fw_bw_node(self, name):
+        return "BW" in name or "FW" in name
     
     def gen_gpu_dag(self, _pretty=False):
         ''' Add edges according to the processing order of FW+BW ops 
             and construct a new graph running on GPU, which we call gpu_dag.
         '''
-        self.gen_dag_with_rank_weight()
-        self.gpu_dag = nx.DiGraph()
+        self.gen_dag_with_prefix_weight()
+        self.gpu_dag = self.dag
 
         critical_path = None
         max_para_degree = self._add_new_edges_via_order(_pretty)
 
-        #! Then, read IO, Comm, OUTPUT, and STEP nodes
-        for u, v in self.dag.edges:
-            if self.is_computation_node(u) and self.is_computation_node(v):
-                #! ignore edges whose u v are both computation nodes
-                continue
-            self.gpu_dag.add_edge(u, v, weight=self.dag.edges[(u, v)]["weight"])
-
         #！til now, all the edges for one GPU have been added.
         if not _pretty:
-            critical_path = dag_longest_path(self.gpu_dag, self.local_rank, self.logger, weight="weight", default_weight=0)
+            critical_path = dag_longest_path(self.gpu_dag, self.pm, weight="weight", default_weight=0)
 
         return max_para_degree, critical_path
 
     def all_topo_sorts(self):
+        ''' generate all possible topological sorts '''
         flag = False
 
         for n in self._fw_bw_dag.nodes:
@@ -258,9 +255,9 @@ class DAGManager:
 
     def gen_fw_bw_dag(self):
         self._fw_bw_dag = nx.DiGraph()
-        self.gen_dag_with_rank_weight()
+        self.gen_dag_with_prefix_weight()
         for u, v, _dict in self.dag.edges.data():
-            if self.is_computation_node(u) and self.is_computation_node(v): 
+            if self.is_fw_bw_node(u) and self.is_fw_bw_node(v): 
                 self._fw_bw_dag.add_edge(u, v, **_dict)
         for n, _dict in self._fw_bw_dag.nodes.data():
             _dict["in_degree"] = self._fw_bw_dag.in_degree(n)

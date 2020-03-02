@@ -19,6 +19,9 @@ QUEUETYPE = {
         }
 }
 
+### The delimiter bettwen the pid and the raw name in the standard name format
+DEL = "->"
+
 @Singleton
 class QueueType:
     def __init__(self, backend, fine_grained=True):
@@ -58,6 +61,118 @@ def read_traces(traces_path):
 
 def _is_comm_trace(trace):
     return trace["cat"] == "Comm"
+
+class TraceManager:
+    def __init__(self, traces, dir_level=None):
+        self.traces = traces
+        self.traces = sorted(self.traces, key=lambda x: (x["ts"], x["name"]), reverse=False)
+
+        self.name2sta = None
+        self.cat2sta = None
+        self.dir_level = dir_level
+
+        self.ret_stat()
+
+    def _is_comm_trace(self, event):
+        return event["cat"] == "Comm"
+
+    def ret_unique_name(self, event):
+        return event["pid"] + DEL + event["name"]
+
+    def ret_stat(self):
+        """ Basic Statistic """
+        self.name2sta = {}
+        self.cat2sta = {}
+        for event in self.traces:
+            unique_name = self.ret_unique_name(event)
+            if unique_name in self.name2sta:
+                self.name2sta[unique_name]["cnt"] += 1
+                self.name2sta[unique_name]["time"] += event["dur"] / 1000.0
+                self.name2sta[unique_name]["min_t"] = min(self.name2sta[unique_name]["min_t"], event["dur"] / 1000.0)
+                self.name2sta[unique_name]["max_t"] = max(self.name2sta[unique_name]["max_t"], event["dur"] / 1000.0)
+            else:
+                self.name2sta[unique_name] = {
+                    "cnt": 1, 
+                    "time": event["dur"] / 1000.0, 
+                    "min_t": event["dur"] / 1000.0, 
+                    "max_t": event["dur"] / 1000.0,
+                    # \TODO: add `cat` field for communication traces
+                    # "cat": event["cat"] 
+                    "cat": event["cat"]
+                    }
+                
+        """calculate the avg """
+        for name, statistic in self.name2sta.items():
+            statistic["avg"] = statistic["time"] / statistic["cnt"]
+            statistic["var"] = 0.0
+            cat = statistic["cat"]
+            if cat in self.cat2sta:
+                if statistic["avg"] > self.cat2sta[cat]["max_t"]:
+                    self.cat2sta[cat]["max_t"] = statistic["avg"]
+                    self.cat2sta[cat]["max_name"] = name
+            else:
+                self.cat2sta[cat] = {"max_t": statistic["avg"], "max_name": name}
+
+        """calculate the variance"""
+        for event in self.traces:
+            unique_name = self.ret_unique_name(event)
+            self.name2sta[unique_name]["var"] += pow(event["dur"] / 1000.0 - self.name2sta[unique_name]["avg"], 2)
+
+        for name, statistic in self.name2sta.items():
+            statistic["var"] = statistic["var"] / float(statistic["cnt"])
+
+    def lookup_stat(self, wk_prefix, rank_prefix, name, with_prefix=False,  _field="avg"):
+        ''' look up data from the stat info
+        Parameters
+        __________
+        with_prefix: boolean
+            if True, name has had prefix, no need to process it
+        '''
+        if "Comm" in name or self.dir_level == DirLevel.GPU or with_prefix:
+            ### Horovod: for communication ops, you must ensure name is unique
+            unique_name = name
+        elif self.dir_level == DirLevel.WORKER:
+            unique_name = "%s%s%s"%(rank_prefix, DEL, name)
+        elif self.dir_level == DirLevel.TRIAL:
+            unique_name = "%s.%s%s%s"%(wk_prefix, rank_prefix, DEL, name)
+
+        if unique_name not in self.name2sta:
+            # SingleLogger().warn("Fail to find the trace of %s" % unique_name)
+            return 0.0
+        else:
+            return self.name2sta[unique_name][_field]
+
+    def export2xlsx(self, _stats, _dir, filename=None, sheet_name=None):
+        ''' Export the statitic results to an XLSX file
+
+        Parameters
+        ----------
+        _stats: list
+            A list of statitic results
+        _dir: str
+            The directory to store the XLSX file
+        '''
+        workbook = xlsxwriter.Workbook(os.path.join(_dir, 'statistic.xlsx' if filename is None else filename + ".xlsx"))
+        for idx, _stat in enumerate(_stats):
+            worksheet = workbook.add_worksheet(sheet_name[idx] if sheet_name is not None else None)
+            row = 0
+            header = []
+            for name, statistic in _stat.items():
+                if row == 0:
+                    # -- Output the header of the sheet
+                    col = 0
+                    worksheet.write(row, col, "Name")
+                    for key in statistic:
+                        col += 1
+                        header.append(key)
+                        worksheet.write(row, col, key)
+                row += 1
+                col = 0
+                worksheet.write(row, col, name)
+                for key in header:
+                    col += 1
+                    worksheet.write(row, col, statistic[key])
+        workbook.close()
 
 def return_stat(traces):
     """ Basic Statistic """
@@ -102,38 +217,6 @@ def return_stat(traces):
     for name, statistic in name2sta.items():
         statistic["var"] = statistic["var"] / float(statistic["cnt"])
     return name2sta, cat2sta
-
-def export2xlsx(_stats, _dir, filename=None, sheet_name=None):
-    ''' Export the statitic results to an XLSX file
-
-    Parameters
-    ----------
-    _stats: list
-        A list of statitic results
-    _dir: str
-        The directory to store the XLSX file
-    '''
-    workbook = xlsxwriter.Workbook(os.path.join(_dir, 'statistic.xlsx' if filename is None else filename + ".xlsx"))
-    for idx, _stat in enumerate(_stats):
-        worksheet = workbook.add_worksheet(sheet_name[idx] if sheet_name is not None else None)
-        row = 0
-        header = []
-        for name, statistic in _stat.items():
-            if row == 0:
-                # -- Output the header of the sheet
-                col = 0
-                worksheet.write(row, col, "Name")
-                for key in statistic:
-                    col += 1
-                    header.append(key)
-                    worksheet.write(row, col, key)
-            row += 1
-            col = 0
-            worksheet.write(row, col, name)
-            for key in header:
-                col += 1
-                worksheet.write(row, col, statistic[key])
-    workbook.close()
 
 def split_name(_name):
     try:
@@ -191,17 +274,32 @@ def return_path_dict(root_path):
             pass
     return path_dict
 
+def parse_pid_from_name(name):
+    if DEL not in name:
+        return "none"
+    else:
+        return name.split(DEL)[0]
+
+def parse_rawname_from_name(name):
+    if DEL not in name:
+        return name
+    else:
+        return name.split(DEL)[1]
+
+def parse_cat_from_name(name):
+    if "I/O" in name:
+        return "I/O"
+    elif "Comm" in name:
+        return "Comm"
+    elif "FW" in name or "BW" in name or "STEP" in name:
+        return "operator"
+    else:
+        raise ValueError("Can not decide the cat of %s" % name)
+
 def group_computation_op_by_prefix(traces, rank=None):
     prefix2traces = {}
     def _get_prefix(e):
-        str_list = e["pid"].split(".")
-        if "rank" in str_list[0]:
-            prefix = str_list[0]
-        elif len(str_list) > 1 and "rank" in str_list[1]:
-            prefix = ".".join(str_list[:2])
-        else:
-            prefix = "none"
-
+        prefix = e["pid"]
         if prefix not in prefix2traces:
             prefix2traces[prefix] = []
         return prefix
@@ -246,17 +344,6 @@ def get_iter_time(traces, rank=None):
                 fw_bw_time, iter_time))
     return ret
 
-def get_dir_level(_dir):
-    ''' return the level of the current dir '''
-    def recur_look_up(_d):
-        root, dirs, files = list(os.walk(_d))[0]
-        if "dag.gml" in files:
-            return 0
-        else:
-            return 1 + recur_look_up(os.path.join(root, dirs[0]))
-    level = recur_look_up(_dir)
-    return DirLevel(level)
-
 def read_list(path):
     ''' read a list from a file
     '''
@@ -268,20 +355,32 @@ def read_list(path):
 class PathManager:
     def __init__(self, path):
         self.path = os.path.abspath(path)
-        self.dir_level = get_dir_level(self.path)
+        self.dir_level = self.get_dir_level(self.path)
         ### get the sub files and directories
         _, self.dirs, self.files = list(os.walk(self.path))[0]
         self.dirs = sorted(self.dirs)
         ### only for DirLevel.GPU path
         self.path_dict = return_path_dict(self.path) if self.dir_level == DirLevel.GPU else None
 
+    def get_dir_level(self, _dir):
+        ''' return the level of the current dir '''
+        def recur_look_up(_d):
+            root, dirs, files = list(os.walk(_d))[0]
+            if "dag.gml" in files:
+                return 0
+            else:
+                return 1 + recur_look_up(os.path.join(root, dirs[0]))
+        level = recur_look_up(_dir)
+        return DirLevel(level)
+
     def search_comm(self):
         return self.search(FileName.COMM.value)
 
     def search(self, target):
+        ''' Search the target file, if not exit, return None '''
         if isinstance(target, Enum):
             target = target.value
-        ''' Search the target file, if not exit, return None '''
+        
         if self.dir_level == DirLevel.GPU: 
             if target in self.path_dict:
                 return self.path_dict[target]
@@ -315,4 +414,25 @@ class PathManager:
             SingleLogger().warn("Fail to find %s in path %s" % (str(target), self.path))
             return
 
+    def ret_prefix(self):
+        ''' Return the host id and rank for DirLevel.GPU
+        '''
+        if self.dir_level != DirLevel.GPU:
+            raise ValueError("Only support DirLevel.GPU now")
+
+        path_split = self.path.split("/")
+        rank_prefix = "rank%s"%(path_split[-1])
+        wk_prefix = path_split[-2]
+        return wk_prefix, rank_prefix
+
+    def ret_id_in_tial(self):
+        if self.dir_level == DirLevel.GPU:
+            wk_prefix, rank_prefix = self.ret_prefix()
+            return wk_prefix + "." + rank_prefix
+        elif self.dir_level == DirLevel.WORKER:
+            return self.path.split("/")[-1]
+        elif self.dir_level == DirLevel.TRIAL:
+            return "TRIAL_ROOT"
+        else:
+            raise ValueError()
 
