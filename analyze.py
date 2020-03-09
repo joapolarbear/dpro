@@ -136,7 +136,7 @@ if args.option == "replay":
 	traceM = clct.collect_traces()
 	logger.info("# Collect DAG")
 	trail_dag = clct.collect_dag(args)
-	
+
 	### Replay traces
 	logger.info("# Start to Replay")
 	replayer = Replayer(
@@ -227,7 +227,6 @@ if args.option == "compare":
 		logger.info("%-100s\t %24.4f\t %24.4f" %
 				(name, compare["avg_absolute"], compare["avg_relative"]))
 		line_cnt += 1
-
 
 if args.option == "collect":
 	clct = Collector(path_list[0])

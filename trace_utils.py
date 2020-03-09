@@ -321,7 +321,8 @@ def get_iter_time(traces, rank=None):
     operator_traces_list = group_computation_op_by_prefix(traces, rank)
 
     ret = []
-    for prefix, operator_traces in operator_traces_list.items():
+    for prefix in sorted(operator_traces_list.keys()):
+        operator_traces = operator_traces_list[prefix]
         start_ts = None
         cur_iter_time = 0
         fw_bw_list = []

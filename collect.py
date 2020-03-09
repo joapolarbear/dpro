@@ -283,9 +283,21 @@ class Collector(object):
         if io_path is None:
             return
 
+        rst_traces = []
         with open(io_path, 'r') as f:
-            rst_traces = json.load(f)
-        self.time_dict["traceEvents"] += rst_traces["traceEvents"]
+            io_traces = json.load(f)
+
+        if isinstance(io_traces, dict):
+            io_traces = io_traces["traceEvents"]
+
+        for trace in io_traces:
+            if "ts" in trace and not self.run_span.if_start(trace["ts"]):
+                continue
+            elif "ts" in trace and self.run_span.if_end(trace["ts"]):
+                break
+            else:
+                rst_traces.append(trace)
+        self.time_dict["traceEvents"] += rst_traces
 
     def bpf_collect_comm(self):
         comm_path = self.pm.search(FileName.COMM)
@@ -448,16 +460,17 @@ class Collector(object):
         return rst_traces["traceEvents"]
 
     def collect_traces(self):
-        trace_path = os.path.join(self.pm.path, self.pm.search(FileName.TRACE))
-        if os.path.exists(trace_path):
+        trace_path = self.pm.search(FileName.TRACE)
+        if trace_path is not None:
             traces = read_traces(trace_path)
             return TraceManager(traces, self.pm.dir_level)
         else:
+            self.logger.info("Generating %s" % (FileName.TRACE.value))
             return TraceManager(self.iter_combine(), self.pm.dir_level)
 
     def iter_time(self):
-        traces = self.read_traces()
-        get_iter_time(traces)
+        traceM = self.collect_traces()
+        get_iter_time(traceM.traces)
 
     def collect_dag(self, args):
         assert self.pm.dir_level == DirLevel.TRIAL
