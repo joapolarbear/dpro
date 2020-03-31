@@ -299,6 +299,36 @@ class Collector(object):
                 rst_traces.append(trace)
         self.time_dict["traceEvents"] += rst_traces
 
+    def bpf_collect_comm_detail(self):
+        assert self.pm.dir_level == DirLevel.TRIAL
+        comm_detail_paths = self.pm.fuzzy_search(FileName.COMM_DETAIL.value)
+        rst_traces = []
+        for p in comm_detail_paths:
+            try:
+                with open(p, 'r') as f:
+                    traces = json.load(f)
+            except json.decoder.JSONDecodeError:
+                traceback.print_exc()
+                traces = []
+                self.logger.warn("Ignore above exception: %s" % p)
+
+            if isinstance(traces, dict):
+                traces = traces["traceEvents"]
+
+            traces = sorted(traces, key=lambda x: x["ts"], reverse=False)
+
+            for trace in traces:
+                if "ts" in trace and not self.run_span.if_start(trace["ts"]):
+                    continue
+                elif "ts" in trace and self.run_span.if_end(trace["ts"]):
+                    break
+                else:
+                    rst_traces.append(trace)
+
+        assert len(rst_traces) > 0
+
+        self.time_dict["traceEvents"] += rst_traces
+
     def bpf_collect_comm(self):
         comm_path = self.pm.search(FileName.COMM)
         if comm_path is None:   
@@ -308,13 +338,15 @@ class Collector(object):
             self.dag = nx.read_gml(dag_path)
         comm_traces = self.parse_comm_traces(comm_path)
         self.time_dict["traceEvents"] += comm_traces
-
+    
     def parse_comm_traces(self, path):
         self.gradient_name_list = {}
 
         #! read communication traces offline
         with open(path, 'r') as f:
             json_str = f.read()
+
+        ### TODO (huhanpeng) delete
         # fix the json file
         if json_str[-1] != ']':
             json_str_lines = json_str.split("\n")
@@ -450,6 +482,7 @@ class Collector(object):
             ### only read comm.json once
             self.time_dict = {"traceEvents":[]} 
             self.bpf_collect_comm()
+            self.bpf_collect_comm_detail()
             rst_traces["traceEvents"] += self.time_dict["traceEvents"]
 
             self.clock_aligner = None

@@ -44,6 +44,7 @@ class FileName(Enum):
     COMP="temp.json"
     SYMBOL="symbol_debug_str.txt"
     TENSOR_NAME="gradient_name_list.txt"
+    COMM_DETAIL="comm_detail"
 
 def read_traces(traces_path):
     '''
@@ -415,6 +416,27 @@ class PathManager:
             SingleLogger().warn("Fail to find %s in path %s" % (str(target), self.path))
             return
 
+    def fuzzy_search(self, target):
+        '''fuzzy search, return a list whose elements contain target'''
+        assert self.dir_level == DirLevel.TRIAL
+        ret = []
+
+        def lookup_files(_path, _files):
+            for file in _files:
+                if target in file:
+                    ret.append(os.path.join(_path, file))
+
+        lookup_files(self.path, self.files)
+        for _dir in self.dirs:
+            worker_root, worker_dirs, worker_files = list(os.walk(os.path.join(self.path, _dir)))[0]
+            lookup_files(worker_root, worker_files)
+            for worker_dir in worker_dirs:
+                gpu_root, gpu_dirs, gpu_files = list(os.walk(os.path.join(worker_root, worker_dir)))[0]
+                lookup_files(gpu_root, gpu_files)
+
+        return ret
+
+
     def ret_prefix(self):
         ''' Return the host id and rank for DirLevel.GPU
         '''
@@ -426,7 +448,7 @@ class PathManager:
         wk_prefix = path_split[-2]
         return wk_prefix, rank_prefix
 
-    def ret_id_in_tial(self):
+    def ret_id_in_trial(self):
         if self.dir_level == DirLevel.GPU:
             wk_prefix, rank_prefix = self.ret_prefix()
             return wk_prefix + "." + rank_prefix

@@ -21,7 +21,7 @@ def visualize_gml(graph, layout="circular"):
 
 def dag_longest_path(G, pathM, weight='weight', default_weight=0):
     critical_path = nx.algorithms.dag.dag_longest_path(G, weight=weight, default_weight=default_weight)
-    prefix = "Critical Path of " + pathM.ret_id_in_tial()
+    prefix = "Critical Path of " + pathM.ret_id_in_trial()
     logger = SingleLogger()
     logger.info(prefix + " => ")
     path_length = 0
