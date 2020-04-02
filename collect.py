@@ -44,6 +44,7 @@ class ClockAligner:
         self.ref = None
 
     def mark(self, t):
+        ''' mark the time of current host '''
         if self.ref is None:
             self.ref = t
 
@@ -117,6 +118,7 @@ class Collector(object):
         assert tmp_pm.dir_level == DirLevel.GPU
         self.bpf_collect_comp(tmp_pm)
         self.bpf_collect_io(tmp_pm)
+        self.bpf_collect_comm_detail(tmp_pm)
 
     def bpf_collect_comp(self, tmp_pm=None):
         '''Apply dependency info to the mxnet trace results
@@ -205,7 +207,19 @@ class Collector(object):
                 "_copyto_GPU2GPU", "broadcast_add", 
                 "Reshape", "Cast", "_arange", "elemwise_add",
                 "_ones", "SyncCopyGPU2CPU", "_mul_scalar",
-                "CopyGPU2CPU", "CopyCPU2GPU"]
+                "CopyGPU2CPU", "CopyCPU2GPU", "SetValueOp"]
+
+        def is_update_op(_trace):
+            ### TODO (huhanpeng) !!! change this when model is changed
+            if "update" in _trace["name"]:
+                return True
+            if "operator" != _trace["cat"]:
+                return False
+            if _trace["name"] in IGNORE_OP:
+                return False
+            if "backward" in _trace["name"]:
+                return False
+            return True
 
         ### collect traces of FW + BP OPs and STEP OPs
         index = 0
@@ -251,9 +265,7 @@ class Collector(object):
                         if name in self.dag.nodes:
                             break
                         index += 1
-                        if _trace["name"] in IGNORE_OP or "operator" != _trace["cat"]:
-                            pass
-                        else:
+                        if is_update_op(_trace):
                             if _step_ts is None:
                                 # print(_trace["name"], _trace["ts"])
                                 _step_ts = _trace["ts"]
@@ -299,31 +311,32 @@ class Collector(object):
                 rst_traces.append(trace)
         self.time_dict["traceEvents"] += rst_traces
 
-    def bpf_collect_comm_detail(self):
-        assert self.pm.dir_level == DirLevel.TRIAL
-        comm_detail_paths = self.pm.fuzzy_search(FileName.COMM_DETAIL.value)
+    def bpf_collect_comm_detail(self, tmp_pm):
+        comm_d_path = self.pm.search(FileName.COMM_DETAIL) if tmp_pm is None else tmp_pm.search(FileName.COMM_DETAIL)
+
+        if comm_d_path is None:
+            return
+
         rst_traces = []
-        for p in comm_detail_paths:
-            try:
-                with open(p, 'r') as f:
-                    traces = json.load(f)
-            except json.decoder.JSONDecodeError:
-                traceback.print_exc()
-                traces = []
-                self.logger.warn("Ignore above exception: %s" % p)
+        try:
+            with open(comm_d_path, 'r') as f:
+                traces = json.load(f)
+        except json.decoder.JSONDecodeError:
+            traceback.print_exc()
+            traces = []
+            self.logger.warn("Ignore above exception: %s" % p)
 
-            if isinstance(traces, dict):
-                traces = traces["traceEvents"]
+        if isinstance(traces, dict):
+            traces = traces["traceEvents"]
 
-            traces = sorted(traces, key=lambda x: x["ts"], reverse=False)
-
-            for trace in traces:
-                if "ts" in trace and not self.run_span.if_start(trace["ts"]):
-                    continue
-                elif "ts" in trace and self.run_span.if_end(trace["ts"]):
-                    break
-                else:
-                    rst_traces.append(trace)
+        traces = sorted(traces, key=lambda x: x["ts"], reverse=False)
+        for trace in traces:
+            if "ts" in trace and not self.run_span.if_start(trace["ts"]):
+                continue
+            elif "ts" in trace and self.run_span.if_end(trace["ts"]):
+                break
+            else:
+                rst_traces.append(trace)
 
         assert len(rst_traces) > 0
 
@@ -482,7 +495,6 @@ class Collector(object):
             ### only read comm.json once
             self.time_dict = {"traceEvents":[]} 
             self.bpf_collect_comm()
-            self.bpf_collect_comm_detail()
             rst_traces["traceEvents"] += self.time_dict["traceEvents"]
 
             self.clock_aligner = None

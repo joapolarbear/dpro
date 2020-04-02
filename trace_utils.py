@@ -44,7 +44,7 @@ class FileName(Enum):
     COMP="temp.json"
     SYMBOL="symbol_debug_str.txt"
     TENSOR_NAME="gradient_name_list.txt"
-    COMM_DETAIL="comm_detail"
+    COMM_DETAIL="comm_detail.json"
 
 def read_traces(traces_path):
     '''
@@ -271,6 +271,8 @@ def return_path_dict(root_path):
             path_dict[FileName.SYMBOL.value] = cur_path
         elif __file == FileName.TENSOR_NAME.value:
             path_dict[FileName.TENSOR_NAME.value] = cur_path
+        elif __file == FileName.COMM_DETAIL.value:
+            path_dict[FileName.COMM_DETAIL.value] = cur_path
         else:
             pass
     return path_dict
@@ -416,6 +418,7 @@ class PathManager:
             SingleLogger().warn("Fail to find %s in path %s" % (str(target), self.path))
             return
 
+    """
     def fuzzy_search(self, target):
         '''fuzzy search, return a list whose elements contain target'''
         assert self.dir_level == DirLevel.TRIAL
@@ -435,7 +438,7 @@ class PathManager:
                 lookup_files(gpu_root, gpu_files)
 
         return ret
-
+    """
 
     def ret_prefix(self):
         ''' Return the host id and rank for DirLevel.GPU
