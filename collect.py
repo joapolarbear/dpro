@@ -68,7 +68,7 @@ class Collector(object):
         self.logger = logger_utils.SingleLogger()
         self.pm = PathManager(root_path)
         self.time_dict = None
-        self.run_span = RunningSpan()
+        self.run_span = {}
         ### Used for clock synchronization when combime traces from multiple machines
         self.clock_aligner = None
         ### TODO (huhanpeng): assume different host use the same dag
@@ -144,6 +144,11 @@ class Collector(object):
 
         if comp_path is None:
             return
+
+        wk_prefix, _ = PathManager("/".join(comp_path.split('/')[:-1])).ret_prefix()
+        if wk_prefix not in self.run_span:
+            self.run_span[wk_prefix] = RunningSpan()
+
 
         ''' Output trace resutls '''
         with open(comp_path, 'r') as f:
@@ -244,7 +249,7 @@ class Collector(object):
                 continue
 
             ### Initialize the start time of the entire running span
-            self.run_span.init_start(trace["ts"])
+            self.run_span[wk_prefix].init_start(trace["ts"])
 
             innodes = [_n for _n, _ in self.dag.in_edges(name)]
             _args = {"name": name}
@@ -289,7 +294,7 @@ class Collector(object):
                         }
                     })
                     ### Initialize the end time of the entire running span
-                    self.run_span.init_end(_step_ts + _step_dur)
+                    self.run_span[wk_prefix].init_end(_step_ts + _step_dur)
 
         self.time_dict["traceEvents"] += rst_traces["traceEvents"]
 
@@ -297,6 +302,8 @@ class Collector(object):
         io_path = self.pm.search(FileName.IO) if tmp_pm is None else tmp_pm.search(FileName.IO)
         if io_path is None:
             return
+
+        wk_prefix, _ = PathManager("/".join(io_path.split('/')[:-1])).ret_prefix()
 
         rst_traces = []
         with open(io_path, 'r') as f:
@@ -306,9 +313,9 @@ class Collector(object):
             io_traces = io_traces["traceEvents"]
 
         for trace in io_traces:
-            if "ts" in trace and not self.run_span.if_start(trace["ts"]):
+            if "ts" in trace and not self.run_span[wk_prefix].if_start(trace["ts"]):
                 continue
-            elif "ts" in trace and self.run_span.if_end(trace["ts"]):
+            elif "ts" in trace and self.run_span[wk_prefix].if_end(trace["ts"]):
                 break
             else:
                 rst_traces.append(trace)
@@ -319,6 +326,8 @@ class Collector(object):
 
         if comm_d_path is None:
             return
+
+        wk_prefix, _ = PathManager("/".join(comm_d_path.split('/')[:-1])).ret_prefix()
 
         rst_traces = []
         try:
@@ -334,9 +343,9 @@ class Collector(object):
 
         traces = sorted(traces, key=lambda x: x["ts"], reverse=False)
         for trace in traces:
-            if "ts" in trace and not self.run_span.if_start(trace["ts"]):
+            if "ts" in trace and not self.run_span[wk_prefix].if_start(trace["ts"]):
                 continue
-            elif "ts" in trace and self.run_span.if_end(trace["ts"]):
+            elif "ts" in trace and self.run_span[wk_prefix].if_end(trace["ts"]):
                 break
             else:
                 rst_traces.append(trace)
@@ -357,6 +366,9 @@ class Collector(object):
     
     def parse_comm_traces(self, path):
         self.gradient_name_list = {}
+
+        ### Get the RunningSpan of root host
+        run_span_key = sorted(self.run_span.keys())[0]
 
         #! read communication traces offline
         with open(path, 'r') as f:
@@ -396,9 +408,9 @@ class Collector(object):
                             }
                 else:
                     pass
-            elif "ts" in trace and not self.run_span.if_start(trace["ts"]):
+            elif "ts" in trace and not self.run_span[run_span_key].if_start(trace["ts"]):
                 continue
-            elif "ts" in trace and self.run_span.if_end(trace["ts"]):
+            elif "ts" in trace and self.run_span[run_span_key].if_end(trace["ts"]):
                 break
             elif trace["pid"] in self.gradient_name_list and trace["ph"] == "B":
                 cur_pid = self.gradient_name_list[trace["pid"]]
@@ -481,7 +493,6 @@ class Collector(object):
                 worker_path = os.path.join(self.pm.path, _dir)
                 worker_root, worker_dirs, _ = list(os.walk(worker_path))[0]
                 worker_dirs = sorted(worker_dirs)
-                self.run_span.reset_span()
                 for __dir in worker_dirs:
                     self.time_dict = {"traceEvents":[]} 
                     gpu_path = os.path.join(worker_root, __dir)
