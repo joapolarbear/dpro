@@ -14,9 +14,8 @@ from trace_utils import *
 from dag_utils import * 
 
 class RunningSpan:
-    def __init__(self, s=None, e=None):
-        self.start = s
-        self.end = e
+    def __init__(self):
+        self.reset_span()
 
     def init_start(self, s):
         if self.start is None:
@@ -37,6 +36,10 @@ class RunningSpan:
             return True
         else:
             return False
+
+    def reset_span(self):
+        self.start = None
+        self.end = None
 
 class ClockAligner:
     def __init__(self):
@@ -402,6 +405,8 @@ class Collector(object):
                 cur_pid["list"].append((trace["name"], trace["ts"]))
             elif trace["pid"] in self.gradient_name_list and trace["ph"] == "E":
                 cur_pid = self.gradient_name_list[trace["pid"]]
+                if len(cur_pid["list"]) == 0:
+                    continue
                 name, ts = cur_pid["list"].pop()
                 dur = trace["ts"] - ts
                 process_name = cur_pid["process_name"]
@@ -476,6 +481,7 @@ class Collector(object):
                 worker_path = os.path.join(self.pm.path, _dir)
                 worker_root, worker_dirs, _ = list(os.walk(worker_path))[0]
                 worker_dirs = sorted(worker_dirs)
+                self.run_span.reset_span()
                 for __dir in worker_dirs:
                     self.time_dict = {"traceEvents":[]} 
                     gpu_path = os.path.join(worker_root, __dir)
