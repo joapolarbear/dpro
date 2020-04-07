@@ -16,6 +16,7 @@ from dag_utils import *
 class RunningSpan:
     def __init__(self):
         self.reset_span()
+        self.disable = False
 
     def init_start(self, s):
         if self.start is None:
@@ -26,12 +27,18 @@ class RunningSpan:
         self.end = e
 
     def if_start(self, t):
+        if self.disable:
+            return True
+
         if self.start is not None and t < self.start:
             return False
         else:
             return True
 
     def if_end(self, t):
+        if self.disable:
+            return False
+
         if self.end is not None and t >= self.end:
             return True
         else:
@@ -43,24 +50,38 @@ class RunningSpan:
 
 class ClockAligner:
     def __init__(self):
+        self.traces_per_host = {}
+        self.marker_per_host = {}
         self.standard = None
         self.ref = None
 
-    def mark(self, t):
-        ''' mark the time of current host '''
-        if self.ref is None:
-            self.ref = t
+    def append_traces(self, host_id, traces):
+        if host_id not in self.traces_per_host:
+            self.traces_per_host[host_id] = []
+            self.marker_per_host[host_id] = None
+        self.traces_per_host[host_id] += traces
+
+    def mark_ref_time(self, host_id, _t, _override=False):
+        if host_id not in self.traces_per_host:
+            self.traces_per_host[host_id] = []
+            self.marker_per_host[host_id] = None
+
+        if self.marker_per_host[host_id] is None or _override:
+            self.marker_per_host[host_id] = _t
 
     def align(self):
-        ''' align to the standard time, return the time difference'''
-        if self.standard is None:
-            self.standard = self.ref
-            self.ref = None
-            return 0
-        else:
-            bias = self.standard - self.ref
-            self.ref = None
-            return bias
+        rst_traces = []
+        host_ids = list(self.traces_per_host.keys())
+        standard_time = self.marker_per_host[host_ids[0]]
+        for host_id, traces in self.traces_per_host.items():
+            if host_id == host_ids[0]:
+                pass
+            else:
+                bias = standard_time - self.marker_per_host[host_id]
+                for trace in traces:
+                    trace["ts"] += bias
+            rst_traces += traces
+        return rst_traces
 
 class Collector(object):
     #! class used to go through the file system and collect info
@@ -116,14 +137,14 @@ class Collector(object):
         with open(trace_path, 'w') as f:
             json.dump(self.time_dict, f, indent=4)
 
-    def bpf_collect_non_comm(self, _path):
+    def bpf_collect_non_comm(self, _path, pid, host_id=None):
         tmp_pm = PathManager(_path)
         assert tmp_pm.dir_level == DirLevel.GPU
-        self.bpf_collect_comp(tmp_pm)
-        self.bpf_collect_io(tmp_pm)
-        self.bpf_collect_comm_detail(tmp_pm)
+        self.bpf_collect_comp(tmp_pm, pid, host_id)
+        self.bpf_collect_io(tmp_pm, pid, host_id)
+        self.bpf_collect_comm_detail(tmp_pm, pid, host_id)
 
-    def bpf_collect_comp(self, tmp_pm=None):
+    def bpf_collect_comp(self, tmp_pm=None, pid=None, host_id=None):
         '''Apply dependency info to the mxnet trace results
 
         Parameters
@@ -154,7 +175,7 @@ class Collector(object):
         with open(comp_path, 'r') as f:
             mxnet_traces = json.load(f)
         
-        pid = None
+        one_pid = None
         rst_traces = {"traceEvents": []}
 
         ### convert the ph from B/E to X
@@ -243,9 +264,9 @@ class Collector(object):
 
             ### deduplication
             ### TODO (huhanpeng): should be careful, only choose one prosess here
-            if pid is None:
-                pid = trace["pid"]
-            elif pid != trace["pid"]:
+            if one_pid is None:
+                one_pid = trace["pid"]
+            elif one_pid != trace["pid"]:
                 continue
 
             ### Initialize the start time of the entire running span
@@ -257,6 +278,8 @@ class Collector(object):
                 _args["input%d"%i] = _n
             trace["name"] = name
             trace["args"] = _args
+            if pid is not None:
+                trace["pid"] = pid
             rst_traces["traceEvents"].append(trace)
 
             ### if all STEP-dependent BW nodes have arrived, process traces til FW
@@ -266,7 +289,7 @@ class Collector(object):
                 _step_dur = 0
                 while index < len(traces):
                     _trace = traces[index]
-                    if pid != _trace["pid"]:
+                    if one_pid != _trace["pid"]:
                         index += 1
                     else:
                         name = standar_name(_trace["name"])
@@ -279,16 +302,16 @@ class Collector(object):
                                 _step_ts = _trace["ts"]
                             _step_dur = _trace["ts"] + _trace["dur"] - _step_ts
                 if _step_ts is not None:
-                    if self.clock_aligner is not None:
+                    if self.clock_aligner is not None and host_id is not None:
                         ### register the start time of first STEP
-                        self.clock_aligner.mark(_step_ts)
+                        self.clock_aligner.mark_ref_time(host_id, _step_ts)
                     rst_traces["traceEvents"].append({
                         "name": "STEP",
                         "ts": _step_ts,
                         "dur": _step_dur,
                         "ph": "X",
                         "cat": "operator",
-                        "pid": pid,
+                        "pid": pid if pid is not None else one_pid,
                         "args": {
                             "name":"STEP"
                         }
@@ -296,9 +319,12 @@ class Collector(object):
                     ### Initialize the end time of the entire running span
                     self.run_span[wk_prefix].init_end(_step_ts + _step_dur)
 
-        self.time_dict["traceEvents"] += rst_traces["traceEvents"]
+        if host_id is not None:
+            self.clock_aligner.append_traces(host_id, rst_traces["traceEvents"])
+        else:
+            self.time_dict["traceEvents"] += rst_traces["traceEvents"]
 
-    def bpf_collect_io(self, tmp_pm=None):
+    def bpf_collect_io(self, tmp_pm=None, pid=None, host_id=None):
         io_path = self.pm.search(FileName.IO) if tmp_pm is None else tmp_pm.search(FileName.IO)
         if io_path is None:
             return
@@ -312,16 +338,23 @@ class Collector(object):
         if isinstance(io_traces, dict):
             io_traces = io_traces["traceEvents"]
 
+        io_traces = sorted(io_traces, key=lambda x: x["ts"], reverse=False)
         for trace in io_traces:
             if "ts" in trace and not self.run_span[wk_prefix].if_start(trace["ts"]):
                 continue
             elif "ts" in trace and self.run_span[wk_prefix].if_end(trace["ts"]):
                 break
             else:
+                if pid is not None:
+                    trace["pid"] = pid
                 rst_traces.append(trace)
-        self.time_dict["traceEvents"] += rst_traces
 
-    def bpf_collect_comm_detail(self, tmp_pm):
+        if host_id is not None:
+            self.clock_aligner.append_traces(host_id, rst_traces)
+        else:
+            self.time_dict["traceEvents"] += rst_traces
+
+    def bpf_collect_comm_detail(self, tmp_pm, pid=None, host_id=None):
         comm_d_path = self.pm.search(FileName.COMM_DETAIL) if tmp_pm is None else tmp_pm.search(FileName.COMM_DETAIL)
 
         if comm_d_path is None:
@@ -343,16 +376,24 @@ class Collector(object):
 
         traces = sorted(traces, key=lambda x: x["ts"], reverse=False)
         for trace in traces:
+            # if host_id is not None and "broadcast" in trace["name"] and trace["ph"] != "i":
+            #     self.clock_aligner.mark_ref_time(host_id, trace["ts"])
+
             if "ts" in trace and not self.run_span[wk_prefix].if_start(trace["ts"]):
                 continue
             elif "ts" in trace and self.run_span[wk_prefix].if_end(trace["ts"]):
                 break
             else:
-                rst_traces.append(trace)
+                if trace["ph"] == "i" or trace["ph"] == "I":
+                    trace["s"] = "p"
+            rst_traces.append(trace)
 
         assert len(rst_traces) > 0
 
-        self.time_dict["traceEvents"] += rst_traces
+        if host_id is not None:
+            self.clock_aligner.append_traces(host_id, rst_traces)
+        else:
+            self.time_dict["traceEvents"] += rst_traces
 
     def bpf_collect_comm(self):
         comm_path = self.pm.search(FileName.COMM)
@@ -476,12 +517,9 @@ class Collector(object):
             for _dir in self.pm.dirs:
                 self.time_dict = {"traceEvents":[]} 
                 gpu_path = os.path.join(self.pm.path, _dir)
-                self.bpf_collect_non_comm(_path=gpu_path)
-                for trace in self.time_dict["traceEvents"]:
-                    ### All GPUs on all host machines share the communication traces
-                    # trace["pid"] = "rank%s."%_dir + str(trace["pid"])
-                    trace["pid"] = "rank%s"%_dir
-                    rst_traces["traceEvents"].append(trace)
+                ### All GPUs on all host machines share the communication traces
+                self.bpf_collect_non_comm(_path=gpu_path, pid="rank%s"%_dir)
+                rst_traces["traceEvents"] += self.time_dict["traceEvents"]
             self.time_dict = {"traceEvents":[]} 
             self.bpf_collect_comm()
             rst_traces["traceEvents"] += self.time_dict["traceEvents"]
@@ -496,25 +534,19 @@ class Collector(object):
                 for __dir in worker_dirs:
                     self.time_dict = {"traceEvents":[]} 
                     gpu_path = os.path.join(worker_root, __dir)
-                    self.bpf_collect_non_comm(_path=gpu_path)
-                    for trace in self.time_dict["traceEvents"]:
-                        ### All GPUs on all host machines share the communication traces
-                        # trace["pid"] = str(_dir)+".rank%s."%__dir + str(trace["pid"])
-                        trace["pid"] = str(_dir)+".rank%s"%__dir
-                        worker_traces.append(trace)
-                bias = self.clock_aligner.align()
-                if bias == 0:
-                    rst_traces["traceEvents"] += worker_traces
-                else:
-                    for trace in worker_traces:
-                        trace["ts"] += bias
-                        rst_traces["traceEvents"].append(trace)
+                    ### All GPUs on all host machines share the communication traces
+                    self.bpf_collect_non_comm(_path=gpu_path, pid=str(_dir)+".rank%s"%__dir, host_id=_dir)
+                    worker_traces += self.time_dict["traceEvents"]
+
+            ### align the time
+            rst_traces["traceEvents"] += self.clock_aligner.align()
+            self.clock_aligner = None
+
             ### only read comm.json once
             self.time_dict = {"traceEvents":[]} 
             self.bpf_collect_comm()
             rst_traces["traceEvents"] += self.time_dict["traceEvents"]
 
-            self.clock_aligner = None
 
         with open(os.path.join(self.pm.path, FileName.TRACE.value), 'w') as f:
                 json.dump(rst_traces, f, indent=4)
