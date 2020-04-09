@@ -12,6 +12,7 @@ import logger_utils
 
 from trace_utils import *
 from dag_utils import * 
+from horovod.graph import *
 
 class RunningSpan:
     def __init__(self):
@@ -369,9 +370,12 @@ class Collector(object):
         except json.decoder.JSONDecodeError:
             traceback.print_exc()
             traces = []
-            self.logger.warn("Ignore above exception: %s" % p)
 
-        if isinstance(traces, dict):
+        if isinstance(traces, dict):   
+            if "Tree" in traces:
+                self.nccl_graph.parse_tree_topo(traces["Tree"])
+            if "Ring" in traces:
+                self.nccl_graph.parse_ring_topo(traces["Ring"])    
             traces = traces["traceEvents"]
 
         traces = sorted(traces, key=lambda x: x["ts"], reverse=False)
@@ -394,6 +398,7 @@ class Collector(object):
             self.clock_aligner.append_traces(host_id, rst_traces)
         else:
             self.time_dict["traceEvents"] += rst_traces
+
 
     def bpf_collect_comm(self):
         comm_path = self.pm.search(FileName.COMM)
@@ -526,6 +531,7 @@ class Collector(object):
 
         elif self.pm.dir_level == DirLevel.TRIAL:
             self.clock_aligner = ClockAligner()
+            self.nccl_graph = ncclGraph()
             for _dir in self.pm.dirs:
                 worker_traces = []
                 worker_path = os.path.join(self.pm.path, _dir)
@@ -541,6 +547,9 @@ class Collector(object):
             ### align the time
             rst_traces["traceEvents"] += self.clock_aligner.align()
             self.clock_aligner = None
+
+            # print(self.nccl_graph.graph)
+            self.nccl_graph.print_graph()
 
             ### only read comm.json once
             self.time_dict = {"traceEvents":[]} 
