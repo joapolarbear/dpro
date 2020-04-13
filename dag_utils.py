@@ -59,7 +59,7 @@ class DAGManager:
         if _prefix is None:
             return "%s%s%s"%(self.prefix, DEL, name)
         else:
-            eturn "%s%s%s"%(_prefix, DEL, name)
+            return "%s%s%s"%(_prefix, DEL, name)
 
     def gen_dag_with_prefix_weight(self):
         ''' Gen a dag from the original graph with weighted edges.
@@ -85,8 +85,10 @@ class DAGManager:
                     for chunkId in range(chunkNum):
                         for sliceId in range(sliceNum):
                             for channelId in range(channelNum):
-                                next_rank, next_chunkId, next_sliceId, next_channelId, prev_nodes_prefix = self.nccl_graph.nccl_dependency(self.prefix, chunkId, sliceId, channelId)
-                                if next_rank is not None:
+                                next_rank_prefix, next_chunkId, next_sliceId, next_channelId, prev_nodes_prefix = \
+                                                    self.nccl_graph.nccl_dependency(self.prefix, chunkId, sliceId, channelId)
+
+                                if next_rank_prefix is not None:
                                     ### normal step
                                     prev_name = u + ".RECV"
                                     prev_node = "%s.RECV.%d_%d_%d" % (u, chunkId, sliceId, channelId)
@@ -101,11 +103,12 @@ class DAGManager:
                                     next_node = "%s.RECV.%d_%d_%d" % (u, next_chunkId, next_sliceId, next_channelId)
                                     self.dag.add_edge(
                                         self.add_prefix(prev_node), 
-                                        self.add_prefix(next_node), 
+                                        self.add_prefix(next_node, _prefix=next_rank_prefix), 
                                         weight=self.traceM.lookup_stat(self.wk_prefix, self.rank_prefix, prev_name)
                                     )
                                 elif prev_nodes_prefix is not None:
                                     ### The first step
+                                    
                                     prev_fw_nodes = [_u for _u, _ in mygraph.in_edges(u)]
                                     assert len(prev_fw_nodes) == 1
                                     prev_name_base = prev_fw_nodes[0]
@@ -113,7 +116,7 @@ class DAGManager:
                                     for _prefix in prev_nodes_prefix:
                                         prev_name = self.add_prefix(prev_name_base, _prefix=_prefix)
                                         self.dag.add_edge(
-                                            prev_name 
+                                            prev_name, 
                                             self.add_prefix(next_node), 
                                             weight=self.traceM.lookup_stat(self.wk_prefix, self.rank_prefix, prev_name, with_prefix=True)
                                         )
@@ -160,6 +163,7 @@ class DAGManager:
 
         for e in self.dag.edges.data("weight"):
             self.logger.debug(e)
+
         # visualize_gml(self.dag, layout="circular")
 
     def _add_new_edges_via_order(self, _pretty):

@@ -137,6 +137,8 @@ if args.option == "replay":
 	logger.info("# Collect DAG")
 	trail_dag = clct.collect_dag(args)
 
+	raise
+	
 	### Replay traces
 	logger.info("# Start to Replay")
 	replayer = Replayer(

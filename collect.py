@@ -371,8 +371,8 @@ class Collector(object):
                 self.nccl_graph.parse_tree_topo(traces["Tree"], map_to=pid)
             if "Ring" in traces:
                 self.nccl_graph.parse_connect_topo(traces["Ring"], map_to=pid)  
-            if "RealRing" in traecs:
-                self.nccl_graph.parse_ring_topo(traces["Ring"], map_to=pid)  
+            if "RealRing" in traces:
+                self.nccl_graph.parse_ring_topo(traces["RealRing"], map_to=pid)  
             traces = traces["traceEvents"]
 
         traces = sorted(traces, key=lambda x: x["ts"], reverse=False)
@@ -400,6 +400,7 @@ class Collector(object):
 
         assert len(rst_traces) > 0
 
+        self.nccl_graph.parse_traces(rst_traces)
         self.clock_aligner.append_traces(host_id, rst_traces)
 
 
@@ -549,7 +550,6 @@ class Collector(object):
             rst_traces["traceEvents"] += self.clock_aligner.align()
             self.clock_aligner = None
 
-            # print(self.nccl_graph.graph)
             self.nccl_graph.print_graph()
 
             ### only read comm.json once

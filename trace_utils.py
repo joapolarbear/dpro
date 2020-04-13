@@ -85,6 +85,8 @@ class TraceManager:
         self.name2sta = {}
         self.cat2sta = {}
         for event in self.traces:
+            if event["ph"].lower() == "i":
+                continue
             unique_name = self.ret_unique_name(event)
             if unique_name in self.name2sta:
                 self.name2sta[unique_name]["cnt"] += 1
@@ -116,6 +118,8 @@ class TraceManager:
 
         """calculate the variance"""
         for event in self.traces:
+            if event["ph"].lower() == "i":
+                continue
             unique_name = self.ret_unique_name(event)
             self.name2sta[unique_name]["var"] += pow(event["dur"] / 1000.0 - self.name2sta[unique_name]["avg"], 2)
 

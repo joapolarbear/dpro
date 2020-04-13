@@ -63,6 +63,7 @@ class ncclGraph:
         self.rank_num = 0
         ### Set freeze to true if the graph will not change
         self.freeze = False
+        self.trace_parsed = False
 
         self.graph = {}
         self.raw_name2IDnum = {}
@@ -160,7 +161,6 @@ class ncclGraph:
         ### "1": "3[3000] -> 0[2000] [receive] via NET/Socket/0,0[2000] -> 1[3000] via direct shared memory,0[2000] -> 3[3000] [send] via NET/Socket/0",
         ### "0": "3[3000] -> 0[2000] [receive] via NET/Socket/0,0[2000] -> 1[3000] via direct shared memory"
         self.algo = NCCL_ALGO.RING
-        print(ring_dict)
         if "Ring" not in self.graph:
             self.graph["Ring"] = {}
         rank = None
@@ -226,15 +226,19 @@ class ncclGraph:
                 for rank, rank_dict in sorted(channel_dict.items()):
                     print("\t\tRank %d: " % rank)
                     if "prev" in rank_dict:
-                        peer_rank, t_type = rank_dict["prev"]
+                        peer_rank = rank_dict["prev"]
                         print("\t\t\tRecv from %d" % peer_rank)
                     if "next" in rank_dict:
-                        peer_rank, t_type = rank_dict["next"]
+                        peer_rank = rank_dict["next"]
                         print("\t\t\tSend to %d" % peer_rank)
 
 
     def parse_traces(self, traces):
         ''' `traces` must be sorted according to `ts` '''
+        if self.trace_parsed:
+        	return
+
+        self.trace_parsed = True
         first_fwd = None
         if self.algo == NCCL_ALGO.RING or self.algo == NCCL_ALGO.TREE:
             for trace in traces:
@@ -246,20 +250,28 @@ class ncclGraph:
                         break
 
                 ### Just check traces whose pid is comm_detail
-                if "comm_detail" not in trace["pid"]:
+                if "comm_detail" not in trace["tid"] and "comm_detail" not in trace["pid"]:
                     continue
 
-                raw_name = trace["name"]
+                ### Get the rawname withoud RECV/SEND
+                if ".RECV" in trace["name"]:
+                	raw_name = trace["name"].split(".RECV")[0]
+                elif ".SEND" in trace["name"]:
+                	raw_name = trace["name"].split(".SEND")[0]
+                else:
+                	raw_name = trace["name"]
+
                 if raw_name not in self.raw_name2IDnum:
                     self.raw_name2IDnum[raw_name] = {"chunkNum": 0, "sliceNum": 0, "channelNum": 0}
-                self.raw_name2IDnum[raw_name]["chunkNum"] = max(int(trace["args"]["chunkId"]), self.raw_name2IDnum[raw_name]["chunkNum"])
-                self.raw_name2IDnum[raw_name]["sliceNum"] = max(int(trace["args"]["sliceId"]), self.raw_name2IDnum[raw_name]["sliceNum"])
-                self.raw_name2IDnum[raw_name]["channelNum"] = max(int(trace["args"]["channelId"]), self.raw_name2IDnum[raw_name]["channelNum"])
+                self.raw_name2IDnum[raw_name]["chunkNum"] = max(int(trace["args"]["chunkId"]) + 1, self.raw_name2IDnum[raw_name]["chunkNum"])
+                self.raw_name2IDnum[raw_name]["sliceNum"] = max(int(trace["args"]["sliceId"]) + 1, self.raw_name2IDnum[raw_name]["sliceNum"])
+                self.raw_name2IDnum[raw_name]["channelNum"] = max(int(trace["args"]["channelId"]) + 1, self.raw_name2IDnum[raw_name]["channelNum"])
         else:
             raise ValueError("NCCL_ALGO error: %s" % self.algo.value)
 
 
     def get_IDnum(self, raw_name):
+        assert self.trace_parsed is True
         return self.raw_name2IDnum[raw_name]["chunkNum"], self.raw_name2IDnum[raw_name]["sliceNum"], self.raw_name2IDnum[raw_name]["channelNum"]
 
     def freeze_graph(self):
@@ -267,25 +279,25 @@ class ncclGraph:
         self.freeze = True
 
     def nccl_dependency(self, prefix, chunkId, sliceId, channelId):
-    	'''
-    	Return
-    	------
-    	`prev rank`, `prev chunkId`, `prev sliceId`, `prev channelId`, 
-    	if these are all None, return a list of prefixes, to denote that this is the first communication operations
-    	it depends on all the BW/Negotiate nodes.
-    	if all of above variables are None, this is the last step
-    	'''
+        '''
+        Return
+        ------
+        `next rank prefix`, `next chunkId`, `next sliceId`, `next channelId`, 
+        if these are all None, return a list of prefixes, to denote that this is the first communication operations
+        it depends on all the BW/Negotiate nodes.
+        if all of above variables are None, this is the last step
+        '''
         if not self.freeze:
             self.freeze_graph()
         if self.algo == NCCL_ALGO.RING:
-        	### For ring, chunkId denotes the step of each chunk of tensor
+            ### For ring, chunkId denotes the step of each chunk of tensor
             if chunkId == 0:
                 ### for the first chunk to be sent, it depends on the BW nodes of all ranks
                 all_prefix = [self.rank2prefix[r] for r in sorted(self.graph["Ring"][channelId].keys())]
                 return None, None, None, None, all_prefix
             if chunkId >= 2 * (self.rank_num - 1):
-            	### the last step
-            	return None, None, None, None, None
+                ### the last step
+                return None, None, None, None, None
 
             ### for the remaining steps
             rank = self.prefix2rank[prefix]
@@ -296,8 +308,7 @@ class ncclGraph:
             nk = k
             next_chunkId = self.ring_chunk_order_id_to_step(next_rank, nc, nk, Send=False)
             
-            return next_rank, next_chunkId, sliceId, channelId, None
-
+            return self.rank2prefix[next_rank], next_chunkId, sliceId, channelId, None
 
         elif self.algo == NCCL_ALGO.TREE:
             # TODO (huhanpeng)
@@ -307,34 +318,43 @@ class ncclGraph:
 
 
     def ring_step_to_chunk_order_id(self, p, t, Send=True):
-    	'''
-    	p is the process number
-    	t is the step, we use chunkId in this programe
+        '''
+        p is the process number
+        t is the step, we use chunkId in this programe
 
-    	Return
-    	------
-    	c is the chunk id sorted by the order of chunks
-    	k is the number of times one chunk has been processed
-    	'''
-    	if Send:
-    		c = (p - t + self.rank_num) % self.rank_num
-    	else:
-    		c = (p - t + self.rank_num - 1) % self.rank_num
-    	k = 1 if t >= self.rank_num else 0
-    	return c, k
+        Return
+        ------
+        c is the chunk id sorted by the order of chunks
+        k is the number of times one chunk has been processed
+        '''
+        if Send:
+            c = (p - t + self.rank_num) % self.rank_num
+        else:
+            c = (p - t + self.rank_num - 1) % self.rank_num
+        k = 1 if t >= self.rank_num else 0
+        return c, k
 
-    def ring_chunk_order_id_to_step(self,p, c, k, Send=True):
-    	if Send:
-    		if c <= p:
-    			t = p - c + k * self.rank_num
-    		else:
-    			t = p - c + (k + 1) * self.rank_num
-    	else:
-    		if c < p:
-    			t = p - 1 - c + k * self.rank_num
-    		else:
-    			t = p - 1 - c + (k + 1) * self.rank_num
-    	return t
+    def ring_chunk_order_id_to_step(self, p, c, k, Send=True):
+        '''
+        c is the chunk id sorted by the order of chunks
+        k is the number of times one chunk has been processed 
+
+        Return
+        ------
+        p is the process number
+        t is the step, we use chunkId in this programe
+        '''
+        if Send:
+            if c <= p:
+                t = p - c + k * self.rank_num
+            else:
+                t = p - c + (k + 1) * self.rank_num
+        else:
+            if c < p:
+                t = p - 1 - c + k * self.rank_num
+            else:
+                t = p - 1 - c + (k + 1) * self.rank_num
+        return t
 
 
 
