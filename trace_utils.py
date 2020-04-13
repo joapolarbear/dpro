@@ -297,7 +297,7 @@ def parse_cat_from_name(name):
         return "I/O"
     elif "Comm" in name:
         return "Comm"
-    elif "FW" in name or "BW" in name or "STEP" in name:
+    elif "FW" in name or "BW" in name or "STEP" in name or "OUTPUT" in name:
         return "operator"
     else:
         raise ValueError("Can not decide the cat of %s" % name)

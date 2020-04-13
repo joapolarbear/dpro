@@ -407,5 +407,7 @@ class ncclGraph:
                 t = p - 1 - c + (k + 1) * self.rank_num
         return t
 
+    
+
 
 

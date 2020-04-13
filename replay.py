@@ -45,9 +45,14 @@ class Deivce:
 			self.mark_as_exct(name, _last_end_time)
 			return 
 
+		if "Comm" in name and ("RECV" in name or "SEND" in name):
+			raw_name_with_prefix = ".".join(name.split(".")[:-1])
+		else:
+			raw_name_with_prefix = name
+
 		#! Some BW nodes of dag is not profiled, ignore them.
 		try:
-			avg = self.replayer.traceM.lookup_stat(None, None, name, with_prefix=True)
+			avg = self.replayer.traceM.lookup_stat(None, None, raw_name_with_prefix, with_prefix=True)
 		except:
 			self.replayer.logger.warning("%s is not in _name2sta" % name)
 			self.mark_as_exct(name, _last_end_time)
@@ -65,7 +70,8 @@ class Deivce:
 				"dur": _dur,
 				"pid": pid,
 				"cat": cat,
-				"ph": "X"
+				"ph": "X",
+				"tid": cat
 			})
 
 		self.mark_as_exct(name, _last_end_time + FIXED_GAP_us + _dur)
