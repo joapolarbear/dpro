@@ -39,7 +39,7 @@ class DAGManager:
     path: str
         Root path for one GPU
     '''
-    def __init__(self, path, traceM):
+    def __init__(self, path, traceM, nccl_graph=None):
         self.pm = PathManager(path)
         ### traceM's DirLevel = TRAIL
         self.traceM = traceM
@@ -47,16 +47,19 @@ class DAGManager:
         self.dag = self.gpu_dag = self._fw_bw_dag = None
 
         self.wk_prefix, self.rank_prefix = self.pm.ret_prefix()
+        self.prefix = "%s.%s" % (self.wk_prefix, self.rank_prefix)
             
         self._topo_sort = []
         self.topo_sorts = []
 
-    def add_prefix(self, name):
-        if "Comm" in name:
-            ### for communication nodes, name has actually included the pid
-            return name
+        ### For fine-grained communication dependency
+        self.nccl_graph = nccl_graph
+
+    def add_prefix(self, name, _prefix=None):
+        if _prefix is None:
+            return "%s%s%s"%(self.prefix, DEL, name)
         else:
-            return "%s.%s%s%s"%(self.wk_prefix, self.rank_prefix, DEL, name)
+            eturn "%s%s%s"%(_prefix, DEL, name)
 
     def gen_dag_with_prefix_weight(self):
         ''' Gen a dag from the original graph with weighted edges.
@@ -69,31 +72,79 @@ class DAGManager:
             * node names start with 'rank{id}.';
             * partition Comm nodes into sub-task nodes if needed.
         '''
+        ### Read the original dag for this gpu first
         mygraph = nx.read_gml(self.pm.search(FileName.DAG))
         self.dag = nx.DiGraph()
         queue_type_list = QueueType().ret_list()
 
         for u, v in mygraph.edges:
             if "Comm" in u:
-                prev_fw_nodes = [_u for _u, _ in mygraph.in_edges(u)]
-                assert len(prev_fw_nodes) == 1
-                prev_node = prev_fw_nodes[0]
-                for suffix in queue_type_list:
-                    ### here u is acctually the pid
-                    cur_node = u + DEL + suffix
-                    if self.traceM.lookup_stat(self.wk_prefix, self.rank_prefix, cur_node) == 0:
-                        continue
+                if self.nccl_graph is not None:
+                    ### Combine chunkId, sliceId and channelId into the graph
+                    chunkNum, sliceNum, channelNum = self.nccl_graph.get_IDnum(u)
+                    for chunkId in range(chunkNum):
+                        for sliceId in range(sliceNum):
+                            for channelId in range(channelNum):
+                                next_rank, next_chunkId, next_sliceId, next_channelId, prev_nodes_prefix = self.nccl_graph.nccl_dependency(self.prefix, chunkId, sliceId, channelId)
+                                if next_rank is not None:
+                                    ### normal step
+                                    prev_name = u + ".RECV"
+                                    prev_node = "%s.RECV.%d_%d_%d" % (u, chunkId, sliceId, channelId)
+                                    next_node = "%s.SEND.%d_%d_%d" % (u, chunkId, sliceId, channelId)
+                                    self.dag.add_edge(
+                                        self.add_prefix(prev_node), 
+                                        self.add_prefix(next_node), 
+                                        weight=self.traceM.lookup_stat(self.wk_prefix, self.rank_prefix, prev_name)
+                                    )
+                                    prev_name = u + ".SEND"
+                                    prev_node = "%s.SEND.%d_%d_%d" % (u, chunkId, sliceId, channelId)
+                                    next_node = "%s.RECV.%d_%d_%d" % (u, next_chunkId, next_sliceId, next_channelId)
+                                    self.dag.add_edge(
+                                        self.add_prefix(prev_node), 
+                                        self.add_prefix(next_node), 
+                                        weight=self.traceM.lookup_stat(self.wk_prefix, self.rank_prefix, prev_name)
+                                    )
+                                elif prev_nodes_prefix is not None:
+                                    ### The first step
+                                    prev_fw_nodes = [_u for _u, _ in mygraph.in_edges(u)]
+                                    assert len(prev_fw_nodes) == 1
+                                    prev_name_base = prev_fw_nodes[0]
+                                    next_node = "%s.SEND.%d_%d_%d" % (u, chunkId, sliceId, channelId)
+                                    for _prefix in prev_nodes_prefix:
+                                        prev_name = self.add_prefix(prev_name_base, _prefix=_prefix)
+                                        self.dag.add_edge(
+                                            prev_name 
+                                            self.add_prefix(next_node), 
+                                            weight=self.traceM.lookup_stat(self.wk_prefix, self.rank_prefix, prev_name, with_prefix=True)
+                                        )
+                                else:
+                                    ### all return values are None, the last step
+                                    prev_node = "%s.RECV.%d_%d_%d" % (u, chunkId, sliceId, channelId)
+                                    self.dag.add_edge(
+                                        self.add_prefix(prev_node), 
+                                        self.add_prefix("STEP"), 
+                                        weight=self.traceM.lookup_stat(self.wk_prefix, self.rank_prefix, prev_node)
+                                    )
+
+                else:
+                    prev_fw_nodes = [_u for _u, _ in mygraph.in_edges(u)]
+                    assert len(prev_fw_nodes) == 1
+                    prev_node = prev_fw_nodes[0]
+                    for suffix in queue_type_list:
+                        cur_node = u + DEL + suffix
+                        if self.traceM.lookup_stat(self.wk_prefix, self.rank_prefix, cur_node) == 0:
+                            continue
+                        self.dag.add_edge(
+                                self.add_prefix(prev_node), 
+                                self.add_prefix(cur_node), 
+                                weight=self.traceM.lookup_stat(self.wk_prefix, self.rank_prefix, prev_node)
+                            )
+                        prev_node = cur_node
                     self.dag.add_edge(
                             self.add_prefix(prev_node), 
-                            self.add_prefix(cur_node), 
+                            self.add_prefix("STEP"), 
                             weight=self.traceM.lookup_stat(self.wk_prefix, self.rank_prefix, prev_node)
                         )
-                    prev_node = cur_node
-                self.dag.add_edge(
-                        self.add_prefix(prev_node), 
-                        self.add_prefix("STEP"), 
-                        weight=self.traceM.lookup_stat(self.wk_prefix, self.rank_prefix, prev_node)
-                    )
             elif "BW" in u and "Comm" in v:
                 ### delete edges from BW to Comm main task.
                 pass

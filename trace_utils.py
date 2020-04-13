@@ -129,8 +129,7 @@ class TraceManager:
         with_prefix: boolean
             if True, name has had prefix, no need to process it
         '''
-        if "Comm" in name or self.dir_level == DirLevel.GPU or with_prefix:
-            ### Horovod: for communication ops, you must ensure name is unique
+        if self.dir_level == DirLevel.GPU or with_prefix:
             unique_name = name
         elif self.dir_level == DirLevel.WORKER:
             unique_name = "%s%s%s"%(rank_prefix, DEL, name)

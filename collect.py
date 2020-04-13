@@ -95,6 +95,7 @@ class Collector(object):
         self.clock_aligner = None
         ### TODO (huhanpeng): assume different host use the same dag
         self.dag = None
+        self.nccl_graph = None
 
     def update_final_traces(self, _io=False, _comm=False, _operator=False):
         trace_path = self.pm.search(FileName.TRACE)
@@ -320,10 +321,7 @@ class Collector(object):
                     ### Initialize the end time of the entire running span
                     self.run_span[wk_prefix].init_end(_step_ts + _step_dur)
 
-        if host_id is not None:
-            self.clock_aligner.append_traces(host_id, rst_traces["traceEvents"])
-        else:
-            self.time_dict["traceEvents"] += rst_traces["traceEvents"]
+        self.clock_aligner.append_traces(host_id, rst_traces["traceEvents"])
 
     def bpf_collect_io(self, tmp_pm=None, pid=None, host_id=None):
         io_path = self.pm.search(FileName.IO) if tmp_pm is None else tmp_pm.search(FileName.IO)
@@ -350,10 +348,7 @@ class Collector(object):
                     trace["pid"] = pid
                 rst_traces.append(trace)
 
-        if host_id is not None:
-            self.clock_aligner.append_traces(host_id, rst_traces)
-        else:
-            self.time_dict["traceEvents"] += rst_traces
+        self.clock_aligner.append_traces(host_id, rst_traces)
 
     def bpf_collect_comm_detail(self, tmp_pm, pid=None, host_id=None):
         comm_d_path = self.pm.search(FileName.COMM_DETAIL) if tmp_pm is None else tmp_pm.search(FileName.COMM_DETAIL)
@@ -373,9 +368,11 @@ class Collector(object):
 
         if isinstance(traces, dict):   
             if "Tree" in traces:
-                self.nccl_graph.parse_tree_topo(traces["Tree"])
+                self.nccl_graph.parse_tree_topo(traces["Tree"], map_to=pid)
             if "Ring" in traces:
-                self.nccl_graph.parse_ring_topo(traces["Ring"])    
+                self.nccl_graph.parse_connect_topo(traces["Ring"], map_to=pid)  
+            if "RealRing" in traecs:
+                self.nccl_graph.parse_ring_topo(traces["Ring"], map_to=pid)  
             traces = traces["traceEvents"]
 
         traces = sorted(traces, key=lambda x: x["ts"], reverse=False)
@@ -390,14 +387,20 @@ class Collector(object):
             else:
                 if trace["ph"] == "i" or trace["ph"] == "I":
                     trace["s"] = "p"
+
+            trace["name"] = "Comm." + trace["name"].split("horovod_allreduce.")[1]
+            trace["args"]["name"] = trace["name"] + (".%d_%d_%d" % 
+                            (int(trace["args"]["chunkId"]), 
+                                int(trace["args"]["sliceId"]), 
+                                int(trace["args"]["channelId"])))
+            if pid is not None:
+                trace["tid"] = trace["pid"]
+                trace["pid"] = pid
             rst_traces.append(trace)
 
         assert len(rst_traces) > 0
 
-        if host_id is not None:
-            self.clock_aligner.append_traces(host_id, rst_traces)
-        else:
-            self.time_dict["traceEvents"] += rst_traces
+        self.clock_aligner.append_traces(host_id, rst_traces)
 
 
     def bpf_collect_comm(self):
@@ -533,7 +536,6 @@ class Collector(object):
             self.clock_aligner = ClockAligner()
             self.nccl_graph = ncclGraph()
             for _dir in self.pm.dirs:
-                worker_traces = []
                 worker_path = os.path.join(self.pm.path, _dir)
                 worker_root, worker_dirs, _ = list(os.walk(worker_path))[0]
                 worker_dirs = sorted(worker_dirs)
@@ -542,7 +544,6 @@ class Collector(object):
                     gpu_path = os.path.join(worker_root, __dir)
                     ### All GPUs on all host machines share the communication traces
                     self.bpf_collect_non_comm(_path=gpu_path, pid=str(_dir)+".rank%s"%__dir, host_id=_dir)
-                    worker_traces += self.time_dict["traceEvents"]
 
             ### align the time
             rst_traces["traceEvents"] += self.clock_aligner.align()
@@ -564,7 +565,7 @@ class Collector(object):
 
     def collect_traces(self):
         trace_path = self.pm.search(FileName.TRACE)
-        if trace_path is not None:
+        if trace_path is not None and self.nccl_graph is not None:
             traces = read_traces(trace_path)
             return TraceManager(traces, self.pm.dir_level)
         else:
@@ -586,7 +587,7 @@ class Collector(object):
             for worker_dir in worker_dirs:
                 gpu_path = os.path.join(worker_root, worker_dir)
                 self.logger.info("## Collect DAG in %s" % (gpu_path))
-                dagmanager = DAGManager(gpu_path, traceM)
+                dagmanager = DAGManager(gpu_path, traceM, self.nccl_graph)
                 max_para_degree, _critical_path = dagmanager.gen_gpu_dag(_pretty=args.pretty)
                 worker_dag_list.append(dagmanager.gpu_dag)
                 if _critical_path is not None:
