@@ -4,7 +4,7 @@ class NCCL_ALGO(Enum):
     RING=1
 
 class ncclGraph:
-    def __init__(self):
+    def __init__(self, algo=NCCL_ALGO.RING):
         '''
         One example of the graph is shown below
         Algorithm: Tree
@@ -59,7 +59,7 @@ class ncclGraph:
                     Send to 2 via SHM
         '''
         
-        self.algo = None
+        self.algo = algo
         self.rank_num = 0
         self.trace_parsed = False
 
@@ -72,7 +72,6 @@ class ncclGraph:
     def parse_tree_topo(self, tree_dict, map_to=None):
         ''' If `map_to` is set, map the rank to the given prefix '''
         ### "Tree": {"-1": "[0] 1/-1/-1->0->-1|-1->0->1/-1/-1 [1] 1/-1/-1->0->3|3->0->1/-1/-1"}
-        self.algo = NCCL_ALGO.TREE
         if "Tree" not in self.graph:
             self.graph["Tree"] = {}
         tree_str = tree_dict["-1"]
@@ -115,8 +114,6 @@ class ncclGraph:
         ''' If `map_to` is set, map the rank to the given prefix '''
         ### "1": "3[3000] -> 0[2000] [receive] via NET/Socket/0,0[2000] -> 1[3000] via direct shared memory,0[2000] -> 3[3000] [send] via NET/Socket/0",
         ### "0": "3[3000] -> 0[2000] [receive] via NET/Socket/0,0[2000] -> 1[3000] via direct shared memory"
-        self.algo = NCCL_ALGO.RING
-        print(ring_dict)
         if "RingConnect" not in self.graph:
             self.graph["RingConnect"] = {}
         rank = None
@@ -158,7 +155,6 @@ class ncclGraph:
         ''' If `map_to` is set, map the rank to the given prefix '''
         ### "1": "3[3000] -> 0[2000] [receive] via NET/Socket/0,0[2000] -> 1[3000] via direct shared memory,0[2000] -> 3[3000] [send] via NET/Socket/0",
         ### "0": "3[3000] -> 0[2000] [receive] via NET/Socket/0,0[2000] -> 1[3000] via direct shared memory"
-        self.algo = NCCL_ALGO.RING
         if "Ring" not in self.graph:
             self.graph["Ring"] = {}
         rank = None
@@ -193,6 +189,11 @@ class ncclGraph:
         if prefix not in self.prefix2rank:
             self.prefix2rank[prefix] = rank
 
+    def ret_rank_from_prefix(self, prefix):
+        return self.prefix2rank[prefix]
+
+    def ret_prefix_from_rank(self, rank):
+        return self.rank2prefix[rank]
 
     def print_graph(self):
         if "Tree" in self.graph:
@@ -230,7 +231,7 @@ class ncclGraph:
 
     def parse_traces(self, traces):
         ''' `traces` must be sorted according to `ts` '''
-        if self.trace_parsed:
+        if self.trace_parsed and self.algo == NCCL_ALGO.RING:
             return
 
         self.trace_parsed = True
@@ -250,15 +251,15 @@ class ncclGraph:
 
                 ### Ignore instant event
                 if trace["ph"].lower() == "i":
-                	continue
+                    continue
 
                 ### Get the rawname withoud RECV/SEND
                 if ".RECV" in trace["name"]:
-                	raw_name = trace["name"].split(".RECV")[0]
+                    raw_name = trace["name"].split(".RECV")[0]
                 elif ".SEND" in trace["name"]:
-                	raw_name = trace["name"].split(".SEND")[0]
+                    raw_name = trace["name"].split(".SEND")[0]
                 else:
-                	raw_name = trace["name"]
+                    raw_name = trace["name"]
 
                 if raw_name not in self.raw_name2IDnum:
                     self.raw_name2IDnum[raw_name] = {"chunkNum": 0, "sliceNum": 0, "channelNum": 0}
@@ -278,29 +279,27 @@ class ncclGraph:
         ''' For the first step of Send, return all the BW/Negotiate nodes.it depends on 
         '''
         if self.algo == NCCL_ALGO.RING:
-            ### For ring, chunkId denotes the step of each chunk of tensor
             ### for the first chunk to be sent, it depends on the BW nodes of all ranks
             all_prefix = [self.rank2prefix[r] for r in sorted(self.graph["Ring"][channelId].keys())]
-            return all_prefix
         elif self.algo == NCCL_ALGO.TREE:
-            # TODO (huhanpeng)
-            raise NotImplementedError()
+            all_prefix = [self.rank2prefix[r] for r in sorted(self.graph["Tree"][channelId].keys())]
         else:
-            raise ValueError("NCCL_ALGO error: %s" % self.algo.value)
+            raise NotImplementedError()
+        return all_prefix
 
     def is_first_step(self, chunkId):
-    	### For ring, chunkId denotes the step of each chunk of tensor
-    	if self.algo == NCCL_ALGO.RING:
-    		return chunkId == 0
-    	else:
-    		raise NotImplementedError()
+        ### For ring, chunkId denotes the step of each chunk of tensor
+        if self.algo == NCCL_ALGO.RING:
+            return chunkId == 0
+        else:
+            raise NotImplementedError()
 
     def is_last_step(self, chunkId):
-    	### For ring, chunkId denotes the step of each chunk of tensor
-    	if self.algo == NCCL_ALGO.RING:
-    		return chunkId >= (2 * (self.rank_num - 1) - 1)
-    	else:
-    		raise NotImplementedError()
+        ### For ring, chunkId denotes the step of each chunk of tensor
+        if self.algo == NCCL_ALGO.RING:
+            return chunkId >= (2 * (self.rank_num - 1) - 1)
+        else:
+            raise NotImplementedError()
 
     def send_to_recv(self, prefix, chunkId, sliceId, channelId):
         ''' Given a Send op, find the Recv Op 
@@ -407,7 +406,13 @@ class ncclGraph:
                 t = p - 1 - c + (k + 1) * self.rank_num
         return t
 
-    
+    def ret_parent(self, prefix, channelId):
+        rank = self.prefix2rank[prefix]
+        return self.graph["Tree"][channelId][rank]["up"]
+
+    def ret_childs(self, prefix, channelId):
+        rank = self.prefix2rank[prefix]
+        return self.graph["Tree"][channelId][rank]["down"]
 
 
 

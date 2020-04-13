@@ -535,7 +535,7 @@ class Collector(object):
 
         elif self.pm.dir_level == DirLevel.TRIAL:
             self.clock_aligner = ClockAligner()
-            self.nccl_graph = ncclGraph()
+            self.nccl_graph = ncclGraph(algo=NCCL_ALGO.TREE)
             for _dir in self.pm.dirs:
                 worker_path = os.path.join(self.pm.path, _dir)
                 worker_root, worker_dirs, _ = list(os.walk(worker_path))[0]
