@@ -23,7 +23,7 @@ class Deivce:
 	def reset(self):
 		self.device_time = 0
 
-	def exet(self, name, _last_end_time):
+	def exct(self, name, _last_end_time):
 		''' Execute one op on this device 
 
 		Parameters
@@ -139,7 +139,6 @@ class Replayer:
 		self.next_nodes = []
 
 		self.rst_traces = []
-		self.init_device_dict()
 
 		#! Used for debug
 		self.debug_traces = []
@@ -163,7 +162,11 @@ class Replayer:
 		#! prepare next_nodes
 		for n, _status in self.node_status.items():
 			if _status["in_degree"] == 0 and n not in self.accessed:
-				assert "Comm" not in n
+				try:
+					assert "Comm" not in n
+				except:
+					print(n)
+					raise
 				pid = parse_pid_from_name(n)
 				_last_end = self.step_end_time[pid] if _status["last_end"] is None else _status["last_end"]
 				self.insert_next_node(n, _last_end)
@@ -173,7 +176,7 @@ class Replayer:
 		assert len(self.next_nodes) != 0
 		for (n, t) in self.next_nodes:
 			device = self.name2device(n)
-			device.exet(n, t)
+			device.exct(n, t)
 		assert len(self.node_status) == 0
 
 	def replay(self):
@@ -184,6 +187,10 @@ class Replayer:
 		self.end_replayer()
 
 	def insert_next_node(self, n, t):
+		'''
+		n: node string
+		t: start time of this node
+		'''
 		self.accessed.add(n)
 		#! TODO (huhanpeng): if OPs are ranked, 
 		# just to substitute key to compare their ranks.
@@ -215,23 +222,19 @@ class Replayer:
 
 	def name2device(self, n):
 		pid = parse_pid_from_name(n)
-		if "Comm" in pid:
-			### communication node
-			if "NEGOTIATE_ALLREDUCE" in n:
-				return self.device_dict["NEGOTIATE_ALLREDUCE"]
-			elif "NCCL_ALLREDUCE" in n or "QUEUE" in n:
-				return self.device_dict["NCCL_ALLREDUCE"]
-			else:
-				raise ValueError("Fail to find devices for %s" % (n))
+		if "Comm" in n:
+			cat = "Comm"
+		elif "I/O" in n:
+			cat = "I/O"
 		else:
-			return self.device_dict[pid]		
+			assert "FW" in n or "BW" in n or "STEP" in n or "OUTPUT" in n
+			cat = "operator"
 
-	def init_device_dict(self):
-		for _d in self.leaf_dirs:
-			self.device_dict[_d] = self.create_device(_d)
+		device_id = "%s%s%s"%(pid, DEL, cat)
+		if device_id not in self.device_dict:
+			self.device_dict[device_id] = self.create_device(device_id)
 
-		self.device_dict["NEGOTIATE_ALLREDUCE"] = self.create_device("NEGOTIATE_ALLREDUCE", infi_para=True)
-		self.device_dict["NCCL_ALLREDUCE"] = self.create_device("NCCL_ALLREDUCE")
+		return self.device_dict[device_id]		
 		
 	def create_device(self, device_name, infi_para=False):
 		d = Deivce(device_name, self, infi_para=infi_para)

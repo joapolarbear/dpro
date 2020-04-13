@@ -85,19 +85,24 @@ class DAGManager:
                     for chunkId in range(chunkNum):
                         for sliceId in range(sliceNum):
                             for channelId in range(channelNum):
-                                next_rank_prefix, next_chunkId, next_sliceId, next_channelId, prev_nodes_prefix = \
-                                                    self.nccl_graph.nccl_dependency(self.prefix, chunkId, sliceId, channelId)
+                                if self.nccl_graph.is_first_step(chunkId):
+                                    ### The first step
 
-                                if next_rank_prefix is not None:
-                                    ### normal step
-                                    prev_name = u + ".RECV"
-                                    prev_node = "%s.RECV.%d_%d_%d" % (u, chunkId, sliceId, channelId)
+                                    ### Connect all BW nodes to the op first
+                                    prev_fw_nodes = [_u for _u, _ in mygraph.in_edges(u)]
+                                    assert len(prev_fw_nodes) == 1
+                                    prev_name_base = prev_fw_nodes[0]
                                     next_node = "%s.SEND.%d_%d_%d" % (u, chunkId, sliceId, channelId)
-                                    self.dag.add_edge(
-                                        self.add_prefix(prev_node), 
-                                        self.add_prefix(next_node), 
-                                        weight=self.traceM.lookup_stat(self.wk_prefix, self.rank_prefix, prev_name)
-                                    )
+                                    prev_nodes_prefix = self.nccl_graph.bw_to_first_send(channelId)
+                                    for _prefix in prev_nodes_prefix:
+                                        prev_name = self.add_prefix(prev_name_base, _prefix=_prefix)
+                                        self.dag.add_edge(
+                                            prev_name, 
+                                            self.add_prefix(next_node), 
+                                            weight=self.traceM.lookup_stat(self.wk_prefix, self.rank_prefix, prev_name, with_prefix=True)
+                                        )
+                                    ### Connect from Send to Recv
+                                    next_rank_prefix, next_chunkId, next_sliceId, next_channelId = self.nccl_graph.send_to_recv(self.prefix, chunkId, sliceId, channelId)
                                     prev_name = u + ".SEND"
                                     prev_node = "%s.SEND.%d_%d_%d" % (u, chunkId, sliceId, channelId)
                                     next_node = "%s.RECV.%d_%d_%d" % (u, next_chunkId, next_sliceId, next_channelId)
@@ -106,29 +111,40 @@ class DAGManager:
                                         self.add_prefix(next_node, _prefix=next_rank_prefix), 
                                         weight=self.traceM.lookup_stat(self.wk_prefix, self.rank_prefix, prev_name)
                                     )
-                                elif prev_nodes_prefix is not None:
-                                    ### The first step
                                     
-                                    prev_fw_nodes = [_u for _u, _ in mygraph.in_edges(u)]
-                                    assert len(prev_fw_nodes) == 1
-                                    prev_name_base = prev_fw_nodes[0]
-                                    next_node = "%s.SEND.%d_%d_%d" % (u, chunkId, sliceId, channelId)
-                                    for _prefix in prev_nodes_prefix:
-                                        prev_name = self.add_prefix(prev_name_base, _prefix=_prefix)
-                                        self.dag.add_edge(
-                                            prev_name, 
-                                            self.add_prefix(next_node), 
-                                            weight=self.traceM.lookup_stat(self.wk_prefix, self.rank_prefix, prev_name, with_prefix=True)
-                                        )
                                 else:
-                                    ### all return values are None, the last step
-                                    prev_node = "%s.RECV.%d_%d_%d" % (u, chunkId, sliceId, channelId)
+                                    ### normal steps
+                                    ### Connect from Recv to Send
+                                    _, last_chunkId, last_sliceId, last_channelId = self.nccl_graph.send_to_last_recv(self.prefix, chunkId, sliceId, channelId)
+                                    prev_name = u + ".RECV"
+                                    prev_node = "%s.RECV.%d_%d_%d" % (u, last_chunkId, last_sliceId, last_channelId)
+                                    next_node = "%s.SEND.%d_%d_%d" % (u, chunkId, sliceId, channelId)
                                     self.dag.add_edge(
                                         self.add_prefix(prev_node), 
-                                        self.add_prefix("STEP"), 
-                                        weight=self.traceM.lookup_stat(self.wk_prefix, self.rank_prefix, prev_node)
-                                    )
+                                        self.add_prefix(next_node), 
+                                        weight=self.traceM.lookup_stat(self.wk_prefix, self.rank_prefix, prev_name)
+                                    )   
 
+                                    ### Connect from Send to Recv
+                                    next_rank_prefix, next_chunkId, next_sliceId, next_channelId = self.nccl_graph.send_to_recv(self.prefix, chunkId, sliceId, channelId)
+                                    prev_name = u + ".SEND"
+                                    prev_node = "%s.SEND.%d_%d_%d" % (u, chunkId, sliceId, channelId)
+                                    next_node = "%s.RECV.%d_%d_%d" % (u, next_chunkId, next_sliceId, next_channelId)
+                                    self.dag.add_edge(
+                                        self.add_prefix(prev_node), 
+                                        self.add_prefix(next_node, _prefix=next_rank_prefix), 
+                                        weight=self.traceM.lookup_stat(self.wk_prefix, self.rank_prefix, prev_name)
+                                    )   
+                                    
+                                    if self.nccl_graph.is_last_step(chunkId):
+                                        prev_name = self.add_prefix(u + ".SEND", _prefix=next_rank_prefix)
+                                        prev_node = next_node
+                                        self.dag.add_edge(
+                                            self.add_prefix(prev_node, _prefix=next_rank_prefix), 
+                                            self.add_prefix("STEP", _prefix=next_rank_prefix), 
+                                            weight=self.traceM.lookup_stat(self.wk_prefix, self.rank_prefix, prev_name, with_prefix=True)
+                                        )
+                                    
                 else:
                     prev_fw_nodes = [_u for _u, _ in mygraph.in_edges(u)]
                     assert len(prev_fw_nodes) == 1
@@ -165,6 +181,7 @@ class DAGManager:
             self.logger.debug(e)
 
         # visualize_gml(self.dag, layout="circular")
+        # raise
 
     def _add_new_edges_via_order(self, _pretty):
         ''' Add new edges between FW+BW ops, according to their processing order

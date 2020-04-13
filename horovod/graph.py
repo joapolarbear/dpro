@@ -61,8 +61,6 @@ class ncclGraph:
         
         self.algo = None
         self.rank_num = 0
-        ### Set freeze to true if the graph will not change
-        self.freeze = False
         self.trace_parsed = False
 
         self.graph = {}
@@ -197,9 +195,6 @@ class ncclGraph:
 
 
     def print_graph(self):
-        if not self.freeze:
-            self.freeze_graph()
-
         if "Tree" in self.graph:
             print("Algorithm: %s" % "Tree")
             for channel, channel_dict in sorted(self.graph["Tree"].items()):
@@ -236,7 +231,7 @@ class ncclGraph:
     def parse_traces(self, traces):
         ''' `traces` must be sorted according to `ts` '''
         if self.trace_parsed:
-        	return
+            return
 
         self.trace_parsed = True
         first_fwd = None
@@ -253,6 +248,10 @@ class ncclGraph:
                 if "comm_detail" not in trace["tid"] and "comm_detail" not in trace["pid"]:
                     continue
 
+                ### Ignore instant event
+                if trace["ph"].lower() == "i":
+                	continue
+
                 ### Get the rawname withoud RECV/SEND
                 if ".RECV" in trace["name"]:
                 	raw_name = trace["name"].split(".RECV")[0]
@@ -263,6 +262,7 @@ class ncclGraph:
 
                 if raw_name not in self.raw_name2IDnum:
                     self.raw_name2IDnum[raw_name] = {"chunkNum": 0, "sliceNum": 0, "channelNum": 0}
+
                 self.raw_name2IDnum[raw_name]["chunkNum"] = max(int(trace["args"]["chunkId"]) + 1, self.raw_name2IDnum[raw_name]["chunkNum"])
                 self.raw_name2IDnum[raw_name]["sliceNum"] = max(int(trace["args"]["sliceId"]) + 1, self.raw_name2IDnum[raw_name]["sliceNum"])
                 self.raw_name2IDnum[raw_name]["channelNum"] = max(int(trace["args"]["channelId"]) + 1, self.raw_name2IDnum[raw_name]["channelNum"])
@@ -274,32 +274,40 @@ class ncclGraph:
         assert self.trace_parsed is True
         return self.raw_name2IDnum[raw_name]["chunkNum"], self.raw_name2IDnum[raw_name]["sliceNum"], self.raw_name2IDnum[raw_name]["channelNum"]
 
-    def freeze_graph(self):
-        assert self.freeze is False
-        self.freeze = True
-
-    def nccl_dependency(self, prefix, chunkId, sliceId, channelId):
+    def bw_to_first_send(self, channelId):
+        ''' For the first step of Send, return all the BW/Negotiate nodes.it depends on 
         '''
-        Return
-        ------
-        `next rank prefix`, `next chunkId`, `next sliceId`, `next channelId`, 
-        if these are all None, return a list of prefixes, to denote that this is the first communication operations
-        it depends on all the BW/Negotiate nodes.
-        if all of above variables are None, this is the last step
-        '''
-        if not self.freeze:
-            self.freeze_graph()
         if self.algo == NCCL_ALGO.RING:
             ### For ring, chunkId denotes the step of each chunk of tensor
-            if chunkId == 0:
-                ### for the first chunk to be sent, it depends on the BW nodes of all ranks
-                all_prefix = [self.rank2prefix[r] for r in sorted(self.graph["Ring"][channelId].keys())]
-                return None, None, None, None, all_prefix
-            if chunkId >= 2 * (self.rank_num - 1):
-                ### the last step
-                return None, None, None, None, None
+            ### for the first chunk to be sent, it depends on the BW nodes of all ranks
+            all_prefix = [self.rank2prefix[r] for r in sorted(self.graph["Ring"][channelId].keys())]
+            return all_prefix
+        elif self.algo == NCCL_ALGO.TREE:
+            # TODO (huhanpeng)
+            raise NotImplementedError()
+        else:
+            raise ValueError("NCCL_ALGO error: %s" % self.algo.value)
 
-            ### for the remaining steps
+    def is_first_step(self, chunkId):
+    	### For ring, chunkId denotes the step of each chunk of tensor
+    	if self.algo == NCCL_ALGO.RING:
+    		return chunkId == 0
+    	else:
+    		raise NotImplementedError()
+
+    def is_last_step(self, chunkId):
+    	### For ring, chunkId denotes the step of each chunk of tensor
+    	if self.algo == NCCL_ALGO.RING:
+    		return chunkId >= (2 * (self.rank_num - 1) - 1)
+    	else:
+    		raise NotImplementedError()
+
+    def send_to_recv(self, prefix, chunkId, sliceId, channelId):
+        ''' Given a Send op, find the Recv Op 
+        '''
+        ### for the remaining steps
+        if self.algo == NCCL_ALGO.RING:
+            ### For ring, chunkId denotes the step of each chunk of tensor
             rank = self.prefix2rank[prefix]
             c, k = self.ring_step_to_chunk_order_id(rank, chunkId, Send=True)
             ### !!! dependency
@@ -308,7 +316,7 @@ class ncclGraph:
             nk = k
             next_chunkId = self.ring_chunk_order_id_to_step(next_rank, nc, nk, Send=False)
             
-            return self.rank2prefix[next_rank], next_chunkId, sliceId, channelId, None
+            return self.rank2prefix[next_rank], next_chunkId, sliceId, channelId
 
         elif self.algo == NCCL_ALGO.TREE:
             # TODO (huhanpeng)
@@ -316,6 +324,49 @@ class ncclGraph:
         else:
             raise ValueError("NCCL_ALGO error: %s" % self.algo.value)
 
+    def send_to_last_recv(self, prefix, chunkId, sliceId, channelId):
+        ''' Given a Send op, find the *last* Recv Op 
+        '''
+        ### for the remaining steps
+        if self.algo == NCCL_ALGO.RING:
+            ### For ring, chunkId denotes the step of each chunk of tensor
+            rank = self.prefix2rank[prefix]
+            c, k = self.ring_step_to_chunk_order_id(rank, chunkId, Send=True)
+            ### !!! dependency
+            last_rank = rank
+            lc = c
+            lk = k - 1 if (k > 0 and c == rank) else k
+            last_chunkId = self.ring_chunk_order_id_to_step(last_rank, lc, lk, Send=False)
+            
+            return self.rank2prefix[last_rank], last_chunkId, sliceId, channelId
+
+        elif self.algo == NCCL_ALGO.TREE:
+            # TODO (huhanpeng)
+            raise NotImplementedError()
+        else:
+            raise ValueError("NCCL_ALGO error: %s" % self.algo.value)
+
+    def recv_to_send(self, prefix, chunkId, sliceId, channelId):
+        ''' Given a Recv op, find the Send Op 
+        '''
+        ### for the remaining steps
+        if self.algo == NCCL_ALGO.RING:
+            ### For ring, chunkId denotes the step of each chunk of tensor
+            rank = self.prefix2rank[prefix]
+            c, k = self.ring_step_to_chunk_order_id(rank, chunkId, Send=False)
+            ### !!! dependency
+            next_rank = rank
+            nc = c
+            nk = k + 1 if c == rank else k
+            next_chunkId = self.ring_chunk_order_id_to_step(next_rank, nc, nk, Send=True)
+            
+            return self.rank2prefix[next_rank], next_chunkId, sliceId, channelId
+
+        elif self.algo == NCCL_ALGO.TREE:
+            # TODO (huhanpeng)
+            raise NotImplementedError()
+        else:
+            raise ValueError("NCCL_ALGO error: %s" % self.algo.value)
 
     def ring_step_to_chunk_order_id(self, p, t, Send=True):
         '''

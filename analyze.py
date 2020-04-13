@@ -137,8 +137,8 @@ if args.option == "replay":
 	logger.info("# Collect DAG")
 	trail_dag = clct.collect_dag(args)
 
-	raise
-	
+	# dag_longest_path(trail_dag, clct.pm, weight="weight", default_weight=0)
+
 	### Replay traces
 	logger.info("# Start to Replay")
 	replayer = Replayer(
