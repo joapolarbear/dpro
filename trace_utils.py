@@ -45,6 +45,7 @@ class FileName(Enum):
     SYMBOL="symbol_debug_str.txt"
     TENSOR_NAME="gradient_name_list.txt"
     COMM_DETAIL="comm_detail.json"
+    INFO="info.json"
 
 def read_traces(traces_path):
     '''
@@ -231,16 +232,6 @@ def split_name(_name):
         raise ValueError("split_name error: " + _name)
     return _local_rank, raw_name
 
-def lookup_stat(name2sta, _name, _field="avg"):
-    ''' look up data from the stat info
-    * if name2sta is the stat info of entire worker, _name should contain rank id
-    * else, name2sta is the stat info of one GPU
-    '''
-    if "rank" not in _name:
-        return name2sta[_name][_field] if _name in name2sta else 0.0
-    _local_rank, _raw_name = split_name(_name)
-    return name2sta["traces"][_local_rank][_raw_name][_field]
-
 def return_path_dict(root_path):
     ''' Map the paths of each file from its name
     Args:
@@ -297,7 +288,7 @@ def parse_cat_from_name(name):
         return "I/O"
     elif "Comm" in name:
         return "Comm"
-    elif "FW" in name or "BW" in name or "STEP" in name or "OUTPUT" in name:
+    elif "FW" in name or "BW" in name or "UPDATE" in name or "OUTPUT" in name:
         return "operator"
     else:
         raise ValueError("Can not decide the cat of %s" % name)
@@ -329,21 +320,31 @@ def get_iter_time(traces, rank=None):
     ret = []
     for prefix in sorted(operator_traces_list.keys()):
         operator_traces = operator_traces_list[prefix]
-        start_ts = None
+        step_start_ts = None
         cur_iter_time = 0
         fw_bw_list = []
         iter_list = []
         operator_traces = sorted(operator_traces, key=lambda x: x["ts"])
+
+        ### Retrive the maximum number of update to find the last operator
+        max_update_id = 0
         for event in operator_traces:
-            if start_ts is None:
-                start_ts = event['ts']
-            ### here we assume STEP is following the last BP op.
-            if "STEP" in event["name"]:
-                fw_bw_list.append((cur_iter_time - start_ts) / 1000.0)
+            if "UPDATE" in event["name"]:
+                max_update_id = max(max_update_id, int(event["name"].split("UPDATE_")[1]))
+        last_op_of_step = "UPDATE_%d"%max_update_id
+
+        for event in operator_traces:
+            if step_start_ts is None:
+                step_start_ts = event['ts']
+                
+            ### TODO (huhanpeng): change after fine-tune update
+            ### here we assume UPDATE is following the last BP op.
+            if "UPDATE" in event["name"]:
+                fw_bw_list.append((cur_iter_time - step_start_ts) / 1000.0)
             cur_iter_time = event['ts'] + event['dur']
-            if "STEP" in event["name"]:
-                iter_list.append((cur_iter_time - start_ts) / 1000.0)
-                start_ts = None
+            if last_op_of_step in event["name"]:
+                iter_list.append((cur_iter_time - step_start_ts) / 1000.0)
+                step_start_ts = None
         fw_bw_time = sum(fw_bw_list) / float(len(fw_bw_list))
         iter_time = sum(iter_list) / float(len(iter_list))
         ret.append((prefix, fw_bw_time, iter_time))
@@ -351,7 +352,7 @@ def get_iter_time(traces, rank=None):
                 fw_bw_time, iter_time))
     return ret
 
-def read_list(path):
+def load_list(path):
     ''' read a list from a file
     '''
     with open(path, 'r') as f:
@@ -464,4 +465,32 @@ class PathManager:
             return "TRIAL_ROOT"
         else:
             raise ValueError()
+
+    def map_tensors_to_update(self):
+        ''' Map each tensor to its corresponding update operation
+        For MXNet
+        '''
+        assert self.dir_level == DirLevel.TRIAL
+        ### Read aggregate num
+        info_path = self.search(FileName.INFO)
+        if info_path is None:
+            SingleLogger().warn("Fail to map_tensors_to_update")
+            aggregate_num = 0
+        else:
+            with open(info_path, 'r') as fp:
+                aggregate_num = json.load(fp)["opt_aggregate_num"]
+        ### Read gradient name list in reverse order
+        gra_path = self.search(FileName.TENSOR_NAME)
+        gradient_name_list = load_list(gra_path)
+        gradient_name_list.reverse()
+        ret = {}
+        for idx in range(len(gradient_name_list)):
+            gra = gradient_name_list[idx]
+            ret[gra] = idx if aggregate_num == 0 else int(idx / aggregate_num)
+        return ret
+
+
+
+
+
 

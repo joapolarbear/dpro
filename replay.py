@@ -63,22 +63,32 @@ class Deivce:
 		cat = parse_cat_from_name(name)
 		raw_name = parse_rawname_from_name(name)
 		delay, ratio = self.get_delay_para()
-		_dur = (1000.0 * (avg + delay)) * ratio
+		duration = (1000.0 * (avg + delay)) * ratio
+
+		if "RECV" in name:
+			### For Send->Recv edge, there exist some overlap
+			### TODO (huhanpeng): how do decide the end time of the RECV event
+			start_t = _last_end_time + FIXED_GAP_us - duration
+		else:
+			start_t = _last_end_time + FIXED_GAP_us
+
 		self.replayer.rst_traces.append({
 				"name": raw_name,
-				"ts": _last_end_time + FIXED_GAP_us ,
-				"dur": _dur,
+				"ts": start_t,
+				"dur": duration,
 				"pid": pid,
 				"cat": cat,
 				"ph": "X",
 				"tid": cat
 			})
 
-		self.mark_as_exct(name, _last_end_time + FIXED_GAP_us + _dur)
-		if "STEP" in name:
-			#! current STEP of this GPU ends
+		self.mark_as_exct(name, start_t + duration)
+		### TODO (huhanpeng): modify after fine-tune update
+		### Should be safe now, would be overitted by an UPDATE OP with larger UPDATE index
+		if "UPDATE" in name:
+			#! current UPDATE of this GPU ends
 			pid = parse_pid_from_name(name)
-			self.replayer.step_end_time[pid] = _last_end_time + FIXED_GAP_us + _dur
+			self.replayer.step_end_time[pid] = start_t + duration
 
 		#! TODO: for debug
 		self.replayer.debug_record(name, _ts, self.device_name, "run")
@@ -113,15 +123,6 @@ class Deivce:
 				delay = self.replayer.delay_dict["DELAY_ALL"]["delay"]
 				ratio = self.replayer.delay_dict["DELAY_ALL"]["ratio"]
 		return delay, ratio
-
-	def get_name2sta(self, _name):
-		if "rank" not in _name:
-			#! shared nodes across GPUs
-			return None, None, None
-		else:
-			_local_rank, _raw_name = split_name(_name)
-			_name2sta = self.replayer.all_name2sta["traces"][_local_rank]
-			return _local_rank, _raw_name, _name2sta
 
 class Replayer:
 	def __init__(self, trace_manager, collector, dag, _step_num):
@@ -228,14 +229,7 @@ class Replayer:
 
 	def name2device(self, n):
 		pid = parse_pid_from_name(n)
-		if "Comm" in n:
-			cat = "Comm"
-		elif "I/O" in n:
-			cat = "I/O"
-		else:
-			assert "FW" in n or "BW" in n or "STEP" in n or "OUTPUT" in n
-			cat = "operator"
-
+		cat = parse_cat_from_name(n)
 		device_id = "%s%s%s"%(pid, DEL, cat)
 		if device_id not in self.device_dict:
 			self.device_dict[device_id] = self.create_device(device_id)

@@ -62,14 +62,14 @@ class DAGManager:
         else:
             return "%s%s%s"%(_prefix, DEL, name)
 
-    def gen_dag_with_prefix_weight(self):
+    def gen_dag_with_prefix_weight(self, update_dict=None):
         ''' Gen a dag from the original graph with weighted edges.
         Args:
             gml_path: stores the dag output by byteprofile
                 TODO, all Comm OPs of one single gradients are considered as one node.
         Return: A dag, which
             * is **weighted**;
-            * containing FW, BW, OUTPUT, Comm, I/O and STEP nodes;
+            * containing FW, BW, OUTPUT, Comm, I/O and UPDATE nodes;
             * node names start with 'rank{id}.';
             * partition Comm nodes into sub-task nodes if needed.
         '''
@@ -80,6 +80,8 @@ class DAGManager:
 
         for u, v in mygraph.edges:
             if "Comm" in u:
+                gra_name = u.split("Comm.")[1]
+                update_id = 0 if update_dict is None else update_dict[gra_name]
                 if self.nccl_graph is not None and self.nccl_graph.algo == NCCL_ALGO.RING:
                     ### Combine chunkId, sliceId and channelId into the graph for RING algorithm
                     chunkNum, sliceNum, channelNum = self.nccl_graph.get_IDnum(u)
@@ -138,7 +140,7 @@ class DAGManager:
                                         prev_node = next_node
                                         self.dag.add_edge(
                                             self.add_prefix(prev_node, _prefix=next_rank_prefix), 
-                                            self.add_prefix("STEP", _prefix=next_rank_prefix), 
+                                            self.add_prefix("UPDATE_%d"%update_id, _prefix=next_rank_prefix), 
                                             weight=self.traceM.lookup_stat(self.wk_prefix, self.rank_prefix, prev_name, with_prefix=True))
                 elif self.nccl_graph is not None and self.nccl_graph.algo == NCCL_ALGO.TREE:
                     ### Combine chunkId, sliceId and channelId into the graph for RING algorithm
@@ -214,7 +216,7 @@ class DAGManager:
                                     prev_node = "%s.AGGR.%d_%d_%d_%d_%d" % (u, chunkId, sliceId, channelId, rank, 1)
                                     self.dag.add_edge(
                                         self.add_prefix(prev_node), 
-                                        self.add_prefix("STEP"), 
+                                        self.add_prefix("UPDATE_%d"%update_id), 
                                         weight=0)
 
                                     for cld_rank in childs:
@@ -286,14 +288,14 @@ class DAGManager:
                         prev_node = cur_node
                     self.dag.add_edge(
                             self.add_prefix(prev_node), 
-                            self.add_prefix("STEP"), 
+                            self.add_prefix("UPDATE_%d"%update_id), 
                             weight=self.traceM.lookup_stat(self.wk_prefix, self.rank_prefix, prev_node)
                         )
             elif "BW" in u and "Comm" in v:
                 ### delete edges from BW to Comm main task.
                 pass
-            elif "STEP" in u and "FW" in v:
-                ### ignore nodes from STEP to FW, avoid a circle
+            elif "UPDATE" in u and "FW" in v:
+                ### ignore nodes from UPDATE to FW, avoid a circle
                 pass
             else:
                 self.dag.add_edge(
@@ -302,6 +304,7 @@ class DAGManager:
                     weight=self.traceM.lookup_stat(self.wk_prefix, self.rank_prefix, u)
                 )
 
+        self.dag.remove_node(self.add_prefix("UPDATE"))
         for e in self.dag.edges.data("weight"):
             self.logger.debug(e)
 
@@ -352,7 +355,7 @@ class DAGManager:
                 first = False
 
             #! only consider FW and BW nodes
-            if event["cat"] != "operator" or "STEP" in event["name"]:
+            if event["cat"] != "operator" or "UPDATE" in event["name"]:
                 continue
 
             #! TODO(huhanpeng): will never break, since some BW nodes do not exist.
@@ -406,11 +409,15 @@ class DAGManager:
     def is_fw_bw_node(self, name):
         return "BW" in name or "FW" in name
     
-    def gen_gpu_dag(self, _pretty=False):
+    def gen_gpu_dag(self, _pretty=False, update_dict=None):
         ''' Add edges according to the processing order of FW+BW ops 
             and construct a new graph running on GPU, which we call gpu_dag.
+        Parameter
+        __________
+        update_dict: dict
+            A dict which maps from each gradients to its UPDATE operation id
         '''
-        self.gen_dag_with_prefix_weight()
+        self.gen_dag_with_prefix_weight(update_dict)
         self.gpu_dag = self.dag
 
         critical_path = None

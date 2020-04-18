@@ -1,17 +1,8 @@
 import logging
 import os
+from base import Singleton
+
 LOG_LEVEL_NAME = ["DEBUG", "INFO", "WARNING", "ERROR", "FATAL"]
-
-#! define a singleton class
-def Singleton(cls):
-    _instance = {}
-
-    def _singleton(*args, **kargs):
-        if cls not in _instance:
-            _instance[cls] = cls(*args, **kargs)
-        return _instance[cls]
-
-    return _singleton
 
 @Singleton
 class SingleLogger:

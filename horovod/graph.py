@@ -72,6 +72,7 @@ class ncclGraph:
     def parse_tree_topo(self, tree_dict, map_to=None):
         ''' If `map_to` is set, map the rank to the given prefix '''
         ### "Tree": {"-1": "[0] 1/-1/-1->0->-1|-1->0->1/-1/-1 [1] 1/-1/-1->0->3|3->0->1/-1/-1"}
+        self.algo = NCCL_ALGO.TREE
         if "Tree" not in self.graph:
             self.graph["Tree"] = {}
         tree_str = tree_dict["-1"]
@@ -155,6 +156,7 @@ class ncclGraph:
         ''' If `map_to` is set, map the rank to the given prefix '''
         ### "1": "3[3000] -> 0[2000] [receive] via NET/Socket/0,0[2000] -> 1[3000] via direct shared memory,0[2000] -> 3[3000] [send] via NET/Socket/0",
         ### "0": "3[3000] -> 0[2000] [receive] via NET/Socket/0,0[2000] -> 1[3000] via direct shared memory"
+        self.algo = NCCL_ALGO.RING
         if "Ring" not in self.graph:
             self.graph["Ring"] = {}
         rank = None
@@ -242,7 +244,7 @@ class ncclGraph:
                 if "FW" in trace["name"]:
                     if first_fwd is None:
                         first_fwd = trace["name"]
-                    elif trace["name"] == first_fwd:
+                    elif trace["name"] == first_fwd:       
                         break
 
                 ### Just check traces whose pid is comm_detail

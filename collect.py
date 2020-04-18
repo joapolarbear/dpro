@@ -9,10 +9,12 @@ import networkx as nx
 import threading
 import time
 import logger_utils
+import arg_utils
 
 from trace_utils import *
 from dag_utils import * 
 from horovod.graph import *
+
 
 class RunningSpan:
     def __init__(self):
@@ -132,7 +134,7 @@ class Collector(object):
         self.time_dict = {"traceEvents":[]}
         ### Apply dependencies in dag to the mxnet traces.
         self.bpf_collect_comp()
-        ### Collect communication traces, IO traces and STEP traces and apply dependency
+        ### Collect communication traces, IO traces and UPDATE traces and apply dependency
         self.bpf_collect_io()
         self.bpf_collect_comm()
         get_iter_time(self.time_dict)
@@ -252,7 +254,7 @@ class Collector(object):
                 return False
             return True
 
-        ### collect traces of FW + BP OPs and STEP OPs
+        ### collect traces of FW + BP OPs and UPDATE OPs
         index = 0
         while index < len(traces):
             trace = traces[index]
@@ -284,11 +286,12 @@ class Collector(object):
                 trace["pid"] = pid
             rst_traces["traceEvents"].append(trace)
 
-            ### if all STEP-dependent BW nodes have arrived, process traces til FW
+            ### if all UPDATE-dependent BW nodes have arrived, process traces til FW
             # if len(last_bw_nodes) == 0:
             if name == _real_last_bw_name:
-                _step_ts = None
-                _step_dur = 0
+                _update_ts = None
+                _update_dur = 0
+                _cnt = 0
                 while index < len(traces):
                     _trace = traces[index]
                     if one_pid != _trace["pid"]:
@@ -299,27 +302,28 @@ class Collector(object):
                             break
                         index += 1
                         if is_update_op(_trace):
-                            if _step_ts is None:
+                            rst_traces["traceEvents"].append({
+                                "name": "UPDATE_%d"%_cnt,
+                                "ts": _trace["ts"],
+                                "dur": _trace["dur"],
+                                "ph": "X",
+                                "cat": "operator",
+                                "pid": pid if pid is not None else one_pid,
+                                "args": {
+                                    "name":"UPDATE_%d"%_cnt
+                                }
+                            })
+                            _cnt += 1
+                            if _update_ts is None:
                                 # print(_trace["name"], _trace["ts"])
-                                _step_ts = _trace["ts"]
-                            _step_dur = _trace["ts"] + _trace["dur"] - _step_ts
-                if _step_ts is not None:
+                                _update_ts = _trace["ts"]
+                            _update_dur = _trace["ts"] + _trace["dur"] - _update_ts
+                if _update_ts is not None:
                     if self.clock_aligner is not None and host_id is not None:
-                        ### register the start time of first STEP
-                        self.clock_aligner.mark_ref_time(host_id, _step_ts)
-                    rst_traces["traceEvents"].append({
-                        "name": "STEP",
-                        "ts": _step_ts,
-                        "dur": _step_dur,
-                        "ph": "X",
-                        "cat": "operator",
-                        "pid": pid if pid is not None else one_pid,
-                        "args": {
-                            "name":"STEP"
-                        }
-                    })
+                        ### register the start time of first UPDATE
+                        self.clock_aligner.mark_ref_time(host_id, _update_ts)
                     ### Initialize the end time of the entire running span
-                    self.run_span[wk_prefix].init_end(_step_ts + _step_dur)
+                    self.run_span[wk_prefix].init_end(_update_ts + _update_dur)
 
         self.clock_aligner.append_traces(host_id, rst_traces["traceEvents"])
 
@@ -366,13 +370,15 @@ class Collector(object):
             traceback.print_exc()
             traces = []
 
-        if isinstance(traces, dict):   
-            if "Tree" in traces:
-                self.nccl_graph.parse_tree_topo(traces["Tree"], map_to=pid)
-            if "Ring" in traces:
-                self.nccl_graph.parse_connect_topo(traces["Ring"], map_to=pid)  
-            if "RealRing" in traces:
-                self.nccl_graph.parse_ring_topo(traces["RealRing"], map_to=pid)  
+        algo = arg_utils.SingleArg().args.nccl_algo
+        if algo is None:
+            raise ValueError("--nccl_algo must be given")
+        elif algo.lower() == "tree":
+            self.nccl_graph.parse_tree_topo(traces["Tree"], map_to=pid)
+        elif algo.lower() == "ring":
+            self.nccl_graph.parse_ring_topo(traces["RealRing"], map_to=pid)  
+            # self.nccl_graph.parse_connect_topo(traces["Ring"], map_to=pid)  
+        if isinstance(traces, dict):    
             traces = traces["traceEvents"]
 
         traces = sorted(traces, key=lambda x: x["ts"], reverse=False)
@@ -535,7 +541,7 @@ class Collector(object):
 
         elif self.pm.dir_level == DirLevel.TRIAL:
             self.clock_aligner = ClockAligner()
-            self.nccl_graph = ncclGraph(algo=NCCL_ALGO.TREE)
+            self.nccl_graph = ncclGraph()
             for _dir in self.pm.dirs:
                 worker_path = os.path.join(self.pm.path, _dir)
                 worker_root, worker_dirs, _ = list(os.walk(worker_path))[0]
@@ -581,6 +587,7 @@ class Collector(object):
         critical_path = []
         worker_dag_list = []   
         traceM = self.collect_traces()
+        update_dict = self.pm.map_tensors_to_update()
         for _dir in self.pm.dirs:
             worker_path = os.path.join(self.pm.path, _dir)
             worker_root, worker_dirs, _ = list(os.walk(worker_path))[0]
@@ -588,7 +595,7 @@ class Collector(object):
                 gpu_path = os.path.join(worker_root, worker_dir)
                 self.logger.info("## Collect DAG in %s" % (gpu_path))
                 dagmanager = DAGManager(gpu_path, traceM, self.nccl_graph)
-                max_para_degree, _critical_path = dagmanager.gen_gpu_dag(_pretty=args.pretty)
+                max_para_degree, _critical_path = dagmanager.gen_gpu_dag(_pretty=args.pretty, update_dict=update_dict)
                 worker_dag_list.append(dagmanager.gpu_dag)
                 if _critical_path is not None:
                     critical_path += _critical_path
