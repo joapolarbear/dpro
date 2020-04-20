@@ -40,7 +40,7 @@ class Deivce:
 		if not self.infi_para:
 			_last_end_time = max(_last_end_time, self.device_time)
 
-		if "OUTPUT" in name or "Sync" in name:
+		if "Sync" in name:
 			#! No event is generated, but has successors
 			self.mark_as_exct(name, _last_end_time)
 			return 

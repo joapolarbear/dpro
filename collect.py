@@ -217,7 +217,9 @@ class Collector(object):
         def real_last_bw_name():
             statue = "init"
             _index = 0
-            tmp = None
+            last_bw = None
+            last_fw = None
+            first_bw = None
             while _index < len(traces):
                 trace = traces[_index]
                 _index += 1
@@ -226,15 +228,19 @@ class Collector(object):
                     continue
                 if statue == "init" and "FW" in name:
                     statue = "fw"
+                    last_fw = name
+                elif statue == "fw" and "FW" in name:
+                    last_fw = name
                 elif statue == "fw" and "BW" in name:
                     statue = "bw"
-                    tmp = name
+                    first_bw = name
+                    last_bw = name
                 elif statue == "bw" and "BW" in name:
-                    tmp = name
+                    last_bw = name
                 elif statue == "bw" and "FW" in name:
                     statue = "fw"
-                    return tmp
-        _real_last_bw_name = real_last_bw_name()
+                    return last_fw, first_bw, last_bw
+        last_fw, first_bw, last_bw = real_last_bw_name()
 
         IGNORE_OP = ["DeleteVariable", "sum", "_plus_scalar", 
                 "_copyto_GPU2GPU", "broadcast_add", 
@@ -286,9 +292,37 @@ class Collector(object):
                 trace["pid"] = pid
             rst_traces["traceEvents"].append(trace)
 
+            ### Handle OUTPUT
+            if name == last_fw:
+                output_ts = None
+                output_dur = None
+                while index < len(traces):
+                    _trace = traces[index]
+                    if one_pid != _trace["pid"]:
+                        index += 1
+                    else:
+                        name = standar_name(_trace["name"])
+                        if name == first_bw or name in self.dag.nodes:
+                            break
+                        output_ts = _trace["ts"] if output_ts is None else output_ts
+                        output_dur = _trace["ts"] + _trace["dur"] - output_ts
+                        index += 1
+                if output_ts is not None and output_dur is not None:
+                    rst_traces["traceEvents"].append({
+                        "name": "OUTPUT0",
+                        "ts": output_ts,
+                        "dur": output_dur,
+                        "ph": "X",
+                        "cat": "operator",
+                        "pid": pid if pid is not None else one_pid,
+                        "args": {
+                            "name":"OUTPUT0"
+                        }
+                    })
+
             ### if all UPDATE-dependent BW nodes have arrived, process traces til FW
             # if len(last_bw_nodes) == 0:
-            if name == _real_last_bw_name:
+            elif name == last_bw:
                 _update_ts = None
                 _update_dur = 0
                 _cnt = 0
