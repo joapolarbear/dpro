@@ -299,6 +299,7 @@ class Collector(object):
             if name == last_fw:
                 output_ts = None
                 output_dur = None
+                output_tid = None
                 while index < len(traces):
                     _trace = traces[index]
                     if one_pid != _trace["pid"]:
@@ -309,6 +310,7 @@ class Collector(object):
                             break
                         output_ts = _trace["ts"] if output_ts is None else output_ts
                         output_dur = _trace["ts"] + _trace["dur"] - output_ts
+                        output_tid = _trace["tid"] if output_tid is None else output_tid
                         index += 1
                 if output_ts is not None and output_dur is not None:
                     rst_traces["traceEvents"].append({
@@ -604,9 +606,9 @@ class Collector(object):
             self.nccl_graph.print_graph()
 
             ### only read comm.json once
-            # self.time_dict = {"traceEvents":[]} 
-            # self.bpf_collect_comm()
-            # rst_traces["traceEvents"] += self.time_dict["traceEvents"]
+            self.time_dict = {"traceEvents":[]} 
+            self.bpf_collect_comm()
+            rst_traces["traceEvents"] += self.time_dict["traceEvents"]
 
         if is_output:
             self.dump_traces(rst_traces)
@@ -729,9 +731,9 @@ class Collector(object):
                             align_table[recv_host][send_host] = BiasRange(None, None)
                         ### (hostid=send_host)'s bias based on (rankid=recv_host)
                         align_table[recv_host][send_host] *= BiasRange(send_end_t - recv_end_t, None)
-                    print(send_trace)
-                    print(recv_trace)
-                    display_align_table()
+                    # print(send_trace)
+                    # print(recv_trace)
+                    # display_align_table()
                     break
 
         ### tidy up align table, calculate bias for all hostid based hostid=0
@@ -744,10 +746,9 @@ class Collector(object):
                 range2host0 *= (_range + ret_bias_range_to_host0(base_id))
             return range2host0
         
-        display_align_table()
         for host_id in sorted(align_table.keys()):
             bias_range = ret_bias_range_to_host0(host_id)
-            bias_range.display()
+            SingleLogger().info("%d's bias range: %s" % (host_id, bias_range.displays()))
             align_list[host_id] = bias_range.random_gen_value()
 
         ### Apply these bias
