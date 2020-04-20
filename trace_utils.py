@@ -1,5 +1,6 @@
 import os
 import json
+import random
 import xlsxwriter
 import traceback
 import logger_utils
@@ -21,6 +22,7 @@ QUEUETYPE = {
 
 ### The delimiter bettwen the pid and the raw name in the standard name format
 DEL = "->"
+DDEL = "~>"
 
 @Singleton
 class QueueType:
@@ -79,7 +81,11 @@ class TraceManager:
         return event["cat"] == "Comm"
 
     def ret_unique_name(self, event):
-        return event["pid"] + DEL + event["name"]
+        if "chunkId" in event["args"]:
+            suffix = "%d_%d_%d"%(event["args"]["chunkId"], event["args"]["sliceId"], event["args"]["channelId"])
+        else:
+            suffix=None
+        return gen_long_name(event["pid"], event["name"], suffix=suffix)
 
     def ret_stat(self):
         """ Basic Statistic """
@@ -104,6 +110,7 @@ class TraceManager:
                     # "cat": event["cat"] 
                     "cat": event["cat"]
                     }
+            event["args"]["cnt"] = self.name2sta[unique_name]["cnt"] - 1
                 
         """calculate the avg """
         for name, statistic in self.name2sta.items():
@@ -137,9 +144,9 @@ class TraceManager:
         if self.dir_level == DirLevel.GPU or with_prefix:
             unique_name = name
         elif self.dir_level == DirLevel.WORKER:
-            unique_name = "%s%s%s"%(rank_prefix, DEL, name)
+            unique_name = gen_long_name(rank_prefix, name)
         elif self.dir_level == DirLevel.TRIAL:
-            unique_name = "%s.%s%s%s"%(wk_prefix, rank_prefix, DEL, name)
+            unique_name = gen_long_name("%s.%s"%(wk_prefix, rank_prefix), name)
 
         if unique_name not in self.name2sta:
             # SingleLogger().warn("Fail to find the trace of %s" % unique_name)
@@ -178,6 +185,17 @@ class TraceManager:
                     col += 1
                     worksheet.write(row, col, statistic[key])
         workbook.close()
+
+    def search_by_long_name(self, longname, start_idx=0):
+        for idx in range(start_idx, len(self.traces)):
+            ### ignore instance events
+            if self.traces[idx]["ph"].lower() == "i":
+                continue
+            std_name = gen_long_name(self.traces[idx]["pid"], self.traces[idx]["args"]["name"])
+            if std_name == longname:
+                return idx, self.traces[idx]
+        return None, None
+
 
 def return_stat(traces):
     """ Basic Statistic """
@@ -271,6 +289,23 @@ def return_path_dict(root_path):
             pass
     return path_dict
 
+def gen_long_name(prefix, raw_name, suffix=None):
+    if prefix is None:
+        pre = ""
+    else:
+        pre = prefix + DEL
+    if suffix is None:
+        suf = ""
+    else:
+        suf = DDEL + suffix
+    return pre + raw_name + suf
+
+def parse_suffix_from_name(name):
+    if DDEL in name:
+        return name.split(DDEL)[0], name.split(DDEL)[1]
+    else:
+        return name, None
+
 def parse_pid_from_name(name):
     if DEL not in name:
         return "none"
@@ -359,6 +394,61 @@ def load_list(path):
         l = f.read().split("\n")
     l = l[:-1] if l[-1] == '' else l
     return l
+
+
+class BiasRange:
+    def __init__(self, _l, _r):
+        self.l = _l
+        self.r = _r
+
+    def max_min_with_none(self, a, b, is_max=True):
+        if a is None:
+            return b
+        elif b is None:
+            return a
+        else:
+            return max(a, b) if is_max else min(a, b)
+
+    def add_with_none(self, a, b):
+        if a is None:
+            return b
+        elif b is None:
+            return a
+        else:
+            return a + b
+
+    def __mul__(self, other):
+        nl = self.max_min_with_none(self.l, other.l, is_max=True)
+        nr = self.max_min_with_none(self.r, other.r, is_max=False)
+        return BiasRange(nl, nr)
+
+    def __add__(self, other):
+        nl = self.add_with_none(self.l, other.l)
+        nr = self.add_with_none(self.r, other.r)
+        return BiasRange(nl, nr)
+
+    def random_gen_value(self):
+        INFINITY = 1e6
+        if self.l is None and self.r is not None:
+            SingleLogger().warn("BiasRange selects a value in random, with a range (-inf, %f]" % self.r)
+            return random.uniform(-INFINITY, self.r)
+        elif self.l is not None and self.r is None:
+            SingleLogger().warn("BiasRange selects a value in random, with a range [%f, inf)" % self.l)
+            return random.uniform(self.l, INFINITY)
+        elif self.l is None and self.r is None:
+            SingleLogger().warn("BiasRange selects a value in random, with a range (-inf, inf)")
+            return random.uniform(-INFINITY, INFINITY)
+        else:
+            return random.uniform(self.l, self.r)
+
+    def display(self):
+        print(self.displays())
+
+    def displays(self):
+        ls = "(-inf" if self.l is None else "[" + str(self.l)
+        rs = "inf)" if self.r is None else str(self.r) + "]"
+        return "%s, %s" % (ls, rs)
+
 
 class PathManager:
     def __init__(self, path):

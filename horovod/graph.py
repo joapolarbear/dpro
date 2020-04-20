@@ -4,6 +4,8 @@ class NCCL_ALGO(Enum):
     RING=1
 
 class ncclGraph:
+    ''' Store the graph information accross multiple GPUs and machines
+    '''
     def __init__(self, algo=NCCL_ALGO.RING):
         '''
         One example of the graph is shown below
@@ -67,6 +69,9 @@ class ncclGraph:
         self.raw_name2IDnum = {}
         self.rank2prefix = {}
         self.prefix2rank = {}
+
+        self.host_id2prefix = None
+        self.host_prefix2id = None
 
        
     def parse_tree_topo(self, tree_dict, map_to=None):
@@ -415,6 +420,16 @@ class ncclGraph:
     def ret_childs(self, prefix, channelId):
         rank = self.prefix2rank[prefix]
         return self.graph["Tree"][channelId][rank]["down"]
+
+    def map_host_prefix_id(self, dirs):
+        self.host_id2prefix = dict(enumerate(dirs))
+        self.host_prefix2id = dict([(v, u) for u, v in enumerate(dirs)])
+
+    def ret_hostid(self, prefix):
+        if "." in prefix:
+            prefix = prefix.split(".")[0]
+        return self.host_prefix2id[prefix]
+
 
 
 

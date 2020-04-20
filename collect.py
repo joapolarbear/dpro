@@ -91,10 +91,13 @@ class Collector(object):
     def __init__(self, root_path):
         self.logger = logger_utils.SingleLogger()
         self.pm = PathManager(root_path)
+        self.traceM = None
+
         self.time_dict = None
         self.run_span = {}
         ### Used for clock synchronization when combime traces from multiple machines
         self.clock_aligner = None
+
         ### TODO (huhanpeng): assume different host use the same dag
         self.dag = None
         self.nccl_graph = None
@@ -416,23 +419,30 @@ class Collector(object):
             traces = traces["traceEvents"]
 
         traces = sorted(traces, key=lambda x: x["ts"], reverse=False)
+        first_op = None
         for trace in traces:
-            # if host_id is not None and "broadcast" in trace["name"] and trace["ph"] != "i":
-            #     self.clock_aligner.mark_ref_time(host_id, trace["ts"])
+            ### ignore digit
+            if trace["name"].split(".")[-2].isdigit():
+                continue
 
+            if first_op is None:
+                first_op = trace["args"]["name"]
+
+            ### Only check the time range for the first communication operator, 
+            ### then the following communication traces should be added to the final traces
             if "ts" in trace and not self.run_span[wk_prefix].if_start(trace["ts"]):
                 continue
-            elif "ts" in trace and self.run_span[wk_prefix].if_end(trace["ts"]):
+            elif first_op == trace["args"]["name"] and "ts" in trace and self.run_span[wk_prefix].if_end(trace["ts"]):
                 break
-            else:
-                if trace["ph"] == "i" or trace["ph"] == "I":
-                    trace["s"] = "p"
+
+            if trace["ph"].lower() == "i":
+                trace["s"] = "p"
 
             trace["name"] = "Comm." + trace["name"].split("horovod_allreduce.")[1]
-            trace["args"]["name"] = trace["name"] + (".%d_%d_%d" % 
+            trace["args"]["name"] = gen_long_name(None, trace["name"], suffix=("%d_%d_%d" % 
                             (int(trace["args"]["chunkId"]), 
                                 int(trace["args"]["sliceId"]), 
-                                int(trace["args"]["channelId"])))
+                                int(trace["args"]["channelId"]))))
             if pid is not None:
                 trace["tid"] = trace["pid"]
                 trace["pid"] = pid
@@ -553,7 +563,7 @@ class Collector(object):
             else:
                 self.re_gen_final_traces()
 
-    def iter_combine(self):
+    def iter_combine(self, is_output=True):
         rst_traces = {"traceEvents": []}
         if self.pm.dir_level == DirLevel.GPU:
             self.time_dict = {"traceEvents":[]}
@@ -576,6 +586,7 @@ class Collector(object):
         elif self.pm.dir_level == DirLevel.TRIAL:
             self.clock_aligner = ClockAligner()
             self.nccl_graph = ncclGraph()
+            self.nccl_graph.map_host_prefix_id(self.pm.dirs)
             for _dir in self.pm.dirs:
                 worker_path = os.path.join(self.pm.path, _dir)
                 worker_root, worker_dirs, _ = list(os.walk(worker_path))[0]
@@ -593,34 +604,43 @@ class Collector(object):
             self.nccl_graph.print_graph()
 
             ### only read comm.json once
-            self.time_dict = {"traceEvents":[]} 
-            self.bpf_collect_comm()
-            rst_traces["traceEvents"] += self.time_dict["traceEvents"]
+            # self.time_dict = {"traceEvents":[]} 
+            # self.bpf_collect_comm()
+            # rst_traces["traceEvents"] += self.time_dict["traceEvents"]
 
-
-        with open(os.path.join(self.pm.path, FileName.TRACE.value), 'w') as f:
-                json.dump(rst_traces, f, indent=4)
+        if is_output:
+            self.dump_traces(rst_traces)
 
         return rst_traces["traceEvents"]
 
-    def collect_traces(self):
+    def dump_traces(self, rst_traces=None):
+        if rst_traces is None:
+            rst_traces = self.traceM.traces
+        rst_traces = sorted(rst_traces, key=lambda x: x["pid"])
+        with open(os.path.join(self.pm.path, FileName.TRACE.value), 'w') as f:
+            json.dump(rst_traces, f, indent=4)
+
+    def collect_traces(self, is_output=True):
         trace_path = self.pm.search(FileName.TRACE)
         if trace_path is not None and self.nccl_graph is not None:
             traces = read_traces(trace_path)
-            return TraceManager(traces, self.pm.dir_level)
+            self.traceM = TraceManager(traces, self.pm.dir_level)
         else:
             self.logger.info("Generating %s" % (FileName.TRACE.value))
-            return TraceManager(self.iter_combine(), self.pm.dir_level)
+            self.traceM = TraceManager(self.iter_combine(is_output=False), self.pm.dir_level)
+            if is_output:
+                self.dump_traces()
+        return self.traceM
 
     def iter_time(self):
-        traceM = self.collect_traces()
-        get_iter_time(traceM.traces)
+        self.collect_traces()
+        get_iter_time(self.traceM.traces)
 
     def collect_dag(self, args):
         assert self.pm.dir_level == DirLevel.TRIAL
         critical_path = []
         worker_dag_list = []   
-        traceM = self.collect_traces()
+        self.collect_traces()
         update_dict = self.pm.map_tensors_to_update()
         for _dir in self.pm.dirs:
             worker_path = os.path.join(self.pm.path, _dir)
@@ -628,7 +648,7 @@ class Collector(object):
             for worker_dir in worker_dirs:
                 gpu_path = os.path.join(worker_root, worker_dir)
                 self.logger.info("## Collect DAG in %s" % (gpu_path))
-                dagmanager = DAGManager(gpu_path, traceM, self.nccl_graph)
+                dagmanager = DAGManager(gpu_path, self.traceM, self.nccl_graph)
                 max_para_degree, _critical_path = dagmanager.gen_gpu_dag(_pretty=args.pretty, update_dict=update_dict)
                 worker_dag_list.append(dagmanager.gpu_dag)
                 if _critical_path is not None:
@@ -655,6 +675,96 @@ class Collector(object):
         else:
             raise ValueError("Do not support DirLevel.GPU")
         return prefixL
+
+    def search_trace_with_cnt(self, longname, send_idx):
+        ### should not cansider suffix
+        return self.traceM.search_by_long_name(longname, send_idx + 1)
+
+    def re_align_traces(self, dag):
+        ''' Re-align traces according to the dependency info in dag.
+        '''
+        ### bias based on each other
+        align_table = dict([(host_id, {}) for host_id in self.nccl_graph.host_id2prefix.keys()])
+        def display_align_table():
+            for host_id, _dict in align_table.items():
+                print("For host %d" % host_id)
+                for _id, _range in _dict.items():
+                    print("     based on %d: %s" % (_id, _range.displays()))
+                    
+
+        ### bias based on host0
+        align_list = [None for host_id in self.nccl_graph.host_id2prefix.keys()]
+        for u, v in dag.edges:
+            if "Comm" in u and "SEND" in u:
+                assert "Comm" in v and "RECV" in v
+                send_host = self.nccl_graph.ret_hostid(u)
+                recv_host = self.nccl_graph.ret_hostid(v)
+
+                ### For the edge SEND->RECV in one host, just ignore
+                if send_host == recv_host:
+                    continue
+
+                ### Find the corresponding traces
+                ### TODO (huhanpeng): only find one pair of traces
+                send_idx = recv_idx = -1
+                cnt = 0
+                while True:
+                    send_idx, send_trace = self.search_trace_with_cnt(u, send_idx)
+                    recv_idx, recv_trace = self.search_trace_with_cnt(v, recv_idx)
+                    if send_idx is None:
+                        break
+                    ### Find send trace and recv trace
+                    assert send_trace["args"]["cnt"] == recv_trace["args"]["cnt"]
+                    cnt += 1
+                    send_end_t = send_trace["ts"] + send_trace["dur"]
+                    recv_end_t = recv_trace["ts"] + recv_trace["dur"]
+                    if send_host > recv_host:
+                        if recv_host not in align_table[send_host]:
+                            align_table[send_host][recv_host] = BiasRange(None, None)
+                        ### (hostid=send_host)'s bias based on (rankid=recv_host)
+                        align_table[send_host][recv_host] *= BiasRange(None, recv_end_t - send_end_t)  
+                    else:
+                        ### send_host < recv_host:
+                        if send_host not in align_table[recv_host]:
+                            align_table[recv_host][send_host] = BiasRange(None, None)
+                        ### (hostid=send_host)'s bias based on (rankid=recv_host)
+                        align_table[recv_host][send_host] *= BiasRange(send_end_t - recv_end_t, None)
+                    print(send_trace)
+                    print(recv_trace)
+                    display_align_table()
+                    break
+
+        ### tidy up align table, calculate bias for all hostid based hostid=0
+        def ret_bias_range_to_host0(_hostid):
+            if _hostid == 0:
+                return BiasRange(0, 0)
+            range2host0 = BiasRange(None, None)
+            for base_id, _range in align_table[_hostid].items():
+                ### Assume the bias of base_id is correct
+                range2host0 *= (_range + ret_bias_range_to_host0(base_id))
+            return range2host0
+        
+        display_align_table()
+        for host_id in sorted(align_table.keys()):
+            bias_range = ret_bias_range_to_host0(host_id)
+            bias_range.display()
+            align_list[host_id] = bias_range.random_gen_value()
+
+        ### Apply these bias
+        for trace in self.traceM.traces:
+            ### For the original Horovod Communication traces, no need to align
+            ### TODO (huhanpeng): delte these traces
+            if "Comm." in trace["pid"]:
+                continue
+
+            host_id = self.nccl_graph.ret_hostid(trace["pid"])
+            trace["ts"] += align_list[host_id]
+
+
+
+
+
+
 
         
     

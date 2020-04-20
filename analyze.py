@@ -111,16 +111,18 @@ if args.option == "replay":
 	worker_dag_list = []
 	
 	clct = Collector(path_list[0])
-	traceM = clct.collect_traces()
+	clct.collect_traces()
 	logger.info("# Collect DAG")
 	trail_dag = clct.collect_dag(args)
+
+	clct.re_align_traces(trail_dag)
+	clct.dump_traces()
 
 	# dag_longest_path(trail_dag, clct.pm, weight="weight", default_weight=0)
 
 	### Replay traces
 	logger.info("# Start to Replay")
 	replayer = Replayer(
-				trace_manager=traceM, 
 				collector=clct,
 				dag=trail_dag, 
 				_step_num=args.step_num)

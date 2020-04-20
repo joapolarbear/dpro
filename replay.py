@@ -45,14 +45,9 @@ class Deivce:
 			self.mark_as_exct(name, _last_end_time)
 			return 
 
-		if "Comm" in name and ("RECV" in name or "SEND" in name):
-			raw_name_with_prefix = ".".join(name.split(".")[:-1])
-		else:
-			raw_name_with_prefix = name
-
 		#! Some BW nodes of dag is not profiled, ignore them.
 		try:
-			avg = self.replayer.traceM.lookup_stat(None, None, raw_name_with_prefix, with_prefix=True)
+			avg = self.replayer.traceM.lookup_stat(None, None, name, with_prefix=True)
 		except:
 			self.replayer.logger.warning("%s is not in _name2sta" % name)
 			self.mark_as_exct(name, _last_end_time)
@@ -79,7 +74,10 @@ class Deivce:
 				"pid": pid,
 				"cat": cat,
 				"ph": "X",
-				"tid": cat
+				"tid": cat,
+				"args": {
+					"name": name
+				}
 			})
 
 		self.mark_as_exct(name, start_t + duration)
@@ -125,9 +123,9 @@ class Deivce:
 		return delay, ratio
 
 class Replayer:
-	def __init__(self, trace_manager, collector, dag, _step_num):
-		self.traceM = trace_manager
+	def __init__(self, collector, dag, _step_num):
 		self.clct = collector
+		self.traceM = collector.traceM
 		self.dag = dag
 		self.step_num = _step_num
 
@@ -230,7 +228,7 @@ class Replayer:
 	def name2device(self, n):
 		pid = parse_pid_from_name(n)
 		cat = parse_cat_from_name(n)
-		device_id = "%s%s%s"%(pid, DEL, cat)
+		device_id = gen_long_name(pid, cat)
 		if device_id not in self.device_dict:
 			self.device_dict[device_id] = self.create_device(device_id)
 
