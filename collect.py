@@ -684,7 +684,16 @@ class Collector(object):
 
     def re_align_traces(self, dag):
         ''' Re-align traces according to the dependency info in dag.
+        TODO (huhanpeng): 
+        1. currently lower priority, since clock synchronization 
+            will not bring much replay accuracy improvement
+        2. Cost large amount of time for a large model, e.g. Bert
         '''
+        raise NotImplementedError("Do not support clock synchronization currently.")
+        
+        if self.nccl_graph.algo == NCCL_ALGO.TREE:
+            SingleLogger().warn("Trace name has not be solved, can not look up")
+            return
         ### bias based on each other
         align_table = dict([(host_id, {}) for host_id in self.nccl_graph.host_id2prefix.keys()])
         def display_align_table():

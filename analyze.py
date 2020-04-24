@@ -107,15 +107,11 @@ if args.option == "replay":
 		--path: the root path for 
 		--step_num: number of steps we want to generate.
 	'''	
-	#! used to store all dags generated from GPUs
-	worker_dag_list = []
-	
-	clct = Collector(path_list[0])
-	clct.collect_traces()
-	logger.info("# Collect DAG")
-	trail_dag = clct.collect_dag(args)
 
-	clct.re_align_traces(trail_dag)
+	logger.info("# Collect DAG")
+	clct = Collector(path_list[0])
+	trail_dag = clct.collect_dag(args)
+	# clct.re_align_traces(trail_dag)
 	clct.dump_traces()
 
 	# dag_longest_path(trail_dag, clct.pm, weight="weight", default_weight=0)
