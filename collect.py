@@ -144,12 +144,13 @@ class Collector(object):
         with open(trace_path, 'w') as f:
             json.dump(self.time_dict, f, indent=4)
 
-    def bpf_collect_non_comm(self, _path, pid, host_id=None):
+    def bpf_collect_for_rank(self, _path, pid, host_id=None):
         tmp_pm = PathManager(_path)
         assert tmp_pm.dir_level == DirLevel.GPU
         self.bpf_collect_comp(tmp_pm, pid, host_id)
         self.bpf_collect_io(tmp_pm, pid, host_id)
         self.bpf_collect_comm_detail(tmp_pm, pid, host_id)
+        self.bpf_collect_comm(tmp_pm, pid, host_id)
 
     def bpf_collect_comp(self, tmp_pm=None, pid=None, host_id=None):
         '''Apply dependency info to the mxnet trace results
@@ -456,28 +457,34 @@ class Collector(object):
         self.clock_aligner.append_traces(host_id, rst_traces)
 
 
-    def bpf_collect_comm(self):
-        comm_path = self.pm.search(FileName.COMM)
+    def bpf_collect_comm(self, tmp_pm=None, pid=None, host_id=None):
+        comm_path = self.pm.search(FileName.COMM) if tmp_pm is None else tmp_pm.search(FileName.COMM)
         if comm_path is None:   
             return
         if self.dag is None:
             dag_path = self.pm.search(FileName.DAG)
             self.dag = nx.read_gml(dag_path)
-        comm_traces = self.parse_comm_traces(comm_path)
-        self.time_dict["traceEvents"] += comm_traces
+        comm_traces = self.parse_comm_traces(comm_path, pid=pid)
+        if host_id is None:
+            self.time_dict["traceEvents"] += comm_traces
+        else:
+            self.clock_aligner.append_traces(host_id, comm_traces)
     
-    def parse_comm_traces(self, path):
-        self.gradient_name_list = {}
+    def parse_comm_traces(self, path, pid=None):
+        self.gradient_name_table = {}
 
-        ### Get the RunningSpan of root host
-        run_span_key = sorted(self.run_span.keys())[0]
+        ### **NOTE** that this requires the computation traces have been collected
+        wk_prefix, _ = PathManager("/".join(path.split('/')[:-1])).ret_prefix()
 
         #! read communication traces offline
         with open(path, 'r') as f:
             json_str = f.read()
 
         ### TODO (huhanpeng) delete
-        # fix the json file
+        ''' Fix the json file
+            For Horovod, the timeline_ outputs traces as soon as a new trace is appended to the queue
+            Making the trace file ends abnormally.
+        '''
         if json_str[-1] != ']':
             json_str_lines = json_str.split("\n")
             if json_str_lines[-1] == '':
@@ -491,34 +498,38 @@ class Collector(object):
         for trace in comm_traces:
             if trace["ph"] == "M":
                 if trace["name"] == "process_name":
-                    assert trace["pid"] not in self.gradient_name_list
+                    assert trace["pid"] not in self.gradient_name_table
+                    if trace["args"]["name"] == "":
+                        continue
                     _split_name = trace["args"]["name"].split(".")
-                    # ignore the traces whose names end with purly digits
+                    ### Ignore the traces whose names end with purly digits
                     if str.isdigit(_split_name[-1]):
                         continue
                     raw_name = ".".join(_split_name[1:])
                     prefix = _split_name[0]
+                    ### For Horovod
                     if "horovod_" not in prefix:
+                        print(trace)
                         raise ValueError("comm.json format error, "
                             "trace args name should start with "
                             "horovod_broadcast or horovod_allreduce: %s" % trace["args"]["name"])
                     process_name = "Comm." + raw_name
-                    self.gradient_name_list[trace["pid"]] = {
+                    self.gradient_name_table[trace["pid"]] = {
                             "process_name": process_name,
                             "tid": prefix,
                             "list": []
                             }
                 else:
                     pass
-            elif "ts" in trace and not self.run_span[run_span_key].if_start(trace["ts"]):
+            elif "ts" in trace and not self.run_span[wk_prefix].if_start(trace["ts"]):
                 continue
-            elif "ts" in trace and self.run_span[run_span_key].if_end(trace["ts"]):
+            elif "ts" in trace and self.run_span[wk_prefix].if_end(trace["ts"]):
                 break
-            elif trace["pid"] in self.gradient_name_list and trace["ph"] == "B":
-                cur_pid = self.gradient_name_list[trace["pid"]]
+            elif trace["pid"] in self.gradient_name_table and trace["ph"] == "B":
+                cur_pid = self.gradient_name_table[trace["pid"]]
                 cur_pid["list"].append((trace["name"], trace["ts"]))
-            elif trace["pid"] in self.gradient_name_list and trace["ph"] == "E":
-                cur_pid = self.gradient_name_list[trace["pid"]]
+            elif trace["pid"] in self.gradient_name_table and trace["ph"] == "E":
+                cur_pid = self.gradient_name_table[trace["pid"]]
                 if len(cur_pid["list"]) == 0:
                     continue
                 name, ts = cur_pid["list"].pop()
@@ -539,8 +550,8 @@ class Collector(object):
                         "ts": ts,
                         "dur": dur,
                         "ph": "X",
-                        "pid": process_name,
-                        "tid": cur_pid["tid"],
+                        "pid": process_name if pid is None else pid,
+                        "tid": cur_pid["tid"] if pid is None else cur_pid["tid"]+"."+process_name,
                         "cat": "Comm",
                         "args":{
                             "name": process_name,
@@ -568,18 +579,20 @@ class Collector(object):
     def iter_combine(self, is_output=True):
         rst_traces = {"traceEvents": []}
         if self.pm.dir_level == DirLevel.GPU:
+            raise NotImplementedError()
             self.time_dict = {"traceEvents":[]}
             self.bpf_collect_comp()
             self.bpf_collect_io()
             self.bpf_collect_comm()
             rst_traces["traceEvents"] += self.time_dict["traceEvents"]
         elif self.pm.dir_level == DirLevel.WORKER:
+            raise NotImplementedError()
             ### collect computation traces and IO traces
             for _dir in self.pm.dirs:
                 self.time_dict = {"traceEvents":[]} 
                 gpu_path = os.path.join(self.pm.path, _dir)
                 ### All GPUs on all host machines share the communication traces
-                self.bpf_collect_non_comm(_path=gpu_path, pid="rank%s"%_dir)
+                self.bpf_collect_for_rank(_path=gpu_path, pid="rank%s"%_dir)
                 rst_traces["traceEvents"] += self.time_dict["traceEvents"]
             self.time_dict = {"traceEvents":[]} 
             self.bpf_collect_comm()
@@ -597,7 +610,7 @@ class Collector(object):
                     self.time_dict = {"traceEvents":[]} 
                     gpu_path = os.path.join(worker_root, __dir)
                     ### All GPUs on all host machines share the communication traces
-                    self.bpf_collect_non_comm(_path=gpu_path, pid=str(_dir)+".rank%s"%__dir, host_id=_dir)
+                    self.bpf_collect_for_rank(_path=gpu_path, pid=str(_dir)+".rank%s"%__dir, host_id=_dir)
 
             ### align the time
             rst_traces["traceEvents"] += self.clock_aligner.align()
@@ -605,10 +618,10 @@ class Collector(object):
 
             self.nccl_graph.print_graph()
 
-            ### only read comm.json once
-            self.time_dict = {"traceEvents":[]} 
-            self.bpf_collect_comm()
-            rst_traces["traceEvents"] += self.time_dict["traceEvents"]
+            # ### only read comm.json once
+            # self.time_dict = {"traceEvents":[]} 
+            # self.bpf_collect_comm()
+            # rst_traces["traceEvents"] += self.time_dict["traceEvents"]
 
         if is_output:
             self.dump_traces(rst_traces)
@@ -690,7 +703,7 @@ class Collector(object):
         2. Cost large amount of time for a large model, e.g. Bert
         '''
         raise NotImplementedError("Do not support clock synchronization currently.")
-        
+
         if self.nccl_graph.algo == NCCL_ALGO.TREE:
             SingleLogger().warn("Trace name has not be solved, can not look up")
             return
