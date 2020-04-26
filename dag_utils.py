@@ -91,18 +91,27 @@ class DAGManager:
                                 if self.nccl_graph.is_first_step(chunkId):
                                     ### The first step
 
-                                    ### Connect all BW nodes to the op first
+                                    ### Connect BW nodes to NEGOTIATE_ALLREDUCE 
                                     prev_fw_nodes = [_u for _u, _ in mygraph.in_edges(u)]
                                     assert len(prev_fw_nodes) == 1
-                                    prev_name_base = prev_fw_nodes[0]
-                                    next_node = gen_long_name(None, "%s.SEND"%u, suffix="%d_%d_%d"%(chunkId, sliceId, channelId))
+                                    prev_name = prev_fw_nodes[0]
+                                    next_node = gen_long_name(None, "%s.NEGOTIATE_ALLREDUCE"%u, suffix=None)
+                                    self.dag.add_edge(
+                                            self.add_prefix(prev_name), 
+                                            self.add_prefix(next_node), 
+                                            weight=self.traceM.lookup_stat(self.wk_prefix, self.rank_prefix, prev_name))
+
+                                    ### Connect all ranks' NEGOTIATE_ALLREDUCE to the first
+                                    prev_name_base = next_node
                                     prev_nodes_prefix = self.nccl_graph.bw_to_first_send(channelId)
+                                    next_node = gen_long_name(None, "%s.SEND"%u, suffix="%d_%d_%d"%(chunkId, sliceId, channelId))
                                     for _prefix in prev_nodes_prefix:
                                         prev_name = self.add_prefix(prev_name_base, _prefix=_prefix)
                                         self.dag.add_edge(
                                             prev_name, 
                                             self.add_prefix(next_node), 
                                             weight=self.traceM.lookup_stat(self.wk_prefix, self.rank_prefix, prev_name, with_prefix=True))
+              
                                     ### Connect from Send to Recv
                                     next_rank_prefix, next_chunkId, next_sliceId, next_channelId = self.nccl_graph.send_to_recv(self.prefix, chunkId, sliceId, channelId)
                                     prev_name = u + ".SEND"
@@ -177,11 +186,19 @@ class DAGManager:
                                             self.add_prefix(next_node), 
                                             weight=0)
                                     else:
-                                        ### 1).2). The second case - The first step, connect all BW nodes to the op first
+                                        ### 1).2). The second case - The first step, connect BW node to NEGOTIATE_ALLREDUCE
+                                        ### Then connect all NEGOTIATE_ALLREDUCE nodes from all ranks to the op first
                                         ### Add edges from all BW nodes to Aggerate Nodes first
                                         prev_fw_nodes = [_u for _u, _ in mygraph.in_edges(u)]
                                         assert len(prev_fw_nodes) == 1
-                                        prev_name_base = prev_fw_nodes[0]
+                                        prev_name = prev_fw_nodes[0]
+                                        next_node = gen_long_name(None, "%s.NEGOTIATE_ALLREDUCE"%u, suffix=None)
+                                        self.dag.add_edge(
+                                                self.add_prefix(prev_name), 
+                                                self.add_prefix(next_node), 
+                                                weight=self.traceM.lookup_stat(self.wk_prefix, self.rank_prefix, prev_name))
+
+                                        prev_name_base = next_node
                                         next_node = gen_long_name(None, "%s.SEND"%u, suffix="%d_%d_%d_%d_%d" % (chunkId, sliceId, channelId, rank, parent))
                                         prev_nodes_prefix = self.nccl_graph.bw_to_first_send(channelId)
                                         for _prefix in prev_nodes_prefix:

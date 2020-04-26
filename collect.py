@@ -509,7 +509,6 @@ class Collector(object):
                     prefix = _split_name[0]
                     ### For Horovod
                     if "horovod_" not in prefix:
-                        print(trace)
                         raise ValueError("comm.json format error, "
                             "trace args name should start with "
                             "horovod_broadcast or horovod_allreduce: %s" % trace["args"]["name"])
@@ -532,7 +531,7 @@ class Collector(object):
                 cur_pid = self.gradient_name_table[trace["pid"]]
                 if len(cur_pid["list"]) == 0:
                     continue
-                name, ts = cur_pid["list"].pop()
+                op_name, ts = cur_pid["list"].pop()
                 dur = trace["ts"] - ts
                 process_name = cur_pid["process_name"]
                 input_nodes = [u for u, _ in self.dag.in_edges(process_name)]
@@ -546,7 +545,7 @@ class Collector(object):
                         "have more than 1 in-edge nodes: %s" % process_name)
                 ret.append(
                     {
-                        "name": name,
+                        "name": "%s.%s"%(process_name, op_name),
                         "ts": ts,
                         "dur": dur,
                         "ph": "X",
@@ -554,7 +553,7 @@ class Collector(object):
                         "tid": cur_pid["tid"] if pid is None else cur_pid["tid"]+"."+process_name,
                         "cat": "Comm",
                         "args":{
-                            "name": process_name,
+                            "name": "%s.%s"%(process_name, op_name),
                             "input0": input0
                         }
                     })
@@ -616,7 +615,8 @@ class Collector(object):
             rst_traces["traceEvents"] += self.clock_aligner.align()
             self.clock_aligner = None
 
-            self.nccl_graph.print_graph()
+            if not arg_utils.SingleArg().args.pretty:
+                self.nccl_graph.print_graph()
 
             # ### only read comm.json once
             # self.time_dict = {"traceEvents":[]} 
