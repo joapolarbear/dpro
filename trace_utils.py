@@ -9,7 +9,7 @@ from logger_utils import Singleton, SingleLogger
 QUEUETYPE = {
     "NCCL": {
         "fine": [
-            "NEGOTIATE_ALLREDUCE",
+            "NEGOTIATE_ALLREDUCE_none",
             "QUEUE",
             "NCCL_ALLREDUCE"
             ],
@@ -328,6 +328,13 @@ def parse_cat_from_name(name):
     else:
         raise ValueError("Can not decide the cat of %s" % name)
 
+def parse_special_from_name(name):
+    '''Sometimes we need some special information from the name, e.g., if it's Negotiate...
+    (TODO) huahanpeng: It should be dedicated for BytePS or Horovod,
+    '''
+    if "NEGOTIATE" in name:
+        return 
+
 def group_computation_op_by_prefix(traces, rank=None):
     prefix2traces = {}
     def _get_prefix(e):
@@ -354,32 +361,36 @@ def get_iter_time(traces, rank=None):
 
     ret = []
     for prefix in sorted(operator_traces_list.keys()):
-        operator_traces = operator_traces_list[prefix]
-        step_start_ts = None
-        cur_iter_time = 0
+        operator_traces = operator_traces_list[prefix] 
         fw_bw_list = []
         iter_list = []
         operator_traces = sorted(operator_traces, key=lambda x: x["ts"])
 
-        ### Retrive the maximum number of update to find the last operator
-        max_update_id = 0
+        iter_cnt = None
+        step_start_ts = None
+        cur_iter_time = 0
         for event in operator_traces:
-            if "UPDATE" in event["name"]:
-                max_update_id = max(max_update_id, int(event["name"].split("UPDATE_")[1]))
-        last_op_of_step = "UPDATE_%d"%max_update_id
-
-        for event in operator_traces:
-            if step_start_ts is None:
+            if iter_cnt is None:
+                ### initialization
                 step_start_ts = event['ts']
-                
-            ### TODO (huhanpeng): change after fine-tune update
-            ### here we assume UPDATE is following the last BP op.
-            if "UPDATE" in event["name"]:
-                fw_bw_list.append((cur_iter_time - step_start_ts) / 1000.0)
-            cur_iter_time = event['ts'] + event['dur']
-            if last_op_of_step in event["name"]:
+                cur_iter_time = event['ts'] + event['dur']
+                iter_cnt = event["args"]["cnt"]
+            elif iter_cnt != event["args"]["cnt"]:
+                ### a new iteration
+                assert step_start_ts is not None
                 iter_list.append((cur_iter_time - step_start_ts) / 1000.0)
-                step_start_ts = None
+                step_start_ts = event['ts']
+                cur_iter_time = event['ts'] + event['dur']
+                iter_cnt = event["args"]["cnt"]
+            else:
+                ### during an iteration
+
+                ### TODO (huhanpeng): change after fine-tune update
+                ### here we assume UPDATE is following the last BP op.
+                if "UPDATE_0" in event["name"]:
+                    fw_bw_list.append((cur_iter_time - step_start_ts) / 1000.0)
+                cur_iter_time = event['ts'] + event['dur']
+
         fw_bw_time = sum(fw_bw_list) / float(len(fw_bw_list))
         iter_time = sum(iter_list) / float(len(iter_list))
         ret.append((prefix, fw_bw_time, iter_time))

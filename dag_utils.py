@@ -95,7 +95,7 @@ class DAGManager:
                                     prev_fw_nodes = [_u for _u, _ in mygraph.in_edges(u)]
                                     assert len(prev_fw_nodes) == 1
                                     prev_name = prev_fw_nodes[0]
-                                    next_node = gen_long_name(None, "%s.NEGOTIATE_ALLREDUCE"%u, suffix=None)
+                                    next_node = gen_long_name(None, "%s.%s"%(u, queue_type_list[0]), suffix=None)
                                     self.dag.add_edge(
                                             self.add_prefix(prev_name), 
                                             self.add_prefix(next_node), 
@@ -192,7 +192,7 @@ class DAGManager:
                                         prev_fw_nodes = [_u for _u, _ in mygraph.in_edges(u)]
                                         assert len(prev_fw_nodes) == 1
                                         prev_name = prev_fw_nodes[0]
-                                        next_node = gen_long_name(None, "%s.NEGOTIATE_ALLREDUCE"%u, suffix=None)
+                                        next_node = gen_long_name(None, "%s.%s"%(u, queue_type_list[0]), suffix=None)
                                         self.dag.add_edge(
                                                 self.add_prefix(prev_name), 
                                                 self.add_prefix(next_node), 

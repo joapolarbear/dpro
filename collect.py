@@ -64,23 +64,25 @@ class ClockAligner:
             self.marker_per_host[host_id] = None
         self.traces_per_host[host_id] += traces
 
-    def mark_ref_time(self, host_id, _t, _override=False):
+    def mark_ref_time(self, host_id, _t, ref_name, _override=False):
         if host_id not in self.traces_per_host:
             self.traces_per_host[host_id] = []
             self.marker_per_host[host_id] = None
 
         if self.marker_per_host[host_id] is None or _override:
-            self.marker_per_host[host_id] = _t
+            self.marker_per_host[host_id] = (_t, ref_name)
 
     def align(self):
         rst_traces = []
         host_ids = list(self.traces_per_host.keys())
-        standard_time = self.marker_per_host[host_ids[0]]
+        standard_time, ref_name = self.marker_per_host[host_ids[0]]
         for host_id, traces in self.traces_per_host.items():
             if host_id == host_ids[0]:
                 pass
             else:
-                bias = standard_time - self.marker_per_host[host_id]
+                t, n = self.marker_per_host[host_id]
+                bias = standard_time - t
+                SingleLogger().info("Align - add %f us based on %s" % (bias, n))
                 for trace in traces:
                     trace["ts"] += bias
             rst_traces += traces
@@ -294,6 +296,7 @@ class Collector(object):
             trace["args"] = _args
             if pid is not None:
                 trace["pid"] = pid
+            trace["tid"] = str(trace["tid"])
             rst_traces["traceEvents"].append(trace)
 
             ### Handle OUTPUT
@@ -321,6 +324,7 @@ class Collector(object):
                         "ph": "X",
                         "cat": "operator",
                         "pid": pid if pid is not None else one_pid,
+                        "tid": "operator",
                         "args": {
                             "name":"OUTPUT0"
                         }
@@ -349,6 +353,7 @@ class Collector(object):
                                 "ph": "X",
                                 "cat": "operator",
                                 "pid": pid if pid is not None else one_pid,
+                                "tid": "operator",
                                 "args": {
                                     "name":"UPDATE_%d"%_cnt
                                 }
@@ -359,9 +364,6 @@ class Collector(object):
                                 _update_ts = _trace["ts"]
                             _update_dur = _trace["ts"] + _trace["dur"] - _update_ts
                 if _update_ts is not None:
-                    if self.clock_aligner is not None and host_id is not None:
-                        ### register the start time of first UPDATE
-                        self.clock_aligner.mark_ref_time(host_id, _update_ts)
                     ### Initialize the end time of the entire running span
                     self.run_span[wk_prefix].init_end(_update_ts + _update_dur)
 
@@ -464,13 +466,13 @@ class Collector(object):
         if self.dag is None:
             dag_path = self.pm.search(FileName.DAG)
             self.dag = nx.read_gml(dag_path)
-        comm_traces = self.parse_comm_traces(comm_path, pid=pid)
+        comm_traces = self.parse_comm_traces(comm_path, pid=pid, host_id=host_id)
         if host_id is None:
             self.time_dict["traceEvents"] += comm_traces
         else:
             self.clock_aligner.append_traces(host_id, comm_traces)
     
-    def parse_comm_traces(self, path, pid=None):
+    def parse_comm_traces(self, path, pid=None, host_id=None):
         self.gradient_name_table = {}
 
         ### **NOTE** that this requires the computation traces have been collected
@@ -505,13 +507,19 @@ class Collector(object):
                     ### Ignore the traces whose names end with purly digits
                     if str.isdigit(_split_name[-1]):
                         continue
-                    raw_name = ".".join(_split_name[1:])
-                    prefix = _split_name[0]
-                    ### For Horovod
-                    if "horovod_" not in prefix:
-                        raise ValueError("comm.json format error, "
-                            "trace args name should start with "
-                            "horovod_broadcast or horovod_allreduce: %s" % trace["args"]["name"])
+
+                    if "Sync" in trace["args"]["name"]:
+                        raw_name = "Sync"
+                        prefix = "Sync"
+                    else:
+                        raw_name = ".".join(_split_name[1:])
+                        prefix = _split_name[0]
+                        ### For Horovod
+                        if "horovod_" not in prefix:
+                            raise ValueError("comm.json format error, "
+                                "trace args name should start with "
+                                "horovod_broadcast or horovod_allreduce: %s" % trace["args"]["name"])
+
                     process_name = "Comm." + raw_name
                     self.gradient_name_table[trace["pid"]] = {
                             "process_name": process_name,
@@ -534,6 +542,12 @@ class Collector(object):
                 op_name, ts = cur_pid["list"].pop()
                 dur = trace["ts"] - ts
                 process_name = cur_pid["process_name"]
+
+                if "Sync" in process_name and "none" not in op_name:
+                    if self.clock_aligner is not None and host_id is not None:
+                            ### register the start time of first UPDATE
+                            self.clock_aligner.mark_ref_time(host_id, ts, "%s.%s"%(process_name, op_name))
+
                 input_nodes = [u for u, _ in self.dag.in_edges(process_name)]
                 if len(input_nodes) == 1:
                     input0 = list(input_nodes)[0]
@@ -550,7 +564,7 @@ class Collector(object):
                         "dur": dur,
                         "ph": "X",
                         "pid": process_name if pid is None else pid,
-                        "tid": cur_pid["tid"] if pid is None else cur_pid["tid"]+"."+process_name,
+                        "tid": cur_pid["tid"] if pid is None else process_name,
                         "cat": "Comm",
                         "args":{
                             "name": "%s.%s"%(process_name, op_name),
@@ -631,7 +645,7 @@ class Collector(object):
     def dump_traces(self, rst_traces=None):
         if rst_traces is None:
             rst_traces = self.traceM.traces
-        rst_traces = sorted(rst_traces, key=lambda x: x["pid"])
+        rst_traces = sorted(rst_traces, key=lambda x: (x["pid"], x["tid"]))
         with open(os.path.join(self.pm.path, FileName.TRACE.value), 'w') as f:
             json.dump(rst_traces, f, indent=4)
 
