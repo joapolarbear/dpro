@@ -390,6 +390,8 @@ def get_iter_time(traces, rank=None):
                 if "UPDATE_0" in event["name"]:
                     fw_bw_list.append((cur_iter_time - step_start_ts) / 1000.0)
                 cur_iter_time = event['ts'] + event['dur']
+        ### Needed if there is only one step
+        iter_list.append((cur_iter_time - step_start_ts) / 1000.0)
 
         fw_bw_time = sum(fw_bw_list) / float(len(fw_bw_list))
         iter_time = sum(iter_list) / float(len(iter_list))

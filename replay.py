@@ -23,7 +23,7 @@ class Deivce:
 	def reset(self):
 		self.device_time = 0
 
-	def exct(self, name, _last_end_time):
+	def exct(self, name, _last_end_time, step_idx):
 		''' Execute one op on this device 
 
 		Parameters
@@ -76,7 +76,8 @@ class Deivce:
 				"ph": "X",
 				"tid": cat,
 				"args": {
-					"name": name
+					"name": name,
+					"cnt": step_idx
 				}
 			})
 
@@ -176,18 +177,18 @@ class Replayer:
 				_last_end = self.step_end_time[pid] if _status["last_end"] is None else _status["last_end"]
 				self.insert_next_node(n, _last_end)
 	
-	def replay_one_iter(self):	
+	def replay_one_iter(self, step_idx):	
 		self.pre_prepare()
 		assert len(self.next_nodes) != 0
 		for (n, t) in self.next_nodes:
 			device = self.name2device(n)
-			device.exct(n, t)
+			device.exct(n, t, step_idx)
 		assert len(self.node_status) == 0
 
 	def replay(self):
 		_ts = time.time()
 		for step_idx in range(self.step_num):
-			self.replay_one_iter()
+			self.replay_one_iter(step_idx)
 		self.logger.info("Take %f s to replay one iteration" % ((time.time() - _ts)/float(self.step_num)))
 		self.end_replayer()
 
