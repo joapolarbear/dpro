@@ -10,7 +10,7 @@ from trace_utils import *
 from progress_utils import progressBar
 import logger_utils
 
-FIXED_GAP_us = 10
+FIXED_GAP_us = 5
 
 class Deivce:
 	def __init__(self, device_name, _replayer, infi_para=False):
@@ -42,7 +42,7 @@ class Deivce:
 
 		if "Sync" in name:
 			#! No event is generated, but has successors
-			self.mark_as_exct(name, _last_end_time)
+			self.mark_as_exct(name, _last_end_time, _last_end_time)
 			return 
 
 		#! Some BW nodes of dag is not profiled, ignore them.
@@ -50,7 +50,7 @@ class Deivce:
 			avg = self.replayer.traceM.lookup_stat(None, None, name, with_prefix=True)
 		except:
 			self.replayer.logger.warning("%s is not in _name2sta" % name)
-			self.mark_as_exct(name, _last_end_time)
+			self.mark_as_exct(name, _last_end_time, _last_end_time)
 			return
 
 		#! really start to execute
@@ -59,11 +59,9 @@ class Deivce:
 		raw_name = parse_rawname_from_name(name)
 		delay, ratio = self.get_delay_para()
 		duration = (1000.0 * (avg + delay)) * ratio
-
-		if "RECV" in name:
-			### For Send->Recv edge, there exist some overlap
-			### TODO (huhanpeng): how do decide the end time of the RECV event
-			start_t = _last_end_time + FIXED_GAP_us - duration
+		
+		if "Comm" in name:
+			start_t = _last_end_time
 		else:
 			start_t = _last_end_time + FIXED_GAP_us
 
@@ -81,7 +79,7 @@ class Deivce:
 				}
 			})
 
-		self.mark_as_exct(name, start_t + duration)
+		self.mark_as_exct(name, start_t, start_t + duration)
 		### TODO (huhanpeng): modify after fine-tune update
 		### Should be safe now, would be overitted by an UPDATE OP with larger UPDATE index
 		if "UPDATE" in name:
@@ -92,7 +90,7 @@ class Deivce:
 		#! TODO: for debug
 		self.replayer.debug_record(name, _ts, self.device_name, "run")
 
-	def mark_as_exct(self, name, _end_time):
+	def mark_as_exct(self, name, _start_t, _end_time):
 		''' Mark that the op has been executed '''
 		self.device_time = _end_time
 		self.replayer.node_status.pop(name)
@@ -100,7 +98,17 @@ class Deivce:
 			if _succ in self.replayer.node_status:
 				_status = self.replayer.node_status[_succ]
 				_status["in_degree"] -= 1
-				_status["last_end"] = _end_time if _status["last_end"] is None else max(_end_time, _status["last_end"])
+				if "SEND" in name and "RECV" in _succ:
+					### For Send->Recv edge, there exist some overlap
+					### TODO (huhanpeng): how do decide the end time of the RECV event
+					try:
+						avg = self.replayer.traceM.lookup_stat(None, None, _succ, with_prefix=True)
+					except:
+						self.replayer.logger.warning("%s is not in _name2sta" % name)
+						avg = 0
+					_status["last_end"] = _end_time if _status["last_end"] is None else max(_end_time - avg, _status["last_end"])
+				else:
+					_status["last_end"] = _end_time if _status["last_end"] is None else max(_end_time, _status["last_end"])
 				if _status["in_degree"] == 0:
 					self.replayer.insert_next_node(_succ, _status["last_end"])
 
@@ -229,7 +237,13 @@ class Replayer:
 	def name2device(self, n):
 		pid = parse_pid_from_name(n)
 		cat = parse_cat_from_name(n)
-		device_id = gen_long_name(pid, cat)
+		if "SEND" in n:
+			device_id = gen_long_name(pid, cat, "SEND")
+		elif "RECV" in n:
+			device_id = gen_long_name(pid, cat, "RECV")
+		else:
+			device_id = gen_long_name(pid, cat)
+
 		if device_id not in self.device_dict:
 			self.device_dict[device_id] = self.create_device(device_id)
 

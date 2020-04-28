@@ -80,6 +80,10 @@ class TraceManager:
     def _is_comm_trace(self, event):
         return event["cat"] == "Comm"
 
+    def _is_ignore_for_sta(self, event):
+        ### some traces are ignored for statistic
+        return event["ph"].lower() == "i" or event["cat"] == "debug"
+
     def ret_unique_name(self, event):
         if "chunkId" in event["args"]:
             suffix = "%d_%d_%d"%(event["args"]["chunkId"], event["args"]["sliceId"], event["args"]["channelId"])
@@ -92,7 +96,7 @@ class TraceManager:
         self.name2sta = {}
         self.cat2sta = {}
         for event in self.traces:
-            if event["ph"].lower() == "i":
+            if self._is_ignore_for_sta(event):
                 continue
             unique_name = self.ret_unique_name(event)
             if unique_name in self.name2sta:
@@ -126,7 +130,7 @@ class TraceManager:
 
         """calculate the variance"""
         for event in self.traces:
-            if event["ph"].lower() == "i":
+            if self._is_ignore_for_sta(event):
                 continue
             unique_name = self.ret_unique_name(event)
             self.name2sta[unique_name]["var"] += pow(event["dur"] / 1000.0 - self.name2sta[unique_name]["avg"], 2)
@@ -369,6 +373,7 @@ def get_iter_time(traces, rank=None):
         iter_cnt = None
         step_start_ts = None
         cur_iter_time = 0
+        fw_bw_end = 0
         for event in operator_traces:
             if iter_cnt is None:
                 ### initialization
@@ -379,19 +384,22 @@ def get_iter_time(traces, rank=None):
                 ### a new iteration
                 assert step_start_ts is not None
                 iter_list.append((cur_iter_time - step_start_ts) / 1000.0)
+                fw_bw_list.append((fw_bw_end - step_start_ts) / 1000.0)
                 step_start_ts = event['ts']
                 cur_iter_time = event['ts'] + event['dur']
                 iter_cnt = event["args"]["cnt"]
             else:
                 ### during an iteration
+                cur_iter_time = event['ts'] + event['dur']
 
                 ### TODO (huhanpeng): change after fine-tune update
                 ### here we assume UPDATE is following the last BP op.
-                if "UPDATE_0" in event["name"]:
-                    fw_bw_list.append((cur_iter_time - step_start_ts) / 1000.0)
-                cur_iter_time = event['ts'] + event['dur']
+                if "FW" in event["name"] or "BW" in event["name"]:
+                    fw_bw_end = cur_iter_time
+                
         ### Needed if there is only one step
         iter_list.append((cur_iter_time - step_start_ts) / 1000.0)
+        fw_bw_list.append((fw_bw_end - step_start_ts) / 1000.0)
 
         fw_bw_time = sum(fw_bw_list) / float(len(fw_bw_list))
         iter_time = sum(iter_list) / float(len(iter_list))
@@ -587,9 +595,12 @@ class PathManager:
         gradient_name_list = load_list(gra_path)
         gradient_name_list.reverse()
         ret = {}
+        max_update_id = 0
         for idx in range(len(gradient_name_list)):
             gra = gradient_name_list[idx]
             ret[gra] = idx if aggregate_num == 0 else int(idx / aggregate_num)
+            max_update_id = max(max_update_id, ret[gra])
+        ret["max"] = max_update_id
         return ret
 
 

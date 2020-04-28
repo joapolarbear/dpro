@@ -15,6 +15,7 @@ from trace_utils import *
 from dag_utils import * 
 from horovod.graph import *
 
+args_ = arg_utils.SingleArg().args
 
 class RunningSpan:
     def __init__(self):
@@ -273,16 +274,22 @@ class Collector(object):
             index += 1
             name = standar_name(trace["name"])       
 
-            if name not in self.dag.nodes:
-                ### Only collect nodes in the dag
-                ### TODO (huhanpeng): some trvial nodes may also be useful
-                continue
-
             ### deduplication
             ### TODO (huhanpeng): should be careful, only choose one prosess here
             if one_pid is None:
                 one_pid = trace["pid"]
             elif one_pid != trace["pid"]:
+                continue
+
+            if name not in self.dag.nodes:
+                ### Only collect nodes in the dag
+                ### TODO (huhanpeng): some trvial nodes may also be useful
+                if args_.trace_level == "debug":
+                    trace["name"] = "%s.%d"%(trace["name"], index)
+                    trace["tid"] = trace["cat"] = "debug"
+                    if pid is not None:
+                        trace["pid"] = pid
+                    rst_traces["traceEvents"].append(trace)
                 continue
 
             ### Initialize the start time of the entire running span
@@ -392,6 +399,8 @@ class Collector(object):
             else:
                 if pid is not None:
                     trace["pid"] = pid
+                if "tid" not in trace:
+                    trace["tid"] = "I/O"
                 rst_traces.append(trace)
 
         self.clock_aligner.append_traces(host_id, rst_traces)
@@ -412,7 +421,7 @@ class Collector(object):
             traceback.print_exc()
             traces = []
 
-        algo = arg_utils.SingleArg().args.nccl_algo
+        algo = args_.nccl_algo
         if algo is None:
             raise ValueError("--nccl_algo must be given")
         elif algo.lower() == "tree":
@@ -441,6 +450,8 @@ class Collector(object):
                 break
 
             if trace["ph"].lower() == "i":
+                if args_.trace_level != "debug":
+                    continue
                 trace["s"] = "p"
 
             trace["name"] = "Comm." + trace["name"].split("horovod_allreduce.")[1]
@@ -548,6 +559,9 @@ class Collector(object):
                             ### register the start time of first UPDATE
                             self.clock_aligner.mark_ref_time(host_id, ts, "%s.%s"%(process_name, op_name))
 
+                if "Sync" in process_name and "none" in op_name and args_.trace_level != "debug":
+                    continue
+
                 input_nodes = [u for u, _ in self.dag.in_edges(process_name)]
                 if len(input_nodes) == 1:
                     input0 = list(input_nodes)[0]
@@ -629,7 +643,7 @@ class Collector(object):
             rst_traces["traceEvents"] += self.clock_aligner.align()
             self.clock_aligner = None
 
-            if not arg_utils.SingleArg().args.pretty:
+            if not args_.pretty:
                 self.nccl_graph.print_graph()
 
             # ### only read comm.json once

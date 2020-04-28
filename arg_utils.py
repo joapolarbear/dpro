@@ -24,6 +24,7 @@ parser.add_argument("--filter", type=str, default=None, help="Used to show part 
 parser.add_argument("--progress", action="store_true", help="Show the progress bar if it is set, disable the std output")
 parser.add_argument("--delay_ratio", type=float, default=1.1, help="delay ratio")
 parser.add_argument("--nccl_algo", type=str, default=None, help="NCCL algorithm")
+parser.add_argument("--trace_level", type=str, choices=["debug", "info"], default="info", help="if set to debug, show some trival traces")
 args = parser.parse_args()
 
 

@@ -321,10 +321,20 @@ class DAGManager:
                     weight=self.traceM.lookup_stat(self.wk_prefix, self.rank_prefix, u)
                 )
 
+        ### Remove original UPDATE node and create an edge from the last BW to UPDATE_%d
+        for u, _ in mygraph.in_edges("UPDATE"):
+            if "BW" not in u:
+                continue
+            for update_id in range(update_dict["max"]):
+                self.dag.add_edge(
+                    self.add_prefix(u), 
+                    self.add_prefix("UPDATE_%d"%update_id), 
+                    weight=self.traceM.lookup_stat(self.wk_prefix, self.rank_prefix, u)
+                )
         self.dag.remove_node(self.add_prefix("UPDATE"))
+
         for e in self.dag.edges.data("weight"):
             self.logger.debug(e)
-
         # visualize_gml(self.dag, layout="circular")
         # raise
 
