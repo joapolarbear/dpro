@@ -47,7 +47,7 @@ class Deivce:
 
 		#! Some BW nodes of dag is not profiled, ignore them.
 		try:
-			avg = self.replayer.traceM.lookup_stat(None, None, name, with_prefix=True)
+			avg = self.replayer.traceM.lookup_stat(None, None, name)
 		except:
 			self.replayer.logger.warning("%s is not in _name2sta" % name)
 			self.mark_as_exct(name, _last_end_time, _last_end_time)
@@ -60,10 +60,7 @@ class Deivce:
 		delay, ratio = self.get_delay_para()
 		duration = (1000.0 * (avg + delay)) * ratio
 		
-		if "Comm" in name:
-			start_t = _last_end_time
-		else:
-			start_t = _last_end_time + FIXED_GAP_us
+		start_t = _last_end_time
 
 		self.replayer.rst_traces.append({
 				"name": raw_name,
@@ -102,13 +99,15 @@ class Deivce:
 					### For Send->Recv edge, there exist some overlap
 					### TODO (huhanpeng): how do decide the end time of the RECV event
 					try:
-						avg = self.replayer.traceM.lookup_stat(None, None, _succ, with_prefix=True)
+						avg = self.replayer.traceM.lookup_stat(None, None, _succ)
 					except:
-						self.replayer.logger.warning("%s is not in _name2sta" % name)
+						self.replayer.logger.warning("%s is not in _name2sta" % _succ)
 						avg = 0
 					_status["last_end"] = _end_time if _status["last_end"] is None else max(_end_time - avg, _status["last_end"])
 				else:
-					_status["last_end"] = _end_time if _status["last_end"] is None else max(_end_time, _status["last_end"])
+					### Apply the gap between two nodes
+					gap = self.replayer.dag.edges[name, _succ]["gap"] if "gap" in self.replayer.dag.edges[name, _succ] else 0
+					_status["last_end"] = _end_time + gap if _status["last_end"] is None else max(_end_time + gap, _status["last_end"])
 				if _status["in_degree"] == 0:
 					self.replayer.insert_next_node(_succ, _status["last_end"])
 

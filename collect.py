@@ -559,8 +559,11 @@ class Collector(object):
                             ### register the start time of first UPDATE
                             self.clock_aligner.mark_ref_time(host_id, ts, "%s.%s"%(process_name, op_name))
 
-                if "Sync" in process_name and "none" in op_name and args_.trace_level != "debug":
+                if "Sync" in process_name and args_.trace_level != "debug":
                     continue
+
+                ### TODO (huhanpeng): Sync node only used for debug currently
+                cat = "Comm" if "Sync" not in process_name else "debug"
 
                 input_nodes = [u for u, _ in self.dag.in_edges(process_name)]
                 if len(input_nodes) == 1:
@@ -579,7 +582,7 @@ class Collector(object):
                         "ph": "X",
                         "pid": process_name if pid is None else pid,
                         "tid": cur_pid["tid"] if pid is None else process_name,
-                        "cat": "Comm",
+                        "cat": cat,
                         "args":{
                             "name": "%s.%s"%(process_name, op_name),
                             "input0": input0
@@ -812,25 +815,71 @@ class Collector(object):
             trace["ts"] += align_list[host_id]
 
 
-    def add_gap(self, dag):
+    def add_gaps(self, dag):
         ''' According to the traces and DAG, add a 'gap' field for each edge (u, v)
         which denotes the gap between two events u and v.
         '''
 
-        name2sta = {}
+        self.traceM.traces = sorted(self.traceM.traces, key=lambda x: (x["ts"], x["name"]), reverse=False)
+
+        def find_pre_node(n):
+            ret = set()
+            for u, v in dag.in_edges(n):
+                if dag.edges[u, v]["weight"] == 0:
+                    ret.union(find_pre_node(u))
+                else:
+                    ret.add(u)
+            return ret
+
+        pid2name2idx = {}
 
         ### The traces have been sorted by ts, so it follows the dependency info
         for idx, event in enumerate(self.traceM.traces):
             if self.traceM._is_ignore_for_sta(event):
                 continue
-            unique_name = self.ret_unique_name(event)
-            for in_node, _ in dag.in_edges(unique_name):
-                pre_idx = name2sta[in_node]
+            if event["pid"] not in pid2name2idx:
+                pid2name2idx[event["pid"]] = {"cnt": None, "name2idx": {}}
+
+            if pid2name2idx[event["pid"]]["cnt"] is None:
+                pid2name2idx[event["pid"]]["cnt"] = event["args"]["cnt"]
+            elif event["args"]["cnt"] != pid2name2idx[event["pid"]]["cnt"]:
+                ### It's a new iteration
+                pid2name2idx[event["pid"]]["name2idx"] = {}
+                pid2name2idx[event["pid"]]["cnt"] = event["args"]["cnt"]
+
+            name2idx = pid2name2idx[event["pid"]]["name2idx"]
+
+            unique_name = self.traceM.ret_unique_name(event)
+            print(unique_name)
+            for in_node in find_pre_node(unique_name):
+                try:
+                    pre_idx = name2idx[in_node]
+                except:
+                    if "SEND" in in_node and "RECV" in unique_name:
+                        continue
+                    SingleLogger().warn("previous %s has not recorded for %s" % (in_node, unique_name))
+                    continue
+
                 pre_event = self.traceM.traces[pre_idx]
-                pre_unique_name = self.ret_unique_name(pre_event)
+                pre_unique_name = self.traceM.ret_unique_name(pre_event)
 
-            name2sta[unique_name] = idx
 
+                if (pre_unique_name, unique_name) not in dag.edges:
+                    dag.add_edge(pre_unique_name, unique_name, weight=self.traceM.lookup_stat(None, None, pre_unique_name))
+                if "gap" not in dag.edges[pre_unique_name, unique_name]:
+                    dag.edges[pre_unique_name, unique_name]["gap"] = event["ts"] - (pre_event["ts"] + pre_event["dur"])
+                    dag.edges[pre_unique_name, unique_name]["cnt_"] = 1
+                else:
+                    dag.edges[pre_unique_name, unique_name]["gap"] += (event["ts"] - (pre_event["ts"] + pre_event["dur"]))
+                    dag.edges[pre_unique_name, unique_name]["cnt_"] += 1
+
+            name2idx[unique_name] = idx
+
+        ### Calculate the average gap for each edge
+        for u, v in dag.edges:
+            if "gap" not in dag.edges[u, v]:
+                continue
+            dag.edges[u, v]["gap"] = dag.edges[u, v]["gap"] / float(dag.edges[u, v]["cnt_"])
 
 
 
