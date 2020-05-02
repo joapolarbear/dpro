@@ -85,6 +85,7 @@ class TraceManager:
         return event["ph"].lower() == "i" or event["cat"] == "debug"
 
     def ret_unique_name(self, event):
+        ### Returen unique name for statistic index
         if "chunkId" in event["args"]:
             suffix = "%d_%d_%d"%(event["args"]["chunkId"], event["args"]["sliceId"], event["args"]["channelId"])
         else:
@@ -138,14 +139,14 @@ class TraceManager:
         for name, statistic in self.name2sta.items():
             statistic["var"] = statistic["var"] / float(statistic["cnt"])
 
-    def lookup_stat(self, wk_prefix, rank_prefix, name, with_prefix=False,  _field="avg"):
+    def lookup_stat(self, wk_prefix, rank_prefix, name,  _field="avg"):
         ''' look up data from the stat info
         Parameters
         __________
         with_prefix: boolean
             if True, name has had prefix, no need to process it
         '''
-        if self.dir_level == DirLevel.GPU or with_prefix:
+        if self.dir_level == DirLevel.GPU or self.has_prefix(name):
             unique_name = name
         elif self.dir_level == DirLevel.WORKER:
             unique_name = gen_long_name(rank_prefix, name)
@@ -157,6 +158,9 @@ class TraceManager:
             return 0.0
         else:
             return self.name2sta[unique_name][_field]
+
+    def has_prefix(self, name):
+        return DEL in name
 
     def export2xlsx(self, _stats, _dir, filename=None, sheet_name=None):
         ''' Export the statitic results to an XLSX file
@@ -245,14 +249,6 @@ def return_stat(traces):
         statistic["var"] = statistic["var"] / float(statistic["cnt"])
     return name2sta, cat2sta
 
-def split_name(_name):
-    try:
-        name_split = _name.split(".")
-        _local_rank = int(name_split[0].split("rank")[1])
-        raw_name = ".".join(name_split[1:])
-    except:
-        raise ValueError("split_name error: " + _name)
-    return _local_rank, raw_name
 
 def return_path_dict(root_path):
     ''' Map the paths of each file from its name
@@ -297,10 +293,12 @@ def gen_long_name(prefix, raw_name, suffix=None):
     if prefix is None:
         pre = ""
     else:
+        assert DEL not in raw_name
         pre = prefix + DEL
     if suffix is None:
         suf = ""
     else:
+        assert DDEL not in raw_name
         suf = DDEL + suffix
     return pre + raw_name + suf
 

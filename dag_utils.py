@@ -110,7 +110,7 @@ class DAGManager:
                                         self.dag.add_edge(
                                             prev_name, 
                                             self.add_prefix(next_node), 
-                                            weight=self.traceM.lookup_stat(self.wk_prefix, self.rank_prefix, prev_name, with_prefix=True))
+                                            weight=self.traceM.lookup_stat(self.wk_prefix, self.rank_prefix, prev_name))
               
                                     ### Connect from Send to Recv
                                     next_rank_prefix, next_chunkId, next_sliceId, next_channelId = self.nccl_graph.send_to_recv(self.prefix, chunkId, sliceId, channelId)
@@ -150,7 +150,7 @@ class DAGManager:
                                         self.dag.add_edge(
                                             self.add_prefix(prev_node, _prefix=next_rank_prefix), 
                                             self.add_prefix("UPDATE_%d"%update_id, _prefix=next_rank_prefix), 
-                                            weight=self.traceM.lookup_stat(self.wk_prefix, self.rank_prefix, prev_node, with_prefix=True))
+                                            weight=self.traceM.lookup_stat(self.wk_prefix, self.rank_prefix, prev_node))
                 elif self.nccl_graph is not None and self.nccl_graph.algo == NCCL_ALGO.TREE:
                     ### Combine chunkId, sliceId and channelId into the graph for Tree algorithm
                     chunkNum, sliceNum, channelNum = self.nccl_graph.get_IDnum(u)
@@ -206,7 +206,7 @@ class DAGManager:
                                             self.dag.add_edge(
                                                 prev_name, 
                                                 self.add_prefix(next_node), 
-                                                weight=self.traceM.lookup_stat(self.wk_prefix, self.rank_prefix, prev_name, with_prefix=True))
+                                                weight=self.traceM.lookup_stat(self.wk_prefix, self.rank_prefix, prev_name))
 
                                     ### 3). Add edges from Send to Recv
                                     prev_name = u + ".SEND"

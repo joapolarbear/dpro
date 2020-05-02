@@ -812,7 +812,24 @@ class Collector(object):
             trace["ts"] += align_list[host_id]
 
 
+    def add_gap(self, dag):
+        ''' According to the traces and DAG, add a 'gap' field for each edge (u, v)
+        which denotes the gap between two events u and v.
+        '''
 
+        name2sta = {}
+
+        ### The traces have been sorted by ts, so it follows the dependency info
+        for idx, event in enumerate(self.traceM.traces):
+            if self.traceM._is_ignore_for_sta(event):
+                continue
+            unique_name = self.ret_unique_name(event)
+            for in_node, _ in dag.in_edges(unique_name):
+                pre_idx = name2sta[in_node]
+                pre_event = self.traceM.traces[pre_idx]
+                pre_unique_name = self.ret_unique_name(pre_event)
+
+            name2sta[unique_name] = idx
 
 
 
