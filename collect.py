@@ -10,6 +10,7 @@ import threading
 import time
 import logger_utils
 import arg_utils
+import debug_utils
 
 from trace_utils import *
 from dag_utils import * 
@@ -62,23 +63,25 @@ class ClockAligner:
     def append_traces(self, host_id, traces):
         if host_id not in self.traces_per_host:
             self.traces_per_host[host_id] = []
-            self.marker_per_host[host_id] = None
+            self.marker_per_host[host_id] = (None, None)
         self.traces_per_host[host_id] += traces
 
     def mark_ref_time(self, host_id, _t, ref_name, _override=False):
         if host_id not in self.traces_per_host:
             self.traces_per_host[host_id] = []
-            self.marker_per_host[host_id] = None
+            self.marker_per_host[host_id] = (None, None)
 
-        if self.marker_per_host[host_id] is None or _override:
+        if self.marker_per_host[host_id][0] is None or _override:
             self.marker_per_host[host_id] = (_t, ref_name)
 
     def align(self):
         rst_traces = []
         host_ids = list(self.traces_per_host.keys())
         standard_time, ref_name = self.marker_per_host[host_ids[0]]
+        if standard_time is None:
+            SingleLogger().warn("Have not set the align standard, fail to do clock synchronization")
         for host_id, traces in self.traces_per_host.items():
-            if host_id == host_ids[0]:
+            if host_id == host_ids[0] or standard_time is None:
                 pass
             else:
                 t, n = self.marker_per_host[host_id]
@@ -169,6 +172,7 @@ class Collector(object):
         rst_traces : dict
             A dict containing MXNet trace results combined with dependency info.
         '''
+        debug_utils.DebugRecorder().debug_event_start("collect_" + pid+"_comp", "Collct", "0")
         comp_path = self.pm.search(FileName.COMP) if tmp_pm is None else tmp_pm.search(FileName.COMP)
         if self.dag is None:
             dag_path = self.pm.search(FileName.DAG) if tmp_pm is None else tmp_pm.search(FileName.DAG)
@@ -375,8 +379,10 @@ class Collector(object):
                     self.run_span[wk_prefix].init_end(_update_ts + _update_dur)
 
         self.clock_aligner.append_traces(host_id, rst_traces["traceEvents"])
+        debug_utils.DebugRecorder().debug_event_end("collect_" + pid+"_comp", "Collct", "0")
 
     def bpf_collect_io(self, tmp_pm=None, pid=None, host_id=None):
+        debug_utils.DebugRecorder().debug_event_start("collect_" + pid+"_io", "Collct", "0")
         io_path = self.pm.search(FileName.IO) if tmp_pm is None else tmp_pm.search(FileName.IO)
         if io_path is None:
             return
@@ -404,8 +410,10 @@ class Collector(object):
                 rst_traces.append(trace)
 
         self.clock_aligner.append_traces(host_id, rst_traces)
+        debug_utils.DebugRecorder().debug_event_end("collect_" + pid+"_io", "Collct", "0")
 
     def bpf_collect_comm_detail(self, tmp_pm, pid=None, host_id=None):
+        debug_utils.DebugRecorder().debug_event_start("collect_" + pid+"_comm_detail", "Collct", "0")
         comm_d_path = self.pm.search(FileName.COMM_DETAIL) if tmp_pm is None else tmp_pm.search(FileName.COMM_DETAIL)
 
         if comm_d_path is None:
@@ -468,9 +476,11 @@ class Collector(object):
 
         self.nccl_graph.parse_traces(rst_traces)
         self.clock_aligner.append_traces(host_id, rst_traces)
+        debug_utils.DebugRecorder().debug_event_end("collect_" + pid+"_comm_detail", "Collct", "0")
 
 
     def bpf_collect_comm(self, tmp_pm=None, pid=None, host_id=None):
+        debug_utils.DebugRecorder().debug_event_start("collect_" + pid+"_comm", "Collct", "0")
         comm_path = self.pm.search(FileName.COMM) if tmp_pm is None else tmp_pm.search(FileName.COMM)
         if comm_path is None:   
             return
@@ -482,6 +492,7 @@ class Collector(object):
             self.time_dict["traceEvents"] += comm_traces
         else:
             self.clock_aligner.append_traces(host_id, comm_traces)
+        debug_utils.DebugRecorder().debug_event_end("collect_" + pid+"_comm", "Collct", "0")
     
     def parse_comm_traces(self, path, pid=None, host_id=None):
         self.gradient_name_table = {}
@@ -667,6 +678,7 @@ class Collector(object):
             json.dump(rst_traces, f, indent=4)
 
     def collect_traces(self, is_output=True):
+        self.logger.info("# Collecting Traces")
         trace_path = self.pm.search(FileName.TRACE)
         if trace_path is not None and self.nccl_graph is not None:
             traces = read_traces(trace_path)
@@ -687,6 +699,7 @@ class Collector(object):
         critical_path = []
         worker_dag_list = []   
         self.collect_traces()
+        self.logger.info("# Collecting DAG")
         update_dict = self.pm.map_tensors_to_update()
         for _dir in self.pm.dirs:
             worker_path = os.path.join(self.pm.path, _dir)
@@ -820,15 +833,13 @@ class Collector(object):
         which denotes the gap between two events u and v.
         '''
 
-        self.traceM.traces = sorted(self.traceM.traces, key=lambda x: (x["ts"], x["name"]), reverse=False)
-
         def find_pre_node(n):
-            ret = set()
+            ret = []
             for u, v in dag.in_edges(n):
                 if dag.edges[u, v]["weight"] == 0:
-                    ret.union(find_pre_node(u))
+                    ret += find_pre_node(u)
                 else:
-                    ret.add(u)
+                    ret.append(u)
             return ret
 
         pid2name2idx = {}
@@ -850,7 +861,6 @@ class Collector(object):
             name2idx = pid2name2idx[event["pid"]]["name2idx"]
 
             unique_name = self.traceM.ret_unique_name(event)
-            print(unique_name)
             for in_node in find_pre_node(unique_name):
                 try:
                     pre_idx = name2idx[in_node]

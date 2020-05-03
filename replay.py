@@ -9,6 +9,7 @@ from dag_utils import QueueType
 from trace_utils import *
 from progress_utils import progressBar
 import logger_utils
+import debug_utils
 
 FIXED_GAP_us = 5
 
@@ -85,7 +86,7 @@ class Deivce:
 			self.replayer.step_end_time[pid] = start_t + duration
 
 		#! TODO: for debug
-		self.replayer.debug_record(name, _ts, self.device_name, "run")
+		debug_utils.DebugRecorder().debug_record(name, _ts, self.device_name, "run")
 
 	def mark_as_exct(self, name, _start_t, _end_time):
 		''' Mark that the op has been executed '''
@@ -152,22 +153,6 @@ class Replayer:
 		self.next_nodes = []
 
 		self.rst_traces = []
-
-		#! Used for debug
-		self.debug_traces = []
-
-	def debug_record(self, name, _ts, pid, tid):
-		''' Used for debug, collect traces while replaying
-			* to optimize the replay algorithm
-		'''
-		self.debug_traces.append({
-					"name": name,
-					"ts": _ts * 10e6,
-					"dur": (time.time() - _ts) * 10e6,
-					"pid": pid,
-					"ph": "X",
-					"tid": tid
-				})
 
 	def pre_prepare(self):
 		self.accessed = set()
@@ -270,13 +255,6 @@ class Replayer:
 		get_iter_time(self.rst_traces)
 		with open(os.path.join(self.clct.pm.path, "synthetic.json"), 'w') as f:
 			json.dump(rst, f, indent=4)
-
-		# TODO
-		if len(self.debug_traces) > 0:
-			with open(os.path.join(self.clct.pm.path, "debug.json"), 'w') as f:
-				json.dump({"traceEvents": self.debug_traces,
-							"displayTimeUnit": "ms"
-								}, f, indent=4)
 
 """
 class Replayer:

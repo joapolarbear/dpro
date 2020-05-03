@@ -13,6 +13,7 @@ from collect import Collector
 from replay import Replayer
 from progress_utils import progressBar
 import arg_utils
+import debug_utils
 
 args = arg_utils.SingleArg().args
 logger = logger_utils.SingleLogger(args.path.split(',')[0], 
@@ -20,8 +21,8 @@ logger = logger_utils.SingleLogger(args.path.split(',')[0],
 	is_clean=args.clean, 
 	show_progress=args.progress)
 logger.info(args)
-
 QueueType("NCCL")
+debug_utils.DebugRecorder()
 
 sys.setrecursionlimit(1000000)
 
@@ -107,10 +108,12 @@ if args.option == "replay":
 		--path: the root path for 
 		--step_num: number of steps we want to generate.
 	'''	
-
-	logger.info("# Collect DAG")
 	clct = Collector(path_list[0])
 	trail_dag = clct.collect_dag(args)
+
+	### Output debug traces
+	debug_utils.DebugRecorder().dump_traces(path_list[0])
+
 	# clct.re_align_traces(trail_dag)
 	clct.add_gaps(trail_dag)
 	clct.dump_traces()
@@ -216,6 +219,8 @@ if args.option == "collect":
 	elif args.sub_option == "iter_time":
 		clct.iter_time()
 
+### Output debug traces
+debug_utils.DebugRecorder().dump_traces(path_list[0])
 
 
 
