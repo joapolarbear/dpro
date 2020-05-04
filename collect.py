@@ -263,13 +263,8 @@ class Collector(object):
             ### TODO (huhanpeng) !!! change this when model is changed
             if "update" in _trace["name"]:
                 return True
-            if "operator" != _trace["cat"]:
+            else:
                 return False
-            if _trace["name"] in IGNORE_OP:
-                return False
-            if "backward" in _trace["name"]:
-                return False
-            return True
 
         ### collect traces of FW + BP OPs and UPDATE OPs
         index = 0
