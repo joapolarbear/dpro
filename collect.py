@@ -127,7 +127,7 @@ class Collector(object):
             self.delete_traces_by_cat("operator")
             self.bpf_collect_comp()
 
-        get_iter_time(self.time_dict)
+        TraceManager(self.time_dict, self.pm.dir_level).get_iter_time()
 
         with open(trace_path, 'w') as f:
             json.dump(self.time_dict, f, indent=4)
@@ -146,7 +146,7 @@ class Collector(object):
         ### Collect communication traces, IO traces and UPDATE traces and apply dependency
         self.bpf_collect_io()
         self.bpf_collect_comm()
-        get_iter_time(self.time_dict)
+        TraceManager(self.time_dict, self.pm.dir_level).get_iter_time()
         with open(trace_path, 'w') as f:
             json.dump(self.time_dict, f, indent=4)
 
@@ -694,7 +694,7 @@ class Collector(object):
         if self.traceM is None:
             self.collect_traces()
         self.logger.info("Original Iteration Time")
-        get_iter_time(self.traceM.traces)
+        self.traceM.get_iter_time()
 
     def collect_dag(self, args):
         assert self.pm.dir_level == DirLevel.TRIAL
@@ -845,7 +845,8 @@ class Collector(object):
             if unique_name not in name2idxlist:
                 name2idxlist[unique_name] = [None] * self.traceM.max_cnt
 
-            name2idxlist[unique_name][event["args"]["cnt"]] = idx
+            if event["args"]["cnt"] != -1:
+                name2idxlist[unique_name][event["args"]["cnt"]] = idx
 
         ### Calculate the average gap for each edge
         for u, v in dag.edges:
@@ -871,6 +872,7 @@ class Collector(object):
                     raise
                 n += 1
             gap = 0 if n == 0 else gap / float(n)
+            # gap = 1
             dag.edges[u, v]["gap"] = gap
 
 

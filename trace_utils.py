@@ -24,6 +24,8 @@ QUEUETYPE = {
 DEL = "->"
 DDEL = "~>"
 
+MAX_CNT = None
+
 @Singleton
 class QueueType:
     def __init__(self, backend, fine_grained=True):
@@ -67,13 +69,15 @@ def _is_comm_trace(trace):
     return trace["cat"] == "Comm"
 
 class TraceManager:
-    def __init__(self, traces, dir_level=None):
+    def __init__(self, traces, dir_level):
         self.traces = traces
         self.traces = sorted(self.traces, key=lambda x: (x["ts"], x["name"]), reverse=False)
 
         self.name2sta = None
         self.cat2sta = None
         self.dir_level = dir_level
+        ### TODO(huhanpeng): Currently, only support DirLevel.TRIAL
+        assert self.dir_level == DirLevel.TRIAL
 
         self.max_cnt = 0
         self.ret_stat()
@@ -102,6 +106,9 @@ class TraceManager:
                 continue
             unique_name = self.ret_unique_name(event)
             if unique_name in self.name2sta:
+                if MAX_CNT is not None and self.name2sta[unique_name]["cnt"] >= MAX_CNT:
+                    event["args"]["cnt"] = -1
+                    continue
                 self.name2sta[unique_name]["cnt"] += 1
                 self.name2sta[unique_name]["time"] += event["dur"] / 1000.0
                 self.name2sta[unique_name]["min_t"] = min(self.name2sta[unique_name]["min_t"], event["dur"] / 1000.0)
@@ -205,6 +212,80 @@ class TraceManager:
             if std_name == longname:
                 return idx, self.traces[idx]
         return None, None
+
+    def get_iter_time(self):
+        ''' print the iteration time and computation time
+        *Note* that this function is strongly dependent on how the bps_trace_final.json
+        is generated based on the temp.json, i.e., which ops of temp.json are used in 
+        the bps_trace_final.json
+        '''
+        assert isinstance(self.traces, list)
+        operator_traces_list = self.group_computation_op_by_prefix()
+
+        ret = []
+        for prefix in sorted(operator_traces_list.keys()):
+            operator_traces = operator_traces_list[prefix] 
+            fw_bw_list = []
+            iter_list = []
+            operator_traces = sorted(operator_traces, key=lambda x: x["ts"])
+
+            iter_cnt = None
+            step_start_ts = None
+            cur_iter_time = 0
+            fw_bw_end = 0
+            for event in operator_traces:
+                if iter_cnt is None:
+                    ### initialization
+                    step_start_ts = event['ts']
+                    cur_iter_time = event['ts'] + event['dur']
+                    iter_cnt = event["args"]["cnt"]
+                elif iter_cnt != event["args"]["cnt"]:
+                    ### a new iteration
+                    assert step_start_ts is not None
+                    if iter_cnt == -1:
+                        continue
+                    if event["args"]["cnt"] < iter_cnt:
+                        SingleLogger().warn("Illegal cnt field for this event %s %s %d" % (event["pid"], event["name"], event["args"]["cnt"]))
+                        continue
+                    iter_list.append((cur_iter_time - step_start_ts) / 1000.0)
+                    fw_bw_list.append((fw_bw_end - step_start_ts) / 1000.0)
+                    # SingleLogger().info("%s - the %d th iteration: FW+BW: %f, Iteration time: %f" % (prefix, len(iter_list), fw_bw_list[-1], iter_list[-1]))
+                    SingleLogger().debug("%s - the %d th iteration: FW+BW: %f, Iteration time: %f" % (prefix, len(iter_list), fw_bw_list[-1], iter_list[-1]))
+                    step_start_ts = event['ts']
+                    cur_iter_time = event['ts'] + event['dur']
+                    iter_cnt = event["args"]["cnt"]
+                else:
+                    ### during an iteration
+                    cur_iter_time = event['ts'] + event['dur']
+
+                    ### TODO (huhanpeng): change after fine-tune update
+                    ### here we assume UPDATE is following the last BP op.
+                    if "FW" in event["name"] or "BW" in event["name"]:
+                        fw_bw_end = cur_iter_time
+                    
+            ### Needed if there is only one step
+            iter_list.append((cur_iter_time - step_start_ts) / 1000.0)
+            fw_bw_list.append((fw_bw_end - step_start_ts) / 1000.0)
+            SingleLogger().debug("%s - the %d th iteration: FW+BW: %f, Iteration time: %f" % (prefix, len(iter_list), fw_bw_list[-1], iter_list[-1]))
+
+            fw_bw_time = sum(fw_bw_list) / float(len(fw_bw_list))
+            iter_time = sum(iter_list) / float(len(iter_list))
+            ret.append((prefix, fw_bw_time, iter_time))
+            SingleLogger().info("<%s> fw + bw: %f ms -- iteration time: %f ms" % (prefix,
+                    fw_bw_time, iter_time))
+        return ret
+
+    def group_computation_op_by_prefix(self):
+        prefix2traces = {}
+        def _get_prefix(e):
+            prefix = e["pid"]
+            if prefix not in prefix2traces:
+                prefix2traces[prefix] = []
+            return prefix
+        for event in self.traces:
+            if event["cat"] == "operator" and not self._is_ignore_for_sta(event):
+                prefix2traces[_get_prefix(event)].append(event)
+        return prefix2traces
 
 
 def return_stat(traces):
@@ -338,75 +419,6 @@ def parse_special_from_name(name):
     '''
     if "NEGOTIATE" in name:
         return 
-
-def group_computation_op_by_prefix(traces, rank=None):
-    prefix2traces = {}
-    def _get_prefix(e):
-        prefix = e["pid"]
-        if prefix not in prefix2traces:
-            prefix2traces[prefix] = []
-        return prefix
-    for event in traces:
-        if event["cat"] == "operator":
-            prefix2traces[_get_prefix(event)].append(event)
-    return prefix2traces
-
-def get_iter_time(traces, rank=None):
-    ''' print the iteration time and computation time
-    *Note* that this function is strongly dependent on how the bps_trace_final.json
-    is generated based on the temp.json, i.e., which ops of temp.json are used in 
-    the bps_trace_final.json
-    '''
-    if isinstance(traces, dict):
-        traces = traces["traceEvents"]
-    else:
-        assert isinstance(traces, list)
-    operator_traces_list = group_computation_op_by_prefix(traces, rank)
-
-    ret = []
-    for prefix in sorted(operator_traces_list.keys()):
-        operator_traces = operator_traces_list[prefix] 
-        fw_bw_list = []
-        iter_list = []
-        operator_traces = sorted(operator_traces, key=lambda x: x["ts"])
-
-        iter_cnt = None
-        step_start_ts = None
-        cur_iter_time = 0
-        fw_bw_end = 0
-        for event in operator_traces:
-            if iter_cnt is None:
-                ### initialization
-                step_start_ts = event['ts']
-                cur_iter_time = event['ts'] + event['dur']
-                iter_cnt = event["args"]["cnt"]
-            elif iter_cnt != event["args"]["cnt"]:
-                ### a new iteration
-                assert step_start_ts is not None
-                iter_list.append((cur_iter_time - step_start_ts) / 1000.0)
-                fw_bw_list.append((fw_bw_end - step_start_ts) / 1000.0)
-                step_start_ts = event['ts']
-                cur_iter_time = event['ts'] + event['dur']
-                iter_cnt = event["args"]["cnt"]
-            else:
-                ### during an iteration
-                cur_iter_time = event['ts'] + event['dur']
-
-                ### TODO (huhanpeng): change after fine-tune update
-                ### here we assume UPDATE is following the last BP op.
-                if "FW" in event["name"] or "BW" in event["name"]:
-                    fw_bw_end = cur_iter_time
-                
-        ### Needed if there is only one step
-        iter_list.append((cur_iter_time - step_start_ts) / 1000.0)
-        fw_bw_list.append((fw_bw_end - step_start_ts) / 1000.0)
-
-        fw_bw_time = sum(fw_bw_list) / float(len(fw_bw_list))
-        iter_time = sum(iter_list) / float(len(iter_list))
-        ret.append((prefix, fw_bw_time, iter_time))
-        SingleLogger().info("<%s> fw + bw: %f ms -- iteration time: %f ms" % (prefix,
-                fw_bw_time, iter_time))
-    return ret
 
 def load_list(path):
     ''' read a list from a file
