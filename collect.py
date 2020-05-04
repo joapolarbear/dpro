@@ -473,7 +473,6 @@ class Collector(object):
         self.clock_aligner.append_traces(host_id, rst_traces)
         debug_utils.DebugRecorder().debug_event_end("collect_" + pid+"_comm_detail", "Collct", "0")
 
-
     def bpf_collect_comm(self, tmp_pm=None, pid=None, host_id=None):
         debug_utils.DebugRecorder().debug_event_start("collect_" + pid+"_comm", "Collct", "0")
         comm_path = self.pm.search(FileName.COMM) if tmp_pm is None else tmp_pm.search(FileName.COMM)
@@ -858,19 +857,47 @@ class Collector(object):
 
             gap = 0
             n = 0
-            for cnt_ in range(self.traceM.max_cnt):
-                u_idx, v_idx = u_idx_l[cnt_], v_idx_l[cnt_]
-                if u_idx is None or v_idx is None:
-                    continue
-                gap += (self.traceM.traces[v_idx]["ts"] - (self.traceM.traces[u_idx]["ts"] + self.traceM.traces[u_idx]["dur"]))
-                if gap < 0 and not ("SEND" in self.traceM.traces[u_idx]["name"] and "RECV" in self.traceM.traces[v_idx]["name"]):
-                    print(self.traceM.traces[u_idx], self.traceM.traces[v_idx])
-                    raise
-                n += 1
+            if not args_.disable_revise and "SEND" in u and "RECV" in v:
+                ### Revise RECV events according to SEND-RECV dependents
+                ### TODO (huhanpeng): duration on dag has not been updated
+                ###     and cat2sta has not be updated
+                recv_dict = None
+                for cnt_ in range(self.traceM.max_cnt):
+                    u_idx, v_idx = u_idx_l[cnt_], v_idx_l[cnt_]
+                    if u_idx is None or v_idx is None:
+                        continue
+                    ### if RECV.start_t() < SEND.start_t(), revise
+                    ### RECV.dur = RECV.dur - (SEND.ts - RECV.ts)
+                    ### RECV.ts = SEND.ts
+                    send_event = self.traceM.traces[u_idx]
+                    recv_event = self.traceM.traces[v_idx]
+                    if send_event["ts"] > recv_event["ts"]:
+                        recv_event["dur"] = recv_event["dur"] - (send_event["ts"] - recv_event["ts"])
+                        recv_event["ts"] = send_event["ts"]
+                    if recv_dict is None:
+                        recv_dict = {
+                            "unique_name": self.traceM.ret_unique_name(recv_event),
+                            "durs": [recv_event["dur"]],
+                        }
+                    else:
+                        recv_dict["durs"].append(recv_event["dur"])
+                if recv_dict is not None:
+                    avg = sum(recv_dict["durs"]) / len(recv_dict["durs"]) / 1000.0
+                    self.traceM.name2sta[recv_dict["unique_name"]]["avg"] = avg 
+                    var_l = [pow(_d / 1000.0 - avg, 2) for _d in recv_dict["durs"]]
+                    self.traceM.name2sta[recv_dict["unique_name"]]["var"] = sum(var_l) / len(var_l)
+            else:
+                for cnt_ in range(self.traceM.max_cnt):
+                    u_idx, v_idx = u_idx_l[cnt_], v_idx_l[cnt_]
+                    if u_idx is None or v_idx is None:
+                        continue
+                    gap += (self.traceM.traces[v_idx]["ts"] - (self.traceM.traces[u_idx]["ts"] + self.traceM.traces[u_idx]["dur"]))
+                    if gap < 0 and not ("SEND" in u and "RECV" in v):
+                        print(self.traceM.traces[u_idx], self.traceM.traces[v_idx])
+                        raise
+                    n += 1
             gap = 0 if n == 0 else gap / float(n)
             dag.edges[u, v]["gap"] = gap
-
-
 
 
         

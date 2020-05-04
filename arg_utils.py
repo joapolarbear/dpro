@@ -25,6 +25,7 @@ parser.add_argument("--progress", action="store_true", help="Show the progress b
 parser.add_argument("--delay_ratio", type=float, default=1.1, help="delay ratio")
 parser.add_argument("--nccl_algo", type=str, default=None, help="NCCL algorithm")
 parser.add_argument("--trace_level", type=str, choices=["debug", "info"], default="info", help="if set to debug, show some trival traces")
+parser.add_argument("--disable_revise", action="store_true", help="By default, revise traecs according to SEND-RECV dependency, set to disable this argument to disable")
 args = parser.parse_args()
 
 
