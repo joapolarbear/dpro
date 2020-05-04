@@ -691,7 +691,9 @@ class Collector(object):
         return self.traceM
 
     def iter_time(self):
-        self.collect_traces()
+        if self.traceM is None:
+            self.collect_traces()
+        self.logger.info("Original Iteration Time")
         get_iter_time(self.traceM.traces)
 
     def collect_dag(self, args):
@@ -700,6 +702,7 @@ class Collector(object):
         worker_dag_list = []   
         if self.traceM is None:
             self.collect_traces()
+        self.iter_time()
         self.logger.info("# Collecting DAG")
         update_dict = self.pm.map_tensors_to_update()
         for _dir in self.pm.dirs:
