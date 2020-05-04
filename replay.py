@@ -95,7 +95,8 @@ class Deivce:
 		for _succ in self.replayer.dag.successors(name):
 			if _succ in self.replayer.node_status:
 				_status = self.replayer.node_status[_succ]
-				_status["in_degree"] -= 1
+
+				### Calculate the start time
 				if "SEND" in name and "RECV" in _succ:
 					### For Send->Recv edge, there exist some overlap
 					### TODO (huhanpeng): how do decide the end time of the RECV event
@@ -109,6 +110,9 @@ class Deivce:
 					### Apply the gap between two nodes
 					gap = self.replayer.dag.edges[name, _succ]["gap"] if "gap" in self.replayer.dag.edges[name, _succ] else 0
 					_status["last_end"] = _end_time + gap if _status["last_end"] is None else max(_end_time + gap, _status["last_end"])
+
+				### Whether the dependency has met
+				_status["in_degree"] -= 1
 				if _status["in_degree"] == 0:
 					self.replayer.insert_next_node(_succ, _status["last_end"])
 
@@ -172,7 +176,10 @@ class Replayer:
 	def replay_one_iter(self, step_idx):	
 		self.pre_prepare()
 		assert len(self.next_nodes) != 0
-		for (n, t) in self.next_nodes:
+		while True:
+			if len(self.next_nodes) == 0:
+				break
+			(n, t) = self.next_nodes.pop(0)
 			device = self.name2device(n)
 			device.exct(n, t, step_idx)
 		assert len(self.node_status) == 0

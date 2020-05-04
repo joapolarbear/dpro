@@ -845,6 +845,7 @@ class Collector(object):
 
         ### Calculate the average gap for each edge
         for u, v in dag.edges:
+            # if "I/O" in u or ("BW" not in u and "UPDATE_" in v):
             if "I/O" in u:
                 dag.edges[u, v]["gap"] = 0
                 continue
@@ -867,7 +868,6 @@ class Collector(object):
                     raise
                 n += 1
             gap = 0 if n == 0 else gap / float(n)
-            # gap = 1
             dag.edges[u, v]["gap"] = gap
 
 
