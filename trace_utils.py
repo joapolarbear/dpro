@@ -75,8 +75,9 @@ class TraceManager:
         self.cat2sta = None
         self.dir_level = dir_level
 
+        self.max_cnt = 0
         self.ret_stat()
-
+        
     def _is_comm_trace(self, event):
         return event["cat"] == "Comm"
 
@@ -138,6 +139,7 @@ class TraceManager:
 
         for name, statistic in self.name2sta.items():
             statistic["var"] = statistic["var"] / float(statistic["cnt"])
+            self.max_cnt = max(statistic["cnt"], self.max_cnt)
 
     def lookup_stat(self, wk_prefix, rank_prefix, name,  _field="avg"):
         ''' look up data from the stat info

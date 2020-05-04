@@ -698,7 +698,8 @@ class Collector(object):
         assert self.pm.dir_level == DirLevel.TRIAL
         critical_path = []
         worker_dag_list = []   
-        self.collect_traces()
+        if self.traceM is None:
+            self.collect_traces()
         self.logger.info("# Collecting DAG")
         update_dict = self.pm.map_tensors_to_update()
         for _dir in self.pm.dirs:
@@ -832,64 +833,43 @@ class Collector(object):
         ''' According to the traces and DAG, add a 'gap' field for each edge (u, v)
         which denotes the gap between two events u and v.
         '''
-
-        def find_pre_node(n):
-            ret = []
-            for u, v in dag.in_edges(n):
-                if dag.edges[u, v]["weight"] == 0:
-                    ret += find_pre_node(u)
-                else:
-                    ret.append(u)
-            return ret
-
-        pid2name2idx = {}
-
-        ### The traces have been sorted by ts, so it follows the dependency info
+        name2idxlist = {}
         for idx, event in enumerate(self.traceM.traces):
             if self.traceM._is_ignore_for_sta(event):
                 continue
-            if event["pid"] not in pid2name2idx:
-                pid2name2idx[event["pid"]] = {"cnt": None, "name2idx": {}}
-
-            if pid2name2idx[event["pid"]]["cnt"] is None:
-                pid2name2idx[event["pid"]]["cnt"] = event["args"]["cnt"]
-            elif event["args"]["cnt"] != pid2name2idx[event["pid"]]["cnt"]:
-                ### It's a new iteration
-                pid2name2idx[event["pid"]]["name2idx"] = {}
-                pid2name2idx[event["pid"]]["cnt"] = event["args"]["cnt"]
-
-            name2idx = pid2name2idx[event["pid"]]["name2idx"]
 
             unique_name = self.traceM.ret_unique_name(event)
-            for in_node in find_pre_node(unique_name):
-                try:
-                    pre_idx = name2idx[in_node]
-                except:
-                    if "SEND" in in_node and "RECV" in unique_name:
-                        continue
-                    SingleLogger().warn("previous %s has not recorded for %s" % (in_node, unique_name))
-                    continue
+            if unique_name not in name2idxlist:
+                name2idxlist[unique_name] = [None] * self.traceM.max_cnt
 
-                pre_event = self.traceM.traces[pre_idx]
-                pre_unique_name = self.traceM.ret_unique_name(pre_event)
-
-
-                if (pre_unique_name, unique_name) not in dag.edges:
-                    dag.add_edge(pre_unique_name, unique_name, weight=self.traceM.lookup_stat(None, None, pre_unique_name))
-                if "gap" not in dag.edges[pre_unique_name, unique_name]:
-                    dag.edges[pre_unique_name, unique_name]["gap"] = event["ts"] - (pre_event["ts"] + pre_event["dur"])
-                    dag.edges[pre_unique_name, unique_name]["cnt_"] = 1
-                else:
-                    dag.edges[pre_unique_name, unique_name]["gap"] += (event["ts"] - (pre_event["ts"] + pre_event["dur"]))
-                    dag.edges[pre_unique_name, unique_name]["cnt_"] += 1
-
-            name2idx[unique_name] = idx
+            name2idxlist[unique_name][event["args"]["cnt"]] = idx
 
         ### Calculate the average gap for each edge
         for u, v in dag.edges:
-            if "gap" not in dag.edges[u, v]:
+            if "I/O" in u:
+                dag.edges[u, v]["gap"] = 0
                 continue
-            dag.edges[u, v]["gap"] = dag.edges[u, v]["gap"] / float(dag.edges[u, v]["cnt_"])
+
+            try:
+                u_idx_l, v_idx_l = name2idxlist[u], name2idxlist[v]
+            except KeyError:
+                ### some dag nodes do not appear in the traces
+                continue
+
+            gap = 0
+            n = 0
+            for cnt_ in range(self.traceM.max_cnt):
+                u_idx, v_idx = u_idx_l[cnt_], v_idx_l[cnt_]
+                if u_idx is None or v_idx is None:
+                    continue
+                gap += (self.traceM.traces[v_idx]["ts"] - (self.traceM.traces[u_idx]["ts"] + self.traceM.traces[u_idx]["dur"]))
+                if gap < 0 and not ("SEND" in self.traceM.traces[u_idx]["name"] and "RECV" in self.traceM.traces[v_idx]["name"]):
+                    print(self.traceM.traces[u_idx], self.traceM.traces[v_idx])
+                    raise
+                n += 1
+            gap = 0 if n == 0 else gap / float(n)
+            dag.edges[u, v]["gap"] = gap
+
 
 
 

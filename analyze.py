@@ -110,15 +110,10 @@ if args.option == "replay":
 	'''	
 	clct = Collector(path_list[0])
 	trail_dag = clct.collect_dag(args)
-
-	### Output debug traces
-	debug_utils.DebugRecorder().dump_traces(path_list[0])
-
 	# clct.re_align_traces(trail_dag)
-	clct.add_gaps(trail_dag)
 	clct.dump_traces()
 
-	raise
+	clct.add_gaps(trail_dag)
 
 	# dag_longest_path(trail_dag, clct.pm, weight="weight", default_weight=0)
 
