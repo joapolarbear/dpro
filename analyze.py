@@ -111,7 +111,6 @@ if args.option == "replay":
 	clct = Collector(path_list[0])
 	trail_dag = clct.collect_dag(args)
 	# clct.re_align_traces(trail_dag)
-	clct.dump_traces()
 
 	clct.add_gaps(trail_dag)
 
@@ -164,7 +163,7 @@ if args.option == "compare":
 		traces = [read_traces(path_list[0]), read_traces(path_list[1])]
 	else:
 		clct = [Collector(path_list[0]), Collector(path_list[1])]
-		traces = [c.iter_combine() for c in clct]
+		traces = [c.iter_combine(is_ouput=False) for c in clct]
 	name2sta = [return_stat(_traces)[0] for _traces in traces]
 	name2compare = {}
 	for name, statistic in name2sta[0].items():
@@ -213,6 +212,9 @@ if args.option == "collect":
 		clct.iter_combine()
 	elif args.sub_option == "iter_time":
 		clct.iter_time()
+	elif args.sub_option == "straggler":
+		clct.collect_traces()
+		clct.detect_straggler1()
 
 ### Output debug traces
 debug_utils.DebugRecorder().dump_traces(path_list[0])

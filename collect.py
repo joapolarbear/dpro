@@ -660,7 +660,7 @@ class Collector(object):
             # rst_traces["traceEvents"] += self.time_dict["traceEvents"]
 
         if is_output:
-            self.dump_traces(rst_traces)
+            self.dump_traces(rst_traces["traceEvents"])
 
         return rst_traces["traceEvents"]
 
@@ -898,6 +898,23 @@ class Collector(object):
                     n += 1
             gap = 0 if n == 0 else gap / float(n)
             dag.edges[u, v]["gap"] = gap
+
+    def detect_straggler1(self):
+        prefix2traces = {}
+        def _get_prefix(e):
+            prefix = e["pid"]
+            if prefix not in prefix2traces:
+                prefix2traces[prefix] = []
+            return prefix
+        for event in self.traceM.traces:
+            if not self.traceM._is_ignore_for_sta(event):
+                prefix2traces[_get_prefix(event)].append(event)
+        for key_ in sorted(prefix2traces.keys()):
+            prefix2traces[key_] = TraceManager(prefix2traces[key_], DirLevel.GPU)
+            print("\n%s" % key_)
+            for cat_, sta_ in prefix2traces[key_].cat2sta.items():
+                print("Cat: %s: avg %f" % (cat_, sta_["avg"]))
+
 
 
         

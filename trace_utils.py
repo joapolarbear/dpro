@@ -76,8 +76,6 @@ class TraceManager:
         self.name2sta = None
         self.cat2sta = None
         self.dir_level = dir_level
-        ### TODO(huhanpeng): Currently, only support DirLevel.TRIAL
-        assert self.dir_level == DirLevel.TRIAL
 
         self.max_cnt = 0
         self.ret_stat()
@@ -129,13 +127,35 @@ class TraceManager:
         for name, statistic in self.name2sta.items():
             statistic["avg"] = statistic["time"] / statistic["cnt"]
             statistic["var"] = 0.0
-            cat = statistic["cat"]
+
+            if statistic["cat"] == "Comm":
+                if "SEND" in name:
+                    cat = statistic["cat"] + ".SEND"
+                elif "RECV" in name:
+                    cat = statistic["cat"] + ".RECV"
+                else:
+                    cat = statistic["cat"] + ".other"
+            elif statistic["cat"] == "operator":
+                if "FW" in name:
+                    cat = statistic["cat"] + ".FW"
+                elif "BW" in name:
+                    cat = statistic["cat"] + ".BW"
+                elif "UPDATE_" in name:
+                    cat = statistic["cat"] + ".UPDATE"
+                else:
+                    cat = statistic["cat"] + ".other"
+
             if cat in self.cat2sta:
                 if statistic["avg"] > self.cat2sta[cat]["max_t"]:
                     self.cat2sta[cat]["max_t"] = statistic["avg"]
                     self.cat2sta[cat]["max_name"] = name
             else:
-                self.cat2sta[cat] = {"max_t": statistic["avg"], "max_name": name}
+                self.cat2sta[cat] = {"max_t": statistic["avg"], "max_name": name, "time": 0, "cnt": 0}
+            self.cat2sta[cat]["time"] += statistic["time"]
+            self.cat2sta[cat]["cnt"] += statistic["cnt"]
+
+        for cat, statistic in self.cat2sta.items():
+            statistic["avg"] = statistic["time"] / statistic["cnt"]
 
         """calculate the variance"""
         for event in self.traces:
