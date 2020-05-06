@@ -1,5 +1,5 @@
 import os 
-import json
+import ujson as json
 
 import networkx as nx
 import traceback
@@ -22,7 +22,7 @@ logger = logger_utils.SingleLogger(args.path.split(',')[0],
 	show_progress=args.progress)
 logger.info(args)
 QueueType("NCCL")
-debug_utils.DebugRecorder()
+debug_utils.DebugRecorder(is_enable=args.debug_traces)
 
 sys.setrecursionlimit(1000000)
 
@@ -109,10 +109,8 @@ if args.option == "replay":
 		--step_num: number of steps we want to generate.
 	'''	
 	clct = Collector(path_list[0])
-	trail_dag = clct.collect_dag(args)
-	# clct.re_align_traces(trail_dag)
-
-	clct.add_gaps(trail_dag)
+	clct.init()
+	raise
 
 	# dag_longest_path(trail_dag, clct.pm, weight="weight", default_weight=0)
 
@@ -163,7 +161,7 @@ if args.option == "compare":
 		traces = [read_traces(path_list[0]), read_traces(path_list[1])]
 	else:
 		clct = [Collector(path_list[0]), Collector(path_list[1])]
-		traces = [c.iter_combine(is_ouput=False) for c in clct]
+		traces = [c.iter_combine() for c in clct]
 	name2sta = [return_stat(_traces)[0] for _traces in traces]
 	name2compare = {}
 	for name, statistic in name2sta[0].items():

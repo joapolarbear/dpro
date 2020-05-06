@@ -1,5 +1,5 @@
 import os
-import json
+import ujson as json
 import random
 import xlsxwriter
 import traceback
@@ -50,6 +50,8 @@ class FileName(Enum):
     TENSOR_NAME="gradient_name_list.txt"
     COMM_DETAIL="comm_detail.json"
     INFO="info.json"
+    NCCL_GRAPH="nccl_graph.txt"
+    TRAIL_DAG="trail_dag.gml"
 
 def read_traces(traces_path):
     '''
@@ -78,7 +80,10 @@ class TraceManager:
         self.dir_level = dir_level
 
         self.max_cnt = 0
+        import time
+        ts_ = time.time()
         self.ret_stat()
+        print("ret_stat %f" %(time.time() - ts_))
         
     def _is_comm_trace(self, event):
         return event["cat"] == "Comm"
@@ -128,6 +133,7 @@ class TraceManager:
             statistic["avg"] = statistic["time"] / statistic["cnt"]
             statistic["var"] = 0.0
 
+            assert statistic["time"] != 0
             if statistic["cat"] == "Comm":
                 if "SEND" in name:
                     cat = statistic["cat"] + ".SEND"
@@ -158,12 +164,14 @@ class TraceManager:
             statistic["avg"] = statistic["time"] / statistic["cnt"]
 
         """calculate the variance"""
+        import time
+        ts_ = time.time()
         for event in self.traces:
             if self._is_ignore_for_sta(event):
                 continue
             unique_name = self.ret_unique_name(event)
             self.name2sta[unique_name]["var"] += pow(event["dur"] / 1000.0 - self.name2sta[unique_name]["avg"], 2)
-
+        print("Go throught all traces: %f" % (time.time() - ts_))
         for name, statistic in self.name2sta.items():
             statistic["var"] = statistic["var"] / float(statistic["cnt"])
             self.max_cnt = max(statistic["cnt"], self.max_cnt)

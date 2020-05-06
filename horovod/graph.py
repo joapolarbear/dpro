@@ -70,8 +70,8 @@ class ncclGraph:
         self.rank2prefix = {}
         self.prefix2rank = {}
 
-        self.host_id2prefix = None
-        self.host_prefix2id = None
+        self.host_id2prefix = {}
+        self.host_prefix2id = {}
 
        
     def parse_tree_topo(self, tree_dict, map_to=None):
@@ -429,6 +429,38 @@ class ncclGraph:
         if "." in prefix:
             prefix = prefix.split(".")[0]
         return self.host_prefix2id[prefix]
+
+    def dump(self, path_):
+        str_ = "%d,%d,%d\n"%(self.algo.value, self.rank_num, int(self.trace_parsed))
+        str_ += str(self.graph) + "\n"
+        str_ += str(self.raw_name2IDnum) + "\n"
+        str_ += str(self.rank2prefix) + "\n"
+        str_ += str(self.prefix2rank) + "\n"
+
+        str_ += str(self.host_id2prefix) + "\n"
+        str_ += str(self.host_prefix2id)
+
+        with open(path_, 'w') as fp:
+            fp.write(str_)
+
+    def load(self, path_):
+        with open(path_, 'r') as fp:
+            str_ = fp.read().split("\n")
+
+        algo, rank_num, trace_parsed = str_[0].split(",")
+        self.algo = NCCL_ALGO(int(algo))
+        self.rank_num = int(rank_num)
+        self.trace_parsed = bool(trace_parsed)
+
+        self.graph = eval(str_[1])
+        self.raw_name2IDnum = eval(str_[2])
+        self.rank2prefix = eval(str_[3])
+        self.prefix2rank = eval(str_[4])
+
+        self.host_id2prefix = eval(str_[5])
+        self.host_prefix2id = eval(str_[6])
+
+
 
 
 

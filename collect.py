@@ -4,7 +4,7 @@ import os
 # append for auto_profiling
 import logging
 import sys, os
-import json
+import ujson as json
 import networkx as nx
 import threading
 import time
@@ -98,15 +98,16 @@ class Collector(object):
         self.logger = logger_utils.SingleLogger()
         self.pm = PathManager(root_path)
         self.traceM = None
+        self.nccl_graph = ncclGraph()
+        self.trail_dag = None
 
         self.time_dict = None
         self.run_span = {}
         ### Used for clock synchronization when combime traces from multiple machines
         self.clock_aligner = None
 
-        ### TODO (huhanpeng): assume different host use the same dag
+        ### TODO (huhanpeng): assume different host use the same dag, original dag
         self.dag = None
-        self.nccl_graph = None
 
     def update_final_traces(self, _io=False, _comm=False, _operator=False):
         trace_path = self.pm.search(FileName.TRACE)
@@ -172,11 +173,13 @@ class Collector(object):
         rst_traces : dict
             A dict containing MXNet trace results combined with dependency info.
         '''
-        debug_utils.DebugRecorder().debug_event_start("collect_" + pid+"_comp", "Collct", "0")
+        debug_utils.DebugRecorder().debug_event_start()
         comp_path = self.pm.search(FileName.COMP) if tmp_pm is None else tmp_pm.search(FileName.COMP)
         if self.dag is None:
             dag_path = self.pm.search(FileName.DAG) if tmp_pm is None else tmp_pm.search(FileName.DAG)
+            debug_utils.DebugRecorder().debug_event_start()
             self.dag = nx.read_gml(dag_path)
+            debug_utils.DebugRecorder().debug_event_end("collect_" + pid+"_comp.read_dag", "Collct", "0")
 
         if comp_path is None:
             return
@@ -185,10 +188,11 @@ class Collector(object):
         if wk_prefix not in self.run_span:
             self.run_span[wk_prefix] = RunningSpan()
 
-
+        debug_utils.DebugRecorder().debug_event_start()
         ''' Output trace resutls '''
         with open(comp_path, 'r') as f:
             mxnet_traces = json.load(f)
+        debug_utils.DebugRecorder().debug_event_end("collect_" + pid+"_comp.jsonload", "Collct", "0")
         
         one_pid = None
         rst_traces = {"traceEvents": []}
@@ -212,7 +216,9 @@ class Collector(object):
             else:
                 index += 1
 
+        debug_utils.DebugRecorder().debug_event_start()
         traces = sorted(traces, key=lambda x: x["ts"], reverse=False)
+        debug_utils.DebugRecorder().debug_event_end("collect_" + pid+"_comp.sorted", "Collct", "0")
 
         def standar_name(_name):
             '''Fetch and handle the trace name'''
@@ -251,13 +257,9 @@ class Collector(object):
                 elif statue == "bw" and "FW" in name:
                     statue = "fw"
                     return last_fw, first_bw, last_bw
+        debug_utils.DebugRecorder().debug_event_start()          
         last_fw, first_bw, last_bw = real_last_bw_name()
-
-        IGNORE_OP = ["DeleteVariable", "sum", "_plus_scalar", 
-                "_copyto_GPU2GPU", "broadcast_add", 
-                "Reshape", "Cast", "_arange", "elemwise_add",
-                "_ones", "SyncCopyGPU2CPU", "_mul_scalar",
-                "CopyGPU2CPU", "CopyCPU2GPU", "SetValueOp"]
+        debug_utils.DebugRecorder().debug_event_end("collect_" + pid+"_comp.real_last_bw_name", "Collct", "0")
 
         def is_update_op(_trace):
             ### TODO (huhanpeng) !!! change this when model is changed
@@ -377,7 +379,7 @@ class Collector(object):
         debug_utils.DebugRecorder().debug_event_end("collect_" + pid+"_comp", "Collct", "0")
 
     def bpf_collect_io(self, tmp_pm=None, pid=None, host_id=None):
-        debug_utils.DebugRecorder().debug_event_start("collect_" + pid+"_io", "Collct", "0")
+        debug_utils.DebugRecorder().debug_event_start()
         io_path = self.pm.search(FileName.IO) if tmp_pm is None else tmp_pm.search(FileName.IO)
         if io_path is None:
             return
@@ -408,7 +410,7 @@ class Collector(object):
         debug_utils.DebugRecorder().debug_event_end("collect_" + pid+"_io", "Collct", "0")
 
     def bpf_collect_comm_detail(self, tmp_pm, pid=None, host_id=None):
-        debug_utils.DebugRecorder().debug_event_start("collect_" + pid+"_comm_detail", "Collct", "0")
+        debug_utils.DebugRecorder().debug_event_start()
         comm_d_path = self.pm.search(FileName.COMM_DETAIL) if tmp_pm is None else tmp_pm.search(FileName.COMM_DETAIL)
 
         if comm_d_path is None:
@@ -417,12 +419,14 @@ class Collector(object):
         wk_prefix, _ = PathManager("/".join(comm_d_path.split('/')[:-1])).ret_prefix()
 
         rst_traces = []
+        debug_utils.DebugRecorder().debug_event_start()
         try:
             with open(comm_d_path, 'r') as f:
                 traces = json.load(f)
         except json.decoder.JSONDecodeError:
             traceback.print_exc()
             traces = []
+        debug_utils.DebugRecorder().debug_event_end("collect_" + pid+"_comm_detail.jsonload", "Collct", "0")
 
         algo = args_.nccl_algo
         if algo is None:
@@ -474,7 +478,7 @@ class Collector(object):
         debug_utils.DebugRecorder().debug_event_end("collect_" + pid+"_comm_detail", "Collct", "0")
 
     def bpf_collect_comm(self, tmp_pm=None, pid=None, host_id=None):
-        debug_utils.DebugRecorder().debug_event_start("collect_" + pid+"_comm", "Collct", "0")
+        debug_utils.DebugRecorder().debug_event_start()
         comm_path = self.pm.search(FileName.COMM) if tmp_pm is None else tmp_pm.search(FileName.COMM)
         if comm_path is None:   
             return
@@ -495,14 +499,17 @@ class Collector(object):
         wk_prefix, _ = PathManager("/".join(path.split('/')[:-1])).ret_prefix()
 
         #! read communication traces offline
+        debug_utils.DebugRecorder().debug_event_start()
         with open(path, 'r') as f:
             json_str = f.read()
+        debug_utils.DebugRecorder().debug_event_end("collect_" + pid+"_comm.read_traces", "Collct", "0")
 
         ### TODO (huhanpeng) delete
         ''' Fix the json file
             For Horovod, the timeline_ outputs traces as soon as a new trace is appended to the queue
             Making the trace file ends abnormally.
         '''
+        debug_utils.DebugRecorder().debug_event_start()
         if json_str[-1] != ']':
             json_str_lines = json_str.split("\n")
             if json_str_lines[-1] == '':
@@ -511,6 +518,7 @@ class Collector(object):
                 json_str_lines[-1] = json_str_lines[-1][:-1]+']'
             json_str = "\n".join(json_str_lines)
         comm_traces = json.loads(json_str)
+        debug_utils.DebugRecorder().debug_event_end("collect_" + pid+"_comm.load_string", "Collct", "0")
 
         ret = []
         for trace in comm_traces:
@@ -565,7 +573,7 @@ class Collector(object):
                             self.clock_aligner.mark_ref_time(host_id, ts, "%s.%s"%(process_name, op_name))
 
                 if "Sync" in process_name and args_.trace_level != "debug":
-                    continue
+                    break
 
                 ### TODO (huhanpeng): Sync node only used for debug currently
                 cat = "Comm" if "Sync" not in process_name else "debug"
@@ -611,7 +619,8 @@ class Collector(object):
             else:
                 self.re_gen_final_traces()
 
-    def iter_combine(self, is_output=True):
+    def iter_combine(self):
+        ts_ = time.time()
         rst_traces = {"traceEvents": []}
         if self.pm.dir_level == DirLevel.GPU:
             raise NotImplementedError()
@@ -635,7 +644,6 @@ class Collector(object):
 
         elif self.pm.dir_level == DirLevel.TRIAL:
             self.clock_aligner = ClockAligner()
-            self.nccl_graph = ncclGraph()
             self.nccl_graph.map_host_prefix_id(self.pm.dirs)
             for _dir in self.pm.dirs:
                 worker_path = os.path.join(self.pm.path, _dir)
@@ -659,9 +667,7 @@ class Collector(object):
             # self.bpf_collect_comm()
             # rst_traces["traceEvents"] += self.time_dict["traceEvents"]
 
-        if is_output:
-            self.dump_traces(rst_traces["traceEvents"])
-
+        print("iter_combine: %f" % (time.time() - ts_))
         return rst_traces["traceEvents"]
 
     def dump_traces(self, rst_traces=None):
@@ -669,20 +675,12 @@ class Collector(object):
             rst_traces = self.traceM.traces
         rst_traces = sorted(rst_traces, key=lambda x: (x["pid"], x["tid"]))
         with open(os.path.join(self.pm.path, FileName.TRACE.value), 'w') as f:
-            json.dump(rst_traces, f, indent=4)
+            json.dump(rst_traces, f)
 
-    def collect_traces(self, is_output=True):
+    def collect_traces(self, force_=False):
         self.logger.info("# Collecting Traces")
-        trace_path = self.pm.search(FileName.TRACE)
-        if trace_path is not None and self.nccl_graph is not None:
-            traces = read_traces(trace_path)
-            self.traceM = TraceManager(traces, self.pm.dir_level)
-        else:
-            self.logger.info("Generating %s" % (FileName.TRACE.value))
-            self.traceM = TraceManager(self.iter_combine(is_output=False), self.pm.dir_level)
-            if is_output:
-                self.dump_traces()
-        return self.traceM
+        self.logger.info("Generating %s" % (FileName.TRACE.value))
+        self.traceM = TraceManager(self.iter_combine(), self.pm.dir_level)
 
     def iter_time(self):
         if self.traceM is None:
@@ -690,14 +688,11 @@ class Collector(object):
         self.logger.info("Original Iteration Time")
         self.traceM.get_iter_time()
 
-    def collect_dag(self, args):
+    def collect_trail_dag(self):
         assert self.pm.dir_level == DirLevel.TRIAL
-        critical_path = []
-        worker_dag_list = []   
-        if self.traceM is None:
-            self.collect_traces()
-        self.iter_time()
         self.logger.info("# Collecting DAG")
+        critical_path = []
+        worker_dag_list = []  
         update_dict = self.pm.map_tensors_to_update()
         for _dir in self.pm.dirs:
             worker_path = os.path.join(self.pm.path, _dir)
@@ -706,13 +701,32 @@ class Collector(object):
                 gpu_path = os.path.join(worker_root, worker_dir)
                 self.logger.info("## Collect DAG in %s" % (gpu_path))
                 dagmanager = DAGManager(gpu_path, self.traceM, self.nccl_graph)
-                max_para_degree, _critical_path = dagmanager.gen_gpu_dag(_pretty=args.pretty, update_dict=update_dict)
+                max_para_degree, _critical_path = dagmanager.gen_gpu_dag(_pretty=args_.pretty, update_dict=update_dict)
                 worker_dag_list.append(dagmanager.gpu_dag)
                 if _critical_path is not None:
                     critical_path += _critical_path
 
         ### Combine all worker_dag_list on one worker, build the dependency
-        return nx.compose_all(worker_dag_list)
+        self.trail_dag = nx.compose_all(worker_dag_list)
+
+    def init(self, force_=False):
+        trace_path = self.pm.search(FileName.TRACE)
+        nccl_graph_path = self.pm.search(FileName.NCCL_GRAPH)
+        trail_dag_path = self.pm.search(FileName.TRAIL_DAG)
+        if force_ or trace_path is None or nccl_graph_path is None or trail_dag_path is None:
+            self.collect_traces()
+            self.collect_trail_dag()
+            self.add_gaps_clip_events()
+            self.dump_traces()
+            self.nccl_graph.dump(os.path.join(self.pm.path, FileName.NCCL_GRAPH.value))
+            nx.write_gml(self.trail_dag, os.path.join(self.pm.path, FileName.TRAIL_DAG.value), lambda x: str(x))
+        else:
+            traces = read_traces(trace_path)
+            self.traceM = TraceManager(traces, self.pm.dir_level)
+            self.nccl_graph.load(nccl_graph_path)
+            self.trail_dag = nx.read_gml(trail_dag_path)
+
+        self.iter_time()    
         
     def all_prefix_list(self):
         ''' Return all prefixes under the dirctory.
@@ -826,7 +840,7 @@ class Collector(object):
             trace["ts"] += align_list[host_id]
 
 
-    def add_gaps(self, dag):
+    def add_gaps_clip_events(self):
         ''' According to the traces and DAG, add a 'gap' field for each edge (u, v)
         which denotes the gap between two events u and v.
         '''
@@ -843,10 +857,10 @@ class Collector(object):
                 name2idxlist[unique_name][event["args"]["cnt"]] = idx
 
         ### Calculate the average gap for each edge
-        for u, v in dag.edges:
+        for u, v in self.trail_dag.edges:
             # if "I/O" in u or ("BW" not in u and "UPDATE_" in v):
             if "I/O" in u:
-                dag.edges[u, v]["gap"] = 0
+                self.trail_dag.edges[u, v]["gap"] = 0
                 continue
 
             try:
@@ -897,7 +911,7 @@ class Collector(object):
                         raise
                     n += 1
             gap = 0 if n == 0 else gap / float(n)
-            dag.edges[u, v]["gap"] = gap
+            self.trail_dag.edges[u, v]["gap"] = gap
 
     def detect_straggler1(self):
         prefix2traces = {}
@@ -909,13 +923,17 @@ class Collector(object):
         for event in self.traceM.traces:
             if not self.traceM._is_ignore_for_sta(event):
                 prefix2traces[_get_prefix(event)].append(event)
+        name2sta_list = []
+        sheet_name = []
         for key_ in sorted(prefix2traces.keys()):
             prefix2traces[key_] = TraceManager(prefix2traces[key_], DirLevel.GPU)
             print("\n%s" % key_)
             for cat_, sta_ in prefix2traces[key_].cat2sta.items():
                 print("Cat: %s: avg %f" % (cat_, sta_["avg"]))
-
-
+            name2sta_list.append(prefix2traces[key_].name2sta)
+            sheet_name.append(key_)
+        
+        self.traceM.export2xlsx(name2sta_list, self.pm.path, filename="diagnosis", sheet_name=sheet_name)
 
         
     
