@@ -109,17 +109,14 @@ if args.option == "replay":
 		--step_num: number of steps we want to generate.
 	'''	
 	clct = Collector(path_list[0])
-	clct.init()
-	raise
+	clct.init(args.force)
+	# raise
 
 	# dag_longest_path(trail_dag, clct.pm, weight="weight", default_weight=0)
 
 	### Replay traces
 	logger.info("# Start to Replay")
-	replayer = Replayer(
-				collector=clct,
-				dag=trail_dag, 
-				_step_num=args.step_num)
+	replayer = Replayer(collector=clct, _step_num=args.step_num)
 	if args.sub_option is None:
 		''' Directly replay '''
 		replayer.replay()

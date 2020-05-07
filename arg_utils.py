@@ -28,6 +28,7 @@ parser.add_argument("--debug_traces", action="store_true", help="If set, output 
 parser.add_argument("--nccl_algo", type=str, default=None, help="NCCL algorithm")
 parser.add_argument("--trace_level", type=str, choices=["debug", "info"], default="info", help="if set to debug, show some trival traces")
 parser.add_argument("--disable_revise", action="store_true", help="By default, revise traecs according to SEND-RECV dependency, set to disable this argument to disable")
+parser.add_argument("--force", action="store_true", help="Force to re-generate traces, graphs")
 
 ### replay
 parser.add_argument("--step_num", type=int, default="1", help="Default step numbers to replay.")

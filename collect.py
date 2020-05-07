@@ -85,6 +85,9 @@ class ClockAligner:
                 pass
             else:
                 t, n = self.marker_per_host[host_id]
+                if n != ref_name:
+                    print("ref_name: %s, name: %s" % (ref_name, n))
+                    raise
                 bias = standard_time - t
                 SingleLogger().info("Align - add %f us based on %s" % (bias, n))
                 for trace in traces:
@@ -573,7 +576,7 @@ class Collector(object):
                             self.clock_aligner.mark_ref_time(host_id, ts, "%s.%s"%(process_name, op_name))
 
                 if "Sync" in process_name and args_.trace_level != "debug":
-                    break
+                    continue
 
                 ### TODO (huhanpeng): Sync node only used for debug currently
                 cat = "Comm" if "Sync" not in process_name else "debug"
@@ -667,10 +670,10 @@ class Collector(object):
             # self.bpf_collect_comm()
             # rst_traces["traceEvents"] += self.time_dict["traceEvents"]
 
-        print("iter_combine: %f" % (time.time() - ts_))
+        self.logger.info("Take %f s to combine all traces" % (time.time() - ts_))
         return rst_traces["traceEvents"]
 
-    def dump_traces(self, rst_traces=None):
+    def dump_traces(self):
         if rst_traces is None:
             rst_traces = self.traceM.traces
         rst_traces = sorted(rst_traces, key=lambda x: (x["pid"], x["tid"]))
@@ -717,12 +720,13 @@ class Collector(object):
             self.collect_traces()
             self.collect_trail_dag()
             self.add_gaps_clip_events()
-            self.dump_traces()
+            ### Cache these info
+            self.traceM.dump(self.pm.path)
             self.nccl_graph.dump(os.path.join(self.pm.path, FileName.NCCL_GRAPH.value))
             nx.write_gml(self.trail_dag, os.path.join(self.pm.path, FileName.TRAIL_DAG.value), lambda x: str(x))
         else:
-            traces = read_traces(trace_path)
-            self.traceM = TraceManager(traces, self.pm.dir_level)
+            self.traceM = TraceManager()
+            self.traceM.load(self.pm.path)
             self.nccl_graph.load(nccl_graph_path)
             self.trail_dag = nx.read_gml(trail_dag_path)
 
@@ -838,7 +842,6 @@ class Collector(object):
 
             host_id = self.nccl_graph.ret_hostid(trace["pid"])
             trace["ts"] += align_list[host_id]
-
 
     def add_gaps_clip_events(self):
         ''' According to the traces and DAG, add a 'gap' field for each edge (u, v)

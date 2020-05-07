@@ -136,10 +136,10 @@ class Deivce:
 		return delay, ratio
 
 class Replayer:
-	def __init__(self, collector, dag, _step_num):
+	def __init__(self, collector, _step_num):
 		self.clct = collector
 		self.traceM = collector.traceM
-		self.dag = dag
+		self.dag = collector.trail_dag
 		self.step_num = _step_num
 
 		assert self.traceM.dir_level == DirLevel.TRIAL

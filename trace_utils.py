@@ -52,6 +52,7 @@ class FileName(Enum):
     INFO="info.json"
     NCCL_GRAPH="nccl_graph.txt"
     TRAIL_DAG="trail_dag.gml"
+    STATISTIC="statistic.txt"
 
 def read_traces(traces_path):
     '''
@@ -71,7 +72,9 @@ def _is_comm_trace(trace):
     return trace["cat"] == "Comm"
 
 class TraceManager:
-    def __init__(self, traces, dir_level):
+    def __init__(self, traces=None, dir_level=None):
+        if traces is None:
+            return
         self.traces = traces
         self.traces = sorted(self.traces, key=lambda x: (x["ts"], x["name"]), reverse=False)
 
@@ -80,10 +83,7 @@ class TraceManager:
         self.dir_level = dir_level
 
         self.max_cnt = 0
-        import time
-        ts_ = time.time()
         self.ret_stat()
-        print("ret_stat %f" %(time.time() - ts_))
         
     def _is_comm_trace(self, event):
         return event["cat"] == "Comm"
@@ -133,7 +133,7 @@ class TraceManager:
             statistic["avg"] = statistic["time"] / statistic["cnt"]
             statistic["var"] = 0.0
 
-            assert statistic["time"] != 0
+            # assert statistic["time"] != 0
             if statistic["cat"] == "Comm":
                 if "SEND" in name:
                     cat = statistic["cat"] + ".SEND"
@@ -165,13 +165,11 @@ class TraceManager:
 
         """calculate the variance"""
         import time
-        ts_ = time.time()
         for event in self.traces:
             if self._is_ignore_for_sta(event):
                 continue
             unique_name = self.ret_unique_name(event)
             self.name2sta[unique_name]["var"] += pow(event["dur"] / 1000.0 - self.name2sta[unique_name]["avg"], 2)
-        print("Go throught all traces: %f" % (time.time() - ts_))
         for name, statistic in self.name2sta.items():
             statistic["var"] = statistic["var"] / float(statistic["cnt"])
             self.max_cnt = max(statistic["cnt"], self.max_cnt)
@@ -315,6 +313,29 @@ class TraceManager:
                 prefix2traces[_get_prefix(event)].append(event)
         return prefix2traces
 
+    def dump(self, dir_):
+        rst_traces = sorted(self.traces, key=lambda x: (x["pid"], x["tid"]))
+        with open(os.path.join(dir_, FileName.TRACE.value), 'w') as f:
+            json.dump(rst_traces, f)
+
+        str_ = "%d,%d\n"%(self.dir_level.value, self.max_cnt)
+        str_ += str(self.name2sta) + "\n"
+        str_ += str(self.cat2sta)
+        with open(os.path.join(dir_, FileName.STATISTIC.value), 'w') as fp:
+            fp.write(str_)
+
+    def load(self, dir_):
+        self.traces = read_traces(os.path.join(dir_, FileName.TRACE.value))
+
+        with open(os.path.join(dir_, FileName.STATISTIC.value), 'r') as fp:
+            str_ = fp.read().split("\n")
+
+        dir_level, max_cnt = str_[0].split(",")
+        self.dir_level = DirLevel(int(dir_level))
+        self.max_cnt = int(max_cnt)
+
+        self.name2sta = eval(str_[1])
+        self.cat2sta = eval(str_[2])
 
 def return_stat(traces):
     """ Basic Statistic """
