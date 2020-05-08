@@ -889,7 +889,7 @@ class Collector(object):
                     send_event = self.traceM.traces[u_idx]
                     recv_event = self.traceM.traces[v_idx]
                     if send_event["ts"] > recv_event["ts"]:
-                        recv_event["dur"] = recv_event["dur"] - (send_event["ts"] - recv_event["ts"])
+                        recv_event["dur"] = max(recv_event["dur"] - (send_event["ts"] - recv_event["ts"]), 0)
                         recv_event["ts"] = send_event["ts"]
                     if recv_dict is None:
                         recv_dict = {

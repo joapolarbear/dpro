@@ -203,12 +203,12 @@ if args.option == "compare":
 
 if args.option == "collect":
 	clct = Collector(path_list[0])
+	clct.init(args.force)
 	if args.sub_option == "combine":
 		clct.iter_combine()
 	elif args.sub_option == "iter_time":
 		clct.iter_time()
 	elif args.sub_option == "straggler":
-		clct.collect_traces()
 		clct.detect_straggler1()
 
 ### Output debug traces

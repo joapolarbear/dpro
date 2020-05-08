@@ -164,7 +164,6 @@ class TraceManager:
             statistic["avg"] = statistic["time"] / statistic["cnt"]
 
         """calculate the variance"""
-        import time
         for event in self.traces:
             if self._is_ignore_for_sta(event):
                 continue
