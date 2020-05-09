@@ -41,7 +41,7 @@ class Deivce:
 		if not self.infi_para:
 			_last_end_time = max(_last_end_time, self.device_time)
 
-		if "Sync" in name:
+		if "Sync" in name or name == "END":
 			#! No event is generated, but has successors
 			self.mark_as_exct(name, _last_end_time, _last_end_time)
 			return 
@@ -58,7 +58,7 @@ class Deivce:
 		pid = parse_pid_from_name(name)
 		cat = parse_cat_from_name(name)
 		raw_name = parse_rawname_from_name(name)
-		delay, ratio = self.get_delay_para()
+		delay, ratio = self.get_delay_para(name)
 		duration = (1000.0 * (avg + delay)) * ratio
 		
 		start_t = _last_end_time
@@ -116,18 +116,18 @@ class Deivce:
 				if _status["in_degree"] == 0:
 					self.replayer.insert_next_node(_succ, _status["last_end"])
 
-	def get_delay_para(self):
+	def get_delay_para(self, name_):
 		#! Get the delay parameters.
 		delay = 0
 		ratio = 1.0
 		if self.replayer.delay_dict is not None:
-			if name in self.replayer.delay_dict:
-				delay = self.replayer.delay_dict[name]["delay"]
-				ratio = self.replayer.delay_dict[name]["ratio"]
-			elif "DELAY_ALL_CMP" in self.replayer.delay_dict and ("FW" in name or "BW" in name or "STEP" in name):
+			if name_ in self.replayer.delay_dict:
+				delay = self.replayer.delay_dict[name_]["delay"]
+				ratio = self.replayer.delay_dict[name_]["ratio"]
+			elif "DELAY_ALL_CMP" in self.replayer.delay_dict and parse_cat_from_name(name_) == "operator":
 				delay = self.replayer.delay_dict["DELAY_ALL_CMP"]["delay"]
 				ratio = self.replayer.delay_dict["DELAY_ALL_CMP"]["ratio"]
-			elif "DELAY_ALL_COMM" in self.replayer.delay_dict and ("PUSH" in name or "PULL" in name):
+			elif "DELAY_ALL_COMM" in self.replayer.delay_dict and parse_cat_from_name(name_) == "Comm":
 				delay = self.replayer.delay_dict["DELAY_ALL_COMM"]["delay"]
 				ratio = self.replayer.delay_dict["DELAY_ALL_COMM"]["ratio"]
 			elif "DELAY_ALL" in self.replayer.delay_dict:
@@ -145,20 +145,19 @@ class Replayer:
 		assert self.traceM.dir_level == DirLevel.TRIAL
 		self.logger = logger_utils.SingleLogger()
 		self.leaf_dirs = self.clct.all_prefix_list()
-		self.step_end_time = dict([(_d, 0.0) for _d in self.leaf_dirs])
-
+		### Delay information, the unit of 'delay' field should be ms
 		self.delay_dict = None
-		### maintain devices
-		self.device_dict = {}
+
 		### maintain node status
 		self.node_status = {}
-		self.accessed = set()
-		### nodes to be executed, in a **partial order**.
-		self.next_nodes = []
+		self.accessed = None
 
-		self.rst_traces = []
+		self.device_dict = {}
+		self.reset_replayer()
 
 	def pre_prepare(self):
+		''' Initialize nodes that need to be replayed first
+		'''
 		self.accessed = set()
 		self.node_status = dict([(n, {"in_degree": self.dag.in_degree(n), "last_end": None}) for n in self.dag.nodes()])
 		#! prepare next_nodes
@@ -184,12 +183,22 @@ class Replayer:
 			device.exct(n, t, step_idx)
 		assert len(self.node_status) == 0
 
-	def replay(self):
+	def replay(self, _output=True):
+		self.reset_replayer()
 		_ts = time.time()
 		for step_idx in range(self.step_num):
 			self.replay_one_iter(step_idx)
 		self.logger.info("Take %f s to replay one iteration" % ((time.time() - _ts)/float(self.step_num)))
-		self.end_replayer()
+		if _output:
+			self.output_traces()
+		
+	def replayAndDelay(self, delay_dict_, _ouput=False):
+		self.reset_replayer()
+		self.delay_dict = delay_dict_
+		self.replay_one_iter(0)
+		if _ouput:
+			self.output_traces()
+		return self.step_end_time
 
 	def insert_next_node(self, n, t):
 		'''
@@ -244,14 +253,14 @@ class Replayer:
 		d = Deivce(device_name, self, infi_para=infi_para)
 		return d
 
-	def end_replayer(self, _output=True):
-		if _output:
-			self.output_traces()
-		self.reset_replayer()
-
 	def reset_replayer(self):
 		self.step_end_time = dict([(_d, 0.0) for _d in self.leaf_dirs])
+		### nodes to be executed, in a **partial order**
+		self.next_nodes = []
 		self.rst_traces = []
+		### Reset all devices
+		for _, device_ in self.device_dict.items():
+			device_.reset()
 
 	def output_traces(self):
 		#! Output the synthetic traces.

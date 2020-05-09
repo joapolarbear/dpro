@@ -110,9 +110,6 @@ if args.option == "replay":
 	'''	
 	clct = Collector(path_list[0])
 	clct.init(args.force)
-	# raise
-
-	# dag_longest_path(trail_dag, clct.pm, weight="weight", default_weight=0)
 
 	### Replay traces
 	logger.info("# Start to Replay")
@@ -141,6 +138,20 @@ if args.option == "replay":
 			logger.info("Delay %s ==> %s ==> %s critical path." % (nodename, str(step_end_time), "in" if nodename in critical_path else "not in"))
 			if args.progress:
 				pgsbar.showBar(idx)
+			idx += 10
+
+	elif args.sub_option == "bottleneck":
+		''' Replay and add delays to some of the node on the critical path respectively.'''
+		critical_path = dag_longest_path(clct.trail_dag, clct.pm, weight="weight", default_weight=0, _debug=False)
+		total_len = len(critical_path)
+		idx = 0
+		while idx < total_len:
+			nodename = critical_path[idx]
+			### TODO (huhanpeng): change the value 10
+			delay_dict = {nodename: {"delay": 10, "ratio": 1.0}}
+			step_end_time = replayer.replayAndDelay(delay_dict, _ouput=False)
+			logger.info("Delay %s ==> %s." % (nodename, str([t / 1000 for t in step_end_time.values()])))
+			### TODO (huhanpeng): how to pick these nodes
 			idx += 10
 		
 if args.option == "topo_sort":
@@ -210,6 +221,8 @@ if args.option == "collect":
 		clct.iter_time()
 	elif args.sub_option == "straggler":
 		clct.detect_straggler1()
+	elif args.sub_option == "bottleneck":
+		clct.detect_bottleneck1()
 
 ### Output debug traces
 debug_utils.DebugRecorder().dump_traces(path_list[0])

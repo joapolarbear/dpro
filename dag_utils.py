@@ -20,17 +20,20 @@ def visualize_gml(graph, layout="circular"):
     # plot_instance = netgraph.InteractiveGraph(graph, node_positions=pos)
     # node_positions = plot_instance.node_positions
 
-def dag_longest_path(G, pathM, weight='weight', default_weight=0):
+def dag_longest_path(G, pathM, weight='weight', default_weight=0, _debug=True):
     critical_path = nx.algorithms.dag.dag_longest_path(G, weight=weight, default_weight=default_weight)
     prefix = "Critical Path of " + pathM.ret_id_in_trial()
     logger = SingleLogger()
-    logger.info(prefix + " => ")
+    if _debug:  
+        logger.info(prefix + " => ")
     path_length = 0
     for (u, v) in nx.utils.pairwise(critical_path):
         path_length += G[u][v].get(weight, default_weight)
-        logger.info("%-80s: %f ms" % (u, G[u][v].get(weight, default_weight)))
+        if _debug:
+            logger.info("%-80s: %f ms" % (u, G[u][v].get(weight, default_weight)))
     # logger.info(prefix + str(critical_path) + " => " + prefix + "%12.4f ms" % path_length)
-    logger.info("Length of the " + prefix + "%12.4f ms\n" % path_length)
+    if _debug:
+        logger.info("Length of the " + prefix + "%12.4f ms\n" % path_length)
     return critical_path
 
 class DAGManager:
@@ -143,10 +146,14 @@ class DAGManager:
                                     
                                     if self.nccl_graph.is_last_step(chunkId):
                                         prev_name = self.add_prefix(next_rawname, _prefix=next_rank_prefix)
+                                        update_name = self.add_prefix("UPDATE_%d"%update_id, _prefix=next_rank_prefix)
                                         self.dag.add_edge(
                                             prev_name, 
-                                            self.add_prefix("UPDATE_%d"%update_id, _prefix=next_rank_prefix), 
+                                            update_name, 
                                             weight=self.traceM.lookup_stat(self.wk_prefix, self.rank_prefix, prev_name))
+                                        ### Connect all UPDATE nodes to an END node
+                                        self.dag.add_edge(update_name, "END",
+                                            weight=self.traceM.lookup_stat(self.wk_prefix, self.rank_prefix, update_name))
                                       
                 elif self.nccl_graph is not None and self.nccl_graph.algo == NCCL_ALGO.TREE:
                     ### Combine chunkId, sliceId and channelId into the graph for Tree algorithm
@@ -227,10 +234,14 @@ class DAGManager:
                                     
                                     ### -1): Add Recv to Step nodes, for Down process
                                     prev_rawname = gen_long_name(None, "%s.AGGR"%u, suffix="%d_%d_%d_%d_%d" % (chunkId, sliceId, channelId, rank, 1))
+                                    update_name = self.add_prefix("UPDATE_%d"%update_id)
                                     self.dag.add_edge(
                                         self.add_prefix(prev_rawname), 
-                                        self.add_prefix("UPDATE_%d"%update_id), 
+                                        update_name, 
                                         weight=0)
+                                    ### Connect all UPDATE nodes to an END node
+                                    self.dag.add_edge(update_name, "END",
+                                        weight=self.traceM.lookup_stat(self.wk_prefix, self.rank_prefix, update_name))
 
                                     for cld_rank in childs:
                                         ### 2). Add edges from broadcast node to Send node

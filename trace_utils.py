@@ -89,6 +89,8 @@ def parse_cat_fine_grained(name_):
         ret_cat = "operator.UPDATE"
     elif "OUTPUT" in name_:
         ret_cat = "operator.OUTPUT"
+    elif name_ == "END":
+        ret_cat = "virtual"
     else:
         raise ValueError("Can not decide the cat of %s" % name_)
 
@@ -465,6 +467,8 @@ def parse_cat_from_name(name):
         return "Comm"
     elif "FW" in name or "BW" in name or "UPDATE" in name or "OUTPUT" in name:
         return "operator"
+    elif name == "END":
+        return "virtual"
     else:
         raise ValueError("Can not decide the cat of %s" % name)
 
