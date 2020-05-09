@@ -71,6 +71,29 @@ def read_traces(traces_path):
 def _is_comm_trace(trace):
     return trace["cat"] == "Comm"
 
+def parse_cat_fine_grained(name_):
+    if "Comm" in name_:
+        if "SEND" in name_:
+            ret_cat = "Comm.SEND"
+        elif "RECV" in name_:
+            ret_cat = "Comm.RECV"
+        else:
+            ret_cat = "Comm.other"
+    elif "I/O" in name_:
+        ret_cat = "I/O"
+    elif "FW" in name_:
+        ret_cat = "operator.FW"
+    elif "BW" in name_:
+        ret_cat = "operator.BW"
+    elif "UPDATE_" in name_:
+        ret_cat = "operator.UPDATE"
+    elif "OUTPUT" in name_:
+        ret_cat = "operator.OUTPUT"
+    else:
+        raise ValueError("Can not decide the cat of %s" % name_)
+
+    return ret_cat
+
 class TraceManager:
     def __init__(self, traces=None, dir_level=None):
         if traces is None:
@@ -134,23 +157,7 @@ class TraceManager:
             statistic["var"] = 0.0
 
             # assert statistic["time"] != 0
-            if statistic["cat"] == "Comm":
-                if "SEND" in name:
-                    cat = statistic["cat"] + ".SEND"
-                elif "RECV" in name:
-                    cat = statistic["cat"] + ".RECV"
-                else:
-                    cat = statistic["cat"] + ".other"
-            elif statistic["cat"] == "operator":
-                if "FW" in name:
-                    cat = statistic["cat"] + ".FW"
-                elif "BW" in name:
-                    cat = statistic["cat"] + ".BW"
-                elif "UPDATE_" in name:
-                    cat = statistic["cat"] + ".UPDATE"
-                else:
-                    cat = statistic["cat"] + ".other"
-
+            cat = parse_cat_fine_grained(name)
             if cat in self.cat2sta:
                 if statistic["avg"] > self.cat2sta[cat]["max_t"]:
                     self.cat2sta[cat]["max_t"] = statistic["avg"]

@@ -876,8 +876,7 @@ class Collector(object):
             n = 0
             if not args_.disable_revise and "SEND" in u and "RECV" in v:
                 ### Revise RECV events according to SEND-RECV dependents
-                ### TODO (huhanpeng): duration on dag has not been updated
-                ###     and cat2sta has not be updated
+                ### TODO (huhanpeng): cat2sta's maximum has not be updated
                 recv_dict = None
                 for cnt_ in range(self.traceM.max_cnt):
                     u_idx, v_idx = u_idx_l[cnt_], v_idx_l[cnt_]
@@ -888,21 +887,36 @@ class Collector(object):
                     ### RECV.ts = SEND.ts
                     send_event = self.traceM.traces[u_idx]
                     recv_event = self.traceM.traces[v_idx]
+                    how_much_less = 0
                     if send_event["ts"] > recv_event["ts"]:
+                        temp_dur = recv_event["dur"]
                         recv_event["dur"] = max(recv_event["dur"] - (send_event["ts"] - recv_event["ts"]), 0)
                         recv_event["ts"] = send_event["ts"]
+                        how_much_less = temp_dur - recv_event["dur"]
                     if recv_dict is None:
                         recv_dict = {
                             "unique_name": self.traceM.ret_unique_name(recv_event),
                             "durs": [recv_event["dur"]],
+                            "less": how_much_less
                         }
                     else:
                         recv_dict["durs"].append(recv_event["dur"])
+                        recv_dict["less"] += how_much_less
                 if recv_dict is not None:
+                    name_ = recv_dict["unique_name"]
+                    ### Update statistical information: name2sta
                     avg = sum(recv_dict["durs"]) / len(recv_dict["durs"]) / 1000.0
-                    self.traceM.name2sta[recv_dict["unique_name"]]["avg"] = avg 
+                    self.traceM.name2sta[name_]["avg"] = avg 
                     var_l = [pow(_d / 1000.0 - avg, 2) for _d in recv_dict["durs"]]
                     self.traceM.name2sta[recv_dict["unique_name"]]["var"] = sum(var_l) / len(var_l)
+                    ### Update statistical information: cat2sta
+                    if recv_dict["less"] != 0:
+                        cat = parse_cat_fine_grained(name_)
+                        self.traceM.cat2sta[cat]["time"] -= recv_dict["less"]
+                        self.traceM.cat2sta[cat]["avg"] = self.traceM.cat2sta[cat]["time"] / self.traceM.cat2sta[cat]["cnt"]
+                    ### Update DAG information
+                    for next_ in self.trail_dag.successors(name_):
+                        self.trail_dag.edges[name_, next_]["weight"] = avg
             else:
                 for cnt_ in range(self.traceM.max_cnt):
                     u_idx, v_idx = u_idx_l[cnt_], v_idx_l[cnt_]
@@ -938,5 +952,3 @@ class Collector(object):
         
         self.traceM.export2xlsx(name2sta_list, self.pm.path, filename="diagnosis", sheet_name=sheet_name)
 
-        
-    
