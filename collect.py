@@ -864,12 +864,15 @@ class Collector(object):
             # if "I/O" in u or ("BW" not in u and "UPDATE_" in v):
             if "I/O" in u:
                 self.trail_dag.edges[u, v]["gap"] = 0
+                self.trail_dag.edges[u, v]["cost"] = self.trail_dag.edges[u, v]["weight"]
                 continue
 
-            try:
-                u_idx_l, v_idx_l = name2idxlist[u], name2idxlist[v]
-            except KeyError:
+            u_idx_l = name2idxlist[u] if u in name2idxlist else None
+            v_idx_l = name2idxlist[v] if v in name2idxlist else None
+            if u_idx_l is None or v_idx_l is None:
                 ### some dag nodes do not appear in the traces
+                if u_idx_l is not None:
+                    self.trail_dag.edges[u, v]["cost"] = self.trail_dag.edges[u, v]["weight"]
                 continue
 
             gap = 0
@@ -929,6 +932,7 @@ class Collector(object):
                     n += 1
             gap = 0 if n == 0 else gap / float(n)
             self.trail_dag.edges[u, v]["gap"] = gap
+            self.trail_dag.edges[u, v]["cost"] = gap / 1000 + self.trail_dag.edges[u, v]["weight"]
 
     def detect_straggler1(self):
         prefix2traces = {}
@@ -953,7 +957,8 @@ class Collector(object):
         self.traceM.export2xlsx(name2sta_list, self.pm.path, filename="diagnosis", sheet_name=sheet_name)
 
     def detect_bottleneck1(self):
-        critical_path = dag_longest_path(self.trail_dag, self.pm, weight="weight", default_weight=0)
+        # critical_path = dag_longest_path(self.trail_dag, self.pm, weight="cost", default_weight=0, _debug_level=2)
+        critical_path = dag_longest_path(self.trail_dag, self.pm, weight="weight", default_weight=0, _debug_level=2)
         return critical_path
 
 

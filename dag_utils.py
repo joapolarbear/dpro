@@ -20,19 +20,19 @@ def visualize_gml(graph, layout="circular"):
     # plot_instance = netgraph.InteractiveGraph(graph, node_positions=pos)
     # node_positions = plot_instance.node_positions
 
-def dag_longest_path(G, pathM, weight='weight', default_weight=0, _debug=True):
+def dag_longest_path(G, pathM, weight='weight', default_weight=0, _debug_level=0):
     critical_path = nx.algorithms.dag.dag_longest_path(G, weight=weight, default_weight=default_weight)
     prefix = "Critical Path of " + pathM.ret_id_in_trial()
     logger = SingleLogger()
-    if _debug:  
+    if _debug_level > 1:  
         logger.info(prefix + " => ")
     path_length = 0
     for (u, v) in nx.utils.pairwise(critical_path):
         path_length += G[u][v].get(weight, default_weight)
-        if _debug:
+        if _debug_level > 1:
             logger.info("%-80s: %f ms" % (u, G[u][v].get(weight, default_weight)))
     # logger.info(prefix + str(critical_path) + " => " + prefix + "%12.4f ms" % path_length)
-    if _debug:
+    if _debug_level > 0:
         logger.info("Length of the " + prefix + "%12.4f ms\n" % path_length)
     return critical_path
 
@@ -333,7 +333,7 @@ class DAGManager:
                 self.dag.add_edge(
                     self.add_prefix(u), 
                     self.add_prefix("UPDATE_%d"%update_id), 
-                    weight=self.traceM.lookup_stat(self.wk_prefix, self.rank_prefix, u)
+                    weight=0
                 )
         self.dag.remove_node(self.add_prefix("UPDATE"))
 

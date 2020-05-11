@@ -644,7 +644,7 @@ class PathManager:
         elif self.dir_level == DirLevel.WORKER:
             return self.path.split("/")[-1]
         elif self.dir_level == DirLevel.TRIAL:
-            return "TRIAL_ROOT"
+            return self.path
         else:
             raise ValueError()
 
