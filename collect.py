@@ -927,8 +927,8 @@ class Collector(object):
                         continue
                     gap += (self.traceM.traces[v_idx]["ts"] - (self.traceM.traces[u_idx]["ts"] + self.traceM.traces[u_idx]["dur"]))
                     if gap < 0 and not ("SEND" in u and "RECV" in v):
-                        print(self.traceM.traces[u_idx], self.traceM.traces[v_idx])
-                        raise
+                        self.logger.warn("The gap < 0 between %s and %s" % (u, v))
+                        # raise
                     n += 1
             gap = 0 if n == 0 else gap / float(n)
             self.trail_dag.edges[u, v]["gap"] = gap

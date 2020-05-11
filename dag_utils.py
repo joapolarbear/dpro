@@ -27,14 +27,19 @@ def dag_longest_path(G, pathM, weight='weight', default_weight=0, _debug_level=0
     if _debug_level > 1:  
         logger.info(prefix + " => ")
     path_length = 0
+    len_list = []
     for (u, v) in nx.utils.pairwise(critical_path):
-        path_length += G[u][v].get(weight, default_weight)
+        weight_ = G[u][v].get(weight, default_weight)
+        path_length += weight_
         if _debug_level > 1:
-            logger.info("%-80s: %f ms" % (u, G[u][v].get(weight, default_weight)))
+            logger.info("%-80s: %f ms" % (u, weight_))
+        len_list.append(weight_)
+    len_list.append(0)
     # logger.info(prefix + str(critical_path) + " => " + prefix + "%12.4f ms" % path_length)
     if _debug_level > 0:
         logger.info("Length of the " + prefix + "%12.4f ms\n" % path_length)
-    return critical_path
+
+    return list(zip(critical_path, len_list))
 
 class DAGManager:
     '''
@@ -154,7 +159,7 @@ class DAGManager:
                                         ### Connect all UPDATE nodes to an END node
                                         self.dag.add_edge(update_name, "END",
                                             weight=self.traceM.lookup_stat(self.wk_prefix, self.rank_prefix, update_name))
-                                      
+                    ### end for loop         
                 elif self.nccl_graph is not None and self.nccl_graph.algo == NCCL_ALGO.TREE:
                     ### Combine chunkId, sliceId and channelId into the graph for Tree algorithm
                     raise NotImplementedError("Remove following todo first")
@@ -370,28 +375,32 @@ class DAGManager:
         fw_bw_arrive = set()
         comm_cnt = 0
         for node in self.dag.nodes:
+            if self.prefix not in node:
+                continue
             if "FW" in node or "BW" in node:
-                fw_bw_arrive.add(".".join(node.split(".")[1:]))
+                fw_bw_arrive.add(node)
             elif "Comm" in node:
                 comm_cnt += 1
         self.logger.info("Total number of operators: %d" % len(fw_bw_arrive))
         self.logger.info("Total number of Comm OPs: %d" % comm_cnt)
-      
+
         ### For FW and BW nodes, go through one step of traces
         for event in self.traceM.traces:
+            if event["pid"] != self.prefix:
+                continue
+            node_name = gen_long_name(event["pid"], event["name"])
             if first:
                 self.logger.info("The first event - name: %s, ts: %s us, dur: %s us" %
-                    (event["name"], str(event["ts"]), str(event["dur"])))
+                    (node_name, str(event["ts"]), str(event["dur"])))
                 start_time = event["ts"]
                 first = False
 
             #! only consider FW and BW nodes
-            if event["cat"] != "operator" or "UPDATE" in event["name"]:
+            if event["cat"] != "operator" or "UPDATE_" in node_name:
                 continue
 
             #! TODO(huhanpeng): will never break, since some BW nodes do not exist.
             #! but can still avoid repeated processing
-            node_name = event["name"]
             if node_name in fw_bw_arrive:
                 fw_bw_arrive.remove(node_name)
                 if len(fw_bw_arrive) == 0:
@@ -406,21 +415,28 @@ class DAGManager:
                     break
                 prev_event = in_process_events[i]
                 assert event["ts"] >= prev_event["ts"]
+                assert event["args"]["cnt"] == prev_event["args"]["cnt"]
                 if event["ts"] >= prev_event["ts"] + prev_event["dur"]:
                     ### prev event has ended, should be deleted from in_process_events
                     del in_process_events[i]
+
+                    ### TODO (huhanpeng) do not follow the dependency graph, ignore now
+                    if "BW.bertencoder0_embedding0" in prev_event["name"] or "BW.bertencoder0_embedding0" in event["name"]:
+                        continue
                     #! TODO: only add once, to verify
                     self.gpu_dag.add_edge(
                         self.add_prefix(prev_event["name"]), 
                         self.add_prefix(event["name"]), 
-                        weight=self.traceM.lookup_stat(self.wk_prefix, self.rank_prefix, prev_event["namne"])
-                    )
+                        weight=0)
                 else:
                     ### if prev event has not ended, current node should share 
                     ### the parent ops of the prev event
                     parent_list_of_prev = [(u, self.gpu_dag.edges[(u, v)]["weight"]) for u, v in self.gpu_dag.in_edges(self.add_prefix(prev_event["name"]))]
                     for u, w in parent_list_of_prev:
-                        self.gpu_dag.add_edge(u, self.add_prefix(event["name"]), weight=w)
+                        ### TODO (huhanpeng) do not follow the dependency graph, ignore now
+                        if "BW.bertencoder0_embedding0" in u or "BW.bertencoder0_embedding0" in v:
+                            continue
+                        self.gpu_dag.add_edge(u, self.add_prefix(event["name"]), weight=0)
                     i += 1
 
             if len(in_process_events) + 1 > max_para_degree:
@@ -434,7 +450,7 @@ class DAGManager:
                         in_process_events2str()))
             in_process_events.append(event)
 
-        self.logger.info("Maximum parallelism degree: %d" % max_para_degree)
+        self.logger.info("Maximum parallelism degree: %d, remain %d FW+BW node(s)" % (max_para_degree, len(fw_bw_arrive)))
         return max_para_degree
 
     def is_fw_bw_node(self, name):

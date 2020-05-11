@@ -114,6 +114,16 @@ if args.option == "replay":
 	### Replay traces
 	logger.info("# Start to Replay")
 	replayer = Replayer(collector=clct, _step_num=args.step_num)
+
+	def replay_with_delay(idx_, rst, node_name=None):
+		logger.info(node_name)
+		delay_dict = {node_name: {"delay": 10, "ratio": 1.0}} if node_name is not None else None
+		step_end_time = replayer.replayAndDelay(delay_dict, _ouput=True)
+		for trace in replayer.rst_traces:
+			trace["tid"] = "%d-->%s"%(idx_, trace["tid"] if "tid" in trace else "tid")
+			rst.append(trace) 
+		return idx_ + 1
+
 	if args.sub_option is None:
 		''' Directly replay '''
 		replayer.replay()
@@ -142,21 +152,34 @@ if args.option == "replay":
 
 	elif args.sub_option == "bottleneck":
 		''' Replay and add delays to some of the node on the critical path respectively.'''
-		critical_path = dag_longest_path(clct.trail_dag, clct.pm, weight="weight", default_weight=0, _debug=False)
+		critical_path = dag_longest_path(clct.trail_dag, clct.pm, weight="weight", default_weight=0, _debug_level=2)
 		total_len = len(critical_path)
 		pgsbar = progressBar(start=0, end=total_len)
 		idx = 0
 		while idx < total_len:
-			nodename = critical_path[idx]
+			nodename, node_len = critical_path[idx]
+			if node_len == 0:
+				idx += 1
+				continue
 			### TODO (huhanpeng): change the value 10
 			delay_dict = {nodename: {"delay": 10, "ratio": 1.0}}
 			step_end_time = replayer.replayAndDelay(delay_dict, _ouput=False)
-			logger.info("Delay %s ==> %s." % (nodename, str([t / 1000 for t in step_end_time.values()])))
+			logger.info("Delay %s" % (nodename))
+			logger.info(" ==> %s." % (str([t / 1000 for t in step_end_time.values()])))
 			if args.progress:
 				pgsbar.showBar(idx)
 			### TODO (huhanpeng): how to pick these nodes
 			idx += 10
-		
+	elif args.sub_option == "compare":
+		rst = []
+		idx = 0
+		idx = replay_with_delay(idx, rst)
+		# idx = replay_with_delay(idx, rst, "host1.rank0->FW.bertencoder0_transformer13_multiheadattentioncell0_div_sqrt_dim0")
+		# idx = replay_with_delay(idx, rst, "host1.rank0->BW.bertencoder0_slice0")
+		rst = sorted(rst, key=lambda x: (x["pid"], x["tid"]))
+		with open(os.path.join(clct.pm.path, "replay_compare.json"), 'w') as f:
+			json.dump(rst, f)
+
 if args.option == "topo_sort":
 	pm = PathManager(path_list[0])
 	assert pm.dir_level == DirLevel.GPU
