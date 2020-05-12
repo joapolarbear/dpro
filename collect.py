@@ -271,6 +271,12 @@ class Collector(object):
             else:
                 return False
 
+        def is_cal_op(_trace):
+            if "dot" == _trace["name"] or "add_n" == _trace["name"]:
+                return True
+            else:
+                return False
+
         ### collect traces of FW + BP OPs and UPDATE OPs
         index = 0
         while index < len(traces):
@@ -346,6 +352,7 @@ class Collector(object):
             elif name == last_bw:
                 _update_ts = None
                 _update_dur = 0
+                _cal_ts = None
                 _cnt = 0
                 while index < len(traces):
                     _trace = traces[index]
@@ -356,7 +363,27 @@ class Collector(object):
                         if name in self.dag.nodes:
                             break
                         index += 1
+                        if is_cal_op(_trace):
+                            if _cal_ts is None:
+                                _cal_ts = _trace["ts"]
                         if is_update_op(_trace):
+                            if _update_ts is None:
+                                # print(_trace["name"], _trace["ts"])
+                                _update_ts = _trace["ts"]
+                                ### Add UPDATE_CAL node
+                                rst_traces["traceEvents"].append({
+                                    "name": "UPDATE_CAL",
+                                    "ts": _cal_ts,
+                                    "dur": _trace["ts"] + _trace["dur"] - _cal_ts,
+                                    "ph": "X",
+                                    "cat": "operator",
+                                    "pid": pid if pid is not None else one_pid,
+                                    "tid": "operator",
+                                    "args": {
+                                        "name":"UPDATE_CAL"
+                                    }
+                                })
+                            _update_dur = _trace["ts"] + _trace["dur"] - _update_ts
                             rst_traces["traceEvents"].append({
                                 "name": "UPDATE_%d"%_cnt,
                                 "ts": _trace["ts"],
@@ -370,10 +397,6 @@ class Collector(object):
                                 }
                             })
                             _cnt += 1
-                            if _update_ts is None:
-                                # print(_trace["name"], _trace["ts"])
-                                _update_ts = _trace["ts"]
-                            _update_dur = _trace["ts"] + _trace["dur"] - _update_ts
                 if _update_ts is not None:
                     ### Initialize the end time of the entire running span
                     self.run_span[wk_prefix].init_end(_update_ts + _update_dur)

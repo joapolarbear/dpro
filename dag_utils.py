@@ -89,7 +89,7 @@ class DAGManager:
         for u, v in mygraph.edges:
             if "Comm" in u:
                 gra_name = u.split("Comm.")[1]
-                update_id = 0 if update_dict is None else update_dict[gra_name]
+                # update_id = 0 if update_dict is None else update_dict[gra_name]
                 if self.nccl_graph is not None and self.nccl_graph.algo == NCCL_ALGO.RING:
                     ### Combine chunkId, sliceId and channelId into the graph for RING algorithm
                     chunkNum, sliceNum, channelNum = self.nccl_graph.get_IDnum(u)
@@ -151,14 +151,14 @@ class DAGManager:
                                     
                                     if self.nccl_graph.is_last_step(chunkId):
                                         prev_name = self.add_prefix(next_rawname, _prefix=next_rank_prefix)
-                                        update_name = self.add_prefix("UPDATE_%d"%update_id, _prefix=next_rank_prefix)
+                                        update_name = self.add_prefix("UPDATE_CAL", _prefix=next_rank_prefix)
                                         self.dag.add_edge(
                                             prev_name, 
                                             update_name, 
                                             weight=self.traceM.lookup_stat(self.wk_prefix, self.rank_prefix, prev_name))
-                                        ### Connect all UPDATE nodes to an END node
-                                        self.dag.add_edge(update_name, "END",
-                                            weight=self.traceM.lookup_stat(self.wk_prefix, self.rank_prefix, update_name))
+                                        # ### Connect all UPDATE nodes to an END node
+                                        # self.dag.add_edge(update_name, "END",
+                                        #     weight=self.traceM.lookup_stat(self.wk_prefix, self.rank_prefix, update_name))
                     ### end for loop         
                 elif self.nccl_graph is not None and self.nccl_graph.algo == NCCL_ALGO.TREE:
                     ### Combine chunkId, sliceId and channelId into the graph for Tree algorithm
@@ -239,14 +239,14 @@ class DAGManager:
                                     
                                     ### -1): Add Recv to Step nodes, for Down process
                                     prev_rawname = gen_long_name(None, "%s.AGGR"%u, suffix="%d_%d_%d_%d_%d" % (chunkId, sliceId, channelId, rank, 1))
-                                    update_name = self.add_prefix("UPDATE_%d"%update_id)
+                                    update_name = self.add_prefix("UPDATE_CAL")
                                     self.dag.add_edge(
                                         self.add_prefix(prev_rawname), 
                                         update_name, 
                                         weight=0)
-                                    ### Connect all UPDATE nodes to an END node
-                                    self.dag.add_edge(update_name, "END",
-                                        weight=self.traceM.lookup_stat(self.wk_prefix, self.rank_prefix, update_name))
+                                    # ### Connect all UPDATE nodes to an END node
+                                    # self.dag.add_edge(update_name, "END",
+                                    #     weight=self.traceM.lookup_stat(self.wk_prefix, self.rank_prefix, update_name))
 
                                     for cld_rank in childs:
                                         ### 2). Add edges from broadcast node to Send node
@@ -330,16 +330,16 @@ class DAGManager:
                     weight=self.traceM.lookup_stat(self.wk_prefix, self.rank_prefix, u)
                 )
 
-        ### Remove original UPDATE node and create an edge from the last BW to UPDATE_%d
-        for u, _ in mygraph.in_edges("UPDATE"):
-            if "BW" not in u:
-                continue
-            for update_id in range(update_dict["max"]):
-                self.dag.add_edge(
-                    self.add_prefix(u), 
-                    self.add_prefix("UPDATE_%d"%update_id), 
-                    weight=0
+        for update_id in range(update_dict["max"]):
+            update_name = self.add_prefix("UPDATE_%d"%update_id)
+            self.dag.add_edge(
+                self.add_prefix("UPDATE_CAL"), 
+                update_name, 
+                weight=self.traceM.lookup_stat(self.wk_prefix, self.rank_prefix, self.add_prefix("UPDATE_CAL"))
                 )
+            ### Connect all UPDATE nodes to an END node
+            self.dag.add_edge(update_name, "END",
+                weight=self.traceM.lookup_stat(self.wk_prefix, self.rank_prefix, update_name))
         self.dag.remove_node(self.add_prefix("UPDATE"))
 
         for e in self.dag.edges.data("weight"):

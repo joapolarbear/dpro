@@ -63,19 +63,24 @@ class Deivce:
 		
 		start_t = _last_end_time
 
-		self.replayer.rst_traces.append({
-				"name": raw_name,
-				"ts": start_t,
-				"dur": duration,
-				"pid": pid,
-				"cat": cat,
-				"ph": "X",
-				"tid": cat,
-				"args": {
-					"name": name,
-					"cnt": step_idx
+		event = {
+					"name": raw_name,
+					"ts": start_t,
+					"dur": duration,
+					"pid": pid,
+					"cat": cat,
+					"ph": "X",
+					"tid": cat,
+					"args": {
+						"name": name,
+						"cnt": step_idx
+					}
 				}
-			})
+		_id = 0
+		for prev, _ in self.replayer.dag.in_edges(name):
+			event["args"]["input%d"%_id] = prev
+			_id += 1
+		self.replayer.rst_traces.append(event)
 
 		self.mark_as_exct(name, start_t, start_t + duration)
 		### TODO (huhanpeng): modify after fine-tune update
@@ -201,26 +206,49 @@ class Replayer:
 		return self.step_end_time
 
 	def insert_next_node(self, n, t):
-		'''
+		''' This is acutally equal to a scheduler of an **Engine**
 		n: node string
 		t: start time of this node
 		'''
 		self.accessed.add(n)
-		#! TODO (huhanpeng): if OPs are ranked, 
-		# just to substitute key to compare their ranks.
-		self.insort_right(self.next_nodes, (n, t), key=lambda x: x[1])
+		def ret_priority(n_):
+			### The smaller the rank is, the higher priority the node has
+			if "FW" in n_:
+				return 0
+			elif "OUTPUT" in n_:
+				return 1
+			elif "BW" in n_:
+				return 2
+			elif "UPDATE_" in n_:
+				return 3
+			else:
+				return 4
 
-	def insort_right(self, a, x, lo=0, hi=None, key=None):
+		def _schedule(_a, _b):
+			_ap = ret_priority(_a[0])
+			_bp = ret_priority(_b[0])
+			if _ap == _bp:
+				### The same priority, compare the start time		
+				return _a[1] < _b[1]
+			else:
+				return _ap < _bp
+			
+
+		#! TODO (huhanpeng): if OPs are ranked, 
+		# just to substitute func to compare their ranks.
+		self.insort_right(self.next_nodes, (n, t), func=_schedule)
+
+	def insort_right(self, a, x, lo=0, hi=None, func=None):
 		"""Insert item x in list a, and keep it sorted assuming a is sorted.
 		If x is already in a, insert it to the right of the rightmost x.
 		Optional args lo (default 0) and hi (default len(a)) bound the
 		slice of a to be searched.
 		"""
 		def fun_cmp(x1, x2):
-			if key is None:
+			if func is None:
 				return x1 < x2
 			else:
-				return key(x1) < key(x2)
+				return func(x1, x2)
 
 		if lo < 0:
 			raise ValueError('lo must be non-negative')
