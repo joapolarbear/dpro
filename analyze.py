@@ -109,7 +109,7 @@ if args.option == "replay":
 		--step_num: number of steps we want to generate.
 	'''	
 	clct = Collector(path_list[0])
-	clct.init(args.force)
+	iter_times = clct.init(args.force)
 
 	### Replay traces
 	logger.info("# Start to Replay")
@@ -117,7 +117,7 @@ if args.option == "replay":
 
 	def replay_with_delay(idx_, rst, node_name=None):
 		logger.info(node_name)
-		delay_dict = {node_name: {"delay": 10, "ratio": 1.0}} if node_name is not None else None
+		delay_dict = {node_name: {"delay": 0, "ratio": 0.5}} if node_name is not None else None
 		step_end_time = replayer.replayAndDelay(delay_dict, _ouput=True)
 		for trace in replayer.rst_traces:
 			trace["tid"] = "%d-->%s"%(idx_, trace["tid"] if "tid" in trace else "tid")
@@ -137,6 +137,7 @@ if args.option == "replay":
 		step_end_time = replayer.replayAndDelay(delay_dict, _output=True)
 	elif args.sub_option == "map_delay":
 		''' Replay and add delays to each node respectively.'''
+		iter_time = max([e[2] for e in iter_times])
 		node_lists = list(wk_dag.nodes())
 		total_len = len(node_lists)
 		pgsbar = progressBar(start=0, end=total_len)
@@ -155,26 +156,35 @@ if args.option == "replay":
 		critical_path = dag_longest_path(clct.trail_dag, clct.pm, weight="weight", default_weight=0, _debug_level=2)
 		total_len = len(critical_path)
 		pgsbar = progressBar(start=0, end=total_len)
+		iter_time = max([e[2] for e in iter_times])
 		idx = 0
+		max_diff = 0
+		bottleneckt_ = None
 		while idx < total_len:
 			nodename, node_len = critical_path[idx]
 			if node_len == 0:
 				idx += 1
 				continue
 			### TODO (huhanpeng): change the value 10
-			delay_dict = {nodename: {"delay": 10, "ratio": 1.0}}
-			step_end_time = replayer.replayAndDelay(delay_dict, _ouput=False)
+			delay_dict = {nodename: {"delay": 1, "ratio": 1.5}}
+			step_end_time_ms = [t / 1000 for t in replayer.replayAndDelay(delay_dict, _ouput=False).values()]
+			cur_iter_time_ = max(step_end_time_ms)
+			diff_ = cur_iter_time_ - iter_time if cur_iter_time_ > iter_time else iter_time - cur_iter_time_
 			logger.info("Delay %s" % (nodename))
-			logger.info(" ==> %s." % (str([t / 1000 for t in step_end_time.values()])))
+			logger.info(" ==> %s." % (str(step_end_time_ms)))
+			if diff_ > max_diff:
+				max_diff = diff_
+				bottleneckt_ = nodename
 			if args.progress:
 				pgsbar.showBar(idx)
 			### TODO (huhanpeng): how to pick these nodes
 			idx += 10
+		logger.info("bottleneckt: %s" % bottleneckt_)
 	elif args.sub_option == "compare":
 		rst = []
 		idx = 0
 		idx = replay_with_delay(idx, rst)
-		# idx = replay_with_delay(idx, rst, "host1.rank0->FW.bertencoder0_transformer13_multiheadattentioncell0_div_sqrt_dim0")
+		idx = replay_with_delay(idx, rst, "host1.rank0->FW.bertencoder0_transformer13_multiheadattentioncell0_div_sqrt_dim0")
 		# idx = replay_with_delay(idx, rst, "host1.rank0->BW.bertencoder0_slice0")
 		rst = sorted(rst, key=lambda x: (x["pid"], x["tid"]))
 		with open(os.path.join(clct.pm.path, "replay_compare.json"), 'w') as f:

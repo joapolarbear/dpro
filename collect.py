@@ -712,7 +712,7 @@ class Collector(object):
         if self.traceM is None:
             self.collect_traces()
         self.logger.info("Original Iteration Time")
-        self.traceM.get_iter_time()
+        return self.traceM.get_iter_time()
 
     def collect_trail_dag(self):
         assert self.pm.dir_level == DirLevel.TRIAL
@@ -753,7 +753,7 @@ class Collector(object):
             self.nccl_graph.load(nccl_graph_path)
             self.trail_dag = nx.read_gml(trail_dag_path)
 
-        self.iter_time()    
+        return self.iter_time()    
         
     def all_prefix_list(self):
         ''' Return all prefixes under the dirctory.

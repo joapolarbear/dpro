@@ -59,7 +59,7 @@ class Deivce:
 		cat = parse_cat_from_name(name)
 		raw_name = parse_rawname_from_name(name)
 		delay, ratio = self.get_delay_para(name)
-		duration = (1000.0 * (avg + delay)) * ratio
+		duration = (1000.0 * max(avg + delay, 0)) * ratio
 		
 		start_t = _last_end_time
 
@@ -77,9 +77,9 @@ class Deivce:
 					}
 				}
 		_id = 0
-		for prev, _ in self.replayer.dag.in_edges(name):
-			event["args"]["input%d"%_id] = prev
-			_id += 1
+		# for prev, _ in self.replayer.dag.in_edges(name):
+		# 	event["args"]["input%d"%_id] = prev
+		# 	_id += 1
 		self.replayer.rst_traces.append(event)
 
 		self.mark_as_exct(name, start_t, start_t + duration)
