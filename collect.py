@@ -278,6 +278,14 @@ class Collector(object):
                 return False
 
         ### collect traces of FW + BP OPs and UPDATE OPs
+        tid_hub = []
+        def _ret_operator_tid(tid_):
+            if tid_ in tid_hub:
+                return "operator%d"%(tid_hub.index(tid_))
+            else:
+                tid_hub.append(tid_)
+                return "operator%d"%(len(tid_hub) - 1)
+
         index = 0
         while index < len(traces):
             trace = traces[index]
@@ -313,7 +321,7 @@ class Collector(object):
             trace["args"] = _args
             if pid is not None:
                 trace["pid"] = pid
-            trace["tid"] = str(trace["tid"])
+            trace["tid"] = _ret_operator_tid(trace["tid"])
             rst_traces["traceEvents"].append(trace)
 
             ### Handle OUTPUT
@@ -341,7 +349,7 @@ class Collector(object):
                         "ph": "X",
                         "cat": "operator",
                         "pid": pid if pid is not None else one_pid,
-                        "tid": "operator",
+                        "tid": _ret_operator_tid(output_tid),
                         "args": {
                             "name":"OUTPUT0"
                         }
@@ -351,8 +359,9 @@ class Collector(object):
             # if len(last_bw_nodes) == 0:
             elif name == last_bw:
                 _update_ts = None
-                _update_dur = 0
                 _cal_ts = None
+                _cal_tid = None
+                _duration = 0
                 _cnt = 0
                 while index < len(traces):
                     _trace = traces[index]
@@ -366,24 +375,25 @@ class Collector(object):
                         if is_cal_op(_trace):
                             if _cal_ts is None:
                                 _cal_ts = _trace["ts"]
+                                _cal_tid = _trace["tid"]
+                            _duration = _trace["ts"] + _trace["dur"] - _cal_ts
                         if is_update_op(_trace):
                             if _update_ts is None:
-                                # print(_trace["name"], _trace["ts"])
                                 _update_ts = _trace["ts"]
                                 ### Add UPDATE_CAL node
                                 rst_traces["traceEvents"].append({
                                     "name": "UPDATE_CAL",
                                     "ts": _cal_ts,
-                                    "dur": _trace["ts"] + _trace["dur"] - _cal_ts,
+                                    "dur": _duration,
                                     "ph": "X",
                                     "cat": "operator",
                                     "pid": pid if pid is not None else one_pid,
-                                    "tid": "operator",
+                                    "tid": _ret_operator_tid(_cal_tid),
                                     "args": {
                                         "name":"UPDATE_CAL"
                                     }
                                 })
-                            _update_dur = _trace["ts"] + _trace["dur"] - _update_ts
+                            _duration = _trace["ts"] + _trace["dur"] - _update_ts
                             rst_traces["traceEvents"].append({
                                 "name": "UPDATE_%d"%_cnt,
                                 "ts": _trace["ts"],
@@ -391,7 +401,7 @@ class Collector(object):
                                 "ph": "X",
                                 "cat": "operator",
                                 "pid": pid if pid is not None else one_pid,
-                                "tid": "operator",
+                                "tid": _ret_operator_tid(_trace["tid"]),
                                 "args": {
                                     "name":"UPDATE_%d"%_cnt
                                 }
@@ -399,7 +409,7 @@ class Collector(object):
                             _cnt += 1
                 if _update_ts is not None:
                     ### Initialize the end time of the entire running span
-                    self.run_span[wk_prefix].init_end(_update_ts + _update_dur)
+                    self.run_span[wk_prefix].init_end(_update_ts + _duration)
 
         self.clock_aligner.append_traces(host_id, rst_traces["traceEvents"])
         debug_utils.DebugRecorder().debug_event_end("collect_" + pid+"_comp", "Collct", "0")
@@ -949,10 +959,10 @@ class Collector(object):
                     if u_idx is None or v_idx is None:
                         continue
                     gap += (self.traceM.traces[v_idx]["ts"] - (self.traceM.traces[u_idx]["ts"] + self.traceM.traces[u_idx]["dur"]))
-                    if gap < 0 and not ("SEND" in u and "RECV" in v):
-                        self.logger.warn("The gap < 0 between %s and %s" % (u, v))
-                        # raise
                     n += 1
+            if gap < 0 and not ("SEND" in u and "RECV" in v):
+                self.logger.warn("The gap < 0 between %s and %s" % (u, v))
+                # raise
             gap = 0 if n == 0 else gap / float(n)
             self.trail_dag.edges[u, v]["gap"] = gap
             self.trail_dag.edges[u, v]["cost"] = gap / 1000 + self.trail_dag.edges[u, v]["weight"]
