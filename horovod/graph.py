@@ -269,18 +269,19 @@ class ncclGraph:
                     raw_name = trace["name"]
 
                 if raw_name not in self.raw_name2IDnum:
-                    self.raw_name2IDnum[raw_name] = {"chunkNum": 0, "sliceNum": 0, "channelNum": 0}
+                    self.raw_name2IDnum[raw_name] = {"chunkNum": 0, "sliceNum": 0, "channelNum": 0, "loopNum": 0}
 
                 self.raw_name2IDnum[raw_name]["chunkNum"] = max(int(trace["args"]["chunkId"]) + 1, self.raw_name2IDnum[raw_name]["chunkNum"])
                 self.raw_name2IDnum[raw_name]["sliceNum"] = max(int(trace["args"]["sliceId"]) + 1, self.raw_name2IDnum[raw_name]["sliceNum"])
                 self.raw_name2IDnum[raw_name]["channelNum"] = max(int(trace["args"]["channelId"]) + 1, self.raw_name2IDnum[raw_name]["channelNum"])
+                self.raw_name2IDnum[raw_name]["loopNum"] = max(int(trace["args"]["loopId"]) + 1, self.raw_name2IDnum[raw_name]["loopNum"])
         else:
             raise ValueError("NCCL_ALGO error: %s" % self.algo.value)
 
 
     def get_IDnum(self, raw_name):
         assert self.trace_parsed is True
-        return self.raw_name2IDnum[raw_name]["chunkNum"], self.raw_name2IDnum[raw_name]["sliceNum"], self.raw_name2IDnum[raw_name]["channelNum"]
+        return self.raw_name2IDnum[raw_name]["chunkNum"], self.raw_name2IDnum[raw_name]["sliceNum"], self.raw_name2IDnum[raw_name]["channelNum"], self.raw_name2IDnum[raw_name]["loopNum"]
 
     def bw_to_first_send(self, channelId):
         ''' For the first step of Send, return all the BW/Negotiate nodes.it depends on 
@@ -308,7 +309,7 @@ class ncclGraph:
         else:
             raise NotImplementedError()
 
-    def send_to_recv(self, prefix, chunkId, sliceId, channelId):
+    def send_to_recv(self, prefix, chunkId, channelId):
         ''' Given a Send op, find the Recv Op 
         '''
         ### for the remaining steps
@@ -322,7 +323,7 @@ class ncclGraph:
             nk = k
             next_chunkId = self.ring_chunk_order_id_to_step(next_rank, nc, nk, Send=False)
             
-            return self.rank2prefix[next_rank], next_chunkId, sliceId, channelId
+            return self.rank2prefix[next_rank], next_chunkId
 
         elif self.algo == NCCL_ALGO.TREE:
             # TODO (huhanpeng)
@@ -330,7 +331,7 @@ class ncclGraph:
         else:
             raise ValueError("NCCL_ALGO error: %s" % self.algo.value)
 
-    def send_to_last_recv(self, prefix, chunkId, sliceId, channelId):
+    def send_to_last_recv(self, prefix, chunkId):
         ''' Given a Send op, find the *last* Recv Op 
         '''
         ### for the remaining steps
@@ -344,7 +345,7 @@ class ncclGraph:
             lk = k - 1 if (k > 0 and c == rank) else k
             last_chunkId = self.ring_chunk_order_id_to_step(last_rank, lc, lk, Send=False)
             
-            return self.rank2prefix[last_rank], last_chunkId, sliceId, channelId
+            return self.rank2prefix[last_rank], last_chunkId
 
         elif self.algo == NCCL_ALGO.TREE:
             # TODO (huhanpeng)

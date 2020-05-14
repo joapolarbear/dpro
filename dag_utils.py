@@ -92,113 +92,15 @@ class DAGManager:
                 # update_id = 0 if update_dict is None else update_dict[gra_name]
                 if self.nccl_graph is not None and self.nccl_graph.algo == NCCL_ALGO.RING:
                     ### Combine chunkId, sliceId and channelId into the graph for RING algorithm
-                    chunkNum, sliceNum, channelNum = self.nccl_graph.get_IDnum(u)
-                    for chunkId in range(chunkNum):
-                        for sliceId in range(sliceNum):
-                            for channelId in range(channelNum):
-                                if self.nccl_graph.is_first_step(chunkId):
-                                    ### The first step
+                    chunkNum, sliceNum, channelNum, loopNum = self.nccl_graph.get_IDnum(u)
+                    for loopId in range(loopNum):
+                        for chunkId in range(chunkNum):
+                            for sliceId in range(sliceNum):
+                                for channelId in range(channelNum):
+                                    if self.nccl_graph.is_first_step(chunkId):
+                                        ### The first step
 
-                                    ### Connect BW nodes to NEGOTIATE_ALLREDUCE 
-                                    prev_fw_nodes = [_u for _u, _ in mygraph.in_edges(u)]
-                                    assert len(prev_fw_nodes) == 1
-                                    prev_rawname = prev_fw_nodes[0]
-                                    next_rawname = gen_long_name(None, "%s.%s"%(u, queue_type_list[0]), suffix=None)
-                                    self.dag.add_edge(
-                                            self.add_prefix(prev_rawname), 
-                                            self.add_prefix(next_rawname), 
-                                            weight=self.traceM.lookup_stat(self.wk_prefix, self.rank_prefix, prev_rawname))
-
-                                    ### Connect all ranks' NEGOTIATE_ALLREDUCE to the first
-                                    prev_rawname = next_rawname
-                                    prev_nodes_prefix = self.nccl_graph.bw_to_first_send(channelId)
-                                    next_rawname = gen_long_name(None, "%s.SEND"%u, suffix="%d_%d_%d"%(chunkId, sliceId, channelId))
-                                    for _prefix in prev_nodes_prefix:
-                                        prev_name = self.add_prefix(prev_rawname, _prefix=_prefix)
-                                        self.dag.add_edge(
-                                            prev_name, 
-                                            self.add_prefix(next_rawname), 
-                                            weight=self.traceM.lookup_stat(self.wk_prefix, self.rank_prefix, prev_name))
-              
-                                    ### Connect from Send to Recv
-                                    next_rank_prefix, next_chunkId, next_sliceId, next_channelId = self.nccl_graph.send_to_recv(self.prefix, chunkId, sliceId, channelId)
-                                    prev_rawname = gen_long_name(None, "%s.SEND"%u, suffix="%d_%d_%d"%(chunkId, sliceId, channelId))
-                                    next_rawname = gen_long_name(None, "%s.RECV"%u, suffix="%d_%d_%d"%(next_chunkId, next_sliceId, next_channelId))
-                                    self.dag.add_edge(
-                                        self.add_prefix(prev_rawname), 
-                                        self.add_prefix(next_rawname, _prefix=next_rank_prefix), 
-                                        weight=self.traceM.lookup_stat(self.wk_prefix, self.rank_prefix, prev_rawname))
-                                    
-                                else:
-                                    ### normal steps
-                                    ### Connect from Recv to Send
-                                    _, last_chunkId, last_sliceId, last_channelId = self.nccl_graph.send_to_last_recv(self.prefix, chunkId, sliceId, channelId)
-                                    prev_rawname = gen_long_name(None, "%s.RECV"%u, suffix="%d_%d_%d"%(last_chunkId, last_sliceId, last_channelId))
-                                    next_rawname = gen_long_name(None, "%s.SEND"%u, suffix="%d_%d_%d"% (chunkId, sliceId, channelId))
-                                    self.dag.add_edge(
-                                        self.add_prefix(prev_rawname), 
-                                        self.add_prefix(next_rawname), 
-                                        weight=self.traceM.lookup_stat(self.wk_prefix, self.rank_prefix, prev_rawname))   
-
-                                    ### Connect from Send to Recv
-                                    next_rank_prefix, next_chunkId, next_sliceId, next_channelId = self.nccl_graph.send_to_recv(self.prefix, chunkId, sliceId, channelId)
-                                    prev_rawname = gen_long_name(None, "%s.SEND"%u, suffix="%d_%d_%d"% (chunkId, sliceId, channelId))
-                                    next_rawname = gen_long_name(None, "%s.RECV"%u, suffix="%d_%d_%d"% (next_chunkId, next_sliceId, next_channelId))
-                                    self.dag.add_edge(
-                                        self.add_prefix(prev_rawname), 
-                                        self.add_prefix(next_rawname, _prefix=next_rank_prefix), 
-                                        weight=self.traceM.lookup_stat(self.wk_prefix, self.rank_prefix, prev_rawname))   
-                                    
-                                    if self.nccl_graph.is_last_step(chunkId):
-                                        prev_name = self.add_prefix(next_rawname, _prefix=next_rank_prefix)
-                                        update_name = self.add_prefix("UPDATE_CAL", _prefix=next_rank_prefix)
-                                        self.dag.add_edge(
-                                            prev_name, 
-                                            update_name, 
-                                            weight=self.traceM.lookup_stat(self.wk_prefix, self.rank_prefix, prev_name))
-                                        # ### Connect all UPDATE nodes to an END node
-                                        # self.dag.add_edge(update_name, "END",
-                                        #     weight=self.traceM.lookup_stat(self.wk_prefix, self.rank_prefix, update_name))
-                    ### end for loop         
-                elif self.nccl_graph is not None and self.nccl_graph.algo == NCCL_ALGO.TREE:
-                    ### Combine chunkId, sliceId and channelId into the graph for Tree algorithm
-                    raise NotImplementedError("Remove following todo first")
-                    chunkNum, sliceNum, channelNum = self.nccl_graph.get_IDnum(u)
-                    for chunkId in range(chunkNum):
-                        for sliceId in range(sliceNum):
-                            for channelId in range(channelNum):
-                                parent = self.nccl_graph.ret_parent(self.prefix, channelId)
-                                childs = self.nccl_graph.ret_childs(self.prefix, channelId)
-                                rank = self.nccl_graph.ret_rank_from_prefix(self.prefix)
-                                if parent != -1:
-                                    ### Not a root node
-
-                                    ### 1. first handel UP process
-                                    if len(childs) > 0:
-                                        ### 1). Add edges from Recv to Aggerate Nodes first
-                                        ### Use 0 to denote UP and 1 to denote Down
-                                        next_rawname = gen_long_name(None, "%s.AGGR"%u, suffix="%d_%d_%d_%d_%d" % (chunkId, sliceId, channelId, rank, 0))
-                                        for cld_rank in childs:
-                                            prev_rawname = gen_long_name(None, "%s.RECV"%u, suffix="%d_%d_%d_%d_%d" % (chunkId, sliceId, channelId, cld_rank, rank)) 
-                                            ### TODO (huhanpeng) make sure name2sta should contain keys with suffix="%d_%d_%d_%d_%d"
-                                            self.dag.add_edge(
-                                                self.add_prefix(prev_rawname), 
-                                                self.add_prefix(next_rawname), 
-                                                weight=self.traceM.lookup_stat(self.wk_prefix, self.rank_prefix, prev_rawname)
-                                            )
-                                        ### 2). Add edges from Aggregate node to Send
-                                        ### Use 0 to denote UP and 1 to denote Down
-                                        ### TODO (huhanpeng): If we need to consider the aggregation time, consider following weight
-                                        prev_rawname = next_rawname
-                                        next_rawname = gen_long_name(None, "%s.SEND"%u, suffix="%d_%d_%d_%d_%d" % (chunkId, sliceId, channelId, rank, parent))
-                                        self.dag.add_edge(
-                                            self.add_prefix(prev_rawname), 
-                                            self.add_prefix(next_rawname), 
-                                            weight=0)
-                                    else:
-                                        ### 1).2). The second case - The first step, connect BW node to NEGOTIATE_ALLREDUCE
-                                        ### Then connect all NEGOTIATE_ALLREDUCE nodes from all ranks to the op first
-                                        ### Add edges from all BW nodes to Aggerate Nodes first
+                                        ### Connect BW nodes to NEGOTIATE_ALLREDUCE 
                                         prev_fw_nodes = [_u for _u, _ in mygraph.in_edges(u)]
                                         assert len(prev_fw_nodes) == 1
                                         prev_rawname = prev_fw_nodes[0]
@@ -208,95 +110,196 @@ class DAGManager:
                                                 self.add_prefix(next_rawname), 
                                                 weight=self.traceM.lookup_stat(self.wk_prefix, self.rank_prefix, prev_rawname))
 
-                                        prev_name_base = next_rawname
-                                        next_rawname = gen_long_name(None, "%s.SEND"%u, suffix="%d_%d_%d_%d_%d" % (chunkId, sliceId, channelId, rank, parent))
+                                        ### Connect all ranks' NEGOTIATE_ALLREDUCE to the first
+                                        prev_rawname = next_rawname
                                         prev_nodes_prefix = self.nccl_graph.bw_to_first_send(channelId)
+                                        next_rawname = gen_long_name(None, "%s.SEND"%u, suffix="%d_%d_%d_%d"%(loopId, channelId, chunkId, sliceId))
                                         for _prefix in prev_nodes_prefix:
-                                            prev_name = self.add_prefix(prev_name_base, _prefix=_prefix)
+                                            prev_name = self.add_prefix(prev_rawname, _prefix=_prefix)
                                             self.dag.add_edge(
                                                 prev_name, 
                                                 self.add_prefix(next_rawname), 
                                                 weight=self.traceM.lookup_stat(self.wk_prefix, self.rank_prefix, prev_name))
-
-                                    ### 3). Add edges from Send to Recv
-                                    prev_rawname = next_rawname
-                                    next_rawname = gen_long_name(None, "%s.RECV"%u, suffix="%d_%d_%d_%d_%d" % (chunkId, sliceId, channelId, rank, parent))
-                                    next_rank_prefix = self.nccl_graph.ret_prefix_from_rank(parent)
-                                    self.dag.add_edge(
-                                        self.add_prefix(prev_rawname), 
-                                        self.add_prefix(next_rawname, _prefix=next_rank_prefix), 
-                                        weight=self.traceM.lookup_stat(self.wk_prefix, self.rank_prefix, prev_rawname)) 
-
-                                    ### 2. Handel Down Process
-
-                                    ### 1). Add edges from Recv to broadcast node, use 1 to denote Down 
-                                    prev_rawname = gen_long_name(None, "%s.RECV"%u, suffix="%d_%d_%d_%d_%d" % (chunkId, sliceId, channelId, parent, rank))
-                                    next_rawname = gen_long_name(None, "%s.AGGR"%u, suffix="%d_%d_%d_%d_%d" % (chunkId, sliceId, channelId, rank, 1))
-                                    self.dag.add_edge(
-                                        self.add_prefix(prev_rawname), 
-                                        self.add_prefix(next_rawname), 
-                                        weight=self.traceM.lookup_stat(self.wk_prefix, self.rank_prefix, prev_rawname))
-                                    
-                                    ### -1): Add Recv to Step nodes, for Down process
-                                    prev_rawname = gen_long_name(None, "%s.AGGR"%u, suffix="%d_%d_%d_%d_%d" % (chunkId, sliceId, channelId, rank, 1))
-                                    update_name = self.add_prefix("UPDATE_CAL")
-                                    self.dag.add_edge(
-                                        self.add_prefix(prev_rawname), 
-                                        update_name, 
-                                        weight=0)
-                                    # ### Connect all UPDATE nodes to an END node
-                                    # self.dag.add_edge(update_name, "END",
-                                    #     weight=self.traceM.lookup_stat(self.wk_prefix, self.rank_prefix, update_name))
-
-                                    for cld_rank in childs:
-                                        ### 2). Add edges from broadcast node to Send node
-                                        ### TODO (huhanpeng): If we need to consider the aggregation time, consider following weight
-                                        prev_rawname = gen_long_name(None, "%s.AGGR"%u, suffix="%d_%d_%d_%d_%d" % (chunkId, sliceId, channelId, rank, 1))
-                                        next_rawname = gen_long_name(None, "%s.SEND"%u, suffix="%d_%d_%d_%d_%d" % (chunkId, sliceId, channelId, rank, cld_rank))
+                  
+                                        ### Connect from Send to Recv
+                                        next_rank_prefix, next_chunkId = self.nccl_graph.send_to_recv(self.prefix, chunkId, channelId)
+                                        prev_rawname = gen_long_name(None, "%s.SEND"%u, suffix="%d_%d_%d_%d"%(loopId, channelId, chunkId, sliceId))
+                                        next_rawname = gen_long_name(None, "%s.RECV"%u, suffix="%d_%d_%d_%d"%(loopId, channelId, next_chunkId, sliceId))
+                                        self.dag.add_edge(
+                                            self.add_prefix(prev_rawname), 
+                                            self.add_prefix(next_rawname, _prefix=next_rank_prefix), 
+                                            weight=self.traceM.lookup_stat(self.wk_prefix, self.rank_prefix, prev_rawname))
+                                        
+                                    else:
+                                        ### normal steps
+                                        ### Connect from Recv to Send
+                                        _, last_chunkId = self.nccl_graph.send_to_last_recv(self.prefix, chunkId)
+                                        prev_rawname = gen_long_name(None, "%s.RECV"%u, suffix="%d_%d_%d_%d"%(loopId, channelId, last_chunkId, sliceId))
+                                        next_rawname = gen_long_name(None, "%s.SEND"%u, suffix="%d_%d_%d_%d"%(loopId, channelId, chunkId, sliceId))
                                         self.dag.add_edge(
                                             self.add_prefix(prev_rawname), 
                                             self.add_prefix(next_rawname), 
-                                            weight=0)
+                                            weight=self.traceM.lookup_stat(self.wk_prefix, self.rank_prefix, prev_rawname))   
+
+                                        ### Connect from Send to Recv
+                                        next_rank_prefix, next_chunkId = self.nccl_graph.send_to_recv(self.prefix, chunkId, channelId)
+                                        prev_rawname = gen_long_name(None, "%s.SEND"%u, suffix="%d_%d_%d_%d"%(loopId, channelId, chunkId, sliceId))
+                                        next_rawname = gen_long_name(None, "%s.RECV"%u, suffix="%d_%d_%d_%d"%(loopId, channelId, next_chunkId, sliceId))
+                                        self.dag.add_edge(
+                                            self.add_prefix(prev_rawname), 
+                                            self.add_prefix(next_rawname, _prefix=next_rank_prefix), 
+                                            weight=self.traceM.lookup_stat(self.wk_prefix, self.rank_prefix, prev_rawname))   
+                                        
+                                        if self.nccl_graph.is_last_step(chunkId):
+                                            prev_name = self.add_prefix(next_rawname, _prefix=next_rank_prefix)
+                                            update_name = self.add_prefix("UPDATE_CAL", _prefix=next_rank_prefix)
+                                            self.dag.add_edge(
+                                                prev_name, 
+                                                update_name, 
+                                                weight=self.traceM.lookup_stat(self.wk_prefix, self.rank_prefix, prev_name))
+                                            # ### Connect all UPDATE nodes to an END node
+                                            # self.dag.add_edge(update_name, "END",
+                                            #     weight=self.traceM.lookup_stat(self.wk_prefix, self.rank_prefix, update_name))
+                    ### end for loop         
+                elif self.nccl_graph is not None and self.nccl_graph.algo == NCCL_ALGO.TREE:
+                    ### Combine chunkId, sliceId and channelId into the graph for Tree algorithm
+                    ### TODO(huhanpeng): can we reduce the number of %d in the suffix
+                    raise NotImplementedError("Remove following todo first")
+                    chunkNum, sliceNum, channelNum, loopNum = self.nccl_graph.get_IDnum(u)
+                    for loopId in range(loopNum):
+                        for chunkId in range(chunkNum):
+                            for sliceId in range(sliceNum):
+                                for channelId in range(channelNum):
+                                    parent = self.nccl_graph.ret_parent(self.prefix, channelId)
+                                    childs = self.nccl_graph.ret_childs(self.prefix, channelId)
+                                    rank = self.nccl_graph.ret_rank_from_prefix(self.prefix)
+                                    if parent != -1:
+                                        ### Not a root node
+
+                                        ### 1. first handel UP process
+                                        if len(childs) > 0:
+                                            ### 1). Add edges from Recv to Aggerate Nodes first
+                                            ### Use 0 to denote UP and 1 to denote Down
+                                            next_rawname = gen_long_name(None, "%s.AGGR"%u, suffix="%d_%d_%d_%d_%d_%d"%(loopId, channelId, chunkId, sliceId, rank, 0))
+                                            for cld_rank in childs:
+                                                prev_rawname = gen_long_name(None, "%s.RECV"%u, suffix="%d_%d_%d_%d_%d_%d"%(loopId, channelId, chunkId, sliceId, cld_rank, rank)) 
+                                                ### TODO (huhanpeng) make sure name2sta should contain keys with suffix="%d_%d_%d_%d_%d"
+                                                self.dag.add_edge(
+                                                    self.add_prefix(prev_rawname), 
+                                                    self.add_prefix(next_rawname), 
+                                                    weight=self.traceM.lookup_stat(self.wk_prefix, self.rank_prefix, prev_rawname)
+                                                )
+                                            ### 2). Add edges from Aggregate node to Send
+                                            ### Use 0 to denote UP and 1 to denote Down
+                                            ### TODO (huhanpeng): If we need to consider the aggregation time, consider following weight
+                                            prev_rawname = next_rawname
+                                            next_rawname = gen_long_name(None, "%s.SEND"%u, suffix="%d_%d_%d_%d_%d_%d"%(loopId, channelId, chunkId, sliceId, rank, parent))
+                                            self.dag.add_edge(
+                                                self.add_prefix(prev_rawname), 
+                                                self.add_prefix(next_rawname), 
+                                                weight=0)
+                                        else:
+                                            ### 1).2). The second case - The first step, connect BW node to NEGOTIATE_ALLREDUCE
+                                            ### Then connect all NEGOTIATE_ALLREDUCE nodes from all ranks to the op first
+                                            ### Add edges from all BW nodes to Aggerate Nodes first
+                                            prev_fw_nodes = [_u for _u, _ in mygraph.in_edges(u)]
+                                            assert len(prev_fw_nodes) == 1
+                                            prev_rawname = prev_fw_nodes[0]
+                                            next_rawname = gen_long_name(None, "%s.%s"%(u, queue_type_list[0]), suffix=None)
+                                            self.dag.add_edge(
+                                                    self.add_prefix(prev_rawname), 
+                                                    self.add_prefix(next_rawname), 
+                                                    weight=self.traceM.lookup_stat(self.wk_prefix, self.rank_prefix, prev_rawname))
+
+                                            prev_name_base = next_rawname
+                                            next_rawname = gen_long_name(None, "%s.SEND"%u, suffix="%d_%d_%d_%d_%d_%d"%(loopId, channelId, chunkId, sliceId, rank, parent))
+                                            prev_nodes_prefix = self.nccl_graph.bw_to_first_send(channelId)
+                                            for _prefix in prev_nodes_prefix:
+                                                prev_name = self.add_prefix(prev_name_base, _prefix=_prefix)
+                                                self.dag.add_edge(
+                                                    prev_name, 
+                                                    self.add_prefix(next_rawname), 
+                                                    weight=self.traceM.lookup_stat(self.wk_prefix, self.rank_prefix, prev_name))
 
                                         ### 3). Add edges from Send to Recv
                                         prev_rawname = next_rawname
-                                        next_rawname = gen_long_name(None, "%s.RECV"%u, suffix="%d_%d_%d_%d_%d" % (chunkId, sliceId, channelId, rank, cld_rank))
-                                        next_rank_prefix = self.nccl_graph.ret_prefix_from_rank(cld_rank)
+                                        next_rawname = gen_long_name(None, "%s.RECV"%u, suffix="%d_%d_%d_%d_%d_%d"%(loopId, channelId, chunkId, sliceId, rank, parent))
+                                        next_rank_prefix = self.nccl_graph.ret_prefix_from_rank(parent)
                                         self.dag.add_edge(
                                             self.add_prefix(prev_rawname), 
                                             self.add_prefix(next_rawname, _prefix=next_rank_prefix), 
                                             weight=self.traceM.lookup_stat(self.wk_prefix, self.rank_prefix, prev_rawname)) 
+
+                                        ### 2. Handel Down Process
+
+                                        ### 1). Add edges from Recv to broadcast node, use 1 to denote Down 
+                                        prev_rawname = gen_long_name(None, "%s.RECV"%u, suffix="%d_%d_%d_%d_%d_%d"%(loopId, channelId, chunkId, sliceId, parent, rank))
+                                        next_rawname = gen_long_name(None, "%s.AGGR"%u, suffix="%d_%d_%d_%d_%d_%d"%(loopId, channelId, chunkId, sliceId, rank, 1))
+                                        self.dag.add_edge(
+                                            self.add_prefix(prev_rawname), 
+                                            self.add_prefix(next_rawname), 
+                                            weight=self.traceM.lookup_stat(self.wk_prefix, self.rank_prefix, prev_rawname))
                                         
-                                else:
-                                    ### Root Nodes
-                                    for cld_rank in childs:
-                                        ### 1). Add edges from Recv to Aggerate Nodes first
-                                        ### Use 0 to denote UP and 1 to denote Down
-                                        prev_rawname = gen_long_name(None, "%s.RECV"%u, suffix="%d_%d_%d_%d_%d" % (chunkId, sliceId, channelId, cld_rank, rank)) 
-                                        next_rawname = gen_long_name(None, "%s.AGGR"%u, suffix="%d_%d_%d_%d_%d" % (chunkId, sliceId, channelId, rank, 0))
+                                        ### -1): Add Recv to Step nodes, for Down process
+                                        prev_rawname = gen_long_name(None, "%s.AGGR"%u, suffix="%d_%d_%d_%d_%d_%d"%(loopId, channelId, chunkId, sliceId, rank, 1))
+                                        update_name = self.add_prefix("UPDATE_CAL")
                                         self.dag.add_edge(
                                             self.add_prefix(prev_rawname), 
-                                            self.add_prefix(next_rawname), 
-                                            weight=self.traceM.lookup_stat(self.wk_prefix, self.rank_prefix, prev_rawname)
-                                        )
-
-                                        ### 2). Add edges from broadcast node to Send node
-                                        ### TODO (huhanpeng): If we need to consider the aggregation time, consider following weight
-                                        prev_rawname = next_rawname
-                                        next_rawname = gen_long_name(None, "%s.SEND"%u, suffix="%d_%d_%d_%d_%d" % (chunkId, sliceId, channelId, rank, cld_rank))
-                                        self.dag.add_edge(
-                                            self.add_prefix(prev_rawname), 
-                                            self.add_prefix(next_rawname), 
+                                            update_name, 
                                             weight=0)
+                                        # ### Connect all UPDATE nodes to an END node
+                                        # self.dag.add_edge(update_name, "END",
+                                        #     weight=self.traceM.lookup_stat(self.wk_prefix, self.rank_prefix, update_name))
 
-                                        ### 3). Add edges from Send to Recv
-                                        prev_rawname = next_rawname
-                                        next_rawname = gen_long_name(None, "%s.RECV"%u, suffix="%d_%d_%d_%d_%d" % (chunkId, sliceId, channelId, rank, cld_rank))
-                                        next_rank_prefix = self.nccl_graph.ret_prefix_from_rank(cld_rank)
-                                        self.dag.add_edge(
-                                            self.add_prefix(prev_rawname), 
-                                            self.add_prefix(next_rawname, _prefix=next_rank_prefix), 
-                                            weight=self.traceM.lookup_stat(self.wk_prefix, self.rank_prefix, prev_rawname))             
+                                        for cld_rank in childs:
+                                            ### 2). Add edges from broadcast node to Send node
+                                            ### TODO (huhanpeng): If we need to consider the aggregation time, consider following weight
+                                            prev_rawname = gen_long_name(None, "%s.AGGR"%u, suffix="%d_%d_%d_%d_%d_%d"%(loopId, channelId, chunkId, sliceId, rank, 1))
+                                            next_rawname = gen_long_name(None, "%s.SEND"%u, suffix="%d_%d_%d_%d_%d_%d"%(loopId, channelId, chunkId, sliceId, rank, cld_rank))
+                                            self.dag.add_edge(
+                                                self.add_prefix(prev_rawname), 
+                                                self.add_prefix(next_rawname), 
+                                                weight=0)
+
+                                            ### 3). Add edges from Send to Recv
+                                            prev_rawname = next_rawname
+                                            next_rawname = gen_long_name(None, "%s.RECV"%u, suffix="%d_%d_%d_%d_%d_%d"%(loopId, channelId, chunkId, sliceId, rank, cld_rank))
+                                            next_rank_prefix = self.nccl_graph.ret_prefix_from_rank(cld_rank)
+                                            self.dag.add_edge(
+                                                self.add_prefix(prev_rawname), 
+                                                self.add_prefix(next_rawname, _prefix=next_rank_prefix), 
+                                                weight=self.traceM.lookup_stat(self.wk_prefix, self.rank_prefix, prev_rawname)) 
+                                            
+                                    else:
+                                        ### Root Nodes
+                                        for cld_rank in childs:
+                                            ### 1). Add edges from Recv to Aggerate Nodes first
+                                            ### Use 0 to denote UP and 1 to denote Down
+                                            prev_rawname = gen_long_name(None, "%s.RECV"%u, suffix="%d_%d_%d_%d_%d_%d"%(loopId, channelId, chunkId, sliceId, cld_rank, rank)) 
+                                            next_rawname = gen_long_name(None, "%s.AGGR"%u, suffix="%d_%d_%d_%d_%d_%d"%(loopId, channelId, chunkId, sliceId, rank, 0))
+                                            self.dag.add_edge(
+                                                self.add_prefix(prev_rawname), 
+                                                self.add_prefix(next_rawname), 
+                                                weight=self.traceM.lookup_stat(self.wk_prefix, self.rank_prefix, prev_rawname)
+                                            )
+
+                                            ### 2). Add edges from broadcast node to Send node
+                                            ### TODO (huhanpeng): If we need to consider the aggregation time, consider following weight
+                                            prev_rawname = next_rawname
+                                            next_rawname = gen_long_name(None, "%s.SEND"%u, suffix="%d_%d_%d_%d_%d_%d"%(loopId, channelId, chunkId, sliceId, rank, cld_rank))
+                                            self.dag.add_edge(
+                                                self.add_prefix(prev_rawname), 
+                                                self.add_prefix(next_rawname), 
+                                                weight=0)
+
+                                            ### 3). Add edges from Send to Recv
+                                            prev_rawname = next_rawname
+                                            next_rawname = gen_long_name(None, "%s.RECV"%u, suffix="%d_%d_%d_%d_%d_%d"%(loopId, channelId, chunkId, sliceId, rank, cld_rank))
+                                            next_rank_prefix = self.nccl_graph.ret_prefix_from_rank(cld_rank)
+                                            self.dag.add_edge(
+                                                self.add_prefix(prev_rawname), 
+                                                self.add_prefix(next_rawname, _prefix=next_rank_prefix), 
+                                                weight=self.traceM.lookup_stat(self.wk_prefix, self.rank_prefix, prev_rawname))             
                 else:
                     ### Normal Horovod, corse-grained (Including NEGOTIATE_..., ALL_REDUCE, etc )
                     prev_fw_nodes = [_u for _u, _ in mygraph.in_edges(u)]

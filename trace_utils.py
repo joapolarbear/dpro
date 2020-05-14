@@ -120,7 +120,7 @@ class TraceManager:
     def ret_unique_name(self, event):
         ### Returen unique name for statistic index
         if "chunkId" in event["args"]:
-            suffix = "%d_%d_%d"%(event["args"]["chunkId"], event["args"]["sliceId"], event["args"]["channelId"])
+            suffix = "%d_%d_%d_%d"%(event["args"]["loopId"], event["args"]["channelId"], event["args"]["chunkId"], event["args"]["sliceId"])
         else:
             suffix=None
         return gen_long_name(event["pid"], event["name"], suffix=suffix)

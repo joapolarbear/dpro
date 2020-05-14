@@ -498,10 +498,11 @@ class Collector(object):
                 trace["s"] = "p"
 
             trace["name"] = "Comm." + trace["name"].split("horovod_allreduce.")[1]
-            trace["args"]["name"] = gen_long_name(None, trace["name"], suffix=("%d_%d_%d" % 
-                            (int(trace["args"]["chunkId"]), 
-                                int(trace["args"]["sliceId"]), 
-                                int(trace["args"]["channelId"]))))
+            trace["args"]["name"] = gen_long_name(None, trace["name"], suffix=("%d_%d_%d_%d"%(
+                                    int(trace["args"]["loopId"]),
+                                    int(trace["args"]["channelId"]),
+                                    int(trace["args"]["chunkId"]), 
+                                    int(trace["args"]["sliceId"]))))
             if pid is not None:
                 trace["tid"] = trace["pid"]
                 trace["pid"] = pid
