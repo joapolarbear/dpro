@@ -333,7 +333,7 @@ class DAGManager:
                     weight=self.traceM.lookup_stat(self.wk_prefix, self.rank_prefix, u)
                 )
 
-        for update_id in range(update_dict["max"]):
+        for update_id in range(update_dict["max"] + 1):
             update_name = self.add_prefix("UPDATE_%d"%update_id)
             self.dag.add_edge(
                 self.add_prefix("UPDATE_CAL"), 
@@ -471,7 +471,7 @@ class DAGManager:
         self.gpu_dag = self.dag
 
         critical_path = None
-        # max_para_degree = self._add_new_edges_via_order(_pretty)
+        max_para_degree = self._add_new_edges_via_order(_pretty)
         max_para_degree = None
 
         #！til now, all the edges for one GPU have been added.

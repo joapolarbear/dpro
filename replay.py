@@ -97,10 +97,10 @@ class Deivce:
 		''' Mark that the op has been executed '''
 		self.device_time = _end_time
 		self.replayer.node_status.pop(name)
+		prev_cat = parse_cat_from_name(name)
 		for _succ in self.replayer.dag.successors(name):
 			if _succ in self.replayer.node_status:
 				_status = self.replayer.node_status[_succ]
-
 				### Calculate the start time
 				if "SEND" in name and "RECV" in _succ:
 					### For Send->Recv edge, there exist some overlap
@@ -113,7 +113,15 @@ class Deivce:
 					_status["last_end"] = _end_time if _status["last_end"] is None else max(_end_time - avg, _status["last_end"])
 				else:
 					### Apply the gap between two nodes
-					gap = self.replayer.dag.edges[name, _succ]["gap"] if "gap" in self.replayer.dag.edges[name, _succ] else 0
+					# gap = self.replayer.dag.edges[name, _succ]["gap"] if "gap" in self.replayer.dag.edges[name, _succ] else 0
+					gap = 0
+					next_cat = parse_cat_from_name(_succ)
+					for key, value in self.replayer.dag.nodes[name].items():
+						if "GAP" in key:
+							### e.g. "gap.operator.operator"
+							key_s = key.split("GAP")
+							if prev_cat == key_s[0] and next_cat == key_s[1]:
+								gap += value
 					_status["last_end"] = _end_time + gap if _status["last_end"] is None else max(_end_time + gap, _status["last_end"])
 
 				### Whether the dependency has met

@@ -4,6 +4,7 @@ import random
 import xlsxwriter
 import traceback
 import logger_utils
+from enum import Enum
 from logger_utils import Singleton, SingleLogger
 
 QUEUETYPE = {
@@ -34,7 +35,6 @@ class QueueType:
     def ret_list(self):
         return self.queue_type_list
 
-from enum import Enum
 class DirLevel(Enum):
     GPU=0
     WORKER=1
@@ -54,6 +54,15 @@ class FileName(Enum):
     TRAIL_DAG="trail_dag.gml"
     STATISTIC="statistic.txt"
 
+class CatName(Enum):
+    OPERATOR="operator"
+    COMM="Comm"
+    IO="I/O"
+    DEBUG="virtual"
+
+GAP_STR_OP2OP = "%sGAP%s"%(CatName.OPERATOR.value, CatName.OPERATOR.value)
+GAP_STR_OP2COMM = "%sGAP%s"%(CatName.OPERATOR.value, CatName.COMM.value)
+
 def read_traces(traces_path):
     '''
     Return: a list of traces
@@ -70,6 +79,137 @@ def read_traces(traces_path):
 
 def _is_comm_trace(trace):
     return trace["cat"] == "Comm"
+
+######################## Delete ########################
+def return_stat(traces):
+    """ Basic Statistic """
+    name2sta = {}
+    cat2sta = {}
+    for event in traces:
+        name = event["name"]
+        if _is_comm_trace(event):
+            name = event["args"]["name"] + "." + event["name"]
+        if name in name2sta:
+            name2sta[name]["cnt"] += 1
+            name2sta[name]["time"] += event["dur"] / 1000.0
+            name2sta[name]["min_t"] = min(name2sta[name]["min_t"], event["dur"] / 1000.0)
+            name2sta[name]["max_t"] = max(name2sta[name]["max_t"], event["dur"] / 1000.0)
+        else:
+            name2sta[name] = {"cnt": 1, "time": event["dur"] / 1000.0, 
+                "min_t": event["dur"] / 1000.0, "max_t": event["dur"] / 1000.0,
+                # \TODO: add `cat` field for communication traces
+                # "cat": event["cat"] 
+                "cat": event["name"].split(".")[0]
+                }
+            
+    """calculate the avg """
+    for name, statistic in name2sta.items():
+        statistic["avg"] = statistic["time"] / statistic["cnt"]
+        statistic["var"] = 0.0
+        cat = statistic["cat"]
+        if cat in cat2sta:
+            if statistic["avg"] > cat2sta[cat]["max_t"]:
+                cat2sta[cat]["max_t"] = statistic["avg"]
+                cat2sta[cat]["max_name"] = name
+        else:
+            cat2sta[cat] = {"max_t": statistic["avg"], "max_name": name}
+
+    """calculate the variance"""
+    for event in traces:
+        name = event["name"]
+        if _is_comm_trace(event):
+            name = event["args"]["name"] + "." + event["name"]
+        name2sta[name]["var"] += pow(event["dur"] / 1000.0 - name2sta[name]["avg"], 2)
+
+    for name, statistic in name2sta.items():
+        statistic["var"] = statistic["var"] / float(statistic["cnt"])
+    return name2sta, cat2sta
+
+
+def return_path_dict(root_path):
+    ### TODO : delete
+    ''' Map the paths of each file from its name
+    Args:
+        root_path: the root path for one GPU
+    '''
+    assert os.path.isdir(root_path)
+    root_path = os.path.abspath(root_path)
+    __root, _, files = list(os.walk(root_path))[0]
+    path_dict = {"root": __root}
+    path_dict["local_rank"] = int(__root.split("/")[-1])
+    for __file in files:
+        cur_path = os.path.join(__root, __file)
+        if FileName.TRACE.value in __file:
+            path_dict[FileName.TRACE.value] = cur_path
+        elif __file == FileName.DAG.value:
+            # mygraph = nx.read_gml(cur_path)
+            path_dict[FileName.DAG.value] = cur_path
+        elif __file == FileName.COMP.value:
+            path_dict[FileName.COMP.value] = cur_path
+        elif __file == FileName.COMM.value:
+            path_dict[FileName.COMM.value] = cur_path
+        elif __file == FileName.IO.value:
+            path_dict[FileName.IO.value] = cur_path
+        elif "loss" in __file:
+            idx = int(__file.split("loss")[1].split(".")[0])
+            if "loss" not in path_dict:
+                path_dict["loss"] = {idx: cur_path}
+            else:
+                path_dict["loss"][idx] = cur_path
+        elif __file == FileName.SYMBOL.value:
+            path_dict[FileName.SYMBOL.value] = cur_path
+        elif __file == FileName.TENSOR_NAME.value:
+            path_dict[FileName.TENSOR_NAME.value] = cur_path
+        elif __file == FileName.COMM_DETAIL.value:
+            path_dict[FileName.COMM_DETAIL.value] = cur_path
+        else:
+            pass
+    return path_dict
+######################## Delete ########################
+
+
+def gen_long_name(prefix, raw_name, suffix=None):
+    if prefix is None:
+        pre = ""
+    else:
+        assert DEL not in raw_name
+        pre = prefix + DEL
+    if suffix is None:
+        suf = ""
+    else:
+        assert DDEL not in raw_name
+        suf = DDEL + suffix
+    return pre + raw_name + suf
+
+def parse_suffix_from_name(name):
+    if DDEL in name:
+        return name.split(DDEL)[0], name.split(DDEL)[1]
+    else:
+        return name, None
+
+def parse_pid_from_name(name):
+    if DEL not in name:
+        return "none"
+    else:
+        return name.split(DEL)[0]
+
+def parse_rawname_from_name(name):
+    if DEL not in name:
+        return name
+    else:
+        return name.split(DEL)[1]
+
+def parse_cat_from_name(name):
+    if "I/O" in name:
+        return CatName.IO.value
+    elif "Comm" in name:
+        return CatName.COMM.value
+    elif "FW" in name or "BW" in name or "UPDATE" in name or "OUTPUT" in name:
+        return CatName.OPERATOR.value
+    elif name == "END":
+        return CatName.DEBUG.value
+    else:
+        raise ValueError("Can not decide the cat of %s" % name)
 
 def parse_cat_fine_grained(name_):
     if "Comm" in name_:
@@ -95,6 +235,23 @@ def parse_cat_fine_grained(name_):
         raise ValueError("Can not decide the cat of %s" % name_)
 
     return ret_cat
+
+
+def parse_special_from_name(name):
+    '''Sometimes we need some special information from the name, e.g., if it's Negotiate...
+    (TODO) huahanpeng: It should be dedicated for BytePS or Horovod,
+    '''
+    if "NEGOTIATE" in name:
+        return 
+
+def load_list(path):
+    ''' read a list from a file
+    '''
+    with open(path, 'r') as f:
+        l = f.read().split("\n")
+    l = l[:-1] if l[-1] == '' else l
+    return l
+
 
 class TraceManager:
     def __init__(self, traces=None, dir_level=None):
@@ -344,148 +501,6 @@ class TraceManager:
 
         self.name2sta = eval(str_[1])
         self.cat2sta = eval(str_[2])
-
-def return_stat(traces):
-    """ Basic Statistic """
-    name2sta = {}
-    cat2sta = {}
-    for event in traces:
-        name = event["name"]
-        if _is_comm_trace(event):
-            name = event["args"]["name"] + "." + event["name"]
-        if name in name2sta:
-            name2sta[name]["cnt"] += 1
-            name2sta[name]["time"] += event["dur"] / 1000.0
-            name2sta[name]["min_t"] = min(name2sta[name]["min_t"], event["dur"] / 1000.0)
-            name2sta[name]["max_t"] = max(name2sta[name]["max_t"], event["dur"] / 1000.0)
-        else:
-            name2sta[name] = {"cnt": 1, "time": event["dur"] / 1000.0, 
-                "min_t": event["dur"] / 1000.0, "max_t": event["dur"] / 1000.0,
-                # \TODO: add `cat` field for communication traces
-                # "cat": event["cat"] 
-                "cat": event["name"].split(".")[0]
-                }
-            
-    """calculate the avg """
-    for name, statistic in name2sta.items():
-        statistic["avg"] = statistic["time"] / statistic["cnt"]
-        statistic["var"] = 0.0
-        cat = statistic["cat"]
-        if cat in cat2sta:
-            if statistic["avg"] > cat2sta[cat]["max_t"]:
-                cat2sta[cat]["max_t"] = statistic["avg"]
-                cat2sta[cat]["max_name"] = name
-        else:
-            cat2sta[cat] = {"max_t": statistic["avg"], "max_name": name}
-
-    """calculate the variance"""
-    for event in traces:
-        name = event["name"]
-        if _is_comm_trace(event):
-            name = event["args"]["name"] + "." + event["name"]
-        name2sta[name]["var"] += pow(event["dur"] / 1000.0 - name2sta[name]["avg"], 2)
-
-    for name, statistic in name2sta.items():
-        statistic["var"] = statistic["var"] / float(statistic["cnt"])
-    return name2sta, cat2sta
-
-
-def return_path_dict(root_path):
-    ''' Map the paths of each file from its name
-    Args:
-        root_path: the root path for one GPU
-    '''
-    assert os.path.isdir(root_path)
-    root_path = os.path.abspath(root_path)
-    __root, _, files = list(os.walk(root_path))[0]
-    path_dict = {"root": __root}
-    path_dict["local_rank"] = int(__root.split("/")[-1])
-    for __file in files:
-        cur_path = os.path.join(__root, __file)
-        if FileName.TRACE.value in __file:
-            path_dict[FileName.TRACE.value] = cur_path
-        elif __file == FileName.DAG.value:
-            # mygraph = nx.read_gml(cur_path)
-            path_dict[FileName.DAG.value] = cur_path
-        elif __file == FileName.COMP.value:
-            path_dict[FileName.COMP.value] = cur_path
-        elif __file == FileName.COMM.value:
-            path_dict[FileName.COMM.value] = cur_path
-        elif __file == FileName.IO.value:
-            path_dict[FileName.IO.value] = cur_path
-        elif "loss" in __file:
-            idx = int(__file.split("loss")[1].split(".")[0])
-            if "loss" not in path_dict:
-                path_dict["loss"] = {idx: cur_path}
-            else:
-                path_dict["loss"][idx] = cur_path
-        elif __file == FileName.SYMBOL.value:
-            path_dict[FileName.SYMBOL.value] = cur_path
-        elif __file == FileName.TENSOR_NAME.value:
-            path_dict[FileName.TENSOR_NAME.value] = cur_path
-        elif __file == FileName.COMM_DETAIL.value:
-            path_dict[FileName.COMM_DETAIL.value] = cur_path
-        else:
-            pass
-    return path_dict
-
-def gen_long_name(prefix, raw_name, suffix=None):
-    if prefix is None:
-        pre = ""
-    else:
-        assert DEL not in raw_name
-        pre = prefix + DEL
-    if suffix is None:
-        suf = ""
-    else:
-        assert DDEL not in raw_name
-        suf = DDEL + suffix
-    return pre + raw_name + suf
-
-def parse_suffix_from_name(name):
-    if DDEL in name:
-        return name.split(DDEL)[0], name.split(DDEL)[1]
-    else:
-        return name, None
-
-def parse_pid_from_name(name):
-    if DEL not in name:
-        return "none"
-    else:
-        return name.split(DEL)[0]
-
-def parse_rawname_from_name(name):
-    if DEL not in name:
-        return name
-    else:
-        return name.split(DEL)[1]
-
-def parse_cat_from_name(name):
-    if "I/O" in name:
-        return "I/O"
-    elif "Comm" in name:
-        return "Comm"
-    elif "FW" in name or "BW" in name or "UPDATE" in name or "OUTPUT" in name:
-        return "operator"
-    elif name == "END":
-        return "virtual"
-    else:
-        raise ValueError("Can not decide the cat of %s" % name)
-
-def parse_special_from_name(name):
-    '''Sometimes we need some special information from the name, e.g., if it's Negotiate...
-    (TODO) huahanpeng: It should be dedicated for BytePS or Horovod,
-    '''
-    if "NEGOTIATE" in name:
-        return 
-
-def load_list(path):
-    ''' read a list from a file
-    '''
-    with open(path, 'r') as f:
-        l = f.read().split("\n")
-    l = l[:-1] if l[-1] == '' else l
-    return l
 
 
 class BiasRange:

@@ -753,7 +753,7 @@ class Collector(object):
         if force_ or trace_path is None or nccl_graph_path is None or trail_dag_path is None:
             self.collect_traces()
             self.collect_trail_dag()
-            self.add_gaps_clip_events()
+            self.fine_tune_trace_dag()
             ### Cache these info
             self.traceM.dump(self.pm.path)
             self.nccl_graph.dump(os.path.join(self.pm.path, FileName.NCCL_GRAPH.value))
@@ -784,6 +784,11 @@ class Collector(object):
         else:
             raise ValueError("Do not support DirLevel.GPU")
         return prefixL
+
+    def fine_tune_trace_dag(self):
+        # self.add_gaps_clip_events()
+        self.add_gap_to_nodes()
+        self.clip_recv_events()
 
     def search_trace_with_cnt(self, longname, send_idx):
         ### should not cansider suffix
@@ -876,6 +881,136 @@ class Collector(object):
 
             host_id = self.nccl_graph.ret_hostid(trace["pid"])
             trace["ts"] += align_list[host_id]
+
+    def add_gap_to_nodes(self):
+        ''' Add gaps for each node '''
+        self.logger.info("Add gap to dependency DAG nodes...")
+        prev_events_dict = {}
+        self.name2idxlist = {}
+        for idx, event in enumerate(self.traceM.traces):
+            if self.traceM._is_ignore_for_sta(event):
+                continue
+
+            ### Map the name to its indexs
+            unique_name = self.traceM.ret_unique_name(event)
+            if unique_name not in self.name2idxlist:
+                self.name2idxlist[unique_name] = [None] * self.traceM.max_cnt
+            if event["args"]["cnt"] != -1:
+                self.name2idxlist[unique_name][event["args"]["cnt"]] = idx
+
+            ### Get previous event for this pid
+            if event["pid"] not in prev_events_dict:
+                prev_events_dict[event["pid"]] = {}
+            cur_pid_dict = prev_events_dict[event["pid"]]
+
+            ### Handle the gap among FW, BW and OUTPUT nodes (exclude BW->UPDATE)
+            cat_ = parse_cat_from_name(event["name"])
+            ### TODO(huhanpeng): Only calculate gaps for operator nodes now
+            if cat_ == CatName.OPERATOR.value and cat_ in cur_pid_dict:
+                ### There are some prev events with the same pid and find-grained cat
+                prev_e = cur_pid_dict[cat_]
+                if not ("BW" in prev_e["name"] and "UPDATE_" in event["name"]):
+                    gap = event["ts"] - (prev_e["ts"] + prev_e["dur"])
+                    prev_name = self.traceM.ret_unique_name(prev_e)
+                    if GAP_STR_OP2OP not in self.trail_dag.nodes[prev_name]:
+                        self.trail_dag.nodes[prev_name][GAP_STR_OP2OP] = gap
+                        self.trail_dag.nodes[prev_name]["cnt"] = 1
+                    else:
+                        self.trail_dag.nodes[prev_name][GAP_STR_OP2OP] += gap
+                        self.trail_dag.nodes[prev_name]["cnt"] += 1
+            else:
+                ### This is the first event of the cat_ in this pid
+                pass
+            cur_pid_dict[cat_] = event
+
+        queue_type_ = QueueType().ret_list()[0]
+        for node_ in self.trail_dag.nodes:
+            if GAP_STR_OP2OP in self.trail_dag.nodes[node_]:
+                self.trail_dag.nodes[node_][GAP_STR_OP2OP] /= self.trail_dag.nodes[node_]["cnt"]
+
+            ### Handle the gap between BW and the first Comm node
+            if queue_type_ in node_:
+                bw_node, _ = list(self.trail_dag.in_edges(node_))[0]
+                prefix_ = parse_pid_from_name(node_)
+                comm_node = None
+                for succ_ in self.trail_dag.successors(node_):
+                    if parse_pid_from_name(succ_) == prefix_:
+                        comm_node = succ_
+                        break
+                try:
+                    u_idx_l, v_idx_l = self.name2idxlist[bw_node], self.name2idxlist[comm_node] 
+                except KeyError:
+                    ### Some rank does not have SEND nodes
+                    continue
+                gap = 0
+                cnt = 0
+                for cnt_ in range(self.traceM.max_cnt):
+                    u_idx, v_idx = u_idx_l[cnt_], v_idx_l[cnt_]
+                    if u_idx is None or v_idx is None:
+                        continue
+                    u_event = self.traceM.traces[u_idx]
+                    v_event = self.traceM.traces[v_idx]
+                    gap += v_event["ts"] - (u_event["ts"] + u_event["dur"])
+                    cnt += 1
+                self.trail_dag.nodes[bw_node][GAP_STR_OP2COMM] = gap / cnt if cnt != 0 else 0
+
+    def clip_recv_events(self):
+        self.logger.info("Clip RECV events...")
+        for u, v in self.trail_dag.edges:
+            if "I/O" in u:
+                continue
+
+            u_idx_l = self.name2idxlist[u] if u in self.name2idxlist else None
+            v_idx_l = self.name2idxlist[v] if v in self.name2idxlist else None
+            if u_idx_l is None or v_idx_l is None:
+                ### some dag nodes do not appear in the traces
+                continue
+
+            gap = 0
+            n = 0
+            if not args_.disable_revise and "SEND" in u and "RECV" in v:
+                ### Revise RECV events according to SEND-RECV dependents
+                ### TODO (huhanpeng): cat2sta's maximum has not be updated
+                recv_dict = None
+                for cnt_ in range(self.traceM.max_cnt):
+                    u_idx, v_idx = u_idx_l[cnt_], v_idx_l[cnt_]
+                    if u_idx is None or v_idx is None:
+                        continue
+                    ### if RECV.start_t() < SEND.start_t(), revise
+                    ### RECV.dur = RECV.dur - (SEND.ts - RECV.ts)
+                    ### RECV.ts = SEND.ts
+                    send_event = self.traceM.traces[u_idx]
+                    recv_event = self.traceM.traces[v_idx]
+                    how_much_less = 0
+                    if send_event["ts"] > recv_event["ts"]:
+                        temp_dur = recv_event["dur"]
+                        recv_event["dur"] = max(recv_event["dur"] - (send_event["ts"] - recv_event["ts"]), 0)
+                        recv_event["ts"] = send_event["ts"]
+                        how_much_less = temp_dur - recv_event["dur"]
+                    if recv_dict is None:
+                        recv_dict = {
+                            "unique_name": self.traceM.ret_unique_name(recv_event),
+                            "durs": [recv_event["dur"]],
+                            "less": how_much_less
+                        }
+                    else:
+                        recv_dict["durs"].append(recv_event["dur"])
+                        recv_dict["less"] += how_much_less
+                if recv_dict is not None:
+                    name_ = recv_dict["unique_name"]
+                    ### Update statistical information: name2sta
+                    avg = sum(recv_dict["durs"]) / len(recv_dict["durs"]) / 1000.0
+                    self.traceM.name2sta[name_]["avg"] = avg 
+                    var_l = [pow(_d / 1000.0 - avg, 2) for _d in recv_dict["durs"]]
+                    self.traceM.name2sta[recv_dict["unique_name"]]["var"] = sum(var_l) / len(var_l)
+                    ### Update statistical information: cat2sta
+                    if recv_dict["less"] != 0:
+                        cat = parse_cat_fine_grained(name_)
+                        self.traceM.cat2sta[cat]["time"] -= recv_dict["less"]
+                        self.traceM.cat2sta[cat]["avg"] = self.traceM.cat2sta[cat]["time"] / self.traceM.cat2sta[cat]["cnt"]
+                    ### Update DAG information
+                    for next_ in self.trail_dag.successors(name_):
+                        self.trail_dag.edges[name_, next_]["weight"] = avg
 
     def add_gaps_clip_events(self):
         ''' According to the traces and DAG, add a 'gap' field for each edge (u, v)
