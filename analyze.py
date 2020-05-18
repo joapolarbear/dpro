@@ -114,10 +114,10 @@ if args.option == "replay":
 	### Replay traces
 	logger.info("# Start to Replay")
 	replayer = Replayer(collector=clct, _step_num=args.step_num)
-
+	
 	def replay_with_delay(idx_, rst, node_name=None):
 		logger.info(node_name)
-		delay_dict = {node_name: {"delay": 0, "ratio": 0.5}} if node_name is not None else None
+		delay_dict = {node_name: {"delay": -5, "ratio": 1}} if node_name is not None else None
 		step_end_time = replayer.replayAndDelay(delay_dict, _ouput=True)
 		for trace in replayer.rst_traces:
 			trace["tid"] = "%d-->%s"%(idx_, trace["tid"] if "tid" in trace else "tid")
@@ -127,24 +127,8 @@ if args.option == "replay":
 	if args.sub_option is None:
 		''' Directly replay '''
 		replayer.replay()
-		for u, v in replayer.exct_dag.edges:
-			gap = 0
-			prev_cat = parse_cat_from_name(u)
-			next_cat = parse_cat_from_name(v)
-			for key, value in replayer.exct_dag.nodes[u].items():
-				if "GAP" in key:
-					### e.g. "gap.operator.operator"
-					key_s = key.split("GAP")
-					if prev_cat == key_s[0] and next_cat == key_s[1]:
-						gap += value
-			replayer.exct_dag.edges[u, v]["cost"] = replayer.exct_dag.edges[u, v]["weight"] + gap / 1000.0
-
-		# name = "host1.rank1->UPDATE_0"
-		# name2 = "host1.rank1->UPDATE_1"
-		# print(replayer.exct_dag.edges[name, name2])
-		# print(replayer.exct_dag.nodes[name])
-		critical_path = dag_longest_path(replayer.exct_dag, clct.pm, weight="cost", default_weight=0, _debug_level=2)
-
+		cal_edge_cost(replayer.exct_dag)
+		critical_path = dag_longest_path(replayer.exct_dag, clct.pm, weight="cost", default_weight=0, _debug_level=1)
 	elif args.sub_option == "smlt_delay_cmp":
 		''' Replay with computation delays'''
 		delay_dict = {"DELAY_ALL_CMP": {"delay": 0, "ratio": args.delay_ratio}}
@@ -171,20 +155,25 @@ if args.option == "replay":
 
 	elif args.sub_option == "bottleneck":
 		''' Replay and add delays to some of the node on the critical path respectively.'''
-		critical_path = dag_longest_path(clct.trail_dag, clct.pm, weight="weight", default_weight=0, _debug_level=2)
+		### Get the execution graph first
+		replayer.replay()
+		cal_edge_cost(replayer.exct_dag)
+
+		critical_path = dag_longest_path(clct.exct_dag, clct.pm, weight="weight", default_weight=0, _debug_level=2)
 		total_len = len(critical_path)
 		pgsbar = progressBar(start=0, end=total_len)
 		iter_time = max([e[2] for e in iter_times])
 		idx = 0
 		max_diff = 0
 		bottleneckt_ = None
+
 		while idx < total_len:
 			nodename, node_len = critical_path[idx]
 			if node_len == 0:
 				idx += 1
 				continue
 			### TODO (huhanpeng): change the value 10
-			delay_dict = {nodename: {"delay": 1, "ratio": 1.5}}
+			delay_dict = {nodename: {"delay": -5, "ratio": 1}}
 			step_end_time_ms = [t / 1000 for t in replayer.replayAndDelay(delay_dict, _ouput=False).values()]
 			cur_iter_time_ = max(step_end_time_ms)
 			diff_ = cur_iter_time_ - iter_time if cur_iter_time_ > iter_time else iter_time - cur_iter_time_
@@ -202,7 +191,7 @@ if args.option == "replay":
 		rst = []
 		idx = 0
 		idx = replay_with_delay(idx, rst)
-		idx = replay_with_delay(idx, rst, "host1.rank0->FW.bertencoder0_transformer13_multiheadattentioncell0_div_sqrt_dim0")
+		idx = replay_with_delay(idx, rst, "host0.rank1->FW.bertencoder0_transformer0_multiheadattentioncell0_batch_dot1")
 		# idx = replay_with_delay(idx, rst, "host1.rank0->BW.bertencoder0_slice0")
 		rst = sorted(rst, key=lambda x: (x["pid"], x["tid"]))
 		with open(os.path.join(clct.pm.path, "replay_compare.json"), 'w') as f:
