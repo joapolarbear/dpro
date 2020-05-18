@@ -472,7 +472,6 @@ class DAGManager:
 
         critical_path = None
         max_para_degree = self._add_new_edges_via_order(_pretty)
-        max_para_degree = None
 
         #！til now, all the edges for one GPU have been added.
         if not _pretty:

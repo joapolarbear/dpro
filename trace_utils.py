@@ -340,7 +340,7 @@ class TraceManager:
             self.max_cnt = max(statistic["cnt"], self.max_cnt)
 
     def lookup_stat(self, wk_prefix, rank_prefix, name,  _field="avg"):
-        ''' look up data from the stat info
+        ''' look up data from the stat info, return average time in ms by default
         Parameters
         __________
         with_prefix: boolean

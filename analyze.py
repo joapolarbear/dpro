@@ -127,6 +127,24 @@ if args.option == "replay":
 	if args.sub_option is None:
 		''' Directly replay '''
 		replayer.replay()
+		for u, v in replayer.exct_dag.edges:
+			gap = 0
+			prev_cat = parse_cat_from_name(u)
+			next_cat = parse_cat_from_name(v)
+			for key, value in replayer.exct_dag.nodes[u].items():
+				if "GAP" in key:
+					### e.g. "gap.operator.operator"
+					key_s = key.split("GAP")
+					if prev_cat == key_s[0] and next_cat == key_s[1]:
+						gap += value
+			replayer.exct_dag.edges[u, v]["cost"] = replayer.exct_dag.edges[u, v]["weight"] + gap / 1000.0
+
+		# name = "host1.rank1->UPDATE_0"
+		# name2 = "host1.rank1->UPDATE_1"
+		# print(replayer.exct_dag.edges[name, name2])
+		# print(replayer.exct_dag.nodes[name])
+		critical_path = dag_longest_path(replayer.exct_dag, clct.pm, weight="cost", default_weight=0, _debug_level=2)
+
 	elif args.sub_option == "smlt_delay_cmp":
 		''' Replay with computation delays'''
 		delay_dict = {"DELAY_ALL_CMP": {"delay": 0, "ratio": args.delay_ratio}}

@@ -786,7 +786,7 @@ class Collector(object):
         return prefixL
 
     def fine_tune_trace_dag(self):
-        # self.add_gaps_clip_events()
+        ### Fine tune the traces and dependency graph
         self.add_gap_to_nodes()
         self.clip_recv_events()
 
