@@ -266,6 +266,13 @@ if args.option == "collect":
 		clct.detect_straggler1()
 	elif args.sub_option == "bottleneck":
 		clct.detect_bottleneck1()
+	elif args.sub_option == "query":
+		while True:
+			name = input("Input the tensor name: ")
+			if name.lower() == "q":
+				break
+			avg = clct.traceM.lookup_stat(None, None, name)
+			print("Average time: %f ms" % (avg))
 
 ### Output debug traces
 debug_utils.DebugRecorder().dump_traces(path_list[0])
