@@ -15,6 +15,7 @@ import debug_utils
 from trace_utils import *
 from dag_utils import * 
 from horovod.graph import *
+from parameter import *
 
 args_ = arg_utils.SingleArg().args
 
@@ -729,8 +730,20 @@ class Collector(object):
         assert self.pm.dir_level == DirLevel.TRIAL
         self.logger.info("# Collecting DAG")
         critical_path = []
-        worker_dag_list = []  
-        update_dict = self.pm.map_tensors_to_update()
+        worker_dag_list = []
+
+        ### Map tensor name to its update index
+        info_path = self.pm.search(FileName.INFO)
+        para_path = self.pm.search(FileName.TENSOR_NAME)
+        if info_path is None:
+            self.logger.warn("Fail to map_tensors_to_update")
+            aggregate_num = 0
+        else:
+            with open(info_path, 'r') as fp:
+                aggregate_num = json.load(fp)["opt_aggregate_num"]
+        self.para_dict = ParameterDict(para_path)
+        update_dict = self.para_dict.map_tensors_to_update(aggregate_num)
+
         for _dir in self.pm.dirs:
             worker_path = os.path.join(self.pm.path, _dir)
             worker_root, worker_dirs, _ = list(os.walk(worker_path))[0]

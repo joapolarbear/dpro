@@ -245,7 +245,7 @@ def parse_special_from_name(name):
         return 
 
 def load_list(path):
-    ''' read a list from a file
+    ''' read a list from a file, ignore the last line if it is empty
     '''
     with open(path, 'r') as f:
         l = f.read().split("\n")
@@ -662,34 +662,6 @@ class PathManager:
             return self.path
         else:
             raise ValueError()
-
-    def map_tensors_to_update(self):
-        ''' Map each tensor to its corresponding update operation
-        For MXNet
-        '''
-        assert self.dir_level == DirLevel.TRIAL
-        ### Read aggregate num
-        info_path = self.search(FileName.INFO)
-        if info_path is None:
-            SingleLogger().warn("Fail to map_tensors_to_update")
-            aggregate_num = 0
-        else:
-            with open(info_path, 'r') as fp:
-                aggregate_num = json.load(fp)["opt_aggregate_num"]
-        ### Read gradient name list in reverse order
-        gra_path = self.search(FileName.TENSOR_NAME)
-        gradient_name_list = load_list(gra_path)
-        gradient_name_list.reverse()
-        ret = {}
-        max_update_id = 0
-        for idx in range(len(gradient_name_list)):
-            gra = gradient_name_list[idx]
-            ret[gra] = idx if aggregate_num == 0 else int(idx / aggregate_num)
-            max_update_id = max(max_update_id, ret[gra])
-        ret["max"] = max_update_id
-        return ret
-
-
 
 
 
