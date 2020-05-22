@@ -272,7 +272,7 @@ if args.option == "collect":
 			name = input("\nQuerying: \n\t 1). The tensor name \n\t 2). \\sta_by_cnt \n\t 3). q or Q to quit \nInput your command: ")
 			if name.lower() == "q":
 				break
-			elif "\\sta_by_cnt":
+			elif "\\sta_by_cnt" in name or name == "2":
 				clct.detect_straggler1()
 			else:
 				avg = clct.traceM.lookup_stat(None, None, name)
