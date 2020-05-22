@@ -450,7 +450,7 @@ class DAGManager:
                     parent_list_of_prev = [(u, self.gpu_dag.edges[(u, v)]["weight"]) for u, v in self.gpu_dag.in_edges(self.add_prefix(prev_event["name"]))]
                     for u, w in parent_list_of_prev:
                         ### TODO (huhanpeng) do not follow the dependency graph, ignore now
-                        if "BW.bertencoder0_embedding0" in u or "BW.bertencoder0_embedding0" in v:
+                        if "BW.bertencoder0_embedding0" in u or "BW.bertencoder0_embedding0" in self.add_prefix(prev_event["name"]):
                             continue
                         self.gpu_dag.add_edge(u, self.add_prefix(event["name"]), weight=0)
                     i += 1

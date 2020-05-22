@@ -322,9 +322,10 @@ class TraceManager:
                     self.cat2sta[cat]["max_t"] = statistic["avg"]
                     self.cat2sta[cat]["max_name"] = name
             else:
-                self.cat2sta[cat] = {"max_t": statistic["avg"], "max_name": name, "time": 0, "cnt": 0}
+                self.cat2sta[cat] = {"max_t": statistic["avg"], "max_name": name, "time": 0, "cnt": 0, "op_cnt":0}
             self.cat2sta[cat]["time"] += statistic["time"]
             self.cat2sta[cat]["cnt"] += statistic["cnt"]
+            self.cat2sta[cat]["op_cnt"] += 1
 
         for cat, statistic in self.cat2sta.items():
             statistic["avg"] = statistic["time"] / statistic["cnt"]
