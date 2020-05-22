@@ -1132,7 +1132,7 @@ class Collector(object):
             prefix2traces[key_] = TraceManager(prefix2traces[key_], DirLevel.GPU)
             print("\n%s" % key_)
             for cat_, sta_ in prefix2traces[key_].cat2sta.items():
-                print("Cat: %s: avg %f" % (cat_, sta_["avg"]))
+                print("Cat: %s: Avg %f ms, Op Count %d" % (cat_, sta_["avg"], sta_["op_cnt"]))
             name2sta_list.append(prefix2traces[key_].name2sta)
             sheet_name.append(key_)
         
