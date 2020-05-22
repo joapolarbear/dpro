@@ -269,7 +269,7 @@ if args.option == "collect":
 		clct.detect_bottleneck1()
 	elif args.sub_option == "query":
 		while True:
-			name = input("Querying: \n\t 1). The tensor name \n\t 2). \\sta_by_cnt \n\t 3). q or Q to quit \nInput your command:")
+			name = input("\nQuerying: \n\t 1). The tensor name \n\t 2). \\sta_by_cnt \n\t 3). q or Q to quit \nInput your command: ")
 			if name.lower() == "q":
 				break
 			elif "\\sta_by_cnt":
