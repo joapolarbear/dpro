@@ -49,15 +49,8 @@ class Deivce:
 			self.mark_as_exct(name, _last_end_time, _last_end_time)
 			return 
 
-		#! Some BW nodes of dag is not profiled, ignore them.
-		try:
-			avg = self.replayer.traceM.lookup_stat(None, None, name)
-		except:
-			self.replayer.logger.warning("%s is not in _name2sta" % name)
-			self.mark_as_exct(name, _last_end_time, _last_end_time)
-			return
-
-		#! really start to execute
+		### Really start to execute
+		avg = self.replayer.dag.nodes[name]["avg"]
 		pid = parse_pid_from_name(name)
 		cat = parse_cat_from_name(name)
 		raw_name = parse_rawname_from_name(name)

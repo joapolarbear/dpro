@@ -802,6 +802,7 @@ class Collector(object):
         ### Fine tune the traces and dependency graph
         self.add_gap_to_nodes()
         self.clip_recv_events()
+        self.add_avg_to_nodes()
 
     def search_trace_with_cnt(self, longname, send_idx):
         ### should not cansider suffix
@@ -1024,6 +1025,11 @@ class Collector(object):
                     ### Update DAG information
                     for next_ in self.trail_dag.successors(name_):
                         self.trail_dag.edges[name_, next_]["weight"] = avg
+
+    def add_avg_to_nodes(self):
+        for node_ in self.trail_dag.nodes:
+            ### Add duration to the node as an attribute
+            self.trail_dag.nodes[node_]["avg"] = self.traceM.lookup_stat(None, None, node_)
 
     def add_gaps_clip_events(self):
         ''' According to the traces and DAG, add a 'gap' field for each edge (u, v)
