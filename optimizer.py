@@ -150,15 +150,6 @@ class Optimizer:
 			self.init_search_space(G)
 			while True:
 				op, target, next_ = self.pick_strategy()
-				# op = "+"
-				# target = "host1.rank1->BW.[414]"
-				# next_ = "host1.rank1->BW.[793]"
-				# print(self.clct.para_dict.index2layer_name(793))
-				# print(list(self.dag.in_edges(target)))
-				# print(list(self.dag.successors(target)))
-				# print(list(self.dag.in_edges(next_)))
-				# print(list(self.dag.successors(next_)))
-
 
 				G_star = G.copy()
 				if op == "+":
@@ -166,14 +157,6 @@ class Optimizer:
 					self.op_fusion(G_star, target, next_)
 				elif op == "-":
 					self.op_defusion(G_star, target, next_)
-
-				# try:
-				# 	cycles = nx.find_cycle(G_star)
-				# 	if len(cycles) > 0:
-				# 		print(cycles)
-				# 		raise
-				# except:
-				# 	pass
 
 				### Start to replay
 				replayer = Replayer(dag=G_star, _step_num=1, leaf_dirs=self.clct.all_prefix_list(), dump_path=self.clct.pm.path)

@@ -50,7 +50,11 @@ class Deivce:
 			return 
 
 		### Really start to execute
-		avg = self.replayer.dag.nodes[name]["avg"]
+		try:
+			avg = self.replayer.dag.nodes[name]["avg"]
+		except KeyError:
+			print("KeyError: %s, %s" % (name, str(self.replayer.dag.nodes[name])))
+			raise
 		pid = parse_pid_from_name(name)
 		cat = parse_cat_from_name(name)
 		raw_name = parse_rawname_from_name(name)
@@ -116,7 +120,11 @@ class Deivce:
 				if "SEND" in name and "RECV" in _succ:
 					### For Send->Recv edge, there exist some overlap
 					### TODO (huhanpeng): how do decide the end time of the RECV event
-					self.replayer.dag.nodes[_succ]["avg"]
+					try:
+						self.replayer.dag.nodes[_succ]["avg"]
+					except KeyError:
+						print("KeyError: %s, %s" % (_succ, str(self.replayer.dag.nodes[_succ])))
+						raise
 					_status["last_end"] = _end_time if _status["last_end"] is None else max(_end_time - avg * 1000, _status["last_end"])
 				else:
 					### Apply the gap between two nodes
