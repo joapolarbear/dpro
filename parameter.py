@@ -2,7 +2,8 @@ import re
 from trace_utils import *
 
 class Parameter:
-    def __init__(self, name, shape, dtype):
+    def __init__(self, index, name, shape, dtype):
+        self.index = index
         self.name = name
         self.shape = shape
         self.dtype = dtype
@@ -10,7 +11,9 @@ class Parameter:
 class ParameterDict:
     def __init__(self, path_):
         self.gradient_name_list = []
-        self.para_dict = {}
+        self.name2para = {}
+        self.name2layeridx = {}
+        self.total_idx = 0
         raw_para_list = load_list(path_)
         for para_ in raw_para_list:
             ### e.g., bertencoder0_position_weight;shape=(512, 1024);dtype=float16
@@ -24,7 +27,12 @@ class ParameterDict:
                 shape_ = [int(e) for e in re.findall(r"\d+", para_split[1])]
                 dtype_ = para_split[2].split("dtype=")[1]
             self.gradient_name_list.append(name_)
-            self.para_dict[name_] = Parameter(name_, shape_, dtype_)
+            self.name2para[name_] = Parameter(self.total_idx, name_, shape_, dtype_)
+            self.total_idx += 1
+            layer_name = parse_layer_name(name_)
+            if layer_name not in self.name2layeridx:
+                self.name2layeridx[layer_name] = self.total_idx
+                self.total_idx += 1
         self.cnt = len(self.gradient_name_list)
 
         self.tensor2update = {}
@@ -40,3 +48,18 @@ class ParameterDict:
             max_update_id = max(max_update_id, self.tensor2update[gra])
         self.tensor2update["max"] = max_update_id
         return self.tensor2update
+
+    def parse_layer_index(self, layer_name):
+        try:
+            return self.name2layeridx[layer_name]
+        except KeyError:
+            ### Some layers do not have parameters, still need to register these nodes
+            self.name2layeridx[layer_name] = self.total_idx
+            self.total_idx += 1
+            return self.total_idx - 1
+
+    def index2layer_name(self, index):
+        for name, idx in self.name2layeridx.items():
+            if idx == index:
+                return name
+        return "Not found"

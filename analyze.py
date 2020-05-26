@@ -14,6 +14,7 @@ from replay import Replayer
 from progress_utils import progressBar
 import arg_utils
 import debug_utils
+import optimizer
 
 args = arg_utils.SingleArg().args
 logger = logger_utils.SingleLogger(args.path.split(',')[0], 
@@ -113,7 +114,7 @@ if args.option == "replay":
 
 	### Replay traces
 	logger.info("# Start to Replay")
-	replayer = Replayer(collector=clct, _step_num=args.step_num)
+	replayer = Replayer(dag=clct.trail_dag, _step_num=args.step_num, leaf_dirs=clct.all_prefix_list(), dump_path=clct.pm.path)
 	
 	def replay_with_delay(idx_, rst, node_name=None):
 		logger.info(node_name)
@@ -277,6 +278,9 @@ if args.option == "collect":
 			else:
 				avg = clct.traceM.lookup_stat(None, None, name)
 				print("Average time: %f ms" % (avg))
+	elif args.sub_option == "opt":
+		opt = optimizer.Optimizer(clct)
+		opt.MCMC_search()
 
 ### Output debug traces
 debug_utils.DebugRecorder().dump_traces(path_list[0])

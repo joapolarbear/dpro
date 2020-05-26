@@ -199,6 +199,19 @@ def parse_rawname_from_name(name):
     else:
         return name.split(DEL)[1]
 
+def parse_layer_name(name):
+    if DEL in name:
+        name = name.split(DEL)[1]
+    if DDEL in name:
+        name = name.split(DDEL)[0]
+    if "." in name:
+        name = name.split(".")[1]
+    name_split = name.split("_")
+    if name_split[-1] in ["gamma", "beta", "weight", "bias"]:
+        return "_".join(name_split[:-1])
+    else:
+        return name
+
 def parse_cat_from_name(name):
     if "I/O" in name:
         return CatName.IO.value

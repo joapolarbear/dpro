@@ -2,7 +2,6 @@ import warnings
 import os
 
 # append for auto_profiling
-import logging
 import sys, os
 import ujson as json
 import networkx as nx
@@ -109,6 +108,7 @@ class Collector(object):
         self.run_span = {}
         ### Used for clock synchronization when combime traces from multiple machines
         self.clock_aligner = None
+        self.para_dict = None
 
         ### TODO (huhanpeng): assume different host use the same dag, original dag
         self.dag = None
@@ -726,12 +726,7 @@ class Collector(object):
         self.logger.info("Original Iteration Time")
         return self.traceM.get_iter_time()
 
-    def collect_trail_dag(self):
-        assert self.pm.dir_level == DirLevel.TRIAL
-        self.logger.info("# Collecting DAG")
-        critical_path = []
-        worker_dag_list = []
-
+    def collect_update_dict(self):
         ### Map tensor name to its update index
         info_path = self.pm.search(FileName.INFO)
         para_path = self.pm.search(FileName.TENSOR_NAME)
@@ -742,8 +737,15 @@ class Collector(object):
             with open(info_path, 'r') as fp:
                 aggregate_num = json.load(fp)["opt_aggregate_num"]
         self.para_dict = ParameterDict(para_path)
-        update_dict = self.para_dict.map_tensors_to_update(aggregate_num)
+        return self.para_dict.map_tensors_to_update(aggregate_num)
 
+    def collect_trail_dag(self):
+        assert self.pm.dir_level == DirLevel.TRIAL
+        self.logger.info("# Collecting DAG")
+        critical_path = []
+        worker_dag_list = []
+
+        update_dict = self.collect_update_dict()
         for _dir in self.pm.dirs:
             worker_path = os.path.join(self.pm.path, _dir)
             worker_root, worker_dirs, _ = list(os.walk(worker_path))[0]
@@ -776,6 +778,10 @@ class Collector(object):
             self.traceM.load(self.pm.path)
             self.nccl_graph.load(nccl_graph_path)
             self.trail_dag = nx.read_gml(trail_dag_path)
+
+        ### TODO (huhanpeng) dump it or not
+        if self.para_dict is None:
+            self.collect_update_dict()
 
         return self.iter_time()    
         
