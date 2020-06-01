@@ -25,12 +25,16 @@ parser.add_argument("--progress", action="store_true", help="Show the progress b
 parser.add_argument("--debug_traces", action="store_true", help="If set, output traces profiled for the analysis process")
 
 ### collect
+parser.add_argument("--comm_backend", type=str, default="NCCL", choices=["NCCL", "BYTEPS"], help="Communication backend")
+parser.add_argument("--pcap_file_path", type=str, default=None, help="Path to the directory containing BytePS communication pcap files.")
+parser.add_argument("--server_log_path", type=str, default=None, help="Path to the directory containing BytePS server log files.")
 parser.add_argument("--nccl_algo", type=str, default=None, help="NCCL algorithm")
 parser.add_argument("--trace_level", type=str, choices=["debug", "info"], default="info", help="if set to debug, show some trival traces")
 parser.add_argument("--disable_revise", action="store_true", help="By default, revise traecs according to SEND-RECV dependency, set to disable this argument to disable")
 parser.add_argument("--force", action="store_true", help="Force to re-generate traces, graphs")
 
 ### replay
+parser.add_argument("--update_barrier", type=bool, default=False, help="If true, add a barrier before all UPDATE ops.")
 parser.add_argument("--step_num", type=int, default="1", help="Default step numbers to replay.")
 parser.add_argument("--delay_ratio", type=float, default=1.1, help="delay ratio")
 

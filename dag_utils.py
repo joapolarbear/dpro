@@ -2,8 +2,12 @@ import os
 import networkx as nx
 import matplotlib.pyplot as plt
 import logger_utils
+import arg_utils
 from trace_utils import *
 from horovod.graph import *
+from byteps.graph import *
+
+args_ = arg_utils.SingleArg().args
 
 def visualize_gml(graph, layout="circular"):
     if layout == "spectral":
@@ -61,7 +65,7 @@ class DAGManager:
     path: str
         Root path for one GPU
     '''
-    def __init__(self, path, traceM, nccl_graph=None):
+    def __init__(self, path, traceM, nccl_graph=None, byteps_graph = None):
         self.pm = PathManager(path)
         ### traceM's DirLevel = TRAIL
         self.traceM = traceM
@@ -75,7 +79,10 @@ class DAGManager:
         self.topo_sorts = []
 
         ### For fine-grained communication dependency
+        # only one of them can be set at a time
+        assert (nccl_graph or byteps_graph) and not (nccl_graph and byteps_graph)
         self.nccl_graph = nccl_graph
+        self.byteps_graph = byteps_graph
 
     def add_prefix(self, name, _prefix=None):
         if _prefix is None:
@@ -102,8 +109,36 @@ class DAGManager:
         for u, v in mygraph.edges:
             if "Comm" in u:
                 gra_name = u.split("Comm.")[1]
-                # update_id = 0 if update_dict is None else update_dict[gra_name]
-                if self.nccl_graph is not None and self.nccl_graph.algo == NCCL_ALGO.RING:
+                update_id = 0 if update_dict is None else update_dict[gra_name]
+                if self.byteps_graph is not None:
+                    wk_rank = int(self.wk_prefix.split("_")[-1])
+                    # add push request dependency
+                    push_req_nodes = self.byteps_graph.get_push_req_node(wk_rank, gra_name)
+                    prev_bw_nodes = [_u for _u, _ in mygraph.in_edges(u)]
+                    assert len(prev_bw_nodes) == 1
+                    prev_name = self.add_prefix(prev_bw_nodes[0])
+                    for push_req_node in push_req_nodes:
+                        self.dag.add_edge(
+                            prev_name,
+                            push_req_node,
+                            weight = self.traceM.lookup_stat(self.wk_prefix, self.rank_prefix, prev_name)
+                        )
+                    # add update dependencies
+                    pull_res_nodes = self.byteps_graph.get_pull_res_node(wk_rank, gra_name)
+                    for pull_res_node in pull_res_nodes:
+                        if args_.update_barrier:
+                            self.dag.add_edge(
+                                pull_res_node,
+                                self.add_prefix("UPDATE_CAL"),
+                                weight = self.traceM.lookup_stat(self.wk_prefix, self.rank_prefix, pull_res_node)
+                            )
+                        else:
+                            self.dag.add_edge(
+                                pull_res_node,
+                                self.add_prefix("UPDATE_%d"%update_id),
+                                weight = self.traceM.lookup_stat(self.wk_prefix, self.rank_prefix, pull_res_node)
+                            )
+                elif self.nccl_graph is not None and self.nccl_graph.algo == NCCL_ALGO.RING:
                     ### Combine chunkId, sliceId and channelId into the graph for RING algorithm
                     chunkNum, sliceNum, channelNum, loopNum = self.nccl_graph.get_IDnum(u)
                     for loopId in range(loopNum):
@@ -339,27 +374,33 @@ class DAGManager:
             elif "UPDATE" in u and "FW" in v:
                 ### ignore nodes from UPDATE to FW, avoid a circle
                 pass
+            elif "STEP" in u or "STEP" in v:
+                ### ignore "STEP" nodes
+                pass
             else:
                 self.dag.add_edge(
                     self.add_prefix(u), 
                     self.add_prefix(v), 
                     weight=self.traceM.lookup_stat(self.wk_prefix, self.rank_prefix, u)
                 )
-
         for update_id in range(update_dict["max"] + 1):
             update_name = self.add_prefix("UPDATE_%d"%update_id)
-            self.dag.add_edge(
-                self.add_prefix("UPDATE_CAL"), 
-                update_name, 
-                weight=self.traceM.lookup_stat(self.wk_prefix, self.rank_prefix, self.add_prefix("UPDATE_CAL"))
-                )
+            if args_.update_barrier:
+                self.dag.add_edge(
+                    self.add_prefix("UPDATE_CAL"), 
+                    update_name, 
+                    weight=self.traceM.lookup_stat(self.wk_prefix, self.rank_prefix, self.add_prefix("UPDATE_CAL"))
+                    )
             ### Connect all UPDATE nodes to an END node
             self.dag.add_edge(update_name, "END",
                 weight=self.traceM.lookup_stat(self.wk_prefix, self.rank_prefix, update_name))
-        self.dag.remove_node(self.add_prefix("UPDATE"))
+        # self.dag.remove_node(self.add_prefix("UPDATE"))
 
         for e in self.dag.edges.data("weight"):
             self.logger.debug(e)
+        # for n in self.dag.nodes:
+        #     print(n)
+        #     exit(0)
         # visualize_gml(self.dag, layout="circular")
         # raise
 

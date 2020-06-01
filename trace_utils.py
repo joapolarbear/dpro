@@ -53,6 +53,12 @@ class FileName(Enum):
     NCCL_GRAPH="nccl_graph.txt"
     TRAIL_DAG="trail_dag.gml"
     STATISTIC="statistic.txt"
+    BPS_COMM_DETAIL="comm_timeline.json"
+    BPS_SERVER_TRACE="server_timeline.json"
+    IP_TO_RANK="ip_to_rank.txt"
+    KEY_DICT="key_dict.txt"
+    BYTEPS_CACHE="bps_cache.pickle"
+    BPS_ALIGNED_TRACE="bps_comm_aligned.json"
 
 class CatName(Enum):
     OPERATOR="operator"
@@ -61,7 +67,9 @@ class CatName(Enum):
     DEBUG="virtual"
 
 GAP_STR_OP2OP = "%sGAP%s"%(CatName.OPERATOR.value, CatName.OPERATOR.value)
+GAP_STR_COMM2COMM = "%sGAP%s"%(CatName.COMM.value, CatName.COMM.value)
 GAP_STR_OP2COMM = "%sGAP%s"%(CatName.OPERATOR.value, CatName.COMM.value)
+GAP_STR_INTERNODE = "INTERNODEGAP"
 
 def read_traces(traces_path):
     '''
@@ -202,9 +210,9 @@ def parse_rawname_from_name(name):
 def parse_cat_from_name(name):
     if "I/O" in name:
         return CatName.IO.value
-    elif "Comm" in name:
+    elif "Comm" in name or "PUSH" in name or "PULL" in name:
         return CatName.COMM.value
-    elif "FW" in name or "BW" in name or "UPDATE" in name or "OUTPUT" in name:
+    elif "FW" in name or "BW" in name or "UPDATE" in name or "OUTPUT" in name or "COPY_FIRST" in name or "SUM" in name or "COPY_MERGED" in name:
         return CatName.OPERATOR.value
     elif name == "END":
         return CatName.DEBUG.value
@@ -219,6 +227,14 @@ def parse_cat_fine_grained(name_):
             ret_cat = "Comm.RECV"
         else:
             ret_cat = "Comm.other"
+    elif "PUSH_REQ" in name_:
+        return "Comm.PUSH_REQ"
+    elif "PUSH_RES" in name_:
+        return "Comm.PUSH_RES"
+    elif "PULL_REQ" in name_:
+        return "Comm.PULL_REQ"
+    elif "PULL_RES" in name_:
+        return "Comm.PULL_RES"
     elif "I/O" in name_:
         ret_cat = "I/O"
     elif "FW" in name_:
@@ -231,6 +247,8 @@ def parse_cat_fine_grained(name_):
         ret_cat = "operator.OUTPUT"
     elif name_ == "END":
         ret_cat = "virtual"
+    elif "COPY_FIRST" in name_ or "SUM" in name_ or "COPY_MERGED" in name_:
+        return "operator.SERVERCOMP"
     else:
         raise ValueError("Can not decide the cat of %s" % name_)
 
@@ -276,7 +294,7 @@ class TraceManager:
 
     def ret_unique_name(self, event):
         ### Returen unique name for statistic index
-        if "chunkId" in event["args"]:
+        if "args" in event and "chunkId" in event["args"]:
             suffix = "%d_%d_%d_%d"%(event["args"]["loopId"], event["args"]["channelId"], event["args"]["chunkId"], event["args"]["sliceId"])
         else:
             suffix=None

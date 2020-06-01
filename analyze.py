@@ -108,7 +108,7 @@ if args.option == "replay":
 		--path: the root path for 
 		--step_num: number of steps we want to generate.
 	'''	
-	clct = Collector(path_list[0])
+	clct = Collector(path_list[0], comm_backend=args_.comm_backend)
 	iter_times = clct.init(args.force)
 
 	### Replay traces
