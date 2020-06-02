@@ -48,21 +48,18 @@ class Deivce:
 		this_cat = parse_cat_from_name(name)
 
 		if not self.infi_para:
-			if self.comm_backend == "BYTEPS":
-				### Apply the gap between two nodes
-				# gap = self.replayer.dag.edges[name, _succ]["gap"] if "gap" in self.replayer.dag.edges[name, _succ] else 0
-				gap = 0
-				for key, value in self.replayer.dag.nodes[name].items():
-					if "GAP" in key:
-						### e.g. "gap.operator.operator"
-						key_s = key.split("GAP")
-						if self.prev_cat == key_s[0] and this_cat == key_s[1]:
-							gap += value
-							if gap > 1000:
-								SingleLogger().warn("Large GAP detected: {}, key = {}, gap = {}".format(name, key, value))
-				_last_end_time =  max(_last_end_time, self.device_time + gap)
-			else:
-				_last_end_time = max(_last_end_time, self.device_time)
+			### Apply the gap between two nodes
+			# gap = self.replayer.dag.edges[name, _succ]["gap"] if "gap" in self.replayer.dag.edges[name, _succ] else 0
+			gap = 0
+			for key, value in self.replayer.dag.nodes[name].items():
+				if "GAP" in key:
+					### e.g. "gap.operator.operator"
+					key_s = key.split("GAP")
+					if self.prev_cat == key_s[0] and this_cat == key_s[1]:
+						gap += value
+						if gap > 1000:
+							SingleLogger().warn("Large GAP detected: {}, key = {}, gap = {}".format(name, key, value))
+			_last_end_time =  max(_last_end_time, self.device_time + gap)
 
 		if "Sync" in name or name == "END":
 			#! No event is generated, but has successors
@@ -160,17 +157,6 @@ class Deivce:
 							self.replayer.logger.warning("%s is not in _name2sta" % _succ)
 							avg = 0
 						_status["last_end"] = _end_time if _status["last_end"] is None else max(_end_time - avg * 1000, _status["last_end"])
-					else:
-						### Apply the gap between two nodes
-						# gap = self.replayer.dag.edges[name, _succ]["gap"] if "gap" in self.replayer.dag.edges[name, _succ] else 0
-						gap = 0
-						for key, value in self.replayer.dag.nodes[name].items():
-							if "GAP" in key:
-								### e.g. "gap.operator.operator"
-								key_s = key.split("GAP")
-								if prev_cat == key_s[0] and next_cat == key_s[1]:
-									gap += value
-						_status["last_end"] = (_end_time + gap) if _status["last_end"] is None else max(_end_time + gap, _status["last_end"])
 				else:
 					## BYTEPS
 					## Only apply BW->Comm gaps

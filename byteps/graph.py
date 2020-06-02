@@ -25,9 +25,6 @@ class COMP_OPS(object):
 
 COMM_DEL = "::"
 
-PROFILE_ITER_START = 10
-PROFILE_ITER_DURATION = 11
-
 comm_ops = set([COMM_OPS.PUSH_REQ, COMM_OPS.PULL_REQ, COMM_OPS.PUSH_RES, COMM_OPS.PULL_RES])
 
 comp_ops = set([COMP_OPS.COPY_FIRST, COMP_OPS.SUM, COMP_OPS.COPY_MERGED])
@@ -68,6 +65,18 @@ class bytepsGraph:
     """ Helper class for processing the detailed communication trace of BytePS
     """
     def __init__(self):
+        if args_.profile_start_step is None:
+            self.PROFILE_ITER_START = 10
+            SingleLogger().warn("[BYTEPS] profile_start_step UNSET. USING DEFAULT VALUE {}.".format(self.PROFILE_ITER_START))
+        else:
+            self.PROFILE_ITER_START = args_.profile_start_step
+            SingleLogger().info("[BYTEPS] Using profile_start_step = {}.".format(self.PROFILE_ITER_START))
+        if args_.profile_duration is None:
+            self.PROFILE_ITER_DURATION = 11
+            SingleLogger().warn("[BYTEPS] profile_duration UNSET. USING DEFAULT VALUE {}.".format(self.PROFILE_ITER_DURATION))
+        else:
+            self.PROFILE_ITER_DURATION = args_.profile_duration
+            SingleLogger().info("[BYTEPS] Using profile_duration = {}.".format(self.PROFILE_ITER_DURATION))
         self.gradient_assignment_dict = {}
         self.pid_to_target = {}
         self.pid_to_server = {}
@@ -298,17 +307,17 @@ class bytepsGraph:
             if op == COMM_OPS.PUSH_REQ or op == COMM_OPS.PUSH_RES:
                 if len(durations) != mode_len + 1:
                     self._ignored_tensors.add(key)
-                chopped_durations = durations[PROFILE_ITER_START:PROFILE_ITER_START+PROFILE_ITER_DURATION]
+                chopped_durations = durations[self.PROFILE_ITER_START:self.PROFILE_ITER_START+self.PROFILE_ITER_DURATION]
             else:
                 if len(durations) != mode_len:
                     self._ignored_tensors.add(key)
-                chopped_durations = durations[PROFILE_ITER_START-1:PROFILE_ITER_START-1+PROFILE_ITER_DURATION]
+                chopped_durations = durations[self.PROFILE_ITER_START-1:self.PROFILE_ITER_START-1+self.PROFILE_ITER_DURATION]
             self.comm_durations[key] = chopped_durations
         
         for key, durations in self.comp_durations.items():
             if len(durations) != mode_len:
                 self._ignored_tensors.add(key)
-            chopped_durations = durations[PROFILE_ITER_START-1:PROFILE_ITER_START-1+PROFILE_ITER_DURATION]
+            chopped_durations = durations[self.PROFILE_ITER_START-1:self.PROFILE_ITER_START-1+self.PROFILE_ITER_DURATION]
             self.comp_durations[key] = chopped_durations
 
     def _calc_stats(self):
