@@ -177,18 +177,12 @@ class Deivce:
 					gap = 0
 					if GAP_STR_OP2COMM in self.replayer.dag.nodes[name] and next_cat == "Comm":
 						gap += self.replayer.dag.nodes[name][GAP_STR_OP2COMM]
-					# if "bertmodel0_word_embed_embedding0_weight~PART15" in name:
-					# 	print("Modified GAP: {}, GAP = {}, _end_time + gap: {}, lastend={}".format(_succ, gap, _end_time + gap, _status["last_end"]))
 					_status["last_end"] = (_end_time + gap) if _status["last_end"] is None else max(_end_time + gap, _status["last_end"])
-					# if "bertmodel0_word_embed_embedding0_weight~PART15" in name:
-					# 	print("Modified lastend: {}, lastend = {}".format(_succ, _status["last_end"]))
 					
 
 				### Whether the dependency has met
 				_status["in_degree"] -= 1
 				if _status["in_degree"] == 0:
-					# if "bertmodel0_word_embed_embedding0_weight~PART15" in name:
-					# 	print("Releasing: {} at {}, endtime = {}".format(_succ, _status["last_end"], _end_time))
 					self.replayer.insert_next_node(_succ, _status["last_end"])
 
 	def get_delay_para(self, name_):
@@ -226,8 +220,6 @@ class PSCommDevice(Deivce):
 	
 	def mark_as_exct(self, name, _start_t, _end_time):
 		next_name = self.op_counter.get_next_op(name)
-		# if "bertmodel0_word_embed_embedding0_weight~PART15" in name:
-		# 	print("Executed: {}".format(name))
 
 		self.device_time = _end_time
 		self.replayer.node_status.pop(name)
@@ -246,8 +238,6 @@ class PSCommDevice(Deivce):
 					else:
 						_status["last_end"] = max(_end_time, _status["last_end"])
 				if _status["in_degree"] == 0:
-					# if "bertmodel0_word_embed_embedding0_weight~PART15" in name:
-					# 	print("Releasing: {}".format(_succ))
 					self.replayer.insert_next_node(_succ, _status["last_end"])
 
 		if next_name is not None:
