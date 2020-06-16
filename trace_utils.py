@@ -53,6 +53,12 @@ class FileName(Enum):
     NCCL_GRAPH="nccl_graph.txt"
     TRAIL_DAG="trail_dag.gml"
     STATISTIC="statistic.txt"
+    BPS_COMM_DETAIL="comm_timeline.json"
+    BPS_SERVER_TRACE="server_timeline.json"
+    IP_TO_RANK="ip_to_rank.txt"
+    KEY_DICT="key_dict.txt"
+    BYTEPS_CACHE="bps_cache.pickle"
+    BPS_ALIGNED_TRACE="bps_comm_aligned.json"
 
 class CatName(Enum):
     OPERATOR="operator"
@@ -61,7 +67,9 @@ class CatName(Enum):
     DEBUG="virtual"
 
 GAP_STR_OP2OP = "%sGAP%s"%(CatName.OPERATOR.value, CatName.OPERATOR.value)
+GAP_STR_COMM2COMM = "%sGAP%s"%(CatName.COMM.value, CatName.COMM.value)
 GAP_STR_OP2COMM = "%sGAP%s"%(CatName.OPERATOR.value, CatName.COMM.value)
+GAP_STR_INTERNODE = "INTERNODEGAP"
 
 def read_traces(traces_path):
     '''
@@ -202,9 +210,9 @@ def parse_rawname_from_name(name):
 def parse_cat_from_name(name):
     if "I/O" in name:
         return CatName.IO.value
-    elif "Comm" in name:
+    elif "Comm" in name or "PUSH" in name or "PULL" in name:
         return CatName.COMM.value
-    elif "FW" in name or "BW" in name or "UPDATE" in name or "OUTPUT" in name:
+    elif "FW" in name or "BW" in name or "UPDATE" in name or "OUTPUT" in name or "COPY_FIRST" in name or "SUM" in name or "COPY_MERGED" in name:
         return CatName.OPERATOR.value
     elif name == "END":
         return CatName.DEBUG.value
@@ -219,6 +227,14 @@ def parse_cat_fine_grained(name_):
             ret_cat = "Comm.RECV"
         else:
             ret_cat = "Comm.other"
+    elif "PUSH_REQ" in name_:
+        return "Comm.PUSH_REQ"
+    elif "PUSH_RES" in name_:
+        return "Comm.PUSH_RES"
+    elif "PULL_REQ" in name_:
+        return "Comm.PULL_REQ"
+    elif "PULL_RES" in name_:
+        return "Comm.PULL_RES"
     elif "I/O" in name_:
         ret_cat = "I/O"
     elif "FW" in name_:
@@ -231,6 +247,8 @@ def parse_cat_fine_grained(name_):
         ret_cat = "operator.OUTPUT"
     elif name_ == "END":
         ret_cat = "virtual"
+    elif "COPY_FIRST" in name_ or "SUM" in name_ or "COPY_MERGED" in name_:
+        return "operator.SERVERCOMP"
     else:
         raise ValueError("Can not decide the cat of %s" % name_)
 
@@ -245,7 +263,7 @@ def parse_special_from_name(name):
         return 
 
 def load_list(path):
-    ''' read a list from a file
+    ''' read a list from a file, ignore the last line if it is empty
     '''
     with open(path, 'r') as f:
         l = f.read().split("\n")
@@ -276,7 +294,7 @@ class TraceManager:
 
     def ret_unique_name(self, event):
         ### Returen unique name for statistic index
-        if "chunkId" in event["args"]:
+        if "args" in event and "chunkId" in event["args"]:
             suffix = "%d_%d_%d_%d"%(event["args"]["loopId"], event["args"]["channelId"], event["args"]["chunkId"], event["args"]["sliceId"])
         else:
             suffix=None
@@ -322,9 +340,10 @@ class TraceManager:
                     self.cat2sta[cat]["max_t"] = statistic["avg"]
                     self.cat2sta[cat]["max_name"] = name
             else:
-                self.cat2sta[cat] = {"max_t": statistic["avg"], "max_name": name, "time": 0, "cnt": 0}
+                self.cat2sta[cat] = {"max_t": statistic["avg"], "max_name": name, "time": 0, "cnt": 0, "op_cnt":0}
             self.cat2sta[cat]["time"] += statistic["time"]
             self.cat2sta[cat]["cnt"] += statistic["cnt"]
+            self.cat2sta[cat]["op_cnt"] += 1
 
         for cat, statistic in self.cat2sta.items():
             statistic["avg"] = statistic["time"] / statistic["cnt"]
@@ -662,34 +681,6 @@ class PathManager:
             return self.path
         else:
             raise ValueError()
-
-    def map_tensors_to_update(self):
-        ''' Map each tensor to its corresponding update operation
-        For MXNet
-        '''
-        assert self.dir_level == DirLevel.TRIAL
-        ### Read aggregate num
-        info_path = self.search(FileName.INFO)
-        if info_path is None:
-            SingleLogger().warn("Fail to map_tensors_to_update")
-            aggregate_num = 0
-        else:
-            with open(info_path, 'r') as fp:
-                aggregate_num = json.load(fp)["opt_aggregate_num"]
-        ### Read gradient name list in reverse order
-        gra_path = self.search(FileName.TENSOR_NAME)
-        gradient_name_list = load_list(gra_path)
-        gradient_name_list.reverse()
-        ret = {}
-        max_update_id = 0
-        for idx in range(len(gradient_name_list)):
-            gra = gradient_name_list[idx]
-            ret[gra] = idx if aggregate_num == 0 else int(idx / aggregate_num)
-            max_update_id = max(max_update_id, ret[gra])
-        ret["max"] = max_update_id
-        return ret
-
-
 
 
 
