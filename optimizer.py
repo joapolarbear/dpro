@@ -160,7 +160,15 @@ class Optimizer:
 
 				### Start to replay
 				replayer = Replayer(dag=G_star, _step_num=1, leaf_dirs=self.clct.all_prefix_list(), dump_path=self.clct.pm.path)
-				cost_star = max([t / 1000 for t in replayer.replayAndDelay(None, _ouput=False).values()])
+				try:
+					cost_star = max([t / 1000 for t in replayer.replayAndDelay(None, _ouput=False).values()])
+				except:
+					print("KeyError")
+					if op == "+":
+						SingleLogger().info("Fuse %s and %s" % (target, next_))
+					elif op == "-":
+						SingleLogger().info("Split %s at %dth op" % (target, next_))
+					raise
 
 				if self.accept_or_not(cost, cost_star):
 					if op == "+":
@@ -188,12 +196,12 @@ class Optimizer:
 				ns = n.split("+")
 				cat = parse_cat_fine_grained(ns[0])
 				pid = parse_pid_from_name(ns[0])
-				split_n_idx = 0
+				pos = 0
 				while True:
-					self.search_space.append(("-", n, split_n_idx))
-					if split_n_idx >= (len(ns) - 2):
+					self.search_space.append(("-", n, pos))
+					if pos >= (len(ns) - 2):
 						break
-					split_n_idx += 1
+					pos += 1
 			else:
 				### Nodes that have never been fused
 				cat = parse_cat_fine_grained(n)

@@ -54,7 +54,7 @@ class Deivce:
 			avg = self.replayer.dag.nodes[name]["avg"]
 		except KeyError:
 			print("KeyError: %s, %s" % (name, str(self.replayer.dag.nodes[name])))
-			raise
+
 		pid = parse_pid_from_name(name)
 		cat = parse_cat_from_name(name)
 		raw_name = parse_rawname_from_name(name)
