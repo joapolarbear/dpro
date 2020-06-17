@@ -15,8 +15,11 @@ from trace_utils import *
 from dag_utils import * 
 from horovod.graph import *
 from parameter import *
+from byteps.graph import *
 
 args_ = arg_utils.SingleArg().args
+
+GAP_THRESHOLD = 20
 
 class RunningSpan:
     def __init__(self):
@@ -54,11 +57,12 @@ class RunningSpan:
         self.end = None
 
 class ClockAligner:
-    def __init__(self):
+    def __init__(self, byteps_graph = None):
         self.traces_per_host = {}
         self.marker_per_host = {}
         self.standard = None
         self.ref = None
+        self.byteps_graph = byteps_graph
 
     def append_traces(self, host_id, traces):
         if host_id not in self.traces_per_host:
@@ -77,19 +81,31 @@ class ClockAligner:
     def align(self):
         rst_traces = []
         host_ids = list(self.traces_per_host.keys())
+
+        def host_id_to_rank(host_id):
+            return int(host_id.split("_")[-1])
+
+        host_ranks = [host_id_to_rank(fn) for fn in host_ids]
         standard_time, ref_name = self.marker_per_host[host_ids[0]]
-        if standard_time is None:
+        if self.byteps_graph is not None:
+            base_host_name = host_ids[host_ranks.index(self.byteps_graph.master_host_id)]
+        else:
+            base_host_name = host_ids[0]
+        if standard_time is None and self.byteps_graph is None:
             SingleLogger().warn("Have not set the align standard, fail to do clock synchronization")
         for host_id, traces in self.traces_per_host.items():
-            if host_id == host_ids[0] or standard_time is None:
+            if host_id == base_host_name or (standard_time is None and self.byteps_graph is None):
                 pass
             else:
-                t, n = self.marker_per_host[host_id]
-                if n != ref_name:
-                    print("ref_name: %s, name: %s" % (ref_name, n))
-                    raise
-                bias = standard_time - t
-                SingleLogger().info("Align - add %f us based on %s" % (bias, n))
+                # if n != ref_name:
+                #     print("ref_name: %s, name: %s" % (ref_name, n))
+                #     raise
+                if self.byteps_graph is None:
+                    t, n = self.marker_per_host[host_id]
+                    bias = standard_time - t
+                else:
+                    bias = self.byteps_graph.time_drift[host_id_to_rank(host_id)]
+                SingleLogger().info("Align - add {} us to {}".format(bias, host_id))
                 for trace in traces:
                     trace["ts"] += bias
             rst_traces += traces
@@ -97,11 +113,20 @@ class ClockAligner:
 
 class Collector(object):
     #! class used to go through the file system and collect info
-    def __init__(self, root_path):
+    def __init__(self, root_path, comm_backend = "NCCL"):
         self.logger = logger_utils.SingleLogger()
         self.pm = PathManager(root_path)
         self.traceM = None
-        self.nccl_graph = ncclGraph()
+        self.comm_backend = comm_backend.upper()
+        if self.comm_backend not in ["NCCL", "BYTEPS"]:
+            raise RuntimeError("Unsupported communication backend {}. Must use NCCL or BytePS.".format(self.comm_backend))
+        self.nccl_graph = None
+        self.byteps_graph = None
+        if self.comm_backend == "NCCL":
+            self.nccl_graph = ncclGraph()
+        else:
+            # BYTEPS
+            self.byteps_graph = bytepsGraph()
         self.trail_dag = None
 
         self.time_dict = None
@@ -267,7 +292,7 @@ class Collector(object):
 
         def is_update_op(_trace):
             ### TODO (huhanpeng) !!! change this when model is changed
-            if "update" in _trace["name"]:
+            if "update" in _trace["name"].lower():
                 return True
             else:
                 return False
@@ -447,6 +472,9 @@ class Collector(object):
         debug_utils.DebugRecorder().debug_event_end("collect_" + pid+"_io", "Collct", "0")
 
     def bpf_collect_comm_detail(self, tmp_pm, pid=None, host_id=None):
+        if self.comm_backend != "NCCL":
+            return
+
         debug_utils.DebugRecorder().debug_event_start()
         comm_d_path = self.pm.search(FileName.COMM_DETAIL) if tmp_pm is None else tmp_pm.search(FileName.COMM_DETAIL)
 
@@ -556,6 +584,8 @@ class Collector(object):
                 json_str_lines[-1] = json_str_lines[-1][:-1]+']'
             json_str = "\n".join(json_str_lines)
         comm_traces = json.loads(json_str)
+        if isinstance(comm_traces, dict):
+            comm_traces = comm_traces["traceEvents"]
         debug_utils.DebugRecorder().debug_event_end("collect_" + pid+"_comm.load_string", "Collct", "0")
 
         ret = []
@@ -681,8 +711,9 @@ class Collector(object):
             rst_traces["traceEvents"] += self.time_dict["traceEvents"]
 
         elif self.pm.dir_level == DirLevel.TRIAL:
-            self.clock_aligner = ClockAligner()
-            self.nccl_graph.map_host_prefix_id(self.pm.dirs)
+            self.clock_aligner = ClockAligner(byteps_graph= self.byteps_graph if self.comm_backend == "BYTEPS" else None)
+            if self.comm_backend == "NCCL":
+                self.nccl_graph.map_host_prefix_id(self.pm.dirs)
             for _dir in self.pm.dirs:
                 worker_path = os.path.join(self.pm.path, _dir)
                 worker_root, worker_dirs, _ = list(os.walk(worker_path))[0]
@@ -697,13 +728,15 @@ class Collector(object):
             rst_traces["traceEvents"] += self.clock_aligner.align()
             self.clock_aligner = None
 
-            if not args_.pretty:
+            if self.comm_backend == "NCCL" and not args_.pretty:
                 self.nccl_graph.print_graph()
 
             # ### only read comm.json once
             # self.time_dict = {"traceEvents":[]} 
             # self.bpf_collect_comm()
             # rst_traces["traceEvents"] += self.time_dict["traceEvents"]
+        if self.comm_backend == "BYTEPS":
+            rst_traces["traceEvents"] += self.byteps_graph.gen_compatible_trace(dump_path=os.path.join(self.pm.path, FileName.BPS_ALIGNED_TRACE.value))
 
         self.logger.info("Take %f s to combine all traces" % (time.time() - ts_))
         return rst_traces["traceEvents"]
@@ -752,31 +785,93 @@ class Collector(object):
             for worker_dir in worker_dirs:
                 gpu_path = os.path.join(worker_root, worker_dir)
                 self.logger.info("## Collect DAG in %s" % (gpu_path))
-                dagmanager = DAGManager(gpu_path, self.traceM, self.nccl_graph)
+                dagmanager = DAGManager(gpu_path, self.traceM, self.nccl_graph, self.byteps_graph)
                 max_para_degree, _critical_path = dagmanager.gen_gpu_dag(_pretty=args_.pretty, update_dict=update_dict)
                 worker_dag_list.append(dagmanager.gpu_dag)
                 if _critical_path is not None:
                     critical_path += _critical_path
 
         ### Combine all worker_dag_list on one worker, build the dependency
-        self.trail_dag = nx.compose_all(worker_dag_list)
+        composed_dag = nx.compose_all(worker_dag_list)
+        if self.comm_backend == "BYTEPS":
+            composed_dag = nx.compose(composed_dag, self.byteps_graph.get_comm_graph())
+
+        self.trail_dag = composed_dag
 
     def init(self, force_=False):
         trace_path = self.pm.search(FileName.TRACE)
-        nccl_graph_path = self.pm.search(FileName.NCCL_GRAPH)
+        if self.comm_backend == "NCCL":
+            nccl_graph_path = self.pm.search(FileName.NCCL_GRAPH)
+        else:
+            nccl_graph_path = None
+            byteps_cache_path = self.pm.search(FileName.BYTEPS_CACHE)
+            if byteps_cache_path is not None:
+                SingleLogger().info("Inited BytePS graph helper from cache.")
+                self.byteps_graph.init_from_cache(byteps_cache_path)
+            else:
+                SingleLogger().info("Unable to find BytePS cache file.")
+                # read or generate BPS comm_trace
+                byteps_comm_detail_path = self.pm.search(FileName.BPS_COMM_DETAIL)
+                if byteps_comm_detail_path is None or force_:
+                    # need to run preprocessing
+                    if args_.pcap_file_path is None:
+                        SingleLogger().error("Cannot find BytePS comm trace or pcap files.")
+                        exit(1)
+                    pcap_fns = [fn for fn in os.listdir(args_.pcap_file_path) if (os.path.isfile(os.path.join(args_.pcap_file_path,fn)) and fn.endswith(".pcap"))]
+                    pcap_paths = [os.path.join(args_.pcap_file_path, fn) for fn in pcap_fns]
+                    process_names = [fn.split(".pcap")[0] for fn in pcap_fns]
+                    ip_to_rank_path = self.pm.search(FileName.IP_TO_RANK)
+                    ip_to_rank_dict = {}
+                    try:
+                        with open(ip_to_rank_path, "r") as f:
+                            for line in f:
+                                ip, rank = line.strip().split(":")
+                                ip = ip.strip()
+                                rank = rank.strip()
+                                ip_to_rank_dict[ip] = rank
+                    except:
+                        SingleLogger().error("Failed to read ip to rank mapping.")
+                        exit(1)
+                    gradient_name_list_path = self.pm.search(FileName.TENSOR_NAME)
+                    key_dict_path = self.pm.search(FileName.KEY_DICT)
+                    SingleLogger().info("Preprocessing pcap files: {}.".format(pcap_paths))
+                    byteps_comm_detail_path = preprocess_pcap(pcap_paths, process_names, ip_to_rank_dict, gradient_name_list_path, key_dict_path)
+                else:
+                    SingleLogger().info("Found BytePS comm trace file in {}.".format(byteps_comm_detail_path))
+                # read or generate BPS server trace
+                byteps_server_trace_path = self.pm.search(FileName.BPS_SERVER_TRACE)
+                if byteps_server_trace_path is None or force_:
+                    # need to run preprocessing
+                    if args_.server_log_path is None:
+                        SingleLogger().error("Cannot find BytePS server trace or raw log files.")
+                        exit(1)
+                    log_fns = [fn for fn in os.listdir(args_.server_log_path) if os.path.isfile(os.path.join(args_.server_log_path,fn)) and fn.endswith(".txt")]
+                    log_paths = [os.path.join(args_.server_log_path, fn) for fn in log_fns]
+                    node_ranks = [int(fn.split(".txt")[0].split("_")[-1]) for fn in log_fns]
+                    gradient_name_list_path = self.pm.search(FileName.TENSOR_NAME)
+                    key_dict_path = self.pm.search(FileName.KEY_DICT)
+                    SingleLogger().info("Parsing server log files: {}.".format(log_paths))
+                    byteps_server_trace_path = parse_server_logs(log_paths, node_ranks, gradient_name_list_path, key_dict_path)
+                else:
+                    SingleLogger().info("Found BytePS server trace file in {}".format(byteps_server_trace_path))
+                # initialize BytePS graph helper
+                self.byteps_graph.init(byteps_comm_detail_path, byteps_server_trace_path)
+
         trail_dag_path = self.pm.search(FileName.TRAIL_DAG)
-        if force_ or trace_path is None or nccl_graph_path is None or trail_dag_path is None:
+        if force_ or trace_path is None or (self.comm_backend == "NCCL" and nccl_graph_path is None) or trail_dag_path is None:
             self.collect_traces()
             self.collect_trail_dag()
             self.fine_tune_trace_dag()
             ### Cache these info
             self.traceM.dump(self.pm.path)
-            self.nccl_graph.dump(os.path.join(self.pm.path, FileName.NCCL_GRAPH.value))
+            if self.comm_backend == "NCCL":
+                self.nccl_graph.dump(os.path.join(self.pm.path, FileName.NCCL_GRAPH.value))
             nx.write_gml(self.trail_dag, os.path.join(self.pm.path, FileName.TRAIL_DAG.value), lambda x: str(x))
         else:
             self.traceM = TraceManager()
             self.traceM.load(self.pm.path)
-            self.nccl_graph.load(nccl_graph_path)
+            if self.comm_backend == "NCCL":
+                self.nccl_graph.load(nccl_graph_path)
             self.trail_dag = nx.read_gml(trail_dag_path)
 
         ### TODO (huhanpeng) dump it or not
@@ -806,9 +901,13 @@ class Collector(object):
 
     def fine_tune_trace_dag(self):
         ### Fine tune the traces and dependency graph
+        if self.comm_backend == "BYTEPS":
+            self.byteps_graph.calc_bw_to_comm_delay(self.traceM.traces, self.trail_dag)
         self.add_gap_to_nodes()
-        self.clip_recv_events()
+        ### TODO (huhanpeng): does this adapt to BytePS ???
         self.add_avg_to_nodes()
+        if self.comm_backend == "NCCL":
+            self.clip_recv_events()
 
     def search_trace_with_cnt(self, longname, send_idx):
         ### should not cansider suffix
@@ -926,18 +1025,20 @@ class Collector(object):
             ### Handle the gap among FW, BW and OUTPUT nodes (exclude BW->UPDATE)
             cat_ = parse_cat_from_name(event["name"])
             ### TODO(huhanpeng): Only calculate gaps for operator nodes now
-            if cat_ == CatName.OPERATOR.value and cat_ in cur_pid_dict:
+            if (cat_ == CatName.OPERATOR.value or cat_ == CatName.COMM.value) and cat_ in cur_pid_dict:
                 ### There are some prev events with the same pid and find-grained cat
                 prev_e = cur_pid_dict[cat_]
-                if not ("BW" in prev_e["name"] and "UPDATE_" in event["name"]):
+                gap_string = GAP_STR_OP2OP if cat_ == CatName.OPERATOR.value else GAP_STR_COMM2COMM
+                if not "UPDATE_CAL" in prev_e["name"] and not "UPDATE_CAL" in event["name"] and not ("BW" in prev_e["name"] and "UPDATE_" in event["name"]) and not ("UPDATE_" in prev_e["name"] and "FW_" in event["name"]):
                     gap = event["ts"] - (prev_e["ts"] + prev_e["dur"])
-                    prev_name = self.traceM.ret_unique_name(prev_e)
-                    if GAP_STR_OP2OP not in self.trail_dag.nodes[prev_name]:
-                        self.trail_dag.nodes[prev_name][GAP_STR_OP2OP] = gap
-                        self.trail_dag.nodes[prev_name]["cnt"] = 1
-                    else:
-                        self.trail_dag.nodes[prev_name][GAP_STR_OP2OP] += gap
-                        self.trail_dag.nodes[prev_name]["cnt"] += 1
+                    if gap < GAP_THRESHOLD:
+                        prev_name = self.traceM.ret_unique_name(prev_e)
+                        if gap_string not in self.trail_dag.nodes[prev_name]:
+                            self.trail_dag.nodes[prev_name][gap_string] = gap
+                            self.trail_dag.nodes[prev_name]["cnt"] = 1
+                        else:
+                            self.trail_dag.nodes[prev_name][gap_string] += gap
+                            self.trail_dag.nodes[prev_name]["cnt"] += 1
             else:
                 ### This is the first event of the cat_ in this pid
                 pass
@@ -947,32 +1048,43 @@ class Collector(object):
         for node_ in self.trail_dag.nodes:
             if GAP_STR_OP2OP in self.trail_dag.nodes[node_]:
                 self.trail_dag.nodes[node_][GAP_STR_OP2OP] /= self.trail_dag.nodes[node_]["cnt"]
+            if GAP_STR_COMM2COMM in self.trail_dag.nodes[node_]:
+                self.trail_dag.nodes[node_][GAP_STR_COMM2COMM] /= self.trail_dag.nodes[node_]["cnt"]
 
-            ### Handle the gap between BW and the first Comm node
-            if queue_type_ in node_:
-                bw_node, _ = list(self.trail_dag.in_edges(node_))[0]
-                prefix_ = parse_pid_from_name(node_)
-                comm_node = None
-                for succ_ in self.trail_dag.successors(node_):
-                    if parse_pid_from_name(succ_) == prefix_:
-                        comm_node = succ_
-                        break
-                try:
-                    u_idx_l, v_idx_l = self.name2idxlist[bw_node], self.name2idxlist[comm_node] 
-                except KeyError:
-                    ### Some rank does not have SEND nodes
-                    continue
-                gap = 0
-                cnt = 0
-                for cnt_ in range(self.traceM.max_cnt):
-                    u_idx, v_idx = u_idx_l[cnt_], v_idx_l[cnt_]
-                    if u_idx is None or v_idx is None:
+            if self.comm_backend == "NCCL":
+                ### Handle the gap between BW and the first Comm node
+                if queue_type_ in node_:
+                    bw_node, _ = list(self.trail_dag.in_edges(node_))[0]
+                    prefix_ = parse_pid_from_name(node_)
+                    comm_node = None
+                    for succ_ in self.trail_dag.successors(node_):
+                        if parse_pid_from_name(succ_) == prefix_:
+                            comm_node = succ_
+                            break
+                    try:
+                        u_idx_l, v_idx_l = self.name2idxlist[bw_node], self.name2idxlist[comm_node] 
+                    except KeyError:
+                        ### Some rank does not have SEND nodes
                         continue
-                    u_event = self.traceM.traces[u_idx]
-                    v_event = self.traceM.traces[v_idx]
-                    gap += v_event["ts"] - (u_event["ts"] + u_event["dur"])
-                    cnt += 1
-                self.trail_dag.nodes[bw_node][GAP_STR_OP2COMM] = gap / cnt if cnt != 0 else 0
+                    gap = 0
+                    cnt = 0
+                    for cnt_ in range(self.traceM.max_cnt):
+                        u_idx, v_idx = u_idx_l[cnt_], v_idx_l[cnt_]
+                        if u_idx is None or v_idx is None:
+                            continue
+                        u_event = self.traceM.traces[u_idx]
+                        v_event = self.traceM.traces[v_idx]
+                        gap += v_event["ts"] - (u_event["ts"] + u_event["dur"])
+                        cnt += 1
+                    self.trail_dag.nodes[bw_node][GAP_STR_OP2COMM] = gap / cnt if cnt != 0 else 0
+            else:
+                ## Add BW -> Comm delays using byteps_graph
+                ## inter node delays are directly added in replayer
+                if "BW" in node_:
+                    pid = parse_pid_from_name(node_)
+                    node_rank = pid.split(".")[0].split("_")[-1]
+                    gap = self.byteps_graph.bw_delays["worker_"+node_rank]
+                    self.trail_dag.nodes[node_][GAP_STR_OP2COMM] = gap
 
     def clip_recv_events(self):
         self.logger.info("Clip RECV events...")
