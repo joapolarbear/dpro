@@ -85,9 +85,9 @@ class ClockAligner:
         def host_id_to_rank(host_id):
             return int(host_id.split("_")[-1])
 
-        host_ranks = [host_id_to_rank(fn) for fn in host_ids]
         standard_time, ref_name = self.marker_per_host[host_ids[0]]
         if self.byteps_graph is not None:
+            host_ranks = [host_id_to_rank(fn) for fn in host_ids]
             base_host_name = host_ids[host_ranks.index(self.byteps_graph.master_host_id)]
         else:
             base_host_name = host_ids[0]
@@ -1010,7 +1010,8 @@ class Collector(object):
             if self.traceM._is_ignore_for_sta(event):
                 continue
 
-            ### Map the name to its indexs
+            ### Map the trace name to its indexs in all traces, 
+            ### e.g. trace_name --> [idx0, idx1, None, ...], traces[idx0][name] = trace_name
             unique_name = self.traceM.ret_unique_name(event)
             if unique_name not in self.name2idxlist:
                 self.name2idxlist[unique_name] = [None] * self.traceM.max_cnt
@@ -1029,9 +1030,11 @@ class Collector(object):
                 ### There are some prev events with the same pid and find-grained cat
                 prev_e = cur_pid_dict[cat_]
                 gap_string = GAP_STR_OP2OP if cat_ == CatName.OPERATOR.value else GAP_STR_COMM2COMM
-                if not "UPDATE_CAL" in prev_e["name"] and not "UPDATE_CAL" in event["name"] and not ("BW" in prev_e["name"] and "UPDATE_" in event["name"]) and not ("UPDATE_" in prev_e["name"] and "FW_" in event["name"]):
+                if not "UPDATE_CAL" in prev_e["name"] and not "UPDATE_CAL" in event["name"] and not ("BW" in prev_e["name"] \
+                    and "UPDATE_" in event["name"]) and not ("UPDATE_" in prev_e["name"] and "FW_" in event["name"]):
                     gap = event["ts"] - (prev_e["ts"] + prev_e["dur"])
-                    if gap < GAP_THRESHOLD:
+                    ### TODO (huhanpeng): test whether to use this threshold
+                    if gap < GAP_THRESHOLD or self.comm_backend == "NCCL":
                         prev_name = self.traceM.ret_unique_name(prev_e)
                         if gap_string not in self.trail_dag.nodes[prev_name]:
                             self.trail_dag.nodes[prev_name][gap_string] = gap

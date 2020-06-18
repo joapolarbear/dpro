@@ -30,7 +30,7 @@ parser.add_argument("--pcap_file_path", type=str, default=None, help="Path to th
 parser.add_argument("--server_log_path", type=str, default=None, help="Path to the directory containing BytePS server log files.")
 parser.add_argument("--profile_start_step", type=int, default=None, help="The start step of computation profiling. Used for truncating BytePS comm trace.")
 parser.add_argument("--profile_duration", type=int, default=None, help="The duration (in steps) of computation profiling. Used for truncating BytePS comm trace.")
-parser.add_argument("--nccl_algo", type=str, default=None, help="NCCL algorithm")
+parser.add_argument("--nccl_algo", type=str, default=None, help="NCCL algorithm, Tree or Ring")
 parser.add_argument("--trace_level", type=str, choices=["debug", "info"], default="info", help="if set to debug, show some trival traces")
 parser.add_argument("--disable_revise", action="store_true", help="By default, revise traecs according to SEND-RECV dependency, set to disable this argument to disable")
 parser.add_argument("--force", action="store_true", help="Force to re-generate traces, graphs")

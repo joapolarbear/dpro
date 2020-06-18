@@ -71,6 +71,9 @@ GAP_STR_COMM2COMM = "%sGAP%s"%(CatName.COMM.value, CatName.COMM.value)
 GAP_STR_OP2COMM = "%sGAP%s"%(CatName.OPERATOR.value, CatName.COMM.value)
 GAP_STR_INTERNODE = "INTERNODEGAP"
 
+# GAP_INTERDEVICE = "INTERDEVICE"
+# GAP_INTRADEVICE = "INTRADEVICE"
+
 def read_traces(traces_path):
     '''
     Return: a list of traces
@@ -302,8 +305,10 @@ class TraceManager:
         return event["cat"] == "Comm"
 
     def _is_ignore_for_sta(self, event):
-        ### some traces are ignored for statistic
-        return event["ph"].lower() == "i" or event["cat"] == "debug"
+        ### Some traces are ignored for statistic
+        ### including 1) instance traces, 2) for debug 3) local_num_masks
+        return event["ph"].lower() == "i" or event["cat"] == "debug" \
+                or "local_num_masks" in event["name"]
 
     def ret_unique_name(self, event):
         ### Returen unique name for statistic index

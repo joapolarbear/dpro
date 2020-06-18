@@ -58,7 +58,7 @@ class Deivce:
 					if self.prev_cat == key_s[0] and this_cat == key_s[1]:
 						gap += value
 						if gap > 1000:
-							SingleLogger().warn("Large GAP detected: {}, key = {}, gap = {}".format(name, key, value))
+							SingleLogger().debug("Large GAP detected: {}, key = {}, gap = {}".format(name, key, value))
 			_last_end_time =  max(_last_end_time, self.device_time + gap)
 
 		if "Sync" in name or name == "END":
@@ -139,31 +139,31 @@ class Deivce:
 			next_cat = parse_cat_from_name(_succ)
 			if _succ in self.replayer.node_status:
 				_status = self.replayer.node_status[_succ]
-
-				if self.comm_backend == "NCCL":
-					### Calculate the start time
-					if "SEND" in name and "RECV" in _succ:
-						### For Send->Recv edge, there exist some overlap
-						### TODO (huhanpeng): how do decide the end time of the RECV event
-						try:
-							self.replayer.dag.nodes[_succ]["avg"]
-						except KeyError:
-							print("KeyError: %s, %s" % (_succ, str(self.replayer.dag.nodes[_succ])))
-							raise
-						_status["last_end"] = _end_time if _status["last_end"] is None else max(_end_time - avg * 1000, _status["last_end"])
+				### Calculate the ready time
+				if self.comm_backend == "NCCL" and ("SEND" in name and "RECV" in _succ):
+					### For Send->Recv edge, there exist some overlap
+					### TODO (huhanpeng): how do decide the end time of the RECV event
+					try:
+						self.replayer.dag.nodes[_succ]["avg"]
+					except KeyError:
+						raise RuntimeError("KeyError: %s, %s" % (_succ, str(self.replayer.dag.nodes[_succ])))
+					_status["ready"] = _end_time if _status["ready"] is None else max(_end_time - avg * 1000, _status["ready"])
 				else:
-					## BYTEPS
-					## Only apply BW->Comm gaps
+					## For BYTEPS and Horovod, Only apply BW->Comm gaps
+					## Other gaps should be considered with the device time.
 					gap = 0
-					if GAP_STR_OP2COMM in self.replayer.dag.nodes[name] and next_cat == "Comm":
+					if GAP_STR_OP2COMM in self.replayer.dag.nodes[name] and next_cat == CatName.COMM.value and prev_cat == CatName.OPERATOR.value:
+					# if GAP_STR_OP2COMM in self.replayer.dag.nodes[name] and next_cat == "Comm":
 						gap += self.replayer.dag.nodes[name][GAP_STR_OP2COMM]
-					_status["last_end"] = (_end_time + gap) if _status["last_end"] is None else max(_end_time + gap, _status["last_end"])
+					_status["ready"] = (_end_time + gap) if _status["ready"] is None else max(_end_time + gap, _status["ready"])
 					
 
 				### Whether the dependency has met
 				_status["in_degree"] -= 1
 				if _status["in_degree"] == 0:
-					self.replayer.insert_next_node(_succ, _status["last_end"])
+					if _status["ready"] is None:
+						raise RuntimeError("{}\'s ready time is not decided".format(_succ))
+					self.replayer.insert_next_node(_succ, _status["ready"])
 
 	def get_delay_para(self, name_):
 		#! Get the delay parameters.
@@ -176,7 +176,7 @@ class Deivce:
 			elif "DELAY_ALL_CMP" in self.replayer.delay_dict and parse_cat_from_name(name_) == "operator":
 				delay = self.replayer.delay_dict["DELAY_ALL_CMP"]["delay"]
 				ratio = self.replayer.delay_dict["DELAY_ALL_CMP"]["ratio"]
-			elif "DELAY_ALL_COMM" in self.replayer.delay_dict and parse_cat_from_name(name_) == "Comm":
+			elif "DELAY_ALL_COMM" in self.replayer.delay_dict and parse_cat_from_name(name_) == CatName.COMM.value:
 				delay = self.replayer.delay_dict["DELAY_ALL_COMM"]["delay"]
 				ratio = self.replayer.delay_dict["DELAY_ALL_COMM"]["ratio"]
 			elif "DELAY_ALL" in self.replayer.delay_dict:
@@ -207,47 +207,49 @@ class PSCommDevice(Deivce):
 			if _succ in self.replayer.node_status:
 				_status = self.replayer.node_status[_succ]
 				_status["in_degree"] -= 1
-				if _status["last_end"] is None:
+				if _status["ready"] is None:
 					if self.comm_delay and (self.source, self.target) in self.comm_delay:
-						_status["last_end"] = _end_time + self.comm_delay[(self.source, self.target)]
+						_status["ready"] = _end_time + self.comm_delay[(self.source, self.target)]
 					else:
-						_status["last_end"] = _end_time
+						_status["ready"] = _end_time
 				else:
 					if self.comm_delay and (self.source, self.target) in self.comm_delay:
-						_status["last_end"] = max(_end_time + self.comm_delay[(self.source, self.target)], _status["last_end"])
+						_status["ready"] = max(_end_time + self.comm_delay[(self.source, self.target)], _status["ready"])
 					else:
-						_status["last_end"] = max(_end_time, _status["last_end"])
+						_status["ready"] = max(_end_time, _status["ready"])
 				if _status["in_degree"] == 0:
-					self.replayer.insert_next_node(_succ, _status["last_end"])
+					self.replayer.insert_next_node(_succ, _status["ready"])
 
 		if next_name is not None:
 			if next_name in self.replayer.node_status:
 				_status = self.replayer.node_status[next_name]
 				_status["in_degree"] -= 1
-				if _status["last_end"] is None:
+				if _status["ready"] is None:
 					if self.comm_delay and (self.source, self.target) in self.comm_delay:
-						_status["last_end"] = _end_time + self.comm_delay[(self.source, self.target)]
+						_status["ready"] = _end_time + self.comm_delay[(self.source, self.target)]
 					else:
-						_status["last_end"] = _end_time
+						_status["ready"] = _end_time
 				else:
 					if self.comm_delay and (self.source, self.target) in self.comm_delay:
-						_status["last_end"] = max(_end_time + self.comm_delay[(self.source, self.target)], _status["last_end"])
+						_status["ready"] = max(_end_time + self.comm_delay[(self.source, self.target)], _status["ready"])
 					else:
-						_status["last_end"] = max(_end_time, _status["last_end"])
+						_status["ready"] = max(_end_time, _status["ready"])
 
 				if _status["in_degree"] == 0:
 					pid = parse_pid_from_name(next_name)
-					self.replayer.insert_next_node(next_name, _status["last_end"])
+					self.replayer.insert_next_node(next_name, _status["ready"])
 			else:
 				SingleLogger().error("{} not in status!".format(next_name))
 				exit(0)
 
 class Replayer:
-	def __init__(self, dag, _step_num, leaf_dirs, dump_path):
+	def __init__(self, dag, _step_num, leaf_dirs, dump_path, comm_backend, byteps_graph):
 		self.dag = dag
 		self.step_num = _step_num
 		self.leaf_dirs = leaf_dirs
 		self.dump_path = dump_path
+		self.comm_backend = comm_backend
+		self.byteps_graph = byteps_graph
 
 		self.logger = logger_utils.SingleLogger()
 		### Delay information, the unit of 'delay' field should be ms
@@ -258,29 +260,28 @@ class Replayer:
 		self.device_dict = {}
 
 		self.reset_replayer()
-		if self.clct.comm_backend == "BYTEPS":
-			self.op_counter = ServerOpCounter(self.clct.byteps_graph)
+		if self.comm_backend == "BYTEPS":
+			self.op_counter = ServerOpCounter(self.byteps_graph)
 
 	def pre_prepare(self):
 		''' Initialize nodes that need to be replayed first
 		'''
 		def map_in_degree(n):
-			if self.clct.comm_backend == "BYTEPS":
-				if self.clct.byteps_graph.is_server_comp(n):
+			if self.comm_backend == "BYTEPS":
+				if self.byteps_graph.is_server_comp(n):
 					return self.dag.in_degree(n) + 1
 			return self.dag.in_degree(n)
 		self.accessed = set()
-		self.node_status = dict([(n, {"in_degree": map_in_degree(n), "last_end": None}) for n in self.dag.nodes()])
+		self.node_status = dict([(n, {"in_degree": map_in_degree(n), "ready": None}) for n in self.dag.nodes()])
 		#! prepare next_nodes
 		for n, _status in self.node_status.items():
 			if _status["in_degree"] == 0 and n not in self.accessed:
 				try:
-					assert "Comm" not in n
+					assert CatName.COMM.value not in n
 				except:
-					print(n)
-					raise
+					raise RuntimeError(n)
 				pid = parse_pid_from_name(n)
-				_last_end = self.step_end_time[pid] if _status["last_end"] is None else _status["last_end"]
+				_last_end = self.step_end_time[pid] if _status["ready"] is None else _status["ready"]
 				self.insert_next_node(n, _last_end)
 	
 	def replay_one_iter(self, step_idx):	
@@ -379,7 +380,7 @@ class Replayer:
 			device_id = gen_long_name(pid, cat)
 
 		if device_id not in self.device_dict:
-			if cat == "Comm" and self.clct.comm_backend == "BYTEPS":
+			if cat == CatName.COMM.value and self.comm_backend == "BYTEPS":
 				self.device_dict[device_id] = self.create_ps_comm_device(device_id)
 			else:
 				self.device_dict[device_id] = self.create_device(device_id)
@@ -387,11 +388,11 @@ class Replayer:
 		return self.device_dict[device_id]		
 		
 	def create_device(self, device_name, infi_para=False):
-		d = Deivce(device_name, self, comm_backend = self.clct.comm_backend, infi_para=infi_para)
+		d = Deivce(device_name, self, comm_backend = self.comm_backend, infi_para=infi_para)
 		return d
 
 	def create_ps_comm_device(self, device_name, infi_para=False):
-		d = PSCommDevice(device_name, self, self.op_counter, comm_backend = self.clct.comm_backend, infi_para=infi_para)
+		d = PSCommDevice(device_name, self, self.op_counter, comm_backend = self.comm_backend, infi_para=infi_para)
 		return d
 
 	def reset_replayer(self):

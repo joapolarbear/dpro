@@ -63,4 +63,5 @@ Set arg `--option collect` to update the final traces. In the meanwhile, the ave
 ## `--option 3dcompare`
 Ignore partition id
 
-## ds
+# Requirements
+pip3 packet: intervaltree, networkx, ujson, xlsxwriter, scapy

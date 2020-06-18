@@ -64,6 +64,12 @@ class DAGManager:
     ----------
     path: str
         Root path for one GPU
+    
+    e.g. For NCCL RING
+    FW ---> OUTPUT ---> BW --------------------------> UPDATE_CAL ---> UPDATE_<id> ---> END
+                         \                           ^  (barrier)
+                          \                         /
+                            -> Comm.<>.SEND.x_x_x_x ...
     '''
     def __init__(self, path, traceM, nccl_graph=None, byteps_graph = None):
         self.pm = PathManager(path)
@@ -394,15 +400,26 @@ class DAGManager:
             ### Connect all UPDATE nodes to an END node
             self.dag.add_edge(update_name, "END",
                 weight=self.traceM.lookup_stat(self.wk_prefix, self.rank_prefix, update_name))
-        # self.dag.remove_node(self.add_prefix("UPDATE"))
+
+        # TODO (huhanpeng): need further to unify the name rule, for NCCL case, 
+        # 1) do not use UPDATE, delete, 
+        # 2) connect the UPDATE_CAL to the following update nodes
+        if self.byteps_graph is None:
+            self.dag.remove_node(self.add_prefix("UPDATE"))
+            for update_id in range(update_dict["max"] + 1):
+                update_name = self.add_prefix("UPDATE_%d"%update_id)
+                self.dag.add_edge(
+                    self.add_prefix("UPDATE_CAL"), 
+                    update_name, 
+                    weight=self.traceM.lookup_stat(self.wk_prefix, self.rank_prefix, self.add_prefix("UPDATE_CAL"))
+                    )
+                ### Connect all UPDATE nodes to an END node
+                self.dag.add_edge(update_name, "END",
+                    weight=self.traceM.lookup_stat(self.wk_prefix, self.rank_prefix, update_name))
 
         for e in self.dag.edges.data("weight"):
             self.logger.debug(e)
-        # for n in self.dag.nodes:
-        #     print(n)
-        #     exit(0)
         # visualize_gml(self.dag, layout="circular")
-        # raise
 
     def _add_new_edges_via_order(self, _pretty):
         ''' Add new edges between FW+BW ops, according to their processing order

@@ -114,7 +114,12 @@ if args.option == "replay":
 
 	### Replay traces
 	logger.info("# Start to Replay")
-	replayer = Replayer(dag=clct.trail_dag, _step_num=args.step_num, leaf_dirs=clct.all_prefix_list(), dump_path=clct.pm.path)
+	replayer = Replayer(dag=clct.trail_dag, 
+			_step_num=args.step_num, 
+			leaf_dirs=clct.all_prefix_list(), 
+			dump_path=clct.pm.path,
+			comm_backend=clct.comm_backend,
+			byteps_graph=clct.byteps_graph)
 	
 	def replay_with_delay(idx_, rst, node_name=None):
 		logger.info(node_name)

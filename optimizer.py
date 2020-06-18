@@ -142,7 +142,11 @@ class Optimizer:
 		### TODO (huhanpeng): is shallow copy is enough ???
 		G = self.dag.copy()
 		### Get the replay results of current state
-		replayer = Replayer(dag=G, _step_num=1, leaf_dirs=self.clct.all_prefix_list(), dump_path=self.clct.pm.path)
+		replayer = Replayer(dag=G, _step_num=1, 
+				leaf_dirs=self.clct.all_prefix_list(), 
+				dump_path=self.clct.pm.path,
+				comm_backend=clct.comm_backend,
+				byteps_graph=clct.byteps_graph)
 		step_end_time_ms = [t / 1000 for t in replayer.replayAndDelay(None, _ouput=False).values()]
 		cost = max(step_end_time_ms)
 
@@ -159,7 +163,10 @@ class Optimizer:
 					self.op_defusion(G_star, target, next_)
 
 				### Start to replay
-				replayer = Replayer(dag=G_star, _step_num=1, leaf_dirs=self.clct.all_prefix_list(), dump_path=self.clct.pm.path)
+				replayer = Replayer(dag=G_star, _step_num=1, 
+						leaf_dirs=self.clct.all_prefix_list(), dump_path=self.clct.pm.path,
+						comm_backend=clct.comm_backend,
+						byteps_graph=clct.byteps_graph)
 				try:
 					cost_star = max([t / 1000 for t in replayer.replayAndDelay(None, _ouput=False).values()])
 				except:
