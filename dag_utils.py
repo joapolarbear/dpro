@@ -65,7 +65,7 @@ class DAGManager:
     path: str
         Root path for one GPU
     
-    e.g. For NCCL RING
+    e.g. For NCCL ALLREDUCE RING
     FW ---> OUTPUT ---> BW --------------------------> UPDATE_CAL ---> UPDATE_<id> ---> END
                          \                           ^  (barrier)
                           \                         /

@@ -1025,13 +1025,19 @@ class Collector(object):
 
             ### Handle the gap among FW, BW and OUTPUT nodes (exclude BW->UPDATE)
             cat_ = parse_cat_from_name(event["name"])
-            ### TODO(huhanpeng): Only calculate gaps for operator nodes now
-            if (cat_ == CatName.OPERATOR.value or cat_ == CatName.COMM.value) and cat_ in cur_pid_dict:
+            if self.comm_backend == "NCCL":
+                ### TODO(huhanpeng): Only calculate gaps for operator nodes now
+                is_need_gap = (cat_ in cur_pid_dict and cat_ == CatName.OPERATOR.value)
+            else:
+                ### BYTEPS
+                is_need_gap = (cat_ in cur_pid_dict and (cat_ == CatName.OPERATOR.value or cat_ == CatName.COMM.value))
+            if is_need_gap:
                 ### There are some prev events with the same pid and find-grained cat
                 prev_e = cur_pid_dict[cat_]
                 gap_string = GAP_STR_OP2OP if cat_ == CatName.OPERATOR.value else GAP_STR_COMM2COMM
                 if not "UPDATE_CAL" in prev_e["name"] and not "UPDATE_CAL" in event["name"] and not ("BW" in prev_e["name"] \
-                    and "UPDATE_" in event["name"]) and not ("UPDATE_" in prev_e["name"] and "FW_" in event["name"]):
+                    and "UPDATE_" in event["name"]) and not ("UPDATE_" in prev_e["name"] and "FW_" in event["name"]) \
+                    and "local_num_masks" not in prev_e["name"]:
                     gap = event["ts"] - (prev_e["ts"] + prev_e["dur"])
                     ### TODO (huhanpeng): test whether to use this threshold
                     if gap < GAP_THRESHOLD or self.comm_backend == "NCCL":
@@ -1042,9 +1048,6 @@ class Collector(object):
                         else:
                             self.trail_dag.nodes[prev_name][gap_string] += gap
                             self.trail_dag.nodes[prev_name]["cnt"] += 1
-            else:
-                ### This is the first event of the cat_ in this pid
-                pass
             cur_pid_dict[cat_] = event
 
         queue_type_ = QueueType().ret_list()[0]

@@ -307,8 +307,9 @@ class TraceManager:
     def _is_ignore_for_sta(self, event):
         ### Some traces are ignored for statistic
         ### including 1) instance traces, 2) for debug 3) local_num_masks
-        return event["ph"].lower() == "i" or event["cat"] == "debug" \
-                or "local_num_masks" in event["name"]
+        return event["ph"].lower() == "i" or event["cat"] == "debug" 
+        # \
+        #         or "local_num_masks" in event["name"]
 
     def ret_unique_name(self, event):
         ### Returen unique name for statistic index
