@@ -284,8 +284,8 @@ if args.option == "collect":
 				avg = clct.traceM.lookup_stat(None, None, name)
 				print("Average time: %f ms" % (avg))
 	elif args.sub_option == "opt":
-		opt = optimizer.Optimizer(clct)
-		opt.MCMC_search()
+		opt = optimizer.MCTSOptimizer(clct)
+		opt.search()
 
 ### Output debug traces
 debug_utils.DebugRecorder().dump_traces(path_list[0])
