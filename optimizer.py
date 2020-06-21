@@ -382,7 +382,7 @@ class MCTSOptimizer(Optimizer):
 				return
 			for idx, child in enumerate(GS.childs):
 				if idx > 0:
-					sys.stdout.write("\n{}{}".format(" "*int(1 + 4/2) + "|    "*int(GS.depth), "|-" if idx < (len(GS.childs) -1) else "\\─"))
+					sys.stdout.write("\n{}{}".format(" "*int(1 + 4/2) + "|    "*int(GS.depth), "|-" if idx < (len(GS.childs) -1) else "\\-"))
 				else:
 					sys.stdout.write("{}".format('-'*4))
 				iter_print(child)
