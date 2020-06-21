@@ -5,7 +5,7 @@ parser = argparse.ArgumentParser(description="Trace Analysis",
 		formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 # parser.add_argument("-s", action="store_true", help="sort the output result")
 parser.add_argument("--option", type=str, 
-					choices=["statistic", "graph", "combine", "compare", "critical", "timeline", "replay", "topo_sort", "collect", "3dcompare"],
+					choices=["statistic", "graph", "combine", "compare", "critical", "timeline", "replay", "topo_sort", "collect", "3dcompare", "optimize"],
 					help="The type of analysis to process. including:\n" + 
 						"* statistic: show the statistic results\n" + 
 						"* graph: show the dependency graph\n")
@@ -39,6 +39,9 @@ parser.add_argument("--force", action="store_true", help="Force to re-generate t
 parser.add_argument("--update_barrier", type=bool, default=False, help="If true, add a barrier before all UPDATE ops.")
 parser.add_argument("--step_num", type=int, default="1", help="Default step numbers to replay.")
 parser.add_argument("--delay_ratio", type=float, default=1.1, help="delay ratio")
+
+### Optimize
+parser.add_argument("--optimizer", type=str, default="MCTS", choices=["MCTS", "MCMC"], help="The algorithm used to search the optimal optimzation strategy")
 
 args = parser.parse_args()
 

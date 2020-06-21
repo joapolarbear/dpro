@@ -47,6 +47,7 @@ class Optimizer:
 		self.dag = self.relabel_dag_node(self.clct.trail_dag)
 
 		self.base_cost = self.evaluate(self.dag)
+		SingleLogger().info("Start to search, the original iteration time is %f" % self.base_cost)
 		### Used to cache the node attribtue
 		self.node_attr_cache = {}
 
@@ -276,6 +277,7 @@ class Optimizer:
 				_cat = parse_cat_fine_grained(succ_)
 				if pid != _pid or cat != _cat:
 					continue
+				### Assumption: for edge a->b, only if the indegree of b is 1, the node can be fused
 				if len(_dag.in_edges(succ_)) == 1:
 					search_space.append(("+", n, succ_))
 		return search_space
@@ -316,22 +318,27 @@ class MCMCOptimizer(Optimizer):
 		cost = self.base_cost
 
 		while True:
-			candiates = self.candidate_selection(G)
-			search_space = self.init_search_space(candidates, new_dag)
+			candidates, _ = self.candidate_selection(G)
+			search_space = self.init_search_space(candidates, G)
 			while True and len(search_space) > 0:
-				G_star = self.apply_strategies(G, self.pick_strategy(search_space))
+				strategy = self.pick_strategy(search_space)
+				G_star = self.apply_strategies(G, strategy)
 
 				### Start to replay
 				cost_star = self.evaluate(G_star)
 
 				if self.accept_or_not(cost, cost_star):
+					op, target, next_ = strategy
 					if op == "+":
 						SingleLogger().info("Fuse %s and %s" % (target, next_))
 					elif op == "-":
 						SingleLogger().info("De-fuse %s at %dth op" % (target, next_))
+					else:
+						raise ValueError("Invalid graph transformation operation: {}".format(op))
 					G = G_star
 					cost = cost_star
 					break
+			SingleLogger().info("Speedup to the origin: %6.4f %%"%(100 * (self.base_cost - cost) / self.base_cost))
 
 	def accept_or_not(self, cost, new_cost):
 		### beta = 1 means if new_cost is smaller, definitely change to the new strategy, otherwise, there is some probability
@@ -359,6 +366,7 @@ class MCTSOptimizer(Optimizer):
 			reward = self.default_policy(GS)
 			self.backpropagation(GS, reward)
 			self.visualize_tree()
+			self.show_opt_strategies()
 		return 
 
 	def visualize_tree(self):
@@ -376,6 +384,17 @@ class MCTSOptimizer(Optimizer):
 		iter_print(self.GS_root)
 		sys.stdout.write("\n")
 
+	def show_opt_strategies(self):
+		GS = self.GS_root
+		while GS.childs is not None and len(GS.childs) > 0:
+			GS_best = c_best = None
+			for cld in GS.childs:
+				c_tmp = cld.quality / cld.visit_cnt
+				if GS_best is None or c_tmp > c_best:
+					GS_best = cld
+					c_best = cld.quality / cld.visit_cnt
+			GS = GS_best
+		SingleLogger().info("Optimal Strategies with %6.4f %% - %s"%(100 * math.log(cld.quality / cld.visit_cnt)/self.base_cost, str(GS.strategy)))
 
 	def check_loop_num(self):
 		self.loop_cnt += 1
@@ -409,7 +428,7 @@ class MCTSOptimizer(Optimizer):
 			GS.iter_time = cost
 		else:
 			cost = GS.iter_time
-		SingleLogger().info("Evaluate the strategy %s" % (str(GS.strategy)))
+		SingleLogger().debug("Evaluate the strategy %s" % (str(GS.strategy)))
 		return math.exp(self.base_cost - cost)
 
 	def backpropagation(self, GS, reward):

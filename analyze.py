@@ -29,7 +29,7 @@ sys.setrecursionlimit(1000000)
 
 path_list = args.path.split(',')
 """ Read traces and prepare statitic info"""
-if args.option not in ['critical', 'combine', 'compare', "replay", "topo_sort", "collect", "3dcompare"]:
+if args.option not in ['critical', 'combine', 'compare', "replay", "topo_sort", "collect", "3dcompare", "optimize"]:
 	pm = PathManager(path_list[0])
 	traces = read_traces(pm.search(FileName.TRACE))
 	name2sta, cat2sta = return_stat(traces)
@@ -283,9 +283,15 @@ if args.option == "collect":
 			else:
 				avg = clct.traceM.lookup_stat(None, None, name)
 				print("Average time: %f ms" % (avg))
-	elif args.sub_option == "opt":
+
+if args.option == "optimize":
+	clct = Collector(path_list[0])
+	clct.init(args.force)
+	if args.optimizer == "MCTS":
 		opt = optimizer.MCTSOptimizer(clct)
-		opt.search()
+	elif args.optimizer == "MCMC":
+		opt = optimizer.MCMCOptimizer(clct)
+	opt.search()
 
 ### Output debug traces
 debug_utils.DebugRecorder().dump_traces(path_list[0])
