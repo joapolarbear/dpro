@@ -14,7 +14,6 @@ class GraphExpand(Enum):
 MAX_TREE_DEPTH = 1000
 MAX_LOOP = 100
 UCB_GAMMA = 1
-ENABLE_DESPLIT = False
 
 class GraphState:
 	def __init__(self, depth):
@@ -53,6 +52,9 @@ class Optimizer:
 
 		### Budget
 		self.memory_budget = memory_budget
+
+		### Some hyper-parameter
+		self.enable_defusion = False
 
 	def relabel_dag_node(self, _dag): 
 		def relabel_func(old_label):
@@ -252,7 +254,7 @@ class Optimizer:
 		### 	Currently assumption: if a->b, belong to the same pid and cat, in_degree(b) = 1 then we can fuse a and b.
 		search_space = []
 		for n in candidates:
-			if ENABLE_DESPLIT and "+" in n:
+			if self.enable_defusion and "+" in n:
 				### This a fused node
 				ns = n.split("+")
 				cat = parse_cat_fine_grained(ns[0])
@@ -312,6 +314,10 @@ class Optimizer:
 
 class MCMCOptimizer(Optimizer):
 	''' Markov Chain Monte Carlo algorithm'''
+	def __init__(self, *args, **kwargs):
+		super(MCMCOptimizer, self).__init__(*args, **kwargs)
+		self.enable_defusion = True
+
 	def search(self):
 		### TODO (huhanpeng): is shallow copy is enough ???
 		G = self.dag.copy()
