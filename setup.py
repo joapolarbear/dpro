@@ -1,4 +1,4 @@
-from setuptools import setup, find_namespace_packages
+from setuptools import setup, find_packages
 
 setup(name='byteprofile analysis',
       version='0.1',
@@ -7,7 +7,7 @@ setup(name='byteprofile analysis',
       # author='Flying Circus',
       # author_email='flyingcircus@example.com',
       # license='MIT',
-      packages=find_namespace_packages(),
+      packages=find_packages(),
       install_requires=[
           'intervaltree', 
           'networkx', 
