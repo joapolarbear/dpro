@@ -231,7 +231,7 @@ class Optimizer:
 		step_end_time_ms = [t / 1000 for t in replayer.replayAndDelay(None, _ouput=False).values()]
 		return max(step_end_time_ms)
 
-	def candidate_selection(self, GS):
+	def candidate_selection(self, GS, topk=None):
 		if isinstance(GS, GraphState):
 			new_dag = self.apply_strategies(self.dag, GS.strategy)
 		elif isinstance(GS, nx.DiGraph):
@@ -244,9 +244,11 @@ class Optimizer:
 
 		### Need to pick some candidates
 		### TODO (huhanpeng): ??? how to decide which nodes to select as candiates
-		MOST_FOCUSED_CANDIATES = 10
-		critical_path = sorted(critical_path, key=lambda x: x[1], reverse=True)
-		return [n for n, l in critical_path[:MOST_FOCUSED_CANDIATES]], new_dag
+		if topk is None:
+			return [n for n, l in critical_path], new_dag
+		else:
+			critical_path = sorted(critical_path, key=lambda x: x[1], reverse=True)
+			return [n for n, l in critical_path[:topk]], new_dag
 
 	def init_search_space(self, candidates, _dag):
 		### TODO (huhanpeng): currently only consider fusion
@@ -324,7 +326,7 @@ class MCMCOptimizer(Optimizer):
 		cost = self.base_cost
 
 		while True:
-			candidates, _ = self.candidate_selection(G)
+			candidates, _ = self.candidate_selection(G, topk=None)
 			search_space = self.init_search_space(candidates, G)
 			while True and len(search_space) > 0:
 				strategy = self.pick_strategy(search_space)
@@ -498,7 +500,7 @@ class MCTSOptimizer(Optimizer):
 	def check_search_space(self, GS):
 		### TODO (huhanpeng): we can do some pruning here
 		if GS.space is None:
-			candidates, new_dag = self.candidate_selection(GS)
+			candidates, new_dag = self.candidate_selection(GS, topk=10)
 			GS.space = [[action, 0] for action in self.init_search_space(candidates, new_dag)] ### The integer value is used as a counter
 
 	def terminal(self, GS):
