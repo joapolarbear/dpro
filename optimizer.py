@@ -405,7 +405,7 @@ class MCMCOptimizer(Optimizer):
 
 	def accept_or_not(self, cost, new_cost):
 		### beta = 1 means if new_cost is smaller, definitely change to the new strategy, otherwise, there is some probability
-		beta = 0.1
+		beta = 100
 		# prob = min(1, (math.exp(beta * (cost - new_cost))))
 		if cost > new_cost:
 			return True
