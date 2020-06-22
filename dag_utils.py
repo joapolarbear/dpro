@@ -35,12 +35,7 @@ def cal_edge_cost(G):
                 key_s = key.split("GAP")
                 if prev_cat == key_s[0] and next_cat == key_s[1]:
                     gap += value
-        try:
-            G.edges[u, v]["cost"] = G.nodes[u]["avg"] + gap / 1000.0
-        except:
-            print(u, v)
-            print(G.nodes[u])
-            raise
+        G.edges[u, v]["cost"] = G.nodes[u]["avg"] + gap / 1000.0
 
 def dag_longest_path(G, pathM=None, weight='weight', default_weight=0, _debug_level=0):
     critical_path = nx.algorithms.dag.dag_longest_path(G, weight=weight, default_weight=default_weight)

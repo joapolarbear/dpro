@@ -1,6 +1,7 @@
 import networkx as nx
 import random
 import math
+import time
 
 from replay import Replayer
 from trace_utils import *
@@ -281,6 +282,7 @@ class Optimizer:
 		### 			Need to add quantization
 		### 	Currently assumption: if a->b, belong to the same pid and cat, in_degree(b) = 1 then we can fuse a and b.
 		search_space = []
+		prun_cnt = 0
 		for n in candidates:
 			if self.enable_defusion and "+" in n:
 				### This a fused node
@@ -336,9 +338,11 @@ class Optimizer:
 						comm_t += ret_comm_time(bw_u_succ)
 				
 				if comm_t >= _dag.nodes[bw_v]["avg"]:
+					prun_cnt += 1
 					continue
 
 				search_space.append(("+", n, succ_))
+		# SingleLogger().info("Init search space len={} from {} candidates, prune {}".format(len(search_space), len(candidates), prun_cnt))
 		return search_space
 
 	def apply_strategies(self, _dag, strategy):
@@ -490,7 +494,6 @@ class MCTSOptimizer(Optimizer):
 
 	def default_policy(self, GS):
 		while not self.terminal(GS):
-			self.check_search_space(GS)
 			action = self.pick_strategy(GS.space)[0]
 
 			GS_c = GraphState(depth=(GS.depth+1))
