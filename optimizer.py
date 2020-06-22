@@ -92,6 +92,13 @@ class Optimizer:
 		# print("cache attributes for %s" % n)
 
 	def op_fusion(self, _dag, u_, v_):
+		### u_ and v_ are both FW nodes
+		self._fuse_pair(_dag, u_, v_)
+		self._fuse_pair(_dag, self.convert_fw2bw(v_), self.convert_fw2bw(u_))
+		
+
+	def _fuse_pair(self, _dag, u_, v_):
+		# print("fuse {} {}".format(u_, v_))
 		### Cache the node attributes in case they will be used when de-fuse
 		if u_ not in self.node_attr_cache:
 			self.cache_node_attr(u_, _dag.nodes[u_])
@@ -172,14 +179,33 @@ class Optimizer:
 			nx.set_node_attributes(_dag, {new_name:attrs})
 			self.cache_node_attr(new_name, _dag.nodes[new_name])
 
+	def convert_fw2bw(self, _name):
+		assert "FW" in _name
+		_name = "BW".join(_name.split("FW"))
+		if "+" in _name:
+			ns = _name.split("+")
+			ns.reverse()
+			return "+".join(ns)
+		else:
+			return _name
+
 	def op_defusion(self, _dag, target, pos):
-		assert "+" in target
+		self._defuse_pair(_dag, target, pos)
+		target = "BW".join(target.split("FW"))
+		ns = target.split("+")
+		ns.reverse()
+		pos = len(ns) - pos - 2
+		target = "+".join(ns)
+		assert target in _dag.nodes
+		self._defuse_pair(_dag, target, pos)
+
+	def _defuse_pair(self, _dag, target, pos):
 		ns = target.split("+")
 		pos += 1
 		left = "+".join(ns[:pos])
 		right = "+".join(ns[pos:])
 
-		### For the edges related to traget, re-connect them to left or right
+		### For the edges related to target, re-connect them to left or right
 		### NOTE, Assumption: for an edge a->b, a is fused with others become ...+...+a, b is fused with others b+...+...
 		left_most = ns[0]
 		right_most = ns[-1]
@@ -261,19 +287,21 @@ class Optimizer:
 				ns = n.split("+")
 				cat = parse_cat_fine_grained(ns[0])
 				pid = parse_pid_from_name(ns[0])
-				pos = 0
-				while True:
-					search_space.append(("-", n, pos))
-					if pos >= (len(ns) - 2):
-						break
-					pos += 1
+				if cat == "operator.FW":
+					### defusion process
+					pos = 0
+					while True:
+						search_space.append(("-", n, pos))
+						if pos >= (len(ns) - 2):
+							break
+						pos += 1
 			else:
 				### Nodes that have never been fused
 				cat = parse_cat_fine_grained(n)
 				pid = parse_pid_from_name(n)
 
-			if cat not in ["operator.FW", "operator.BW"]:
-				### TODO (huhanpeng): only fuse FW or BW nodes now
+			if cat != "operator.FW":
+				### TODO (huhanpeng): only pick FW, then fuse corresponding BW
 				continue
 
 			for succ_ in _dag.successors(n):
@@ -281,9 +309,36 @@ class Optimizer:
 				_cat = parse_cat_fine_grained(succ_)
 				if pid != _pid or cat != _cat:
 					continue
-				### Assumption: for edge a->b, only if the indegree of b is 1, the node can be fused
-				if len(_dag.in_edges(succ_)) == 1:
-					search_space.append(("+", n, succ_))
+
+				### Assumption 1: for edge a->b, only if the indegree of b is 1, the node can be fused
+				bw_v = self.convert_fw2bw(n)
+				if len(_dag.in_edges(succ_)) > 1 or len(_dag.in_edges(bw_v)) > 1:
+					continue
+
+				bw_u = self.convert_fw2bw(succ_)
+				assert bw_u in _dag.nodes and bw_v in _dag.nodes
+				
+				# TODO (huhanpeng): this process is only for NCCL now
+				if arg_utils.SingleArg().args.comm_backend != "NCCL":
+					raise NotImplementedError()
+
+				### Assumption 2: for edge bw_u->bw_v, if comm_bw_u > bw_v, it can not bring any speedup if fusing u and v.
+				def ret_comm_time(_node):
+					__ret = _dag.nodes[_node]["avg"]
+					for __succ in _dag.successors(_node):
+						if "Comm" in __succ:
+							__ret += ret_comm_time(__succ)
+					return __ret
+
+				comm_t = 0
+				for bw_u_succ in _dag.successors(bw_u):
+					if "Comm" in bw_u_succ:
+						comm_t += ret_comm_time(bw_u_succ)
+				
+				if comm_t >= _dag.nodes[bw_v]["avg"]:
+					continue
+
+				search_space.append(("+", n, succ_))
 		return search_space
 
 	def apply_strategies(self, _dag, strategy):
@@ -350,12 +405,18 @@ class MCMCOptimizer(Optimizer):
 
 	def accept_or_not(self, cost, new_cost):
 		### beta = 1 means if new_cost is smaller, definitely change to the new strategy, otherwise, there is some probability
-		beta = 1
-		prob = min(1, (math.exp(beta * (cost - new_cost))))
-		if random.random() < prob:
+		beta = 0.1
+		# prob = min(1, (math.exp(beta * (cost - new_cost))))
+		if cost > new_cost:
 			return True
 		else:
-			return False
+			prob = math.exp(beta * (cost - new_cost))
+			r = random.random() 
+			if r < prob:
+				SingleLogger().info("Accept a worse action with {} < {} ".format(r, prob))
+				return True
+			else:
+				return False
 
 class MCTSOptimizer(Optimizer):
 	''' Monte Carlo Tree Search '''
@@ -378,18 +439,26 @@ class MCTSOptimizer(Optimizer):
 		return 
 
 	def visualize_tree(self):
-		def iter_print(GS):
+		def iter_print(GS, cnt):
+			### `cnt` is used to decide how many parent branches to print for current nodes
 			sys.stdout.write("*")
 			if GS.childs is None:
 				return
 			for idx, child in enumerate(GS.childs):
 				if idx > 0:
-					sys.stdout.write("\n{}{}".format(" "*int(1 + 4/2) + "|    "*int(GS.depth), "|-" if idx < (len(GS.childs) -1) else "\\-"))
+					sys.stdout.write("\n{}".format(" "*int(1 + 4/2)))
+					sys.stdout.write("{}".format("     "*(GS.depth - cnt)))
+					sys.stdout.write("{}".format("|    "*(cnt)))
+					sys.stdout.write("{}".format("|-" if idx < (len(GS.childs) -1) else "\\-"))
 				else:
 					sys.stdout.write("{}".format('-'*4))
-				iter_print(child)
+				if idx < (len(GS.childs) -1):
+					next_cnt = cnt + 1
+				else:
+					next_cnt = cnt
+				iter_print(child, next_cnt)
 
-		iter_print(self.GS_root)
+		iter_print(self.GS_root, 0)
 		sys.stdout.write("\n")
 
 	def show_opt_strategies(self):
@@ -402,7 +471,7 @@ class MCTSOptimizer(Optimizer):
 					GS_best = cld
 					c_best = cld.quality / cld.visit_cnt
 			GS = GS_best
-		SingleLogger().info("Optimal Strategies with %6.4f %% - %s"%(100 * math.log(cld.quality / cld.visit_cnt)/self.base_cost, str(GS.strategy)))
+		SingleLogger().info("Optimal Strategies with %6.4f %% - %s"%(100 * math.log(GS.quality / GS.visit_cnt)/self.base_cost, str(GS.strategy)))
 
 	def check_loop_num(self):
 		self.loop_cnt += 1
@@ -500,7 +569,7 @@ class MCTSOptimizer(Optimizer):
 	def check_search_space(self, GS):
 		### TODO (huhanpeng): we can do some pruning here
 		if GS.space is None:
-			candidates, new_dag = self.candidate_selection(GS, topk=10)
+			candidates, new_dag = self.candidate_selection(GS, topk=None)
 			GS.space = [[action, 0] for action in self.init_search_space(candidates, new_dag)] ### The integer value is used as a counter
 
 	def terminal(self, GS):
