@@ -304,12 +304,12 @@ class Replayer:
 		if _output:
 			self.output_traces()
 		
-	def replayAndDelay(self, delay_dict_, _ouput=False):
+	def replayAndDelay(self, delay_dict_, _ouput=False, _filename=None):
 		self.reset_replayer()
 		self.delay_dict = delay_dict_
 		self.replay_one_iter(0)
 		if _ouput:
-			self.output_traces()
+			self.output_traces(_filename=_filename)
 		return self.step_end_time
 
 	def insert_next_node(self, n, t):
@@ -408,13 +408,14 @@ class Replayer:
 		### Ininitalize the execution graph as the depdency graph
 		self.exct_dag = self.dag.copy()
 
-	def output_traces(self):
+	def output_traces(self, _filename=None):
 		#! Output the synthetic traces.
 		rst = {
 			"traceEvents": self.rst_traces,
 			"displayTimeUnit": "ms"
 		}
 		TraceManager(self.rst_traces, DirLevel.TRIAL).get_iter_time()
-		with open(os.path.join(self.dump_path, "synthetic.json"), 'w') as f:
+		filename = "synthetic.json" if _filename is None else _filename
+		with open(os.path.join(self.dump_path, filename), 'w') as f:
 			json.dump(rst, f, indent=4)
 

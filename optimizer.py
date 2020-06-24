@@ -14,7 +14,7 @@ class GraphExpand(Enum):
 
 MAX_TREE_DEPTH = 1000
 MAX_LOOP = 1000
-UCB_GAMMA = 0
+UCB_GAMMA = 0.1
 
 class GraphState:
 	def __init__(self, depth):
@@ -44,10 +44,12 @@ class GraphState:
 class Optimizer:
 	def __init__(self, collector, memory_budget=None):
 		self.clct = collector
+		### Get the dependency graph
 		self.dag = self.relabel_dag_node(self.clct.trail_dag)
 
-		self.base_cost = self.evaluate(self.dag)
+		self.base_cost, _ = self.evaluate(self.dag)
 		SingleLogger().info("Start to search, the original iteration time is %f" % self.base_cost)
+
 		### Used to cache the node attribtue
 		self.node_attr_cache = {}
 
@@ -73,15 +75,15 @@ class Optimizer:
 	def combine_avg(self, ua, va):
 		### TODO (huhanpeng): key component
 		# raise NotImplementedError()
-		return (ua + va) / 0.8
-		# return 0
+		# return (ua + va) / 0.8
+		return 0
 
 	def combine_gap(self, ug, vg):
 		### TODO (huhanpeng): key component
 		### Use max to avoid one input is zero, 
 		### some how for the new gap x, ug < x < ug + vg, vg < x < ug + vg
-		return max(max((ug + vg) / 0.8, ug), vg)
-		# return 0
+		# return max(max((ug + vg) / 0.8, ug), vg)
+		return 0
 
 	def get_node_attr(self, n, attr_):
 		if attr_ in self.node_attr_cache[n]:
@@ -251,38 +253,52 @@ class Optimizer:
 		
 
 	def evaluate(self, _dag):
-		### Get the replay results of current state
+		### input _dag is a dependency graph, using the replayer to get the simulated traces and execution graph
+		### Return the iteration time and the execution graph
 		replayer = Replayer(dag=_dag, _step_num=1, 
 				leaf_dirs=self.clct.all_prefix_list(), 
 				dump_path=self.clct.pm.path,
 				comm_backend=self.clct.comm_backend,
 				byteps_graph=self.clct.byteps_graph)
 		step_end_time_ms = [t / 1000 for t in replayer.replayAndDelay(None, _ouput=False).values()]
-		return max(step_end_time_ms)
+		return max(step_end_time_ms), replayer.exct_dag
 
-	def candidate_selection(self, GS, topk=None):
-		if isinstance(GS, GraphState):
-			new_dag = self.apply_strategies(self.dag, GS.strategy)
-		elif isinstance(GS, nx.DiGraph):
-			new_dag = GS
+	def candidate_selection(self, GS, topk=None, critical_path=None):
+		### Select nodes on the critical path of the execution graph as the candidates
+		### Return the candidates and the revised dependency graph
+		if critical_path is None:
+			if isinstance(GS, GraphState):
+				new_dag = self.apply_strategies(self.dag, GS.strategy)
+			elif isinstance(GS, nx.DiGraph):
+				new_dag = GS
+			else:
+				raise ValueError("Invalid type for input (type: {}), only GraphState and nx.DiGraph are allowed".format(type(GS)))
+
+			iter_time, exct_dag = self.evaluate(new_dag)
+			if isinstance(GS, GraphState) and GS.iter_time is None:
+				GS.iter_time = iter_time
+
+			### Need to pick some candidates
+			### TODO (huhanpeng): ??? how to decide which nodes to select as candiates
+			### Currently, pick all nodes on the critical path of the execution graph as the candidates
+			critical_path = self.wrap_critical_path(exct_dag)
 		else:
-			raise ValueError("Invalid type for input (type: {}), only GraphState and nx.DiGraph are allowed".format(type(GS)))
+			new_dag = GS
 
-		cal_edge_cost(new_dag)
-		critical_path = dag_longest_path(new_dag, None, weight="cost", default_weight=0, _debug_level=0)
-
-		### Need to pick some candidates
-		### TODO (huhanpeng): ??? how to decide which nodes to select as candiates
 		if topk is None:
 			return [n for n, l in critical_path], new_dag
 		else:
 			critical_path = sorted(critical_path, key=lambda x: x[1], reverse=True)
 			return [n for n, l in critical_path[:topk]], new_dag
 
+	def wrap_critical_path(self, _dag):
+		cal_edge_cost(_dag)
+		return dag_longest_path(_dag, None, weight="cost", default_weight=0, _debug_level=0)
+
 	def init_search_space(self, candidates, _dag):
+		### Based on the candidates, init the search space for the new dependency graph `_dag`
 		### TODO (huhanpeng): currently only consider fusion
 		### 			Need to add quantization
-		### 	Currently assumption: if a->b, belong to the same pid and cat, in_degree(b) = 1 then we can fuse a and b.
 		search_space = []
 		prun_cnt = 0
 		for n in candidates:
@@ -330,7 +346,8 @@ class Optimizer:
 				def ret_comm_time(_node):
 					__ret = _dag.nodes[_node]["avg"]
 					for __succ in _dag.successors(_node):
-						if "Comm" in __succ:
+						_pid = parse_pid_from_name(__succ)
+						if "Comm" in __succ and pid == _pid:
 							__ret += ret_comm_time(__succ)
 					return __ret
 
@@ -385,16 +402,20 @@ class MCMCOptimizer(Optimizer):
 		### TODO (huhanpeng): is shallow copy is enough ???
 		G = self.dag.copy()
 		cost = self.base_cost
+		trajectory = []
+		candidates, _ = self.candidate_selection(G, topk=None)
+		search_space = self.init_search_space(candidates, G)
+
+		best_cost = cost
+		best_strategy = trajectory.copy()
 
 		while True:
-			candidates, _ = self.candidate_selection(G, topk=None)
-			search_space = self.init_search_space(candidates, G)
 			while True and len(search_space) > 0:
 				strategy = self.pick_strategy(search_space)
 				G_star = self.apply_strategies(G, strategy)
 
 				### Start to replay
-				cost_star = self.evaluate(G_star)
+				cost_star, exct_dag = self.evaluate(G_star)
 
 				if self.accept_or_not(cost, cost_star):
 					op, target, next_ = strategy
@@ -404,10 +425,21 @@ class MCMCOptimizer(Optimizer):
 						SingleLogger().info("De-fuse %s at %dth op" % (target, next_))
 					else:
 						raise ValueError("Invalid graph transformation operation: {}".format(op))
+
 					G = G_star
 					cost = cost_star
+					trajectory.append(strategy)
+
+					### Cache the best strategy
+					if cost < best_cost:
+						best_cost = cost
+						best_strategy = trajectory.copy()
+					### Init new search space
+					candidates, _ = self.candidate_selection(G, topk=None, critical_path=self.wrap_critical_path(exct_dag))
+					search_space = self.init_search_space(candidates, G)
 					break
 			SingleLogger().info("Speedup to the origin: %6.4f %%"%(100 * (self.base_cost - cost) / self.base_cost))
+			SingleLogger().info("Best speedup: %d the acception, speed up to the origin: %6.4f %%"%(len(best_strategy), 100 * (self.base_cost - best_cost) / self.base_cost))
 
 	def accept_or_not(self, cost, new_cost):
 		### beta = 1 means if new_cost is smaller, definitely change to the new strategy, otherwise, there is some probability
@@ -508,11 +540,8 @@ class MCTSOptimizer(Optimizer):
 				GS = GS_c
 		### Evaluate the final graph
 		if GS.iter_time is None:
-			new_dag = self.apply_strategies(self.dag, GS.strategy)
-			cost = self.evaluate(new_dag)
-			GS.iter_time = cost
-		else:
-			cost = GS.iter_time
+			self.check_search_space(GS)
+		cost = GS.iter_time
 		SingleLogger().debug("Evaluate the strategy %s" % (str(GS.strategy)))
 		return math.exp(self.base_cost - cost)
 
@@ -572,6 +601,7 @@ class MCTSOptimizer(Optimizer):
 		return GS_c
 
 	def pick_unvisited(self, GS):
+		### TODO (huhanpeng): delete this check, repeated check
 		self.check_search_space(GS)
 		### TODO (huhanpeng): how to pick with some heuristic
 		for idx in range(len(GS.space)):

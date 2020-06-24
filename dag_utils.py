@@ -66,10 +66,21 @@ class DAGManager:
         Root path for one GPU
     
     e.g. For NCCL ALLREDUCE RING
-    FW ---> OUTPUT ---> BW --------------------------> UPDATE_CAL ---> UPDATE_<id> ---> END
-                         \\                          ^  (barrier)
-                          \\                        //
-                            -> Comm.<>.SEND.x_x_x_x ...
+    Note: NEGOTIATE used to sync between ranks
+    
+    FW ---> OUTPUT ---> BW ------------------- .................. --------------------> UPDATE_CAL ---> UPDATE_<id> ---> END
+                         \\                                                         ^  (barrier)
+                          \\                                                       //
+                            -> Comm.<>.NEGOTIATE --------> Comm.<>.SEND.x_x_x_x ...
+                                                  \\   ^
+                                                   \\ //
+                                                     x
+                                                   // \\
+                                                  //   V
+                            -> Comm.<>.NEGOTIATE --------> Comm.<>.SEND.x_x_x_x ...
+                          //                                                       \\
+                         //                                                         V  (barrier)
+    FW ---> OUTPUT ---> BW ------------------- .................. --------------------> UPDATE_CAL ---> UPDATE_<id> ---> END
     '''
     def __init__(self, path, traceM, nccl_graph=None, byteps_graph = None):
         self.pm = PathManager(path)
