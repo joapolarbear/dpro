@@ -288,7 +288,7 @@ if args.option == "optimize":
 	clct = Collector(path_list[0])
 	clct.init(args.force)
 	if args.optimizer == "MCTS":
-		opt = optimizer.MCTSOptimizer(clct)
+		opt = optimizer.MCTSOptimizer(clct, ucb_type=args.ucb_type, no_mutation=args.no_mutation)
 	elif args.optimizer == "MCMC":
 		opt = optimizer.MCMCOptimizer(clct)
 	opt.search()

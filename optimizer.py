@@ -13,8 +13,8 @@ class GraphExpand(Enum):
     FULLY=2
 
 MAX_TREE_DEPTH = 1000
-MAX_LOOP = 100
-UCB_GAMMA = 1
+MAX_LOOP = 1000
+UCB_GAMMA = 0
 
 class GraphState:
 	def __init__(self, depth):
@@ -74,12 +74,14 @@ class Optimizer:
 		### TODO (huhanpeng): key component
 		# raise NotImplementedError()
 		return (ua + va) / 0.8
+		# return 0
 
 	def combine_gap(self, ug, vg):
 		### TODO (huhanpeng): key component
 		### Use max to avoid one input is zero, 
 		### some how for the new gap x, ug < x < ug + vg, vg < x < ug + vg
 		return max(max((ug + vg) / 0.8, ug), vg)
+		# return 0
 
 	def get_node_attr(self, n, attr_):
 		if attr_ in self.node_attr_cache[n]:
@@ -424,10 +426,14 @@ class MCMCOptimizer(Optimizer):
 
 class MCTSOptimizer(Optimizer):
 	''' Monte Carlo Tree Search '''
-	def __init__(self, *args, **kwargs):
+	def __init__(self, *args, ucb_type="AVG", no_mutation=False, **kwargs):
 		super(MCTSOptimizer, self).__init__(*args, **kwargs)
 		self.loop_cnt = 0
 		self.GS_root = None
+		self.ucb_type = ucb_type
+		if self.ucb_type != "MAX" and self.ucb_type != "AVG":
+			raise ValueError("UCB type should be MAX or AVG, but {} is given.".format(self.ucb_type))
+		self.no_mutation=no_mutation
 
 	def search(self):
 		### Initialize the root graph state
@@ -470,10 +476,10 @@ class MCTSOptimizer(Optimizer):
 		while GS.childs is not None and len(GS.childs) > 0:
 			GS_best = c_best = None
 			for cld in GS.childs:
-				c_tmp = cld.quality / cld.visit_cnt
+				c_tmp = cld.quality / cld.visit_cnt if self.ucb_type == "AVG" else cld.quality
 				if GS_best is None or c_tmp > c_best:
 					GS_best = cld
-					c_best = cld.quality / cld.visit_cnt
+					c_best = c_tmp
 			GS = GS_best
 		SingleLogger().info("Optimal Strategies with %6.4f %% - %s"%(100 * math.log(GS.quality / GS.visit_cnt)/self.base_cost, str(GS.strategy)))
 
@@ -493,14 +499,13 @@ class MCTSOptimizer(Optimizer):
 		return self.expansion(GS)
 
 	def default_policy(self, GS):
-		while not self.terminal(GS):
-			action = self.pick_strategy(GS.space)[0]
-
-			GS_c = GraphState(depth=(GS.depth+1))
-			GS_c.strategy = GS.strategy.copy()
-			GS_c.strategy.append(action)
-			GS = GS_c
-
+		if not self.no_mutation:
+			while not self.terminal(GS):
+				action = self.pick_strategy(GS.space)[0]
+				GS_c = GraphState(depth=(GS.depth+1))
+				GS_c.strategy = GS.strategy.copy()
+				GS_c.strategy.append(action)
+				GS = GS_c
 		### Evaluate the final graph
 		if GS.iter_time is None:
 			new_dag = self.apply_strategies(self.dag, GS.strategy)
@@ -512,7 +517,10 @@ class MCTSOptimizer(Optimizer):
 		return math.exp(self.base_cost - cost)
 
 	def backpropagation(self, GS, reward):
-		GS.quality += reward
+		if self.ucb_type == "MAX":
+			GS.quality = max(reward, GS.quality)
+		elif self.ucb_type == "AVG":
+			GS.quality += reward
 		GS.visit_cnt += 1
 		if GS.depth == 0:
 			return
@@ -522,7 +530,10 @@ class MCTSOptimizer(Optimizer):
 	def best_UCB(self, GS):
 		GS_opt = c_opt = None
 		for GS_c in GS.childs:
-			c = GS_c.quality / GS_c.visit_cnt + UCB_GAMMA * math.sqrt((2 * math.log(GS.visit_cnt)) / GS_c.visit_cnt)
+			if self.ucb_type == "MAX":
+				c = GS_c.quality + UCB_GAMMA * math.sqrt((2 * math.log(GS.visit_cnt)) / GS_c.visit_cnt)
+			elif self.ucb_type == "AVG":
+				c = GS_c.quality / GS_c.visit_cnt + UCB_GAMMA * math.sqrt((2 * math.log(GS.visit_cnt)) / GS_c.visit_cnt)
 			if GS_opt is None or c > c_opt:
 				c_opt = c
 				GS_opt = GS_c
