@@ -44,6 +44,8 @@ parser.add_argument("--delay_ratio", type=float, default=1.1, help="delay ratio"
 parser.add_argument("--optimizer", type=str, default="MCTS", choices=["MCTS", "MCMC"], help="The algorithm used to search the optimal optimzation strategy")
 parser.add_argument("--ucb_type", type=str, default="AVG", choices=["MAX", "AVG"], help="The type of quanlity value used in the UCB euqation")
 parser.add_argument("--no_mutation", action="store_true", help="If this arg is set, the default policy of MCTS will not rollout")
+parser.add_argument("--ucb_gamma", type=float, default=0.1, help="Hyper Parameter used in UCB to control the exploration rate.")
+parser.add_argument("--mcmc_beta", type=float, default=100, help="Hyper Parameter used in MCMC/SA to control the exploration rate")
 
 args = parser.parse_args()
 

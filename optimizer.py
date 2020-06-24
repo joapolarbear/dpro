@@ -12,9 +12,12 @@ class GraphExpand(Enum):
     PARTIAL=1
     FULLY=2
 
+args = arg_utils.SingleArg().args
 MAX_TREE_DEPTH = 1000
 MAX_LOOP = 1000
-UCB_GAMMA = 0.1
+UCB_GAMMA = args.ucb_gamma
+MCMC_BETA = args.mcmc_beta
+
 
 class GraphState:
 	def __init__(self, depth):
@@ -339,7 +342,7 @@ class Optimizer:
 				assert bw_u in _dag.nodes and bw_v in _dag.nodes
 				
 				# TODO (huhanpeng): this process is only for NCCL now
-				if arg_utils.SingleArg().args.comm_backend != "NCCL":
+				if args.comm_backend != "NCCL":
 					raise NotImplementedError()
 
 				### Assumption 2: for edge bw_u->bw_v, if comm_bw_u > bw_v, it can not bring any speedup if fusing u and v.
@@ -439,16 +442,14 @@ class MCMCOptimizer(Optimizer):
 					search_space = self.init_search_space(candidates, G)
 					break
 			SingleLogger().info("Speedup to the origin: %6.4f %%"%(100 * (self.base_cost - cost) / self.base_cost))
-			SingleLogger().info("Best speedup: %d the acception, speed up to the origin: %6.4f %%"%(len(best_strategy), 100 * (self.base_cost - best_cost) / self.base_cost))
+			SingleLogger().info("Best speedup: %d th acception, speed up to the origin: %6.4f %%"%(len(best_strategy), 100 * (self.base_cost - best_cost) / self.base_cost))
 
 	def accept_or_not(self, cost, new_cost):
-		### beta = 1 means if new_cost is smaller, definitely change to the new strategy, otherwise, there is some probability
-		beta = 100
 		# prob = min(1, (math.exp(beta * (cost - new_cost))))
 		if cost > new_cost:
 			return True
 		else:
-			prob = math.exp(beta * (cost - new_cost))
+			prob = math.exp(MCMC_BETA * (cost - new_cost))
 			r = random.random() 
 			if r < prob:
 				SingleLogger().info("Accept a worse action with {} < {} ".format(r, prob))
