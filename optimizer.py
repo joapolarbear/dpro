@@ -255,15 +255,16 @@ class Optimizer:
 		assert "avg" in _dag.nodes[right]
 		
 
-	def evaluate(self, _dag):
+	def evaluate(self, _dag, _filename=None):
 		### input _dag is a dependency graph, using the replayer to get the simulated traces and execution graph
 		### Return the iteration time and the execution graph
+		_output = False if _filename is None else True
 		replayer = Replayer(dag=_dag, _step_num=1, 
 				leaf_dirs=self.clct.all_prefix_list(), 
 				dump_path=self.clct.pm.path,
 				comm_backend=self.clct.comm_backend,
 				byteps_graph=self.clct.byteps_graph)
-		step_end_time_ms = [t / 1000 for t in replayer.replayAndDelay(None, _ouput=False).values()]
+		step_end_time_ms = [t / 1000 for t in replayer.replayAndDelay(None, _ouput=_output, _filename=_filename).values()]
 		return max(step_end_time_ms), replayer.exct_dag
 
 	def candidate_selection(self, GS, topk=None, critical_path=None):
@@ -294,9 +295,9 @@ class Optimizer:
 			critical_path = sorted(critical_path, key=lambda x: x[1], reverse=True)
 			return [n for n, l in critical_path[:topk]], new_dag
 
-	def wrap_critical_path(self, _dag):
+	def wrap_critical_path(self, _dag, verbose=False):
 		cal_edge_cost(_dag)
-		return dag_longest_path(_dag, None, weight="cost", default_weight=0, _debug_level=0)
+		return dag_longest_path(_dag, None, weight="cost", default_weight=0, _debug_level=(1 if verbose else 0))
 
 	def init_search_space(self, candidates, _dag):
 		### Based on the candidates, init the search space for the new dependency graph `_dag`
@@ -484,17 +485,22 @@ class MCTSOptimizer(Optimizer):
 	def visualize_tree(self):
 		def iter_print(GS, cnt):
 			### `cnt` is used to decide how many parent branches to print for current nodes
-			sys.stdout.write("*")
+			LENOFNODE = 5
+			LENOFARROW = 5
+			node_string = "%4.3f"%(GS.quality)
+			assert len(node_string) == LENOFNODE
+			sys.stdout.write(node_string)
 			if GS.childs is None:
 				return
 			for idx, child in enumerate(GS.childs):
 				if idx > 0:
-					sys.stdout.write("\n{}".format(" "*int(1 + 4/2)))
-					sys.stdout.write("{}".format("     "*(GS.depth - cnt)))
-					sys.stdout.write("{}".format("|    "*(cnt)))
-					sys.stdout.write("{}".format("|-" if idx < (len(GS.childs) -1) else "\\-"))
+					sys.stdout.write("\n{}".format(" "*(LENOFNODE + LENOFARROW//2)))
+					sys.stdout.write("{}".format(" "*((LENOFNODE + LENOFARROW) * (GS.depth - cnt))))
+					sys.stdout.write("{}".format(("|" + " " * (LENOFNODE + LENOFARROW - 1))*(cnt)))
+					sys.stdout.write("{}".format("|" if idx < (len(GS.childs) -1) else "\\"))
+					sys.stdout.write("{}".format("-"*(LENOFARROW - LENOFARROW//2 - 1)))
 				else:
-					sys.stdout.write("{}".format('-'*4))
+					sys.stdout.write("{}".format('-'*LENOFARROW))
 				if idx < (len(GS.childs) -1):
 					next_cnt = cnt + 1
 				else:
@@ -505,16 +511,20 @@ class MCTSOptimizer(Optimizer):
 		sys.stdout.write("\n")
 
 	def show_opt_strategies(self):
+		if self.ucb_type == "AVG":
+			raise NotImplementedError()
 		GS = self.GS_root
-		while GS.childs is not None and len(GS.childs) > 0:
-			GS_best = c_best = None
+		while GS.childs is not None and len(GS.childs) > 0:	
+			next_GS = None
 			for cld in GS.childs:
-				c_tmp = cld.quality / cld.visit_cnt if self.ucb_type == "AVG" else cld.quality
-				if GS_best is None or c_tmp > c_best:
-					GS_best = cld
-					c_best = c_tmp
-			GS = GS_best
-		SingleLogger().info("Optimal Strategies with %6.4f %% - %s"%(100 * math.log(GS.quality / GS.visit_cnt)/self.base_cost, str(GS.strategy)))
+				if cld.quality >= GS.quality:
+					next_GS = cld
+					break
+			if next_GS is None:
+				break
+			else:
+				GS = next_GS
+		SingleLogger().info("Optimal Strategies with %6.4f %% - %s"%(100 * ((self.base_cost - GS.iter_time) / self.base_cost), str(GS.strategy)))
 
 	def check_loop_num(self):
 		self.loop_cnt += 1
@@ -602,8 +612,6 @@ class MCTSOptimizer(Optimizer):
 		return GS_c
 
 	def pick_unvisited(self, GS):
-		### TODO (huhanpeng): delete this check, repeated check
-		self.check_search_space(GS)
 		### TODO (huhanpeng): how to pick with some heuristic
 		for idx in range(len(GS.space)):
 			if GS.space[idx][1] == 0:

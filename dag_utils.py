@@ -67,7 +67,7 @@ class DAGManager:
     
     e.g. For NCCL ALLREDUCE RING
     Note: NEGOTIATE used to sync between ranks
-    
+
     FW ---> OUTPUT ---> BW ------------------- .................. --------------------> UPDATE_CAL ---> UPDATE_<id> ---> END
                          \\                                                         ^  (barrier)
                           \\                                                       //
@@ -175,7 +175,7 @@ class DAGManager:
                                                 self.add_prefix(next_rawname), 
                                                 weight=self.traceM.lookup_stat(self.wk_prefix, self.rank_prefix, prev_rawname))
 
-                                        ### Connect all ranks' NEGOTIATE_ALLREDUCE to the first
+                                        ### Connect all ranks' NEGOTIATE_ALLREDUCE to the first      
                                         prev_rawname = next_rawname
                                         prev_nodes_prefix = self.nccl_graph.bw_to_first_send(channelId)
                                         next_rawname = gen_long_name(None, "%s.SEND"%u, suffix="%d_%d_%d_%d"%(loopId, channelId, chunkId, sliceId))

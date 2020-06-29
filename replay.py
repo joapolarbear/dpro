@@ -14,6 +14,7 @@ import logger_utils
 import debug_utils
 
 FIXED_GAP_us = 5
+args = arg_utils.SingleArg().args
 
 class Deivce:
 	def __init__(self, device_name, _replayer, infi_para=False, comm_backend = "NCCL"):
@@ -45,21 +46,9 @@ class Deivce:
 		### for debug
 		_ts = time.time()
 
-		this_cat = parse_cat_from_name(name)
 
 		if not self.infi_para:
-			### Apply the gap between two nodes
-			# gap = self.replayer.dag.edges[name, _succ]["gap"] if "gap" in self.replayer.dag.edges[name, _succ] else 0
-			gap = 0
-			for key, value in self.replayer.dag.nodes[name].items():
-				if "GAP" in key:
-					### e.g. "gap.operator.operator"
-					key_s = key.split("GAP")
-					if self.prev_cat == key_s[0] and this_cat == key_s[1]:
-						gap += value
-						if gap > 1000:
-							SingleLogger().debug("Large GAP detected: {}, key = {}, gap = {}".format(name, key, value))
-			_last_end_time =  max(_last_end_time, self.device_time + gap)
+			_last_end_time = max(_last_end_time, self.device_time)
 
 		if "Sync" in name or name == "END":
 			#! No event is generated, but has successors
@@ -99,7 +88,7 @@ class Deivce:
 		_id = 0
 
 		### Expose dependency info in trace["args"], time-consuming
-		if False:
+		if args.full_trace:
 			for prev, _ in self.replayer.dag.in_edges(name):
 				event["args"]["input%d"%_id] = prev
 				_id += 1
@@ -112,9 +101,9 @@ class Deivce:
 				self.replayer.exct_dag.add_edge(prev_event["args"]["name"], name, weight=(prev_event["dur"] / 1000.0))
 		self.prev_idx = len(self.replayer.rst_traces)
 
-		### 2. Update edge weight
-		for next_ in self.replayer.exct_dag.successors(name):
-			self.replayer.exct_dag.edges[name, next_]["weight"] = duration / 1000.0
+		# ### 2. Update edge weight
+		# for next_ in self.replayer.exct_dag.successors(name):
+		# 	self.replayer.exct_dag.edges[name, next_]["weight"] = duration / 1000.0
 
 		self.replayer.rst_traces.append(event)
 		self.mark_as_exct(name, start_t, start_t + duration)
@@ -132,7 +121,20 @@ class Deivce:
 
 	def mark_as_exct(self, name, _start_t, _end_time):
 		''' Mark that the op has been executed '''
-		self.device_time = _end_time
+
+		### Apply the gap between two nodes
+		this_cat = parse_cat_from_name(name)
+		gap = 0
+		for key, value in self.replayer.dag.nodes[name].items():
+			if "GAP" in key:
+				### e.g. "gap.operator.operator"
+				key_s = key.split("GAP")
+				if self.prev_cat == key_s[0] and this_cat == key_s[1]:
+					gap += value
+					if gap > 1000:
+						SingleLogger().debug("Large GAP detected: {}, key = {}, gap = {}".format(name, key, value))
+		self.device_time = _end_time + gap
+
 		self.replayer.node_status.pop(name)
 		prev_cat = parse_cat_from_name(name)
 		for _succ in self.replayer.dag.successors(name):
@@ -144,7 +146,7 @@ class Deivce:
 					### For Send->Recv edge, there exist some overlap
 					### TODO (huhanpeng): how do decide the end time of the RECV event
 					try:
-						self.replayer.dag.nodes[_succ]["avg"]
+						avg = self.replayer.dag.nodes[_succ]["avg"]
 					except KeyError:
 						raise RuntimeError("KeyError: %s, %s" % (_succ, str(self.replayer.dag.nodes[_succ])))
 					_status["ready"] = _end_time if _status["ready"] is None else max(_end_time - avg * 1000, _status["ready"])
