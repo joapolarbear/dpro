@@ -57,7 +57,7 @@ class DebugRecorder:
 			trace_path = self.path_
 		else:
 			raise ValueError("Trace path must be given")
-
+		
 		with open(os.path.join(trace_path, "debug.json"), 'w') as f:
 			json.dump({"traceEvents": self.debug_traces,
 						"displayTimeUnit": "ms"

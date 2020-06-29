@@ -22,7 +22,7 @@ MCMC_BETA = args.mcmc_beta
 class GraphState:
 	def __init__(self, depth):
 		self.visit_cnt = 1
-		self.quality = 0
+		self.quality = -1
 
 		self.space = None
 		self.childs = None
@@ -256,6 +256,9 @@ class Optimizer:
 		
 
 	def evaluate(self, _dag, _filename=None):
+
+		# t = time.time()
+
 		### input _dag is a dependency graph, using the replayer to get the simulated traces and execution graph
 		### Return the iteration time and the execution graph
 		_output = False if _filename is None else True
@@ -265,6 +268,9 @@ class Optimizer:
 				comm_backend=self.clct.comm_backend,
 				byteps_graph=self.clct.byteps_graph)
 		step_end_time_ms = [t / 1000 for t in replayer.replayAndDelay(None, _ouput=_output, _filename=_filename).values()]
+
+		# print("Evaluate time {}".format(time.time() - t))
+
 		return max(step_end_time_ms), replayer.exct_dag
 
 	def candidate_selection(self, GS, topk=None, critical_path=None):
@@ -281,6 +287,8 @@ class Optimizer:
 			iter_time, exct_dag = self.evaluate(new_dag)
 			if isinstance(GS, GraphState) and GS.iter_time is None:
 				GS.iter_time = iter_time
+				if self.opt_GS is None or iter_time < self.opt_GS.iter_time:
+					self.opt_GS = GS
 
 			### Need to pick some candidates
 			### TODO (huhanpeng): ??? how to decide which nodes to select as candiates
@@ -296,8 +304,14 @@ class Optimizer:
 			return [n for n, l in critical_path[:topk]], new_dag
 
 	def wrap_critical_path(self, _dag, verbose=False):
+		# t = time.time()
+
 		cal_edge_cost(_dag)
-		return dag_longest_path(_dag, None, weight="cost", default_weight=0, _debug_level=(1 if verbose else 0))
+		ret = dag_longest_path(_dag, None, weight="cost", default_weight=0, _debug_level=(1 if verbose else 0))
+
+		# print("critical path time {}".format(time.time() - t))
+
+		return ret
 
 	def init_search_space(self, candidates, _dag):
 		### Based on the candidates, init the search space for the new dependency graph `_dag`
@@ -464,6 +478,7 @@ class MCTSOptimizer(Optimizer):
 		super(MCTSOptimizer, self).__init__(*args, **kwargs)
 		self.loop_cnt = 0
 		self.GS_root = None
+		self.opt_GS = None
 		self.ucb_type = ucb_type
 		if self.ucb_type != "MAX" and self.ucb_type != "AVG":
 			raise ValueError("UCB type should be MAX or AVG, but {} is given.".format(self.ucb_type))
@@ -477,19 +492,21 @@ class MCTSOptimizer(Optimizer):
 		while self.check_loop_time() and self.check_loop_num():
 			GS = self.tree_policy(self.GS_root)
 			reward = self.default_policy(GS)
+			SingleLogger().info("Speedup to the origin %6.4f %%"%(100 * reward))
 			self.backpropagation(GS, reward)
-			self.visualize_tree()
+			if args.ucb_visual:
+				self.visualize_tree()
 			self.show_opt_strategies()
 		return 
 
 	def visualize_tree(self):
 		def iter_print(GS, cnt):
 			### `cnt` is used to decide how many parent branches to print for current nodes
-			LENOFNODE = 5
+			LENOFNODE = 11
 			LENOFARROW = 5
-			node_string = "%4.3f"%(GS.quality)
-			assert len(node_string) == LENOFNODE
+			node_string = "  %5.4f %% "%(GS.quality * 100) if GS.quality >= 0 else " -%5.4f %% "%(-GS.quality * 100)
 			sys.stdout.write(node_string)
+			assert len(node_string) == LENOFNODE
 			if GS.childs is None:
 				return
 			for idx, child in enumerate(GS.childs):
@@ -511,20 +528,7 @@ class MCTSOptimizer(Optimizer):
 		sys.stdout.write("\n")
 
 	def show_opt_strategies(self):
-		if self.ucb_type == "AVG":
-			raise NotImplementedError()
-		GS = self.GS_root
-		while GS.childs is not None and len(GS.childs) > 0:	
-			next_GS = None
-			for cld in GS.childs:
-				if cld.quality >= GS.quality:
-					next_GS = cld
-					break
-			if next_GS is None:
-				break
-			else:
-				GS = next_GS
-		SingleLogger().info("Optimal Strategies with %6.4f %% - %s"%(100 * ((self.base_cost - GS.iter_time) / self.base_cost), str(GS.strategy)))
+		SingleLogger().info("Best speedup: %d th layer, speed up to the origin: %6.4f %%"%(len(self.opt_GS.strategy), 100 * self.opt_GS.quality))
 
 	def check_loop_num(self):
 		self.loop_cnt += 1
@@ -554,7 +558,7 @@ class MCTSOptimizer(Optimizer):
 			self.check_search_space(GS)
 		cost = GS.iter_time
 		SingleLogger().debug("Evaluate the strategy %s" % (str(GS.strategy)))
-		return math.exp(self.base_cost - cost)
+		return (self.base_cost - cost)/self.base_cost
 
 	def backpropagation(self, GS, reward):
 		if self.ucb_type == "MAX":

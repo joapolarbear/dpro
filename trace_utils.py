@@ -198,6 +198,27 @@ def parse_suffix_from_name(name):
     else:
         return name, None
 
+def parse_allinfo_from_name(name):
+    if DEL not in name:
+        raw_name = name
+        pid = "none"
+    else:
+        ns = name.split(DEL)
+        pid = ns[0]
+        raw_name = ns[1]
+
+    if "I/O" in raw_name:
+        return pid, raw_name, CatName.IO.value
+    elif "Comm" in raw_name or "PUSH" in raw_name or "PULL" in raw_name:
+        return pid, raw_name, CatName.COMM.value
+    elif "FW" in raw_name or "BW" in raw_name or "UPDATE" in raw_name or "OUTPUT" in raw_name or "COPY_FIRST" in raw_name or "SUM" in raw_name or "COPY_MERGED" in raw_name:
+        return pid, raw_name, CatName.OPERATOR.value
+    elif raw_name == "END":
+        return pid, raw_name, CatName.DEBUG.value
+    else:
+        raise ValueError("Can not decide the cat of %s" % name)
+
+
 def parse_pid_from_name(name):
     if DEL not in name:
         return "none"
