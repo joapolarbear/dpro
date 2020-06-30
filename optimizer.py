@@ -298,10 +298,10 @@ class Optimizer:
 			new_dag = GS
 
 		if topk is None:
-			return [n for n, l in critical_path], new_dag
+			return critical_path, new_dag
 		else:
 			critical_path = sorted(critical_path, key=lambda x: x[1], reverse=True)
-			return [n for n, l in critical_path[:topk]], new_dag
+			return critical_path[:topk], new_dag
 
 	def wrap_critical_path(self, _dag, verbose=False):
 		# t = time.time()
@@ -318,8 +318,9 @@ class Optimizer:
 		### TODO (huhanpeng): currently only consider fusion
 		### 			Need to add quantization
 		search_space = []
+		weights = []
 		prun_cnt = 0
-		for n in candidates:
+		for n, l in candidates:
 			if self.enable_defusion and "+" in n:
 				### This a fused node
 				ns = n.split("+")
@@ -330,6 +331,7 @@ class Optimizer:
 					pos = 0
 					while True:
 						search_space.append(("-", n, pos))
+						weights.append(l)
 						if pos >= (len(ns) - 2):
 							break
 						pos += 1
@@ -376,11 +378,15 @@ class Optimizer:
 				
 				if comm_t >= _dag.nodes[bw_v]["avg"]:
 					prun_cnt += 1
+					# G_star = self.apply_strategies(self.dag, ("+", n, succ_))
+					# iter_time, _ = self.evaluate(G_star)
+					# SingleLogger().info("Prune fusing %s and %s, performace %f %%"%(n, succ_, 100*(self.base_cost - iter_time)/self.base_cost))
 					continue
 
 				search_space.append(("+", n, succ_))
+				weights.append(l)
 		# SingleLogger().info("Init search space len={} from {} candidates, prune {}".format(len(search_space), len(candidates), prun_cnt))
-		return search_space
+		return search_space, weights
 
 	def apply_strategies(self, _dag, strategy):
 		# print(strategy)
@@ -403,12 +409,25 @@ class Optimizer:
 			__apply(strategy)
 		return __dag
 
-	def pick_strategy(self, search_space):
+	def pick_strategy(self, search_space, weights=None):
 		### TODO (huhanpeng): need some priority/heuristic
-		return random.choice(search_space)
+		if weights is None:
+			return random.choice(search_space)
+		else:
+			return self.weighted_choice(search_space, weights)
 
 	def search(self):
 		raise NotImplementedError()
+
+	def weighted_choice(self, choices, weights):
+		total = sum(weights)
+		r = random.uniform(0, total)
+		upto = 0
+		for i in range(len(weights)):
+			if upto + weights[i] >= r:
+				return choices[i]
+			upto += weights[i]
+		assert False, "Shouldn't get here"
 
 class MCMCOptimizer(Optimizer):
 	''' Markov Chain Monte Carlo algorithm'''
@@ -422,14 +441,14 @@ class MCMCOptimizer(Optimizer):
 		cost = self.base_cost
 		trajectory = []
 		candidates, _ = self.candidate_selection(G, topk=None)
-		search_space = self.init_search_space(candidates, G)
+		search_space, weights = self.init_search_space(candidates, G)
 
 		best_cost = cost
 		best_strategy = trajectory.copy()
 
 		while True:
 			while True and len(search_space) > 0:
-				strategy = self.pick_strategy(search_space)
+				strategy = self.pick_strategy(search_space, weights=weights)
 				G_star = self.apply_strategies(G, strategy)
 
 				### Start to replay
@@ -454,7 +473,7 @@ class MCMCOptimizer(Optimizer):
 						best_strategy = trajectory.copy()
 					### Init new search space
 					candidates, _ = self.candidate_selection(G, topk=None, critical_path=self.wrap_critical_path(exct_dag))
-					search_space = self.init_search_space(candidates, G)
+					search_space, weights = self.init_search_space(candidates, G)
 					break
 			SingleLogger().info("Speedup to the origin: %6.4f %%"%(100 * (self.base_cost - cost) / self.base_cost))
 			SingleLogger().info("Best speedup: %d th acception, speed up to the origin: %6.4f %%"%(len(best_strategy), 100 * (self.base_cost - best_cost) / self.base_cost))
@@ -627,7 +646,8 @@ class MCTSOptimizer(Optimizer):
 		### TODO (huhanpeng): we can do some pruning here
 		if GS.space is None:
 			candidates, new_dag = self.candidate_selection(GS, topk=None)
-			GS.space = [[action, 0] for action in self.init_search_space(candidates, new_dag)] ### The integer value is used as a counter
+			search_space, _ = self.init_search_space(candidates, new_dag)
+			GS.space = [[action, 0] for action in search_space] ### The integer value is used as a counter
 
 	def terminal(self, GS):
 		self.check_search_space(GS)
