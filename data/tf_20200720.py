@@ -2,6 +2,19 @@
 Platform: On one V100 GPU, single machine
 Framework: Tensorflow 1.14, CUDA 10.2
 Model/Dataset: 2conv + 2 dense with MNIST
+	# ---------
+	# Variables: name (type shape) [size]
+	# ---------
+	# conv_layer1/conv2d/kernel:0 (float32_ref 5x5x1x32) [800, bytes: 3200]
+	# conv_layer1/conv2d/bias:0 (float32_ref 32) [32, bytes: 128]
+	# conv_layer2/conv2d/kernel:0 (float32_ref 5x5x32x64) [51200, bytes: 204800]
+	# conv_layer2/conv2d/bias:0 (float32_ref 64) [64, bytes: 256]
+	# dense/kernel:0 (float32_ref 3136x1024) [3211264, bytes: 12845056]
+	# dense/bias:0 (float32_ref 1024) [1024, bytes: 4096]
+	# dense_1/kernel:0 (float32_ref 1024x10) [10240, bytes: 40960]
+	# dense_1/bias:0 (float32_ref 10) [10, bytes: 40]
+	# Total size of variables: 3274634
+	# Total bytes of variables: 13098536
 """
 import matplotlib.pyplot as plt
 import numpy as np
@@ -283,7 +296,8 @@ DEFAULT_KENREL_SIZE_STR="K=5"
 DEFAULT_BATCH_SIZE=int(DEFAULT_BATCH_SIZE_STR.split("=")[1])
 DEFAULT_DENSE_SIZE=int(DEFAULT_DENSE_SIZE_STR.split("=")[1])
 DEFAULT_KENREL_SIZE=int(DEFAULT_KENREL_SIZE_STR.split("=")[1])
-BATCH_LIST_STR = ["B=100", "B=200", "B=300", "B=400", "B=500", "B=600", "B=700", "B=800", "B=900", 
+BATCH_LIST_STR = [
+			"B=100", "B=200", "B=300", "B=400", "B=500", "B=600", "B=700", "B=800", "B=900", 
 			"B=1000", "B=2000", "B=3000", "B=4000", "B=5000", "B=6000", "B=7000", "B=8000", "B=9000",
 			"B=10000"]
 DENSE_LIST_STR = ["D=128", "D=256", "D=512", "D=1024", "D=2048", "D=4096", "D=8192"]
@@ -294,28 +308,6 @@ KENREL_LIST_VALUE = [int(e.split("=")[1]) for e in KENREL_LIST_STR]
 
 def time2batch_size(B, a1, a2):
 	return a1 * B + a2
-
-def calculationSizeAndGFLOPS2time(xs, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12):
-	'''
-	gflops:
-		We only need a relative value of gflops, 
-		i.e., if we know fp32's is twice of fp16's, we can just fp32's = 2 and fp16's = 1,
-		the scale is hidden in the a2 
-		x[0]: relative gflops
-		x[1]: num of multiplication
-		x[2]: num of addition
-		x[3]: input size
-		x[4]: output size
-		x[5]: weight size
-	'''
-	# gflops = xs[0]
-	# S_mul = xs[1]
-	return (a1 * xs[1] + a2 * xs[2] + a3) / (a4 * xs[0] + a5) + a6 * xs[3] + a7 * xs[4] + a8 * xs[5] + a9 + a10 * xs[0] * xs[3] + a11 * xs[0] * xs[4] + a12 * xs[0] * xs[5]
-	# return (a1 * xs[1] + a2 * xs[2] + a3) / (a4 * xs[0] + a5) + a9
-
-def wrap_curve_fit(xs, ys):
-	assert isinstance(xs, list) and isinstance(ys, list)
-	return curve_fit(time2batch_size, [0] + xs, [0] + ys)
 
 def vary_batch_size(index, fp16=False):
 	avg = []
@@ -368,9 +360,23 @@ def sizeWeiOfDense(B, C_in, C_out):
 def sizeWeiOfConv(B, width, K, C_in, C_out):
 	return K * K * C_in * C_out
 
+THRESHOLD = 0.01 # in ms
+def exct_filter(target, others):
+	assert len(target.shape) == 1
+	_filter = np.where(target >= THRESHOLD)
+	if len(others.shape) == 1:
+		return target[_filter], others[_filter]
+	else:
+		return target[_filter], others[:, _filter].reshape(list(others.shape[:-1]) + [-1])
+
 def predict_error(_list, _list_pred):
 	_list_pred = np.array(_list_pred)
 	_list = np.array(_list)
+	_list, _list_pred = exct_filter(_list, _list_pred)
+
+	if len(_list) == 0:
+		return None, "Original time is too small. Ignore!!!"
+
 	diff = np.abs(_list_pred - _list) / _list
 	return diff, "%f %%"%(np.average(diff * 100))
 
@@ -387,20 +393,6 @@ def infoOfDense(B, C_in, C_out):
 		sizeInOfDense(B, C_in, C_out), \
 		sizeOutOfDense(B, C_in, C_out), \
 		sizeWeiOfDense(B, C_in, C_out)
-
-# ---------
-# Variables: name (type shape) [size]
-# ---------
-# conv_layer1/conv2d/kernel:0 (float32_ref 5x5x1x32) [800, bytes: 3200]
-# conv_layer1/conv2d/bias:0 (float32_ref 32) [32, bytes: 128]
-# conv_layer2/conv2d/kernel:0 (float32_ref 5x5x32x64) [51200, bytes: 204800]
-# conv_layer2/conv2d/bias:0 (float32_ref 64) [64, bytes: 256]
-# dense/kernel:0 (float32_ref 3136x1024) [3211264, bytes: 12845056]
-# dense/bias:0 (float32_ref 1024) [1024, bytes: 4096]
-# dense_1/kernel:0 (float32_ref 1024x10) [10240, bytes: 40960]
-# dense_1/bias:0 (float32_ref 10) [10, bytes: 40]
-# Total size of variables: 3274634
-# Total bytes of variables: 13098536
 
 def show_model_complexity():
 	computeComplexity = [["conv_layer1", "conv_layer2", "dense", "dense1"], 
@@ -424,8 +416,6 @@ names = ['conv_layer1/conv2d/BiasAdd',
 	'conv_layer2/conv2d/Conv2D', 
 	'conv_layer2/conv2d/Relu', 
 	'dense/BiasAdd', 'dense/MatMul', 'dense/Relu', 'dense_1/BiasAdd', 'dense_1/MatMul']
-
-is_show = [True, True, True, True]
 
 def plot_varyB_resut(S_mul=False, S_add=False, S_in=False, S_out=False, S_wei=False):
 	plt.figure(num=1, figsize=(8, 6))
@@ -517,14 +507,17 @@ def plot_varyB_resut(S_mul=False, S_add=False, S_in=False, S_out=False, S_wei=Fa
 
 	plt.show()
 
+def init_fig_base(cnt):
+	w = math.ceil(math.sqrt(cnt))
+	h = math.ceil(cnt / w)
+	fig_base = w * 100 + h * 10 + 1
+	return fig_base, 0
+
 def plot_varyK_result(S_mul=False, S_add=False, S_in=False, S_out=False, S_wei=False):
 	plt.figure(num=1, figsize=(8, 6))
 
 	cnt = 1 + int(S_mul) + int(S_add) + int(S_in) + int(S_out) + int(S_wei)
-	w = math.ceil(math.sqrt(cnt))
-	h = math.ceil(cnt / w)
-	fig_base = w * 100 + h * 10 + 1
-	fig_idx = 0
+	fig_base, fig_idx = init_fig_base(cnt)
 	
 	model_size = [list(zip(*[infoOfConv(DEFAULT_BATCH_SIZE, 28, k, 1, 32) for k in KENREL_LIST_VALUE])),
 		list(zip(*[infoOfConv(DEFAULT_BATCH_SIZE, 14, k, 32, 64) for k in KENREL_LIST_VALUE]))]
@@ -622,12 +615,40 @@ def plot_varyB_resut_of_cast():
 # plot_varyD_result()
 # plot_varyB_resut(S_mul=False, S_add=False, S_in=False, S_out=False, S_wei=False)
 # plot_varyB_resut_of_cast()
-raise
+# raise
 
 
 ####################################################################################################
 #############################        Start to Fit          #########################################
 ####################################################################################################
+def calculationSizeAndGFLOPS2time(xs, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12):
+	'''
+	gflops:
+		We only need a relative value of gflops, 
+		i.e., if we know fp32's is twice of fp16's, we can just fp32's = 2 and fp16's = 1,
+		the scale is hidden in the a2 
+		x[0]: relative gflops
+		x[1]: num of multiplication
+		x[2]: num of addition
+		x[3]: input size
+		x[4]: output size
+		x[5]: weight size
+	'''
+	# gflops = xs[0]
+	# S_mul = xs[1]
+	return (a1 * xs[1] + a2 * xs[2] + a3) / (a4 * xs[0] + a5) + a6 * xs[3] + a7 * xs[4] + a8 * xs[5] + a9 + a10 * xs[0] * xs[3] + a11 * xs[0] * xs[4] + a12 * xs[0] * xs[5]
+	# return (a1 * xs[1] + a2 * xs[2] + a3) / (a4 * xs[0] + a5) + a9
+
+def wrap_curve_fit(xs, ys):
+	assert isinstance(xs, list) and isinstance(ys, list)
+	return curve_fit(time2batch_size, [0] + xs, [0] + ys)
+
+# up_bounds = (0, 0, -np.inf, 0, -np.inf, -np.inf)
+up_bounds = (0, 0, -np.inf, 0, -np.inf, 0, 0, 0, -np.inf, 0, 0, 0)
+lower_boulds = tuple(len(up_bounds) * [np.inf])
+p0=[0]*len(up_bounds)
+
+is_show = [True, True, False, False, False, False, False, False]
 
 def fit_with_S_cal_gflops(is_show):
 	GFLOPS_FP32 = 1
@@ -640,106 +661,96 @@ def fit_with_S_cal_gflops(is_show):
 	S_in_list = []
 	S_out_list = []
 	S_wei_list = []
+
+	def __record_xdata(S_mul, S_add, S_in, S_out, S_wei, gflops):
+		S_mul_list.append(S_mul)
+		S_add_list.append(S_add)
+		S_in_list.append(S_in)
+		S_out_list.append(S_out)
+		S_wei_list.append(S_wei)
+		gflopsList.append(gflops)
 	
 
 	if is_show[0]:
 		avgsList += vary_batch_size(NAMELIST_32.index('conv_layer1/conv2d/Conv2D'))
 		for b in BATCH_LIST_VALUE:
 			S_mul, S_add, S_in, S_out, S_wei = infoOfConv(b, 28, DEFAULT_KENREL_SIZE, 1, 32)
-			S_mul_list.append(S_mul)
-			S_add_list.append(S_add)
-			S_in_list.append(S_in)
-			S_out_list.append(S_out)
-			S_wei_list.append(S_wei)
-			gflopsList.append(GFLOPS_FP32)
-
+			__record_xdata(S_mul, S_add, S_in, S_out, S_wei, GFLOPS_FP32)
 
 		avgsList += vary_batch_size(NAMELIST_16.index('conv_layer1/conv2d/Conv2D'), fp16=True)
 		for b in BATCH_LIST_VALUE:
 			S_mul, S_add, S_in, S_out, S_wei = infoOfConv(b, 28, DEFAULT_KENREL_SIZE, 1, 32)
-			S_mul_list.append(S_mul)
-			S_add_list.append(S_add)
-			S_in_list.append(S_in)
-			S_out_list.append(S_out)
-			S_wei_list.append(S_wei)
-			gflopsList.append(GFLOPS_FP16)
+			__record_xdata(S_mul, S_add, S_in, S_out, S_wei, GFLOPS_FP16)
 
 	if is_show[1]:
 		avgsList += vary_batch_size(NAMELIST_32.index('conv_layer2/conv2d/Conv2D'))
 		for b in BATCH_LIST_VALUE:
 			S_mul, S_add, S_in, S_out, S_wei = infoOfConv(b, 14, DEFAULT_KENREL_SIZE, 32, 64)
-			S_mul_list.append(S_mul)
-			S_add_list.append(S_add)
-			S_in_list.append(S_in)
-			S_out_list.append(S_out)
-			S_wei_list.append(S_wei)
-			gflopsList.append(GFLOPS_FP32)
+			__record_xdata(S_mul, S_add, S_in, S_out, S_wei, GFLOPS_FP32)
 
 		avgsList += vary_batch_size(NAMELIST_16.index('conv_layer2/conv2d/Conv2D'), fp16=True)
 		for b in BATCH_LIST_VALUE:
 			S_mul, S_add, S_in, S_out, S_wei = infoOfConv(b, 14, DEFAULT_KENREL_SIZE, 32, 64)
-			S_mul_list.append(S_mul)
-			S_add_list.append(S_add)
-			S_in_list.append(S_in)
-			S_out_list.append(S_out)
-			S_wei_list.append(S_wei)
-			gflopsList.append(GFLOPS_FP16)
+			__record_xdata(S_mul, S_add, S_in, S_out, S_wei, GFLOPS_FP16)
 	
 	if is_show[2]:
 		avgsList += vary_batch_size(NAMELIST_32.index('dense/MatMul'))
 		for b in BATCH_LIST_VALUE:
 			S_mul, S_add, S_in, S_out, S_wei = infoOfDense(b, 7*7*64, DEFAULT_DENSE_SIZE)
-			S_mul_list.append(S_mul)
-			S_add_list.append(S_add)
-			S_in_list.append(S_in)
-			S_out_list.append(S_out)
-			S_wei_list.append(S_wei)
-			gflopsList.append(GFLOPS_FP32)
+			__record_xdata(S_mul, S_add, S_in, S_out, S_wei, GFLOPS_FP32)
 
 		avgsList += vary_batch_size(NAMELIST_16.index('dense/MatMul'), fp16=True)
 		for b in BATCH_LIST_VALUE:
 			S_mul, S_add, S_in, S_out, S_wei = infoOfDense(b, 7*7*64, DEFAULT_DENSE_SIZE)
-			S_mul_list.append(S_mul)
-			S_add_list.append(S_add)
-			S_in_list.append(S_in)
-			S_out_list.append(S_out)
-			S_wei_list.append(S_wei)
-			gflopsList.append(GFLOPS_FP16)
+			__record_xdata(S_mul, S_add, S_in, S_out, S_wei, GFLOPS_FP16)
 
 	if is_show[3]:
 		avgsList += vary_batch_size(NAMELIST_32.index('dense_1/MatMul'))
 		for b in BATCH_LIST_VALUE:
 			S_mul, S_add, S_in, S_out, S_wei = infoOfDense(b, DEFAULT_DENSE_SIZE, 10)
-			S_mul_list.append(S_mul)
-			S_add_list.append(S_add)
-			S_in_list.append(S_in)
-			S_out_list.append(S_out)
-			S_wei_list.append(S_wei)
-			gflopsList.append(GFLOPS_FP32)
+			__record_xdata(S_mul, S_add, S_in, S_out, S_wei, GFLOPS_FP32)
 
 		avgsList += vary_batch_size(NAMELIST_16.index('dense_1/MatMul'), fp16=True)
 		for b in BATCH_LIST_VALUE:
 			S_mul, S_add, S_in, S_out, S_wei = infoOfDense(b, DEFAULT_DENSE_SIZE, 10)
-			S_mul_list.append(S_mul)
-			S_add_list.append(S_add)
-			S_in_list.append(S_in)
-			S_out_list.append(S_out)
-			S_wei_list.append(S_wei)
-			gflopsList.append(GFLOPS_FP16)
+			__record_xdata(S_mul, S_add, S_in, S_out, S_wei, GFLOPS_FP16)
 	
+	if is_show[4]:
+		avgsList += vary_batch_size(NAMELIST_16.index('conv_layer1/Cast_1'), fp16=True)
+		S_mul = S_add = S_wei = 0
+		for b in BATCH_LIST_VALUE:
+			S_in = S_out = sizeOutOfConv(b, 28, DEFAULT_KENREL_SIZE, 1, 32)
+			__record_xdata(S_mul, S_add, S_in, S_out, S_wei, GFLOPS_FP16)
+
+	if is_show[5]:
+		avgsList += vary_batch_size(NAMELIST_16.index('conv_layer2/Cast'), fp16=True)
+		S_mul = S_add = S_wei = 0
+		for b in BATCH_LIST_VALUE:
+			S_in = S_out = sizeInOfConv(b, 14, DEFAULT_KENREL_SIZE, 32, 64)
+			__record_xdata(S_mul, S_add, S_in, S_out, S_wei, GFLOPS_FP16)
+
+	if is_show[6]:
+		avgsList += vary_batch_size(NAMELIST_16.index('Cast_2'), fp16=True)
+		S_mul = S_add = S_wei = 0
+		for b in BATCH_LIST_VALUE:
+			S_in = S_out = sizeInOfDense(b, 7*7*64, DEFAULT_DENSE_SIZE)
+			__record_xdata(S_mul, S_add, S_in, S_out, S_wei, GFLOPS_FP16)
+
+	if is_show[7]:
+		avgsList += vary_batch_size(NAMELIST_16.index('Cast_3'), fp16=True)
+		S_mul = S_add = S_wei = 0
+		for b in BATCH_LIST_VALUE:
+			S_in = S_out = sizeOutOfDense(b, DEFAULT_DENSE_SIZE, 10)
+			__record_xdata(S_mul, S_add, S_in, S_out, S_wei, GFLOPS_FP16)
+
 	xdata = np.array([gflopsList, S_mul_list, S_add_list, S_in_list, S_out_list, S_wei_list])
 	ydata = np.array(avgsList)
-	# up_bounds = (0, 0, -np.inf, 0, -np.inf, -np.inf)
-	up_bounds = (0, 0, -np.inf, 0, -np.inf, 0, 0, 0, -np.inf, 0, 0, 0)
-	lower_boulds = tuple(len(up_bounds) * [np.inf])
-	p0=[0]*len(up_bounds)
-	popt, pcov = curve_fit(calculationSizeAndGFLOPS2time, xdata, ydata, 
+	_ydata, _xdata = exct_filter(ydata, xdata)
+	popt, pcov = curve_fit(calculationSizeAndGFLOPS2time, _xdata, _ydata, 
 		bounds=(up_bounds, lower_boulds), p0=p0)
-	return popt, pcov, avgsList, S_mul_list, S_add_list, gflopsList, S_in_list, S_out_list, S_wei_list
+	return popt, pcov, xdata, ydata
 
-popt, pcov, avgsList, S_mul_list, \
-	S_add_list, gflopsList, S_in_list, \
-	S_out_list, S_wei_list = fit_with_S_cal_gflops(is_show)
+popt, pcov, xdata, ydata = fit_with_S_cal_gflops(is_show)
 print(popt)
 UNIT_LEN = len(BATCH_LIST_VALUE)
 
@@ -803,152 +814,56 @@ def plot_3d_fit_result():
 
 def plot_2d_fit_result(is_show):
 	plt.figure(num=1, figsize=(8, 6))
-	fig_idx = 0
 
-	cnt = 0
-	for i in is_show:
-		if i:
-			cnt += 1
-	fig_base = 110 if cnt == 1 else (120 if cnt == 2 else 220)
+	cnt = sum([int(i) for i in is_show])
+	fig_base, fig_idx = init_fig_base(cnt)
+
+	def __plot(layer_name, label_32, label_16, fig_base, fig_idx, only_16=False):
+		ax = plt.subplot(fig_base)
+		if not only_16:
+			avgs = vary_batch_size(NAMELIST_32.index(layer_name))
+			ax.plot(BATCH_LIST_VALUE, avgs, marker='.', label=label_32)
+			avgs_pred = calculationSizeAndGFLOPS2time(xdata[:, fig_idx*UNIT_LEN:(fig_idx+1)*UNIT_LEN], *popt)
+			ax.plot(BATCH_LIST_VALUE, avgs_pred, "--", label=label_32+"_pred")
+			diff = predict_error(avgs, avgs_pred)
+			print(label_32, diff)
+			fig_idx += 1
+
+		avgs_16 = vary_batch_size(NAMELIST_16.index(layer_name), fp16=True)
+		ax.plot(BATCH_LIST_VALUE, avgs_16, marker='^', label=label_16)
+		avgs_pred = calculationSizeAndGFLOPS2time(xdata[:, fig_idx*UNIT_LEN:(fig_idx+1)*UNIT_LEN], *popt)
+		ax.plot(BATCH_LIST_VALUE, avgs_pred, "--", label=label_16+"_pred")
+		diff = predict_error(avgs_16, avgs_pred)
+		print(label_16, diff)
+		fig_idx += 1
+		fig_base += 1
+
+		plt.legend()
+		plt.ylabel('Average Time (ms)')
+		plt.xlabel("Batch Size (B)")
+		return fig_base, fig_idx
 
 	if is_show[0]:
-		ax = plt.subplot(fig_base+(fig_idx//2)+1)
-		avgs = vary_batch_size(NAMELIST_32.index('conv_layer1/conv2d/Conv2D'))
-		ax.plot(BATCH_LIST_VALUE, avgs, marker='.', label="conv1 (5*5*1*32)")
-		avgs_pred = calculationSizeAndGFLOPS2time(
-			np.array([gflopsList[fig_idx*UNIT_LEN:(fig_idx+1)*UNIT_LEN],
-			S_mul_list[fig_idx*UNIT_LEN:(fig_idx+1)*UNIT_LEN],
-			S_add_list[fig_idx*UNIT_LEN:(fig_idx+1)*UNIT_LEN],
-				S_in_list[fig_idx*UNIT_LEN:(fig_idx+1)*UNIT_LEN], 
-				S_out_list[fig_idx*UNIT_LEN:(fig_idx+1)*UNIT_LEN],
-				S_wei_list[fig_idx*UNIT_LEN:(fig_idx+1)*UNIT_LEN]]), *popt)
-		ax.plot(BATCH_LIST_VALUE, avgs_pred, "--", label="conv1 pred")
-		diff = predict_error(avgs, avgs_pred)
-		print("conv1_fp32", diff)
-		fig_idx += 1
-
-		avgs_16 = vary_batch_size(NAMELIST_16.index('conv_layer1/conv2d/Conv2D'), fp16=True)
-		ax.plot(BATCH_LIST_VALUE, avgs_16, marker='^', label="conv1_fp16")
-		avgs_pred = calculationSizeAndGFLOPS2time(
-			np.array([gflopsList[fig_idx*UNIT_LEN:(fig_idx+1)*UNIT_LEN],
-			S_mul_list[fig_idx*UNIT_LEN:(fig_idx+1)*UNIT_LEN],
-			S_add_list[fig_idx*UNIT_LEN:(fig_idx+1)*UNIT_LEN],
-				S_in_list[fig_idx*UNIT_LEN:(fig_idx+1)*UNIT_LEN], 
-				S_out_list[fig_idx*UNIT_LEN:(fig_idx+1)*UNIT_LEN],
-				S_wei_list[fig_idx*UNIT_LEN:(fig_idx+1)*UNIT_LEN]]), *popt)
-		ax.plot(BATCH_LIST_VALUE, avgs_pred, "--", label="conv1_fp16 pred")
-		diff = predict_error(avgs_16, avgs_pred)
-		print("conv1_fp16", diff)
-		fig_idx += 1
-
-		plt.legend()
-		plt.ylabel('Average Time (ms)')
-		plt.xlabel("Batch Size (B)")
+		fig_base, fig_idx = __plot('conv_layer1/conv2d/Conv2D', "conv1_fp32", "conv1_fp16", fig_base, fig_idx)
 
 	if is_show[1]:
-		ax = plt.subplot(fig_base+(fig_idx//2)+1)
-		avgs = vary_batch_size(NAMELIST_32.index('conv_layer2/conv2d/Conv2D'))
-		ax.plot(BATCH_LIST_VALUE, avgs, marker='.', label="conv2 (5*5*32*64)")
-		avgs_pred = calculationSizeAndGFLOPS2time(
-			np.array([gflopsList[fig_idx*UNIT_LEN:(fig_idx+1)*UNIT_LEN],
-			S_mul_list[fig_idx*UNIT_LEN:(fig_idx+1)*UNIT_LEN],
-			S_add_list[fig_idx*UNIT_LEN:(fig_idx+1)*UNIT_LEN],
-				S_in_list[fig_idx*UNIT_LEN:(fig_idx+1)*UNIT_LEN], 
-				S_out_list[fig_idx*UNIT_LEN:(fig_idx+1)*UNIT_LEN],
-				S_wei_list[fig_idx*UNIT_LEN:(fig_idx+1)*UNIT_LEN]]), *popt)
-		ax.plot(BATCH_LIST_VALUE, avgs_pred, "--", label="conv2 pred")
-		diff = predict_error(avgs, avgs_pred)
-		print("conv2_fp32", diff)
-		fig_idx += 1
-
-		avgs_16 = vary_batch_size(NAMELIST_16.index('conv_layer2/conv2d/Conv2D'), fp16=True)
-		ax.plot(BATCH_LIST_VALUE, avgs_16, marker='^', label="conv2 (5*5*32*64) + fp16")
-		avgs_pred = calculationSizeAndGFLOPS2time(
-			np.array([gflopsList[fig_idx*UNIT_LEN:(fig_idx+1)*UNIT_LEN],
-			S_mul_list[fig_idx*UNIT_LEN:(fig_idx+1)*UNIT_LEN],
-			S_add_list[fig_idx*UNIT_LEN:(fig_idx+1)*UNIT_LEN],
-				S_in_list[fig_idx*UNIT_LEN:(fig_idx+1)*UNIT_LEN], 
-				S_out_list[fig_idx*UNIT_LEN:(fig_idx+1)*UNIT_LEN],
-				S_wei_list[fig_idx*UNIT_LEN:(fig_idx+1)*UNIT_LEN]]), *popt)
-		ax.plot(BATCH_LIST_VALUE, avgs_pred, "--", label="conv2_fp16 pred")
-		diff = predict_error(avgs_16, avgs_pred)
-		print("conv2_fp16", diff)
-		fig_idx += 1
-
-		plt.legend()
-		plt.ylabel('Average Time (ms)')
-		plt.xlabel("Batch Size (B)")
+		fig_base, fig_idx = __plot('conv_layer2/conv2d/Conv2D', "conv2_fp32", "conv2_fp16", fig_base, fig_idx)
 
 	if is_show[2]:
-		ax = plt.subplot(fig_base+(fig_idx//2)+1)
-
-		avgs = vary_batch_size(NAMELIST_32.index('dense/MatMul'))
-		ax.plot(BATCH_LIST_VALUE, avgs, marker='.', label="dense (3136*1024)")
-		avgs_pred = calculationSizeAndGFLOPS2time(
-			np.array([gflopsList[fig_idx*UNIT_LEN:(fig_idx+1)*UNIT_LEN],
-				S_mul_list[fig_idx*UNIT_LEN:(fig_idx+1)*UNIT_LEN],
-				S_add_list[fig_idx*UNIT_LEN:(fig_idx+1)*UNIT_LEN],
-				S_in_list[fig_idx*UNIT_LEN:(fig_idx+1)*UNIT_LEN], 
-				S_out_list[fig_idx*UNIT_LEN:(fig_idx+1)*UNIT_LEN],
-				S_wei_list[fig_idx*UNIT_LEN:(fig_idx+1)*UNIT_LEN]]), *popt)
-		ax.plot(BATCH_LIST_VALUE, avgs_pred, "--", label="dense pred")
-		diff = predict_error(avgs, avgs_pred)
-		print("dense_fp32", diff)
-		# ax.plot(BATCH_LIST_VALUE, S_mul_list[fig_idx*UNIT_LEN:(fig_idx+1)*UNIT_LEN], marker='o', label="dense (3136*1024) size")
-		fig_idx += 1
-
-		avgs_16 = vary_batch_size(NAMELIST_16.index('dense/MatMul'), fp16=True)
-		ax.plot(BATCH_LIST_VALUE, avgs_16, marker='^', label="dense (3136*1024) + fp16")
-		avgs_pred = calculationSizeAndGFLOPS2time(
-			np.array([gflopsList[fig_idx*UNIT_LEN:(fig_idx+1)*UNIT_LEN],
-				S_mul_list[fig_idx*UNIT_LEN:(fig_idx+1)*UNIT_LEN],
-				S_add_list[fig_idx*UNIT_LEN:(fig_idx+1)*UNIT_LEN],
-				S_in_list[fig_idx*UNIT_LEN:(fig_idx+1)*UNIT_LEN], 
-				S_out_list[fig_idx*UNIT_LEN:(fig_idx+1)*UNIT_LEN],
-				S_wei_list[fig_idx*UNIT_LEN:(fig_idx+1)*UNIT_LEN]]), *popt)
-		ax.plot(BATCH_LIST_VALUE, avgs_pred, "--", label="dense_fp16 pred")
-		diff = predict_error(avgs_16, avgs_pred)
-		print("dense_fp16", diff)
-		fig_idx += 1
-
-		plt.legend()
-		plt.ylabel('Average Time (ms)')
-		plt.xlabel("Batch Size (B)")
+		fig_base, fig_idx = __plot('dense/MatMul', "dense_fp32", "dense_fp16", fig_base, fig_idx)
 
 	if is_show[3]:
-		ax = plt.subplot(fig_base+(fig_idx//2)+1)
+		fig_base, fig_idx = __plot('dense_1/MatMul', "dense1_fp32", "dense1_fp16", fig_base, fig_idx)
 
-		avgs = vary_batch_size(NAMELIST_32.index('dense_1/MatMul'))
-		ax.plot(BATCH_LIST_VALUE, avgs, marker='.', label="dense1 (1024*10)")
-		avgs_pred = calculationSizeAndGFLOPS2time(
-			np.array([gflopsList[fig_idx*UNIT_LEN:(fig_idx+1)*UNIT_LEN],
-				S_mul_list[fig_idx*UNIT_LEN:(fig_idx+1)*UNIT_LEN],
-				S_add_list[fig_idx*UNIT_LEN:(fig_idx+1)*UNIT_LEN],
-				S_in_list[fig_idx*UNIT_LEN:(fig_idx+1)*UNIT_LEN], 
-				S_out_list[fig_idx*UNIT_LEN:(fig_idx+1)*UNIT_LEN],
-				S_wei_list[fig_idx*UNIT_LEN:(fig_idx+1)*UNIT_LEN]]), *popt)
-		ax.plot(BATCH_LIST_VALUE, avgs_pred, "--", label="dense1 pred")
-		diff = predict_error(avgs, avgs_pred)
-		print("dense1_fp32", diff)
-		fig_idx += 1
-
-		avgs_16 = vary_batch_size(NAMELIST_16.index('dense_1/MatMul'), fp16=True)
-		ax.plot(BATCH_LIST_VALUE, avgs_16, marker='^', label="dense1 (1024*10) + fp16")
-		avgs_pred = calculationSizeAndGFLOPS2time(
-			np.array([gflopsList[fig_idx*UNIT_LEN:(fig_idx+1)*UNIT_LEN],
-				S_mul_list[fig_idx*UNIT_LEN:(fig_idx+1)*UNIT_LEN],
-				S_add_list[fig_idx*UNIT_LEN:(fig_idx+1)*UNIT_LEN],
-				S_in_list[fig_idx*UNIT_LEN:(fig_idx+1)*UNIT_LEN], 
-				S_out_list[fig_idx*UNIT_LEN:(fig_idx+1)*UNIT_LEN],
-				S_wei_list[fig_idx*UNIT_LEN:(fig_idx+1)*UNIT_LEN]]), *popt)
-		ax.plot(BATCH_LIST_VALUE, avgs_pred, "--", label="dense1_fp16 pred")
-		diff = predict_error(avgs_16, avgs_pred)
-		print("dense1_fp16", diff)
-		fig_idx += 1
-
-		plt.legend()
-		plt.ylabel('Average Time (ms)')
-		plt.xlabel("Batch Size (B)")
+	### plot results for cast ops
+	if is_show[4]:
+		fig_base, fig_idx = __plot('conv_layer1/Cast_1', None, "conv1_out_cast", fig_base, fig_idx, only_16=True)
+	if is_show[5]:
+		fig_base, fig_idx = __plot('conv_layer2/Cast', None, "conv2_in_cast", fig_base, fig_idx, only_16=True)
+	if is_show[6]:
+		fig_base, fig_idx = __plot('Cast_2', None, "dense_out_cast", fig_base, fig_idx, only_16=True)
+	if is_show[7]:
+		fig_base, fig_idx = __plot('Cast_3', None, "dense_in_cast", fig_base, fig_idx, only_16=True)
 
 	plt.show()
 
