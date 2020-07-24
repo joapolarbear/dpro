@@ -360,26 +360,6 @@ def sizeWeiOfDense(B, C_in, C_out):
 def sizeWeiOfConv(B, width, K, C_in, C_out):
 	return K * K * C_in * C_out
 
-THRESHOLD = 0.01 # in ms
-def exct_filter(target, others):
-	assert len(target.shape) == 1
-	_filter = np.where(target >= THRESHOLD)
-	if len(others.shape) == 1:
-		return target[_filter], others[_filter]
-	else:
-		return target[_filter], others[:, _filter].reshape(list(others.shape[:-1]) + [-1])
-
-def predict_error(_list, _list_pred):
-	_list_pred = np.array(_list_pred)
-	_list = np.array(_list)
-	_list, _list_pred = exct_filter(_list, _list_pred)
-
-	if len(_list) == 0:
-		return None, "Original time is too small. Ignore!!!"
-
-	diff = np.abs(_list_pred - _list) / _list
-	return diff, "%f %%"%(np.average(diff * 100))
-
 def infoOfConv(B, width, K, C_in, C_out):
 	return numOfMulInConv(B, width, K, C_in, C_out), \
 		numOfAddInConv(B, width, K, C_in, C_out), \
@@ -417,6 +397,19 @@ names = ['conv_layer1/conv2d/BiasAdd',
 	'conv_layer2/conv2d/Relu', 
 	'dense/BiasAdd', 'dense/MatMul', 'dense/Relu', 'dense_1/BiasAdd', 'dense_1/MatMul']
 
+OP_NAMES = ['conv_layer1/conv2d/Conv2D', 'conv_layer2/conv2d/Conv2D', 'dense/MatMul', 'dense_1/MatMul',
+	'conv_layer1/Cast_1', 'conv_layer2/Cast', 'Cast_2', 'Cast_3']
+OP_LABELS = ['conv1', 'conv2', 'dense', 'dense_1',
+	"conv1_out_cast", "conv2_in_cast", "dense_out_cast", "dense_in_cast"]
+
+model_size = np.array([
+		list(zip(*[infoOfConv(b, 28, DEFAULT_KENREL_SIZE, 1, 32) for b in BATCH_LIST_VALUE])),
+		list(zip(*[infoOfConv(b, 14, DEFAULT_KENREL_SIZE, 32, 64) for b in BATCH_LIST_VALUE])),
+		list(zip(*[infoOfDense(b, 7*7*64, DEFAULT_DENSE_SIZE) for b in BATCH_LIST_VALUE])),
+		list(zip(*[infoOfDense(b, DEFAULT_DENSE_SIZE, 10) for b in BATCH_LIST_VALUE]))
+	])
+intensity = model_size[:, 0, :] / (model_size[:, 2, :] + model_size[:, 3, :] + model_size[:, 4, :])
+
 def plot_varyB_resut(S_mul=False, S_add=False, S_in=False, S_out=False, S_wei=False):
 	plt.figure(num=1, figsize=(8, 6))
 
@@ -432,12 +425,6 @@ def plot_varyB_resut(S_mul=False, S_add=False, S_in=False, S_out=False, S_wei=Fa
 	elif S_wei:
 		x_axis_idx = 4
 
-	model_size = [
-		list(zip(*[infoOfConv(b, 28, DEFAULT_KENREL_SIZE, 1, 32) for b in BATCH_LIST_VALUE])),
-		list(zip(*[infoOfConv(b, 14, DEFAULT_KENREL_SIZE, 32, 64) for b in BATCH_LIST_VALUE])),
-		list(zip(*[infoOfDense(b, 7*7*64, DEFAULT_DENSE_SIZE) for b in BATCH_LIST_VALUE])),
-		list(zip(*[infoOfDense(b, DEFAULT_DENSE_SIZE, 10) for b in BATCH_LIST_VALUE]))
-	]
 	x_axis_names = ["S_mul", "S_add", "S_in", "S_out", "S_weight"]
 	x_axis_name = "Batch Size (B)" if x_axis_idx is None else x_axis_names[x_axis_idx]
 
@@ -451,7 +438,6 @@ def plot_varyB_resut(S_mul=False, S_add=False, S_in=False, S_out=False, S_wei=Fa
 	# popt, pcov = wrap_curve_fit(BATCH_LIST_VALUE, avgs)
 	# popt_16, pcov = wrap_curve_fit(BATCH_LIST_VALUE, avgs_16)
 	# ax.plot(BATCH_LIST_VALUE, np.array(avgs)/np.array(avgs_16), "--", label="conv1 / conv1_fp16")
-
 	plt.legend()
 	plt.ylabel('Average Time (ms)')
 	plt.xlabel(x_axis_name)
@@ -504,6 +490,38 @@ def plot_varyB_resut(S_mul=False, S_add=False, S_in=False, S_out=False, S_wei=Fa
 	plt.legend()
 	plt.ylabel('Average Time (ms)')
 	plt.xlabel(x_axis_name)
+
+	plt.show()
+
+def plot_varyB_intensity():
+	plt.figure(num=1, figsize=(8, 6))
+
+	# x_axis_names = ["S_mul", "S_add", "S_in", "S_out", "S_weight"]
+	x_axis_name = "Batch Size (B)"
+
+	def __plot(op_id):
+		ax = plt.subplot(241 + 2 * op_id)
+		x_axis = BATCH_LIST_VALUE
+		avgs = vary_batch_size(NAMELIST_32.index(OP_NAMES[op_id]))
+		avgs_16 = vary_batch_size(NAMELIST_16.index(OP_NAMES[op_id]), fp16=True)
+
+		flops_32 = model_size[op_id, 0, :] / np.array(avgs)
+		flops_16 = model_size[op_id, 0, :] / np.array(avgs_16)
+		ax.plot(x_axis, flops_32, '.-', label=OP_LABELS[op_id]+"_fp32_flops")
+		ax.plot(x_axis, flops_16, '.-', label=OP_LABELS[op_id]+"_fp16_flops")
+		plt.legend()
+		plt.ylabel('FLOPS')
+		plt.xlabel(x_axis_name)
+
+		ax = plt.subplot(242 + 2 * op_id)
+		ax.plot(x_axis, intensity[op_id], '.-', label=OP_LABELS[op_id]+"_intensity")
+		plt.legend()
+		plt.ylabel('Intensity')
+		plt.xlabel(x_axis_name)
+		op_id + 1
+
+	for op_id in range(4):
+		__plot(op_id)
 
 	plt.show()
 
@@ -614,6 +632,7 @@ def plot_varyB_resut_of_cast():
 # plot_varyK_result(S_mul=True, S_add=True, S_in=True, S_out=True, S_wei=True)
 # plot_varyD_result()
 # plot_varyB_resut(S_mul=False, S_add=False, S_in=False, S_out=False, S_wei=False)
+# plot_varyB_intensity()
 # plot_varyB_resut_of_cast()
 # raise
 
@@ -621,7 +640,28 @@ def plot_varyB_resut_of_cast():
 ####################################################################################################
 #############################        Start to Fit          #########################################
 ####################################################################################################
-def calculationSizeAndGFLOPS2time(xs, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12):
+
+THRESHOLD = 0.1 # in ms
+def exct_filter(target, others):
+	assert len(target.shape) == 1
+	_filter = np.where(target >= THRESHOLD)
+	if len(others.shape) == 1:
+		return target[_filter], others[_filter]
+	else:
+		return target[_filter], others[:, _filter].reshape(list(others.shape[:-1]) + [-1])
+
+def predict_error(_list, _list_pred):
+	_list_pred = np.array(_list_pred)
+	_list = np.array(_list)
+	_list, _list_pred = exct_filter(_list, _list_pred)
+
+	if len(_list) == 0:
+		return None, "Original time is too small. Ignore!!!"
+
+	diff = np.abs(_list_pred - _list) / _list
+	return diff, "%f %%"%(np.average(diff * 100))
+
+def calculationSizeAndGFLOPS2time(xs, a1, a2, a3, a4, a5, a6, a7, a8, a9, b1, b2, b3):
 	'''
 	gflops:
 		We only need a relative value of gflops, 
@@ -634,26 +674,47 @@ def calculationSizeAndGFLOPS2time(xs, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a
 		x[4]: output size
 		x[5]: weight size
 	'''
-	# gflops = xs[0]
-	# S_mul = xs[1]
-	return (a1 * xs[1] + a2 * xs[2] + a3) / (a4 * xs[0] + a5) + a6 * xs[3] + a7 * xs[4] + a8 * xs[5] + a9 + a10 * xs[0] * xs[3] + a11 * xs[0] * xs[4] + a12 * xs[0] * xs[5]
-	# return (a1 * xs[1] + a2 * xs[2] + a3) / (a4 * xs[0] + a5) + a9
+	gflops = xs[0]
+	S_mul = xs[1]
+	S_add = xs[2]
+	wei_S_all = a4 * xs[3] + a5 * xs[4] + a6 * xs[5]
+	wei_S_all2 = a7 * xs[3] + a8 * xs[4] + a9 * xs[5]
+	return (a1 * S_mul + b1) / (a3 * gflops + b2) + wei_S_all / gflops + b3 + gflops * wei_S_all2 
+	# return (a1 * xs[1] + b1) / (np.exp(a3 * xs[0] * (a4 * xs[3] + a5 * xs[4] + a6 * xs[5]) * (xs[1]/(xs[3] + xs[4] + a7 * xs[3] + a8 * xs[4] + a9 * xs[5]))) + b2) + b3 
+
+def fit_test(xs, a1, a2, a3, a4, b1):
+	'''
+	gflops:
+		We only need a relative value of gflops, 
+		i.e., if we know fp32's is twice of fp16's, we can just fp32's = 2 and fp16's = 1,
+		the scale is hidden in the a2 
+		x[0]: relative gflops
+		x[1]: num of multiplication
+		x[2]: num of addition
+		x[3]: input size
+		x[4]: output size
+		x[5]: weight size
+	'''
+	return (a1 * xs[1] + b1) * (1 / (a2 * xs[0] * xs[1] / (xs[3] + xs[4] + xs[5])) + 1 / (a3 * xs[0]) + a4 * xs[0] * (xs[3] + xs[4] + xs[5]) / xs[1])
+		
 
 def wrap_curve_fit(xs, ys):
 	assert isinstance(xs, list) and isinstance(ys, list)
 	return curve_fit(time2batch_size, [0] + xs, [0] + ys)
 
-# up_bounds = (0, 0, -np.inf, 0, -np.inf, -np.inf)
-up_bounds = (0, 0, -np.inf, 0, -np.inf, 0, 0, 0, -np.inf, 0, 0, 0)
-lower_boulds = tuple(len(up_bounds) * [np.inf])
-p0=[0]*len(up_bounds)
+lower_bounds = tuple([0]*9 + [-np.inf]*3)
+# lower_bounds = tuple([0]*4 + [-np.inf]*1)
+# lower_bounds= (0, 0, -np.inf, 0, -np.inf, 0, 0, 0, -np.inf, 0, 0, 0)
+up_bounds = tuple(len(lower_bounds) * [np.inf])
+p0=[0]*len(lower_bounds)
+FIT_FUNC = calculationSizeAndGFLOPS2time
+# FIT_FUNC = fit_test
 
-is_show = [True, True, False, False, False, False, False, False]
+is_show = [False, False, True, True, False, False, False, False]
+GFLOPS_FP32 = 1
+GFLOPS_FP16 = 2
 
 def fit_with_S_cal_gflops(is_show):
-	GFLOPS_FP32 = 1
-	GFLOPS_FP16 = 2
-
 	avgsList = []
 	gflopsList = []
 	S_mul_list = []
@@ -670,7 +731,6 @@ def fit_with_S_cal_gflops(is_show):
 		S_wei_list.append(S_wei)
 		gflopsList.append(gflops)
 	
-
 	if is_show[0]:
 		avgsList += vary_batch_size(NAMELIST_32.index('conv_layer1/conv2d/Conv2D'))
 		for b in BATCH_LIST_VALUE:
@@ -746,18 +806,41 @@ def fit_with_S_cal_gflops(is_show):
 	xdata = np.array([gflopsList, S_mul_list, S_add_list, S_in_list, S_out_list, S_wei_list])
 	ydata = np.array(avgsList)
 	_ydata, _xdata = exct_filter(ydata, xdata)
-	popt, pcov = curve_fit(calculationSizeAndGFLOPS2time, _xdata, _ydata, 
-		bounds=(up_bounds, lower_boulds), p0=p0)
+	popt, pcov = curve_fit(FIT_FUNC, _xdata, _ydata, 
+		bounds=(lower_bounds, up_bounds), p0=p0, maxfev=10000)
 	return popt, pcov, xdata, ydata
 
 popt, pcov, xdata, ydata = fit_with_S_cal_gflops(is_show)
 print(popt)
 UNIT_LEN = len(BATCH_LIST_VALUE)
 
+def plot_intensity2flops():
+	assert not is_show[4]
+	intensity = xdata[1] / (xdata[3] + xdata[4] + xdata[5])
+	flops = xdata[1] / ydata
+
+	from mpl_toolkits.mplot3d import Axes3D
+	plt.figure(num=1, figsize=(8, 6))
+	fig = plt.figure()
+	ax = fig.add_subplot(121, projection='3d')
+	ax.scatter(intensity, xdata[0], flops)
+	plt.xlabel("arithmetic intensity")
+	plt.ylabel("precision")
+
+	ax = plt.subplot(122)
+	index32 = np.where(xdata[0,:]==GFLOPS_FP32)
+	index16 = np.where(xdata[0,:]==GFLOPS_FP16)
+	intensity32 = intensity[index32]
+	flops_32_to_16 = flops[index32] / flops[index16]
+	ax.plot(intensity32, flops_32_to_16)
+	plt.xlabel("arithmetic intensity")
+	plt.ylabel("flops 32 / flops 16")
+	plt.show()
+
 def plot_3d_fit_result():
 	from mpl_toolkits.mplot3d import Axes3D
 	xdata = np.array([gflopsList, S_mul_list, S_in_list, S_out_list, S_wei_list])
-	pred = calculationSizeAndGFLOPS2time(xdata, *popt)
+	pred = FIT_FUNC(xdata, *popt)
 	plt.figure(num=1, figsize=(8, 6))
 	fig = plt.figure()
 	fig_idx = 0
@@ -815,58 +898,51 @@ def plot_3d_fit_result():
 def plot_2d_fit_result(is_show):
 	plt.figure(num=1, figsize=(8, 6))
 
+	ratio_sum = []
 	cnt = sum([int(i) for i in is_show])
 	fig_base, fig_idx = init_fig_base(cnt)
 
-	def __plot(layer_name, label_32, label_16, fig_base, fig_idx, only_16=False):
+	def __plot(op_id, fig_base, fig_idx, only_16=False):
 		ax = plt.subplot(fig_base)
 		if not only_16:
-			avgs = vary_batch_size(NAMELIST_32.index(layer_name))
-			ax.plot(BATCH_LIST_VALUE, avgs, marker='.', label=label_32)
-			avgs_pred = calculationSizeAndGFLOPS2time(xdata[:, fig_idx*UNIT_LEN:(fig_idx+1)*UNIT_LEN], *popt)
-			ax.plot(BATCH_LIST_VALUE, avgs_pred, "--", label=label_32+"_pred")
-			diff = predict_error(avgs, avgs_pred)
-			print(label_32, diff)
+			avgs = vary_batch_size(NAMELIST_32.index(OP_NAMES[op_id]))
+			ax.plot(BATCH_LIST_VALUE, avgs, marker='.', label=OP_LABELS[op_id]+"_fp32")
+			avgs_pred = FIT_FUNC(xdata[:, fig_idx*UNIT_LEN:(fig_idx+1)*UNIT_LEN], *popt)
+			ax.plot(BATCH_LIST_VALUE, avgs_pred, "--", label=OP_LABELS[op_id]+"_fp32"+"_pred")
+			diff, ratio = predict_error(avgs, avgs_pred)
+			print(OP_LABELS[op_id]+"_fp32", ratio, diff)
 			fig_idx += 1
+			if "%" in ratio:
+				ratio_sum.append(float(ratio.split("%")[0]))
 
-		avgs_16 = vary_batch_size(NAMELIST_16.index(layer_name), fp16=True)
-		ax.plot(BATCH_LIST_VALUE, avgs_16, marker='^', label=label_16)
-		avgs_pred = calculationSizeAndGFLOPS2time(xdata[:, fig_idx*UNIT_LEN:(fig_idx+1)*UNIT_LEN], *popt)
-		ax.plot(BATCH_LIST_VALUE, avgs_pred, "--", label=label_16+"_pred")
-		diff = predict_error(avgs_16, avgs_pred)
-		print(label_16, diff)
+		avgs_16 = vary_batch_size(NAMELIST_16.index(OP_NAMES[op_id]), fp16=True)
+		ax.plot(BATCH_LIST_VALUE, avgs_16, marker='^', label=OP_LABELS[op_id]+"_fp16")
+		avgs_pred = FIT_FUNC(xdata[:, fig_idx*UNIT_LEN:(fig_idx+1)*UNIT_LEN], *popt)
+		ax.plot(BATCH_LIST_VALUE, avgs_pred, "--", label=OP_LABELS[op_id]+"_fp16"+"_pred")
+		diff, ratio = predict_error(avgs_16, avgs_pred)
+		print(OP_LABELS[op_id]+"_fp16", ratio, diff)
 		fig_idx += 1
-		fig_base += 1
-
+		if "%" in ratio:
+			ratio_sum.append(float(ratio.split("%")[0]))
+		
 		plt.legend()
 		plt.ylabel('Average Time (ms)')
 		plt.xlabel("Batch Size (B)")
-		return fig_base, fig_idx
+		return fig_base+1, fig_idx
 
-	if is_show[0]:
-		fig_base, fig_idx = __plot('conv_layer1/conv2d/Conv2D', "conv1_fp32", "conv1_fp16", fig_base, fig_idx)
-
-	if is_show[1]:
-		fig_base, fig_idx = __plot('conv_layer2/conv2d/Conv2D', "conv2_fp32", "conv2_fp16", fig_base, fig_idx)
-
-	if is_show[2]:
-		fig_base, fig_idx = __plot('dense/MatMul', "dense_fp32", "dense_fp16", fig_base, fig_idx)
-
-	if is_show[3]:
-		fig_base, fig_idx = __plot('dense_1/MatMul', "dense1_fp32", "dense1_fp16", fig_base, fig_idx)
+	for op_id in range(4):
+		if is_show[op_id]:
+			fig_base, fig_idx = __plot(op_id, fig_base, fig_idx)
 
 	### plot results for cast ops
-	if is_show[4]:
-		fig_base, fig_idx = __plot('conv_layer1/Cast_1', None, "conv1_out_cast", fig_base, fig_idx, only_16=True)
-	if is_show[5]:
-		fig_base, fig_idx = __plot('conv_layer2/Cast', None, "conv2_in_cast", fig_base, fig_idx, only_16=True)
-	if is_show[6]:
-		fig_base, fig_idx = __plot('Cast_2', None, "dense_out_cast", fig_base, fig_idx, only_16=True)
-	if is_show[7]:
-		fig_base, fig_idx = __plot('Cast_3', None, "dense_in_cast", fig_base, fig_idx, only_16=True)
-
+	for op_id in range(4):
+		if is_show[op_id+4]:
+			fig_base, fig_idx = __plot(op_id+4, fig_base, fig_idx, only_16=True)
+	
+	print("average error: %f %%"%(sum(ratio_sum)/len(ratio_sum)))
 	plt.show()
 
+# plot_intensity2flops()
 plot_2d_fit_result(is_show)
 
 
