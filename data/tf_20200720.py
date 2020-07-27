@@ -410,6 +410,8 @@ model_size = np.array([
 	])
 intensity = model_size[:, 0, :] / (model_size[:, 2, :] + model_size[:, 3, :] + model_size[:, 4, :])
 
+THRESHOLD = 0.2 # in ms
+
 def plot_varyB_resut(S_mul=False, S_add=False, S_in=False, S_out=False, S_wei=False):
 	plt.figure(num=1, figsize=(8, 6))
 
@@ -501,26 +503,105 @@ def plot_varyB_intensity():
 
 	def __plot(op_id):
 		ax = plt.subplot(241 + 2 * op_id)
-		x_axis = BATCH_LIST_VALUE
 		avgs = vary_batch_size(NAMELIST_32.index(OP_NAMES[op_id]))
 		avgs_16 = vary_batch_size(NAMELIST_16.index(OP_NAMES[op_id]), fp16=True)
 
 		flops_32 = model_size[op_id, 0, :] / np.array(avgs)
 		flops_16 = model_size[op_id, 0, :] / np.array(avgs_16)
-		ax.plot(x_axis, flops_32, '.-', label=OP_LABELS[op_id]+"_fp32_flops")
-		ax.plot(x_axis, flops_16, '.-', label=OP_LABELS[op_id]+"_fp16_flops")
+		ax.plot(intensity[op_id], flops_32, '.-', label=OP_LABELS[op_id]+"_fp32_flops")
+		ax.plot(intensity[op_id], flops_16, '.-', label=OP_LABELS[op_id]+"_fp16_flops")
 		plt.legend()
 		plt.ylabel('FLOPS')
-		plt.xlabel(x_axis_name)
+		plt.xlabel("arithmetic intensity")
 
 		ax = plt.subplot(242 + 2 * op_id)
-		ax.plot(x_axis, intensity[op_id], '.-', label=OP_LABELS[op_id]+"_intensity")
+		ax.plot(BATCH_LIST_VALUE, intensity[op_id], '.-', label=OP_LABELS[op_id]+"_intensity")
 		plt.legend()
 		plt.ylabel('Intensity')
 		plt.xlabel(x_axis_name)
 		op_id + 1
 
 	for op_id in range(4):
+		__plot(op_id)
+
+	plt.show()
+
+def plot_varyB_intensity_combine():
+	plt.figure(num=1, figsize=(8, 6))
+
+	# x_axis_names = ["S_mul", "S_add", "S_in", "S_out", "S_weight"]
+	x_axis_name = "Batch Size (B)"
+
+	def __plot(op_id):
+		ax = plt.subplot(211 + op_id)
+
+		avgs = vary_batch_size(NAMELIST_32.index(OP_NAMES[op_id]))
+		avgs_16 = vary_batch_size(NAMELIST_16.index(OP_NAMES[op_id]), fp16=True)
+		flops_32 = model_size[op_id, 0, :] / np.array(avgs)
+		flops_16 = model_size[op_id, 0, :] / np.array(avgs_16)
+		ax.plot(intensity[op_id], flops_32, '.-', label=OP_LABELS[op_id]+"_fp32_flops")
+		ax.plot(intensity[op_id], flops_16, '.-', label=OP_LABELS[op_id]+"_fp16_flops")
+
+		op_id += 1
+
+		avgs = vary_batch_size(NAMELIST_32.index(OP_NAMES[op_id]))
+		avgs_16 = vary_batch_size(NAMELIST_16.index(OP_NAMES[op_id]), fp16=True)
+		flops_32 = model_size[op_id, 0, :] / np.array(avgs)
+		flops_16 = model_size[op_id, 0, :] / np.array(avgs_16)
+		ax.plot(intensity[op_id], flops_32, '.-', label=OP_LABELS[op_id]+"_fp32_flops")
+		ax.plot(intensity[op_id], flops_16, '.-', label=OP_LABELS[op_id]+"_fp16_flops")
+
+		plt.legend()
+		plt.ylabel('FLOPS')
+		plt.xlabel("arithmetic intensity")
+
+	for op_id in range(2):
+		__plot(op_id)
+
+	plt.show()
+
+def plot_avg_accum_distribution():
+	plt.figure(num=1, figsize=(8, 6))
+	def __plot(op_id):
+		ax = plt.subplot(211 + op_id)
+
+		avgs = vary_batch_size(NAMELIST_32.index(OP_NAMES[op_id]))
+		avgs_16 = vary_batch_size(NAMELIST_16.index(OP_NAMES[op_id]), fp16=True)
+
+		op_id += 1
+
+		avgs_ = vary_batch_size(NAMELIST_32.index(OP_NAMES[op_id]))
+		avgs_16_ = vary_batch_size(NAMELIST_16.index(OP_NAMES[op_id]), fp16=True)
+
+		avgs = np.concatenate((avgs, avgs_))
+		avgs_16 = np.concatenate((avgs_16, avgs_16_))
+
+		def _gen(_array):
+			assert len(_array.shape)==1
+			_array = np.sort(_array)
+			_len = _array.shape[0]
+			dist = []
+			ret = None
+			for i in range(_len):
+				dist.append(100 * i / _len)
+				if ret is None and _array[i] > THRESHOLD:
+					ret = 100 * i / _len
+			return _array, np.array(dist), ret
+
+		x1, y1, ret1 = _gen(avgs)
+		x2, y2, ret2 = _gen(avgs_16)
+
+		ax.plot(x1, y1, label="fp32" + ", fp32 == %f: %6.4f %%"%(THRESHOLD, ret1))
+		ax.plot(x2, y2, label="fp16" + ", fp16 == %f: %6.4f %%"%(THRESHOLD, ret2))
+
+		# ax.text(0.1, ret1, "fp32: {}, {} %".format(0.1, ret1))
+		# ax.text(0.1, ret2, "fp16: {}, {} %".format(0.1, ret2))
+
+		plt.legend()
+		plt.ylabel('Cumulative Distribution (%)')
+		plt.xlabel("Execution time (ms)")
+
+	for op_id in range(2):
 		__plot(op_id)
 
 	plt.show()
@@ -633,7 +714,9 @@ def plot_varyB_resut_of_cast():
 # plot_varyD_result()
 # plot_varyB_resut(S_mul=False, S_add=False, S_in=False, S_out=False, S_wei=False)
 # plot_varyB_intensity()
+# plot_varyB_intensity_combine()
 # plot_varyB_resut_of_cast()
+# plot_avg_accum_distribution()
 # raise
 
 
@@ -641,7 +724,6 @@ def plot_varyB_resut_of_cast():
 #############################        Start to Fit          #########################################
 ####################################################################################################
 
-THRESHOLD = 0.1 # in ms
 def exct_filter(target, others):
 	assert len(target.shape) == 1
 	_filter = np.where(target >= THRESHOLD)
@@ -683,19 +765,11 @@ def calculationSizeAndGFLOPS2time(xs, a1, a2, a3, a4, a5, a6, a7, a8, a9, b1, b2
 	# return (a1 * xs[1] + b1) / (np.exp(a3 * xs[0] * (a4 * xs[3] + a5 * xs[4] + a6 * xs[5]) * (xs[1]/(xs[3] + xs[4] + a7 * xs[3] + a8 * xs[4] + a9 * xs[5]))) + b2) + b3 
 
 def fit_test(xs, a1, a2, a3, a4, b1):
-	'''
-	gflops:
-		We only need a relative value of gflops, 
-		i.e., if we know fp32's is twice of fp16's, we can just fp32's = 2 and fp16's = 1,
-		the scale is hidden in the a2 
-		x[0]: relative gflops
-		x[1]: num of multiplication
-		x[2]: num of addition
-		x[3]: input size
-		x[4]: output size
-		x[5]: weight size
-	'''
-	return (a1 * xs[1] + b1) * (1 / (a2 * xs[0] * xs[1] / (xs[3] + xs[4] + xs[5])) + 1 / (a3 * xs[0]) + a4 * xs[0] * (xs[3] + xs[4] + xs[5]) / xs[1])
+	gflops = xs[0]
+	S_mul = xs[1]
+	S_add = xs[2]
+	intensity = xs[1] / (xs[3] + xs[4] + xs[5])
+	return (a1 * S_mul + b1) * (1 / (a2 * gflops * intensity) + 1 / (a3 * gflops) + a4 * gflops / intensity)
 		
 
 def wrap_curve_fit(xs, ys):
@@ -704,13 +778,12 @@ def wrap_curve_fit(xs, ys):
 
 lower_bounds = tuple([0]*9 + [-np.inf]*3)
 # lower_bounds = tuple([0]*4 + [-np.inf]*1)
-# lower_bounds= (0, 0, -np.inf, 0, -np.inf, 0, 0, 0, -np.inf, 0, 0, 0)
 up_bounds = tuple(len(lower_bounds) * [np.inf])
 p0=[0]*len(lower_bounds)
 FIT_FUNC = calculationSizeAndGFLOPS2time
 # FIT_FUNC = fit_test
 
-is_show = [False, False, True, True, False, False, False, False]
+is_show = [False, False, False, False, True, True, True, True]
 GFLOPS_FP32 = 1
 GFLOPS_FP16 = 2
 
