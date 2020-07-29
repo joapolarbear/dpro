@@ -199,6 +199,31 @@ class bytepsGraph:
         return tensor_name + "~PART" + str(part_id)
 
     def _parse_trace(self):
+        # server trace
+        for event in self.server_trace_content_:
+            if event["ph"] == "M":
+                if event["name"] == "process_name":
+                    server = event["args"]["name"].strip()
+                    self.pid_to_server[event["pid"]] = server
+
+        for event in self.server_trace_content_:
+            if event["ph"] != "M":
+                server = self.pid_to_server[event["pid"]]
+                if server not in self.servers_threads:
+                    self.servers_threads[server] = 0
+                tensor_name, op = self._parse_event_name(event["name"])
+                if tensor_name in self.gradient_assignment_dict:
+                    assert self.gradient_assignment_dict[tensor_name] == server
+                else:
+                    self.gradient_assignment_dict[tensor_name] = server
+                self._parse_partition(tensor_name)
+                self.servers_threads[server] = max(self.servers_threads[server], event["tid"])
+                if (server, tensor_name, op) not in self.comp_ops_tid:
+                    self.comp_ops_tid[(server, tensor_name, op)] = event["tid"]
+                if (server, tensor_name, op, event["tid"]) not in self.comp_ops_dict:
+                    self.comp_ops_dict[(server, tensor_name, op, event["tid"])] = []
+                self.comp_ops_dict[(server, tensor_name, op, event["tid"])].append((event["ph"], event["ts"]))
+
         # COMM trace
         for event in self.comm_trace_content_:
             if event["ph"] == "M":
@@ -206,7 +231,6 @@ class bytepsGraph:
                     process_name = event["args"]["name"]
                     source, target = self._parse_source_target(process_name)
                     self.pid_to_target[event["pid"]] = (source, target)
-
         len_count = {}
         
         for event in self.comm_trace_content_:
@@ -216,22 +240,16 @@ class bytepsGraph:
                 self._parse_partition(tensor_name)
                 if "server" in source:
                     self.workers.add(target)
-                    if source not in self.servers_threads:
-                        self.servers_threads[source] = 0
                     op += "_RES"
                     if tensor_name in self.gradient_assignment_dict:
-                        assert self.gradient_assignment_dict[tensor_name] == source
-                    else:
-                        self.gradient_assignment_dict[tensor_name] = source
+                        if self.gradient_assignment_dict[tensor_name] != source:
+                            continue
                 else:
                     self.workers.add(source)
-                    if target not in self.servers_threads:
-                        self.servers_threads[source] = 0 
                     op += "_REQ"
                     if tensor_name in self.gradient_assignment_dict:
-                        assert self.gradient_assignment_dict[tensor_name] == target
-                    else:
-                        self.gradient_assignment_dict[tensor_name] = target
+                        if self.gradient_assignment_dict[tensor_name] != target:
+                            continue
                 if (source, target, tensor_name, op) not in self.comm_ops_dict:
                     self.comm_ops_dict[(source, target, tensor_name, op)] = []
                 self.comm_ops_dict[(source, target, tensor_name, op)].append((event["ph"], event["ts"]))
@@ -249,27 +267,6 @@ class bytepsGraph:
             if key not in self.comm_durations:
                 self.comm_durations[key] = {}
             self.comm_durations[key] = durations
-
-        # server trace
-        for event in self.server_trace_content_:
-            if event["ph"] == "M":
-                if event["name"] == "process_name":
-                    server = event["args"]["name"].strip()
-                    self.pid_to_server[event["pid"]] = server
-
-        for event in self.server_trace_content_:
-            if event["ph"] != "M":
-                server = self.pid_to_server[event["pid"]]
-                tensor_name, op = self._parse_event_name(event["name"])
-                self._parse_partition(tensor_name)
-                self.servers_threads[server] = max(self.servers_threads[server], event["tid"])
-                # sanity check
-                assert self.gradient_assignment_dict[tensor_name] == server
-                if (server, tensor_name, op) not in self.comp_ops_tid:
-                    self.comp_ops_tid[(server, tensor_name, op)] = event["tid"]
-                if (server, tensor_name, op, event["tid"]) not in self.comp_ops_dict:
-                    self.comp_ops_dict[(server, tensor_name, op, event["tid"])] = []
-                self.comp_ops_dict[(server, tensor_name, op, event["tid"])].append((event["ph"], event["ts"]))
         
         for key, events in self.comp_ops_dict.items():
             durations = []

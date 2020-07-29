@@ -144,8 +144,8 @@ def __generate_comm_events(logs, pid, key_to_tensor_name):
     return events
 
 def preprocess_pcap(pcap_paths, process_names_list, node_ip_to_rank, 
-                    gradient_name_list_path, key_dict_path, 
-                    save_path = None):
+                    key_dict_path, gradient_name_list_path=None,
+                    save_path=None, platform="TENSORFLOW"):
     """
     Reads and preprocesses captured pcap communication trace files. 
 
@@ -183,27 +183,45 @@ def preprocess_pcap(pcap_paths, process_names_list, node_ip_to_rank,
     if save_path is None:
         save_path = os.path.join(args_.path, "comm_timeline.json")
 
-    # read id to name mapping
     key_to_tensor_name = {}
-    tensor_index_to_tensor_name = {}
-    with open(gradient_name_list_path, "r") as f:
-        index = 0
-        for line in f:
-            tensor_index_to_tensor_name[index] = line.strip()
-            index += 1
+    if platform == "MXNET":
+        # read id to name mapping
+        tensor_index_to_tensor_name = {}
+        with open(gradient_name_list_path, "r") as f:
+            index = 0
+            for line in f:
+                tensor_index_to_tensor_name[index] = line.strip()
+                index += 1
 
-    with open(key_dict_path, "r") as f:
-        for line in f:
-            name, keys = line.split(":")
-            if "gradient" in name:
-                tensor_id = int(name.split("_")[-1])
-                tensor_name = tensor_index_to_tensor_name[tensor_id]
-                key_list = keys.split()
-                if len(key_list) > 1:
-                    for index, key in enumerate(key_list):
-                        key_to_tensor_name[int(key)] = tensor_name+"~PART"+str(index)
-                else:
-                    key_to_tensor_name[int(key_list[0])] = tensor_name
+        with open(key_dict_path, "r") as f:
+            for line in f:
+                name, keys = line.split(":")
+                if "gradient" in name:
+                    tensor_id = int(name.split("_")[-1])
+                    tensor_name = tensor_index_to_tensor_name[tensor_id]
+                    key_list = keys.split()
+                    if len(key_list) > 1:
+                        for index, key in enumerate(key_list):
+                            key_to_tensor_name[int(key)] = tensor_name+"~PART"+str(index)
+                    else:
+                        key_to_tensor_name[int(key_list[0])] = tensor_name
+    elif platform == "TENSORFLOW":
+        with open(key_dict_path, "r") as f:
+            for line in f:
+                try:
+                    name, keys = line.split(":")
+                except:
+                    pass
+                if "BytePSPushPull" in name or "grad" in name:
+                    tensor_name = name.strip()
+                    key_list = keys.split()
+                    if len(key_list) > 1:
+                        for index, key in enumerate(key_list):
+                            key_to_tensor_name[int(key)] = tensor_name+"~PART"+str(index)
+                    else:
+                        key_to_tensor_name[int(key_list[0])] = tensor_name
+    else:
+        raise NotImplementedError("Unsupported platform {}.".format(platform))
 
     # read pcap files and perform preprocessing
     machine_logs_list = []
@@ -276,8 +294,8 @@ def __generate_server_events(logs, pid, key_to_tensor_name):
             events.append(event)
     return events
 
-def parse_server_logs(server_log_paths, node_rank_list, gradient_name_list_path, 
-                        key_dict_path, save_path = None):
+def parse_server_logs(server_log_paths, node_rank_list, key_dict_path,
+                        gradient_name_list_path, save_path = None, platform="TENSORFLOW"):
     """
     Reads and preprocesses captured server trace files. 
 
@@ -309,25 +327,43 @@ def parse_server_logs(server_log_paths, node_rank_list, gradient_name_list_path,
 
     # read name mappings
     key_to_tensor_name = {}
-    tensor_index_to_tensor_name = {}
-    with open(gradient_name_list_path, "r") as f:
-        index = 0
-        for line in f:
-            tensor_index_to_tensor_name[index] = line.strip()
-            index += 1
+    if platform == "MXNET":
+        tensor_index_to_tensor_name = {}
+        with open(gradient_name_list_path, "r") as f:
+            index = 0
+            for line in f:
+                tensor_index_to_tensor_name[index] = line.strip()
+                index += 1
 
-    with open(key_dict_path, "r") as f:
-        for line in f:
-            name, keys = line.split(":")
-            if "gradient" in name:
-                tensor_id = int(name.split("_")[-1])
-                tensor_name = tensor_index_to_tensor_name[tensor_id]
-                key_list = keys.split()
-                if len(key_list) > 1:
-                    for index, key in enumerate(key_list):
-                        key_to_tensor_name[int(key)] = tensor_name+"~PART"+str(index)
-                else:
-                    key_to_tensor_name[int(key_list[0])] = tensor_name
+        with open(key_dict_path, "r") as f:
+            for line in f:
+                name, keys = line.split(":")
+                if "gradient" in name:
+                    tensor_id = int(name.split("_")[-1])
+                    tensor_name = tensor_index_to_tensor_name[tensor_id]
+                    key_list = keys.split()
+                    if len(key_list) > 1:
+                        for index, key in enumerate(key_list):
+                            key_to_tensor_name[int(key)] = tensor_name+"~PART"+str(index)
+                    else:
+                        key_to_tensor_name[int(key_list[0])] = tensor_name
+    elif platform == "TENSORFLOW":
+        with open(key_dict_path, "r") as f:
+            for line in f:
+                try:
+                    name, keys = line.split(":")
+                except:
+                    pass
+                if "BytePSPushPull" in name or "grad" in name:
+                    tensor_name = name.strip()
+                    key_list = keys.split()
+                    if len(key_list) > 1:
+                        for index, key in enumerate(key_list):
+                            key_to_tensor_name[int(key)] = tensor_name+"~PART"+str(index)
+                    else:
+                        key_to_tensor_name[int(key_list[0])] = tensor_name
+    else:
+        raise NotImplementedError("Unsupported platform {}.".format(platform))
     
     # read server logs
     server_logs = []

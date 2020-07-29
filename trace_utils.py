@@ -66,6 +66,10 @@ class CatName(Enum):
     IO="I/O"
     DEBUG="virtual"
 
+class PlatformName(Enum):
+    MXNET = "MXNET"
+    TENSORFLOW = "TENSORFLOW"
+
 GAP_STR_OP2OP = "%sGAP%s"%(CatName.OPERATOR.value, CatName.OPERATOR.value)
 GAP_STR_COMM2COMM = "%sGAP%s"%(CatName.COMM.value, CatName.COMM.value)
 GAP_STR_OP2COMM = "%sGAP%s"%(CatName.OPERATOR.value, CatName.COMM.value)
@@ -211,7 +215,7 @@ def parse_allinfo_from_name(name):
         return pid, raw_name, CatName.IO.value
     elif "Comm" in raw_name or "PUSH" in raw_name or "PULL" in raw_name:
         return pid, raw_name, CatName.COMM.value
-    elif "FW" in raw_name or "BW" in raw_name or "UPDATE" in raw_name or "OUTPUT" in raw_name or "COPY_FIRST" in raw_name or "SUM" in raw_name or "COPY_MERGED" in raw_name:
+    elif "FW" in raw_name or "BW" in raw_name or "COMP" in raw_name or "UPDATE" in raw_name or "OUTPUT" in raw_name or "COPY_FIRST" in raw_name or "SUM" in raw_name or "COPY_MERGED" in raw_name:
         return pid, raw_name, CatName.OPERATOR.value
     elif raw_name == "END":
         return pid, raw_name, CatName.DEBUG.value
@@ -249,7 +253,7 @@ def parse_cat_from_name(name):
         return CatName.IO.value
     elif "Comm" in name or "PUSH" in name or "PULL" in name:
         return CatName.COMM.value
-    elif "FW" in name or "BW" in name or "UPDATE" in name or "OUTPUT" in name or "COPY_FIRST" in name or "SUM" in name or "COPY_MERGED" in name:
+    elif "FW" in name or "BW" in name or "COMP" in name or "UPDATE" in name or "OUTPUT" in name or "COPY_FIRST" in name or "SUM" in name or "COPY_MERGED" in name:
         return CatName.OPERATOR.value
     elif name == "END":
         return CatName.DEBUG.value
@@ -278,6 +282,10 @@ def parse_cat_fine_grained(name_):
         ret_cat = "operator.FW"
     elif "BW" in name_:
         ret_cat = "operator.BW"
+    elif "COMM" in name_:
+        ret_cat = "operator.COMM"
+    elif "COMP" in name_:
+        ret_cat = "operator.COMP"
     elif "UPDATE_" in name_:
         ret_cat = "operator.UPDATE"
     elif "OUTPUT" in name_:
