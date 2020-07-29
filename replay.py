@@ -111,10 +111,8 @@ class Device:
 
 		#! TODO: for debug
 		debug_utils.DebugRecorder().debug_event_end(name, self.device_name, "exct")
-
-	def mark_as_exct(self, name, _start_t, _end_time):
-		''' Mark that the op has been executed '''
-
+	
+	def _update_device_time(self, name, _end_time):
 		### Apply the gap between two nodes
 		this_cat = parse_cat_from_name(name)
 		gap = 0
@@ -130,6 +128,11 @@ class Device:
 		if gap < 0:
 			raise RuntimeError("Negative GAP detected: {}, key = {}, gap = {}".format(name, key, gap))
 		self.device_time = _end_time + gap
+
+	def mark_as_exct(self, name, _start_t, _end_time):
+		''' Mark that the op has been executed '''
+
+		self._update_device_time(name, _end_time)
 
 		self.replayer.node_status.pop(name)
 		for _succ in self.replayer.dag.successors(name):
@@ -195,7 +198,8 @@ class PSCommDevice(Device):
 	def mark_as_exct(self, name, _start_t, _end_time):
 		next_name = self.op_counter.get_next_op(name)
 
-		self.device_time = _end_time
+		self._update_device_time(name, _end_time)
+
 		self.replayer.node_status.pop(name)
 		for _succ in self.replayer.dag.successors(name):
 			if _succ in self.replayer.node_status:
