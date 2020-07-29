@@ -238,7 +238,7 @@ class Collector(object):
                 for trace in raw_traces["traceEvents"]:
                     if trace["ph"] == "M" and trace["name"] == "process_name":
                         if "args" in trace and "name" in trace["args"]:
-                            if "device:GPU" in trace["args"]["name"] and "Compute" in trace["args"]["name"]:
+                            if "device:GPU" in trace["args"]["name"] and "Compute" in trace["args"]["name"] and "replica" in trace["args"]["name"]:
                                 one_pid = trace["pid"]
 
             if "ts" not in raw_traces["traceEvents"][index]:
@@ -1069,6 +1069,8 @@ class Collector(object):
                     and "local_num_masks" not in prev_e["name"]:
                     gap = event["ts"] - (prev_e["ts"] + prev_e["dur"])
                     ### TODO (huhanpeng): test whether to use this threshold
+                    if gap < 0:
+                        continue
                     if gap < GAP_THRESHOLD or self.comm_backend == "NCCL":
                         prev_name = self.traceM.ret_unique_name(prev_e)
                         if prev_name not in self.trail_dag.nodes:

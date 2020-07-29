@@ -16,7 +16,7 @@ import debug_utils
 FIXED_GAP_us = 5
 args = arg_utils.SingleArg().args
 
-class Deivce:
+class Device:
 	def __init__(self, device_name, _replayer, infi_para=False, comm_backend = "NCCL"):
 		self.replayer = _replayer
 		self.device_time = 0
@@ -127,6 +127,8 @@ class Deivce:
 					gap += value
 					if gap > 1000:
 						SingleLogger().debug("Large GAP detected: {}, key = {}, gap = {}".format(name, key, value))
+		if gap < 0:
+			raise RuntimeError("Negative GAP detected: {}, key = {}, gap = {}".format(name, key, gap))
 		self.device_time = _end_time + gap
 
 		self.replayer.node_status.pop(name)
@@ -176,7 +178,7 @@ class Deivce:
 				ratio = self.replayer.delay_dict["DELAY_ALL"]["ratio"]
 		return delay, ratio
 
-class PSCommDevice(Deivce):
+class PSCommDevice(Device):
 	def __init__(self, device_name, _replayer, op_counter, comm_delay = 0, comm_backend = "NCCL", infi_para=False):
 		super().__init__(device_name, _replayer, infi_para=infi_para, comm_backend = comm_backend)
 		self.op_counter = op_counter
@@ -381,7 +383,7 @@ class Replayer:
 		return self.device_dict[device_id]		
 		
 	def create_device(self, device_name, infi_para=False):
-		d = Deivce(device_name, self, comm_backend = self.comm_backend, infi_para=infi_para)
+		d = Device(device_name, self, comm_backend = self.comm_backend, infi_para=infi_para)
 		return d
 
 	def create_ps_comm_device(self, device_name, infi_para=False):
