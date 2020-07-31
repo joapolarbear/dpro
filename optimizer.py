@@ -45,8 +45,12 @@ class GraphState:
 			self.state = GraphExpand.PARTIAL
 
 class Optimizer:
-	def __init__(self, collector, memory_budget=None):
+	def __init__(self, collector, cost_models, memory_budget=None):
 		self.clct = collector
+		self.cost_models = cost_models
+		self.platform = self.clct.platform
+		self.index2name = {}
+		self.index2pid = {}
 		### Get the dependency graph
 		self.dag = self.relabel_dag_node(self.clct.trail_dag)
 
@@ -62,30 +66,72 @@ class Optimizer:
 		### Some hyper-parameter
 		self.enable_defusion = False
 
-	def relabel_dag_node(self, _dag): 
-		def relabel_func(old_label):
-			if "BW" in old_label or "FW" in old_label or "Comm" in old_label:
-				layer_name = parse_layer_name(old_label)
-				layer_index = self.clct.para_dict.parse_layer_index(layer_name)
-				return ("[%d]"%layer_index).join(old_label.split(layer_name))
-			else:
-				return old_label
+	def relabel_dag_node(self, _dag):
+		if self.platform == "TENSORFLOW":
+			def relabel_func(old_label):
+				if "BW" in old_label or "FW" in old_label or "Comm" in old_label:
+					layer_name = parse_layer_name(old_label)
+					layer_pid = parse_pid_from_name(old_label)
+					layer_index = len(self.index2name)
+					new_name = ("[%d]"%layer_index).join(old_label.split(layer_name))
+					self.index2name[layer_index] = layer_name
+					self.index2pid[layer_index] = layer_pid
+					return ("[%d]"%layer_index).join(old_label.split(layer_name))
+				else:
+					return old_label
+		elif self.platform == "MXNET":
+			def relabel_func(old_label):
+				if "BW" in old_label or "FW" in old_label or "Comm" in old_label:
+					layer_name = parse_layer_name(old_label)
+					layer_pid = parse_pid_from_name(old_label)
+					layer_index = self.clct.para_dict.parse_layer_index(layer_name)
+					self.index2name[layer_index] = layer_name
+					self.index2pid[layer_index] = layer_pid
+					return ("[%d]"%layer_index).join(old_label.split(layer_name))
+				else:
+					return old_label
+		else:
+			raise NotImplementedError("Unsupported platform {}".format(self.platform))
 		return nx.relabel_nodes(_dag, relabel_func)
 
 	def concat_name(self, u_, v_):
 		return "%s+%s"%(u_, v_)
+	
+	def _parse_index_from_name(self, name_):
+		return int(name_[1:].split("]")[0])
 
-	def combine_avg(self, ua, va):
-		### TODO (huhanpeng): key component
-		# raise NotImplementedError()
-		# return (ua + va) / 0.8
-		return 0
+	def _get_original_name_pid_from_index(self, name_):
+		index = self._parse_index_from_name(name_)
+		return self.index2name[index], self.index2pid[index]
+
+	def _get_original_name_pid_from_fused_node(self, u_):
+		single_pid = None
+		orig_names = []
+		for node_name in self._get_defused_node_names(u_):
+			orig_name, pid = self._get_original_name_pid_from_index(node_name)
+			orig_names.append(orig_name)
+			if single_pid is None:
+				single_pid = pid
+			else:
+				if single_pid != pid:
+					raise RuntimeError("Fused DAG node {} contains ops from different machines.".format(u_))
+		return orig_names, single_pid
+
+	def combine_avg(self, u, v):
+		# call cost model to obtain the combined time
+		nodes_in_u, u_pid = self._get_original_name_pid_from_fused_node(u)
+		nodes_in_v, v_pid = self._get_original_name_pid_from_fused_node(v)
+		if u_pid != v_pid:
+			raise RuntimeError("{} and {} contains ops from different machines.".format(u, v))
+		nodes_to_fuse = set(nodes_in_u).union(set(nodes_in_v))
+		exec_time = self.cost_models[u_pid].predict(nodes_to_fuse)
+		return exec_time
 
 	def combine_gap(self, ug, vg):
 		### TODO (huhanpeng): key component
 		### Use max to avoid one input is zero, 
 		### some how for the new gap x, ug < x < ug + vg, vg < x < ug + vg
-		# return max(max((ug + vg) / 0.8, ug), vg)
+		return max(max((ug + vg) / 0.8, ug), vg)
 		return 0
 
 	def get_node_attr(self, n, attr_):
@@ -205,6 +251,9 @@ class Optimizer:
 		target = "+".join(ns)
 		assert target in _dag.nodes
 		self._defuse_pair(_dag, target, pos)
+	
+	def _get_defused_node_names(self, fused_node_):
+		return fused_node_.split("+")
 
 	def _defuse_pair(self, _dag, target, pos):
 		ns = target.split("+")

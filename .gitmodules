@@ -1,0 +1,3 @@
+[submodule "3rdparty/mixbench"]
+	path = 3rdparty/mixbench
+	url = https://github.com/ekondis/mixbench.git
