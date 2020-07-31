@@ -49,6 +49,7 @@ class Optimizer:
 		self.clct = collector
 		self.cost_models = cost_models
 		self.platform = self.clct.platform
+		self.comm_backend = self.clct.comm_backend
 		self.index2name = {}
 		self.index2pid = {}
 		### Get the dependency graph
@@ -116,16 +117,18 @@ class Optimizer:
 				if single_pid != pid:
 					raise RuntimeError("Fused DAG node {} contains ops from different machines.".format(u_))
 		return orig_names, single_pid
+	
+	def _query_cost_model(self, fused_u_):
+		# query cost model for exec time of a fused node u
+		nodes_in_u, u_pid = self._get_original_name_pid_from_fused_node(fused_u_)
+		nodes_to_fuse = set(nodes_in_u)
+		exec_time = self.cost_models[u_pid].predict(nodes_to_fuse)
+		return exec_time
 
 	def combine_avg(self, u, v):
 		# call cost model to obtain the combined time
-		nodes_in_u, u_pid = self._get_original_name_pid_from_fused_node(u)
-		nodes_in_v, v_pid = self._get_original_name_pid_from_fused_node(v)
-		if u_pid != v_pid:
-			raise RuntimeError("{} and {} contains ops from different machines.".format(u, v))
-		nodes_to_fuse = set(nodes_in_u).union(set(nodes_in_v))
-		exec_time = self.cost_models[u_pid].predict(nodes_to_fuse)
-		return exec_time
+		fused_name = self.concat_name(u, v)
+		return self._query_cost_model(fused_name)
 
 	def combine_gap(self, ug, vg):
 		### TODO (huhanpeng): key component
@@ -148,7 +151,7 @@ class Optimizer:
 	def op_fusion(self, _dag, u_, v_):
 		### u_ and v_ are both FW nodes
 		self._fuse_pair(_dag, u_, v_)
-		self._fuse_pair(_dag, self.convert_fw2bw(v_), self.convert_fw2bw(u_))
+		# self._fuse_pair(_dag, self.convert_fw2bw(v_), self.convert_fw2bw(u_))
 		
 
 	def _fuse_pair(self, _dag, u_, v_):
@@ -197,13 +200,13 @@ class Optimizer:
 
 	def combine_nodes_attr(self, _dag, target, u_, v_):
 		### In graph _dag, combine the attributes of u_ and v_, store the results in _dag as the attributes of target
-		_dag.nodes[target]["avg"] = self.combine_avg(self.get_node_attr(u_, "avg"), self.get_node_attr(v_, "avg"))
+		_dag.nodes[target]["avg"] = self.combine_avg(u_, v_)
 		_dag.nodes[target][GAP_STR_OP2OP] = self.combine_gap(self.get_node_attr(u_, GAP_STR_OP2OP), self.get_node_attr(v_, GAP_STR_OP2OP))
 		_dag.nodes[target][GAP_STR_OP2COMM] = self.combine_gap(self.get_node_attr(u_, GAP_STR_OP2COMM), self.get_node_attr(v_, GAP_STR_OP2COMM))
 
-	def combine_attr(self, target, attr1, attr2):
+	def combine_attr_except_avg(self, target, attr1, attr2):
 		### In graph _dag, combine the attributes of u_ and v_, store the results in _dag as the attributes of target
-		target["avg"] = self.combine_avg(attr1["avg"], attr2["avg"])
+		# target["avg"] = self.combine_avg(attr1["avg"], attr2["avg"])
 
 		if GAP_STR_OP2OP in attr1 and GAP_STR_OP2OP in attr2:
 			target[GAP_STR_OP2OP] = self.combine_gap(attr1[GAP_STR_OP2OP], attr2[GAP_STR_OP2OP])
@@ -227,7 +230,9 @@ class Optimizer:
 			ns = new_name.split("+")
 			attrs = self.node_attr_cache[ns[0]].copy()
 			for idx in range(1, len(ns)):
-				self.combine_attr(attrs, attrs, self.node_attr_cache[ns[idx]])
+				self.combine_attr_except_avg(attrs, attrs, self.node_attr_cache[ns[idx]])
+			# combine attr avg
+			target["avg"] = self._query_cost_model(new_name)
 			### set and cache the attribute
 			nx.set_node_attributes(_dag, {new_name:attrs})
 			self.cache_node_attr(new_name, _dag.nodes[new_name])
@@ -388,9 +393,9 @@ class Optimizer:
 				cat = parse_cat_fine_grained(n)
 				pid = parse_pid_from_name(n)
 
-			if cat != "operator.FW":
-				### TODO (huhanpeng): only pick FW, then fuse corresponding BW
-				continue
+			# if cat != "operator.FW":
+			# 	### TODO (huhanpeng): only pick FW, then fuse corresponding BW
+			# 	continue
 
 			for succ_ in _dag.successors(n):
 				_pid = parse_pid_from_name(succ_)
@@ -399,12 +404,13 @@ class Optimizer:
 					continue
 
 				### Assumption 1: for edge a->b, only if the indegree of b is 1, the node can be fused
-				bw_v = self.convert_fw2bw(n)
-				if len(_dag.in_edges(succ_)) > 1 or len(_dag.in_edges(bw_v)) > 1:
+				# bw_v = self.convert_fw2bw(n)
+				# if len(_dag.in_edges(succ_)) > 1 or len(_dag.in_edges(bw_v)) > 1:
+				if len(_dag.in_edges(succ_)) > 1:
 					continue
 
-				bw_u = self.convert_fw2bw(succ_)
-				assert bw_u in _dag.nodes and bw_v in _dag.nodes
+				# bw_u = self.convert_fw2bw(succ_)
+				# assert bw_u in _dag.nodes and bw_v in _dag.nodes
 				
 				# TODO (huhanpeng): this process is only for NCCL now
 				if args.comm_backend != "NCCL":
@@ -420,11 +426,16 @@ class Optimizer:
 					return __ret
 
 				comm_t = 0
-				for bw_u_succ in _dag.successors(bw_u):
+				# for bw_u_succ in _dag.successors(bw_u):
+				for bw_u_succ in _dag.successors(n):
 					if "Comm" in bw_u_succ:
-						comm_t += ret_comm_time(bw_u_succ)
+						if self.comm_backend == "NCCL":
+							comm_t += ret_comm_time(bw_u_succ)
+						else:
+							comm_t += _dag.nodes[bw_u_succ]["avg"]
 				
-				if comm_t >= _dag.nodes[bw_v]["avg"]:
+				# if comm_t >= _dag.nodes[bw_v]["avg"]:
+				if comm_t >= _dag.nodes[succ_]["avg"]:
 					prun_cnt += 1
 					# G_star = self.apply_strategies(self.dag, ("+", n, succ_))
 					# iter_time, _ = self.evaluate(G_star)
