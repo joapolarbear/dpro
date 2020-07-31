@@ -783,7 +783,7 @@ p0=[0]*len(lower_bounds)
 FIT_FUNC = calculationSizeAndGFLOPS2time
 # FIT_FUNC = fit_test
 
-is_show = [False, False, False, False, True, True, True, True]
+is_show = [False, False, True, True, False, False, False, False]
 GFLOPS_FP32 = 1
 GFLOPS_FP16 = 2
 
