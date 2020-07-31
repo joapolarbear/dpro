@@ -144,7 +144,6 @@ class Optimizer:
 		_dag.remove_node(u_)
 		_dag.remove_node(v_)
 
-
 		assert u_ not in _dag.nodes 
 		assert v_ not in _dag.nodes
 		assert u_ in self.node_attr_cache and "avg" in self.node_attr_cache[u_]

@@ -114,7 +114,6 @@ class Device:
 	
 	def _update_device_time(self, name, _end_time):
 		### Apply the gap between two nodes
-		this_cat = parse_cat_from_name(name)
 		gap = 0
 		for key, value in self.replayer.dag.nodes[name].items():
 			if "GAP" in key:
@@ -135,6 +134,7 @@ class Device:
 		self._update_device_time(name, _end_time)
 
 		self.replayer.node_status.pop(name)
+		this_cat = parse_cat_from_name(name)
 		for _succ in self.replayer.dag.successors(name):
 			next_cat = parse_cat_from_name(_succ)
 			if _succ in self.replayer.node_status:
@@ -152,6 +152,8 @@ class Device:
 					if GAP_STR_OP2COMM in self.replayer.dag.nodes[name] and next_cat == CatName.COMM.value and this_cat == CatName.OPERATOR.value:
 					# if GAP_STR_OP2COMM in self.replayer.dag.nodes[name] and next_cat == "Comm":
 						gap += self.replayer.dag.nodes[name][GAP_STR_OP2COMM]
+						if self.replayer.dag.nodes[name][GAP_STR_OP2COMM] > 10000:
+							SingleLogger().warn("Large OP2COMM gap detected, {} -> {},  gap: {}".format(name, _succ, self.replayer.dag.nodes[name][GAP_STR_OP2COMM]))
 					_status["ready"] = (_end_time + gap) if _status["ready"] is None else max(_end_time + gap, _status["ready"])
 					
 

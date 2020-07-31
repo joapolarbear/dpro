@@ -871,9 +871,9 @@ class bytepsGraph:
                             assert len(evs) == len(tensor_durations)
                             bw_st, bw_ed = evs[index]
                             pu_st, pu_ed = tensor_durations[index]
-                            if not interval["worker_"+node_rank].overlap(bw_ed - 1000, bw_ed + 50):
+                            if not interval["worker_"+node_rank].overlap(bw_ed - 1000, bw_ed + 1000):
                                 local_min_delay = min(local_min_delay, pu_st - bw_ed)
-                                # print(layer_name, tensor_name, index, pu_st - bw_ed)
+                                print(layer_name, tensor_name, index, pu_st - bw_ed)
                         if node_rank not in bw_delay_dict:
                             bw_delay_dict[node_rank] = {}
                         if local_rank not in bw_delay_dict[node_rank]:
