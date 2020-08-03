@@ -2,6 +2,13 @@ import shutil
 import re
 import os
 import subprocess
+import tensorflow as tf
+try:
+    GraphDef = tf.GraphDef
+except:
+    GraphDef = tf.compat.v1.GraphDef
+from google.protobuf.json_format import Parse
+import byteps.tensorflow as bps
 from execute_graph import *
 from gen_samples import *
 from process_trace import *
@@ -28,7 +35,7 @@ def log_op_names(graph_def, log_file="./op_names_in_def.txt"):
             f.write(node_def.name)
             f.write("\n")
 
-def profile_entire_graph(sample_generator, profile_dir, num_runs_per_sample=20):
+def profile_entire_graph(sess, sample_generator, profile_dir, num_runs_per_sample=20):
     graph_def, input_defs = sample_generator.get_original_graph_def()
     # log_op_names(graph_def)
     execute_graph_def(graph_def, input_defs, profile_dir, num_runs=num_runs_per_sample)
@@ -137,7 +144,40 @@ def gen_sample_once_using_replay(sample_generator, dataset_dir, label_file_path,
     clean_up_dir(raw_subgraph_dir)
     return
 
-def gen_dataset(graph_def, op_time_dict, gpu_benchmark_cmd, result_dir, num_samples=2000, 
+# def gen_dataset(graph_def, op_time_dict, gpu_benchmark_cmd, result_dir, num_samples=2000, 
+#                 min_subgraph_level=5, max_subgraph_level=15):
+#     if not os.path.isdir(result_dir):
+#         os.makedirs(result_dir)
+#         print("Result dir not exist. Created result dir at {}.".format(result_dir))
+#     dataset_dir = os.path.join(result_dir, "dataset")
+#     label_file_path = os.path.join(result_dir, "running_time.txt")
+#     if os.path.isfile(label_file_path):
+#         raise RuntimeError("Label file already exists.")
+#     feature_dir = os.path.join(dataset_dir, "feature_vecs")
+#     if not os.path.isdir(feature_dir):
+#         os.makedirs(feature_dir)
+#     dataset_hlo_dir = os.path.join(dataset_dir, "hlos")
+#     if not os.path.isdir(dataset_hlo_dir):
+#         os.makedirs(dataset_hlo_dir)
+#     profile_dir = os.path.join(result_dir, "xla_profile")
+#     if not os.path.isdir(profile_dir):
+#         os.makedirs(profile_dir)
+#     if isinstance(graph_def, str):
+#         sample_generator = SampleGenerator(freezed_graph_path=graph_def)
+#     else:
+#         sample_generator = SampleGenerator(freezed_graph_def=graph_def)
+#     print("Benchmarking GPU stats.")
+#     gflops, gbps = run_gpu_profile(gpu_benchmark_cmd)
+#     print("Start generation.")
+#     for i in trange(num_samples):
+#         gen_sample_once_using_replay(sample_generator, dataset_dir, label_file_path, feature_dir,
+#                         dataset_hlo_dir, profile_dir, op_time_dict, gflops, gbps,
+#                         min_levels=min_subgraph_level, max_levels=max_subgraph_level)
+#     if os.path.isdir(profile_dir):
+#         os.rmdir(profile_dir)
+#     print("Dataset generation complete.")
+
+def gen_dataset(graph_json_path, op_time_dict, gpu_benchmark_cmd, result_dir, num_samples=2000, 
                 min_subgraph_level=5, max_subgraph_level=15):
     if not os.path.isdir(result_dir):
         os.makedirs(result_dir)
@@ -155,10 +195,23 @@ def gen_dataset(graph_def, op_time_dict, gpu_benchmark_cmd, result_dir, num_samp
     profile_dir = os.path.join(result_dir, "xla_profile")
     if not os.path.isdir(profile_dir):
         os.makedirs(profile_dir)
-    if isinstance(graph_def, str):
-        sample_generator = SampleGenerator(freezed_graph_path=graph_def)
-    else:
-        sample_generator = SampleGenerator(freezed_graph_def=graph_def)
+    # load graphdef
+    with open("./graph.json", "r") as f:
+        graph_def = Parse(f.read(), GraphDef())
+    # clean up graphdef
+    save_nodes = []
+    for node in graph_def.node:
+        if "save" in node.name:
+            save_nodes.append(node.name)
+    cleaned_graph_def = GraphDef()
+    cleaned_graph_def.versions.CopyFrom(graph_def.versions)
+    cleaned_graph_def.library.CopyFrom(graph_def.library)
+    for node in graph_def.node:
+        if "save" in node.name:
+            continue
+        cleaned_graph_def.node.append(node)
+    
+    sample_generator = SampleGenerator(graph_def=cleaned_graph_def)
     print("Benchmarking GPU stats.")
     gflops, gbps = run_gpu_profile(gpu_benchmark_cmd)
     print("Start generation.")

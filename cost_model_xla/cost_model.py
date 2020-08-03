@@ -121,44 +121,30 @@ class XlaDataset(object):
             self.op_time_dict = op_time_dict
 
     @classmethod
-    def construct_dataset(cls, graph_def, result_dir, gpu_benchmark_cmd, num_samples=2000, 
+    def construct_dataset(cls, trace_dir, result_dir, gpu_benchmark_cmd, num_samples=2000, 
                           min_subgraph_level = None, max_subgraph_level = None, 
                           op_times_dict = None):
-        if op_times_dict is None:
-            # need generation
-            gen_op_times_dict(graph_def, result_dir)
-            op_times_dict = os.path.join("op_running_times.pickle")
-        if isinstance(op_times_dict, str):
-            # load from file
-            op_times_dict_fn = op_times_dict
-            with open(op_times_dict_fn, "rb") as f:
-                op_time_dict = pickle.load(f)
-        else:
-            # type check
-            if not isinstance(op_times_dict, dict):
-                raise TypeError("op_times_dict expects a string or dict but got {}.".format(type(op_times_dict)))
-        gen_dataset(graph_def, op_times_dict, gpu_benchmark_cmd, result_dir, num_samples, min)
+        graph_json_path = os.path.join(trace_dir, "graph.json")
+        op_times_dict = get_execution_time_from_temp_trace(os.path.join(trace_dir, "temp.json"))
+        gen_dataset(graph_json_path, op_times_dict, gpu_benchmark_cmd, result_dir, num_samples, min)
     
-    @classmethod
-    def gen_op_times_dict(cls, graph_def, result_dir, profile_tmp_dir = None):
-        if profile_tmp_dir is None:
-            profile_tmp_dir = os.path.join(result_dir, "profile_tmp")
-        if isinstance(graph_def, str):
-            sample_generator = SampleGenerator(freezed_graph_path=graph_def)
-        else:
-            sample_generator = SampleGenerator(freezed_graph_def=graph_def)
-        print("Profiling entire graph.")
-        op_time_dict = profile_entire_graph(sample_generator, profile_tmp_dir)
-        if op_time_dict is None:
-            raise RuntimeError("Failed to profile graph.")
-        if not os.path.isdir(result_dir):
-            os.makedirs(result_dir)
-        output_fn = os.path.join(result_dir, "op_running_times.pickle")
-        with open(output_fn, "wb") as f:
-            pickle.dump(op_time_dict, f)
-        if os.path.isdir(profile_tmp_dir):
-            os.rmdir(profile_tmp_dir)
-        print("Op time profiling complete.")
+    # @classmethod
+    # def gen_op_times_dict(cls, graph, result_dir, profile_tmp_dir = None):
+    #     if profile_tmp_dir is None:
+    #         profile_tmp_dir = os.path.join(result_dir, "profile_tmp")
+    #     sample_generator = SampleGenerator(graph=graph)
+    #     print("Profiling entire graph.")
+    #     op_time_dict = profile_entire_graph(sample_generator, profile_tmp_dir)
+    #     if op_time_dict is None:
+    #         raise RuntimeError("Failed to profile graph.")
+    #     if not os.path.isdir(result_dir):
+    #         os.makedirs(result_dir)
+    #     output_fn = os.path.join(result_dir, "op_running_times.pickle")
+    #     with open(output_fn, "wb") as f:
+    #         pickle.dump(op_time_dict, f)
+    #     if os.path.isdir(profile_tmp_dir):
+    #         os.rmdir(profile_tmp_dir)
+    #     print("Op time profiling complete.")
 
 class GraphDefUtil(object):
     def __init__(self, graph_def):

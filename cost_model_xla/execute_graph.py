@@ -36,7 +36,7 @@ def execute_graph_def(graph_def, input_node_defs, profile_result_dir, tf2xla_con
             feed_dict[input_node.outputs[0]] = tf.random.uniform(shape=shape, maxval=5, dtype=dtype).numpy()
         else:
             feed_dict[input_node.outputs[0]] = tf.random.uniform(shape=shape, dtype=dtype).numpy()
-        print("feed_dict added : {} with shape {} and dtype {}".format(input_node.outputs[0], shape, dtype))
+        # print("feed_dict added : {} with shape {} and dtype {}".format(input_node.outputs[0], shape, dtype))
     with tf.profiler.experimental.Profile(profile_result_dir):
         with tf.compat.v1.Session(graph=graph) as sess:
             for i in range(num_runs):

@@ -234,7 +234,7 @@ class Collector(object):
         index = 0
         traces = []
         while index < len(raw_traces["traceEvents"]):
-            if self.platform == "TENSORFLOW":
+            if self.platform == "TENSORFLOW" and one_pid is None:
                 for trace in raw_traces["traceEvents"]:
                     if trace["ph"] == "M" and trace["name"] == "process_name":
                         if "args" in trace and "name" in trace["args"]:

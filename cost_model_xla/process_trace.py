@@ -53,6 +53,32 @@ def get_execution_time_for_whole_graph(trace_path):
         time_dict[name] = (time / count, count)
     return time_dict
 
+def get_execution_time_from_temp_trace(trace_path):
+    one_pid = None
+    with open(trace_path, "r") as f:
+        trace = json.load(f)
+    if isinstance(trace, dict):
+        trace = trace["traceEvents"]
+    for tr in trace:
+        if tr["ph"] == "M" and tr["name"] == "process_name":
+            if "args" in tr and "name" in tr["args"]:
+                if "device:GPU" in tr["args"]["name"] and "Compute" in tr["args"]["name"] and "replica" in tr["args"]["name"]:
+                    one_pid = tr["pid"]
+                    break
+    time_dict = {}
+    for tr in trace:
+        try:
+            if tr["ph"] == "X" and tr["pid"] == one_pid:
+                op_name = tr["args"]["name"]
+                if op_name not in time_dict:
+                    time_dict[op_name] = []
+                time_dict[op_name].append(tr["dur"])
+        except:
+            pass
+    for key, durs in time_dict.items():
+        time_dict[key] = sum(durs) / len(durs)
+    return time_dict
+
 def get_execution_time_from_trace(trace_path):
     with gzip.open(trace_path, "rb") as f:
         trace_data = json.loads(f.read().decode("ascii"))

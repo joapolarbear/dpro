@@ -36,12 +36,12 @@ def get_input_def_from_graph_(graph):
     return input_op_defs
 
 class SampleGenerator(object):
-    def __init__(self, freezed_graph_path=None, freezed_graph_def=None, cache_dir="."):
+    def __init__(self, freezed_graph_path=None, graph_def=None, cache_dir="."):
         super().__init__()
-        if freezed_graph_path is None and freezed_graph_def is None:
-            raise RuntimeError("At least one of freezed_graph_path and freezed_graph must be filled.")
-        if freezed_graph_def is not None:
-            graph_def = freezed_graph_def
+        if freezed_graph_path is None and graph_def is None:
+            raise RuntimeError("At least one of freezed_graph_path and graph_def must be filled.")
+        if graph_def is not None:
+            graph_def = graph_def
         else:
             self.freezed_graph_path_ = freezed_graph_path
             cache_name = hashlib.md5(freezed_graph_path.encode('utf-8')).hexdigest() + ".pickle"
