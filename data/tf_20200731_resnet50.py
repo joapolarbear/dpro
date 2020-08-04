@@ -32,7 +32,7 @@ DEFAULT_KENREL_SIZE=3
 
 BATCH_LIST_VALUE = []
 
-RST_DIR="./data_20200731_resnet50/v100"
+RST_DIR="./data_20200804_resnet50/v100"
 
 def str2list(_list, dtype=str):
 	assert dtype in [int, float, str]
@@ -76,6 +76,7 @@ with open(os.path.join(RST_DIR, "avg.txt"), 'r') as fp:
 			break
 assert "network/resblock_3_1/conv_1/conv2d/Conv2D" in NAMELIST_32, "%s"%str(NAMELIST_32)
 
+BATCH_LIST_VALUE = [e for e in BATCH_LIST_VALUE if e >=4]
 BATCH_LIST_VALUE = sorted(BATCH_LIST_VALUE)
 BATCH_LIST_STR = ["B=%d"%e for e in BATCH_LIST_VALUE]
 
@@ -155,17 +156,19 @@ OP_NAMES = [
 				'network/resblock0_1/conv_0/conv2d/Conv2D',
 				'network/resblock1_1/conv_0/conv2d/Conv2D',
 				'network/resblock2_1/conv_0/conv2d/Conv2D', 
-				'network/resblock_3_1/conv_1/conv2d/Conv2D', 
-				
+				'network/resblock_3_1/conv_1/conv2d/Conv2D', 			
 			]
 OP_LABELS = ["/".join(n.split("/")[1:]) for n in OP_NAMES]
 
 model_size = np.array([
+		list(zip(*[infoOfConv(b, 32, DEFAULT_KENREL_SIZE, 32, 32) for b in BATCH_LIST_VALUE])),
+		list(zip(*[infoOfConv(b, 16, DEFAULT_KENREL_SIZE, 64, 64) for b in BATCH_LIST_VALUE])),
+		list(zip(*[infoOfConv(b, 8, DEFAULT_KENREL_SIZE, 128, 128) for b in BATCH_LIST_VALUE])),
 		list(zip(*[infoOfConv(b, 4, DEFAULT_KENREL_SIZE, 256, 256) for b in BATCH_LIST_VALUE])),
 	])
 intensity = model_size[:, 0, :] / (model_size[:, 2, :] + model_size[:, 3, :] + model_size[:, 4, :])
 
-THRESHOLD = 0.2 # in ms
+THRESHOLD = 0.00 # in ms
 
 def plot_varyB_resut(S_mul=False, S_add=False, S_in=False, S_out=False, S_wei=False):
 	plt.figure(num=1, figsize=(8, 6))
@@ -419,12 +422,12 @@ def plot_varyB_resut_of_cast():
 
 # plot_varyK_result(S_mul=True, S_add=True, S_in=True, S_out=True, S_wei=True)
 # plot_varyD_result()
-plot_varyB_resut(S_mul=False, S_add=False, S_in=False, S_out=False, S_wei=False)
+# plot_varyB_resut(S_mul=False, S_add=False, S_in=False, S_out=False, S_wei=False)
 # plot_varyB_intensity()
 # plot_varyB_intensity_combine()
 # plot_varyB_resut_of_cast()
 # plot_avg_accum_distribution()
-raise
+# raise
 
 
 ####################################################################################################
@@ -490,7 +493,7 @@ p0=[0]*len(lower_bounds)
 FIT_FUNC = calculationSizeAndGFLOPS2time
 # FIT_FUNC = fit_test
 
-is_show = [False, False, True, True, False, False, False, False]
+is_show = [True, True, True, True, False, False, False, False]
 GFLOPS_FP32 = 1
 GFLOPS_FP16 = 2
 
@@ -510,78 +513,22 @@ def fit_with_S_cal_gflops(is_show):
 		S_out_list.append(S_out)
 		S_wei_list.append(S_wei)
 		gflopsList.append(gflops)
-	
-	if is_show[0]:
-		avgsList += vary_batch_size(NAMELIST_32.index('conv_layer1/conv2d/Conv2D'))
-		for b in BATCH_LIST_VALUE:
-			S_mul, S_add, S_in, S_out, S_wei = infoOfConv(b, 28, DEFAULT_KENREL_SIZE, 1, 32)
-			__record_xdata(S_mul, S_add, S_in, S_out, S_wei, GFLOPS_FP32)
 
-		avgsList += vary_batch_size(NAMELIST_16.index('conv_layer1/conv2d/Conv2D'), fp16=True)
-		for b in BATCH_LIST_VALUE:
-			S_mul, S_add, S_in, S_out, S_wei = infoOfConv(b, 28, DEFAULT_KENREL_SIZE, 1, 32)
-			__record_xdata(S_mul, S_add, S_in, S_out, S_wei, GFLOPS_FP16)
+	w_ = 32
+	cin = 32
 
-	if is_show[1]:
-		avgsList += vary_batch_size(NAMELIST_32.index('conv_layer2/conv2d/Conv2D'))
-		for b in BATCH_LIST_VALUE:
-			S_mul, S_add, S_in, S_out, S_wei = infoOfConv(b, 14, DEFAULT_KENREL_SIZE, 32, 64)
-			__record_xdata(S_mul, S_add, S_in, S_out, S_wei, GFLOPS_FP32)
-
-		avgsList += vary_batch_size(NAMELIST_16.index('conv_layer2/conv2d/Conv2D'), fp16=True)
-		for b in BATCH_LIST_VALUE:
-			S_mul, S_add, S_in, S_out, S_wei = infoOfConv(b, 14, DEFAULT_KENREL_SIZE, 32, 64)
-			__record_xdata(S_mul, S_add, S_in, S_out, S_wei, GFLOPS_FP16)
-	
-	if is_show[2]:
-		avgsList += vary_batch_size(NAMELIST_32.index('dense/MatMul'))
-		for b in BATCH_LIST_VALUE:
-			S_mul, S_add, S_in, S_out, S_wei = infoOfDense(b, 7*7*64, DEFAULT_DENSE_SIZE)
-			__record_xdata(S_mul, S_add, S_in, S_out, S_wei, GFLOPS_FP32)
-
-		avgsList += vary_batch_size(NAMELIST_16.index('dense/MatMul'), fp16=True)
-		for b in BATCH_LIST_VALUE:
-			S_mul, S_add, S_in, S_out, S_wei = infoOfDense(b, 7*7*64, DEFAULT_DENSE_SIZE)
-			__record_xdata(S_mul, S_add, S_in, S_out, S_wei, GFLOPS_FP16)
-
-	if is_show[3]:
-		avgsList += vary_batch_size(NAMELIST_32.index('dense_1/MatMul'))
-		for b in BATCH_LIST_VALUE:
-			S_mul, S_add, S_in, S_out, S_wei = infoOfDense(b, DEFAULT_DENSE_SIZE, 10)
-			__record_xdata(S_mul, S_add, S_in, S_out, S_wei, GFLOPS_FP32)
-
-		avgsList += vary_batch_size(NAMELIST_16.index('dense_1/MatMul'), fp16=True)
-		for b in BATCH_LIST_VALUE:
-			S_mul, S_add, S_in, S_out, S_wei = infoOfDense(b, DEFAULT_DENSE_SIZE, 10)
-			__record_xdata(S_mul, S_add, S_in, S_out, S_wei, GFLOPS_FP16)
-	
-	if is_show[4]:
-		avgsList += vary_batch_size(NAMELIST_16.index('conv_layer1/Cast_1'), fp16=True)
-		S_mul = S_add = S_wei = 0
-		for b in BATCH_LIST_VALUE:
-			S_in = S_out = sizeOutOfConv(b, 28, DEFAULT_KENREL_SIZE, 1, 32)
-			__record_xdata(S_mul, S_add, S_in, S_out, S_wei, GFLOPS_FP16)
-
-	if is_show[5]:
-		avgsList += vary_batch_size(NAMELIST_16.index('conv_layer2/Cast'), fp16=True)
-		S_mul = S_add = S_wei = 0
-		for b in BATCH_LIST_VALUE:
-			S_in = S_out = sizeInOfConv(b, 14, DEFAULT_KENREL_SIZE, 32, 64)
-			__record_xdata(S_mul, S_add, S_in, S_out, S_wei, GFLOPS_FP16)
-
-	if is_show[6]:
-		avgsList += vary_batch_size(NAMELIST_16.index('Cast_2'), fp16=True)
-		S_mul = S_add = S_wei = 0
-		for b in BATCH_LIST_VALUE:
-			S_in = S_out = sizeInOfDense(b, 7*7*64, DEFAULT_DENSE_SIZE)
-			__record_xdata(S_mul, S_add, S_in, S_out, S_wei, GFLOPS_FP16)
-
-	if is_show[7]:
-		avgsList += vary_batch_size(NAMELIST_16.index('Cast_3'), fp16=True)
-		S_mul = S_add = S_wei = 0
-		for b in BATCH_LIST_VALUE:
-			S_in = S_out = sizeOutOfDense(b, DEFAULT_DENSE_SIZE, 10)
-			__record_xdata(S_mul, S_add, S_in, S_out, S_wei, GFLOPS_FP16)
+	for i in range(len(OP_NAMES)):
+		if is_show[i]:
+			avgsList += vary_batch_size(NAMELIST_32.index(OP_NAMES[i]))
+			for b in BATCH_LIST_VALUE:
+				S_mul, S_add, S_in, S_out, S_wei = infoOfConv(b, w_, DEFAULT_KENREL_SIZE, cin, cin)
+				__record_xdata(S_mul, S_add, S_in, S_out, S_wei, GFLOPS_FP32)
+			avgsList += vary_batch_size(NAMELIST_16.index(OP_NAMES[i]), fp16=True)
+			for b in BATCH_LIST_VALUE:
+				S_mul, S_add, S_in, S_out, S_wei = infoOfConv(b, w_, DEFAULT_KENREL_SIZE, cin, cin)
+				__record_xdata(S_mul, S_add, S_in, S_out, S_wei, GFLOPS_FP16)
+		w_ /= 2
+		cin *=2
 
 	xdata = np.array([gflopsList, S_mul_list, S_add_list, S_in_list, S_out_list, S_wei_list])
 	ydata = np.array(avgsList)
@@ -713,11 +660,6 @@ def plot_2d_fit_result(is_show):
 	for op_id in range(4):
 		if is_show[op_id]:
 			fig_base, fig_idx = __plot(op_id, fig_base, fig_idx)
-
-	### plot results for cast ops
-	for op_id in range(4):
-		if is_show[op_id+4]:
-			fig_base, fig_idx = __plot(op_id+4, fig_base, fig_idx, only_16=True)
 	
 	print("average error: %f %%"%(sum(ratio_sum)/len(ratio_sum)))
 	plt.show()
