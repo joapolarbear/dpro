@@ -71,7 +71,7 @@ def standard_name(_name, platform="TENSORFLOW"):
         for prefix in ["COMM.", "COMP.", "BW.", "FW."]:
             if _name.startswith(prefix):
                 return _name   
-        if "BytePSPushPull" in _name:
+        if "BytePSPushPull" in _name and "tensor" not in _name:
             _name = "COMM." + _name
         else:
             if _name.startswith("gradients"):
@@ -409,12 +409,16 @@ class DAGManager:
             )
 
     def _process_edge_tensorflow(self, graph, queue_type_list, u, v):
-        if "BytePSPushPull" in u:
+        if "BytePSPushPull" in u and "tensor" not in u:
             gra_name = u
             if self.byteps_graph is not None:
                 wk_rank = int(self.wk_prefix.split("_")[-1])
                 # add push request dependency
-                push_req_nodes = self.byteps_graph.get_push_req_node(wk_rank, gra_name)
+                try:
+                    push_req_nodes = self.byteps_graph.get_push_req_node(wk_rank, gra_name)
+                except:
+                    self.logger.warn("{} is not in comm dag. Ignoring.".format(gra_name))
+                    return
                 prev_bw_nodes = [_u for _u, _ in graph.in_edges(u)]
                 for prev_bw_node in prev_bw_nodes:
                     prev_name = self.add_prefix(standard_name(prev_bw_node, platform=self.platform))
@@ -434,7 +438,7 @@ class DAGManager:
                     )
             else:
                 raise NotImplementedError("Tensorflow + NCCL not yet implemented.")
-        elif "BytePSPushPull" in v:
+        elif "BytePSPushPull" in v and "tensor" not in v:
             ### delete edges from BW to Comm main task.
             pass
         # elif "" in v:

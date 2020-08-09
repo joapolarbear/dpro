@@ -868,12 +868,14 @@ class bytepsGraph:
                         local_min_delay = float('inf')
                         for tensor_name in matched_tensor_names:
                             tensor_durations = push_req_ops["worker_"+node_rank][tensor_name]
-                            assert len(evs) == len(tensor_durations)
+                            if len(evs) != len(tensor_durations):
+                                SingleLogger().warn("Length mismatch between PUSH REQ {} and BW node {}".format(long_name, tensor_name))
+                                continue
                             bw_st, bw_ed = evs[index]
                             pu_st, pu_ed = tensor_durations[index]
                             if not interval["worker_"+node_rank].overlap(bw_ed - 1000, bw_ed + 1000):
                                 local_min_delay = min(local_min_delay, pu_st - bw_ed)
-                                print(layer_name, tensor_name, index, pu_st - bw_ed)
+                                # print(layer_name, tensor_name, index, pu_st - bw_ed)
                         if node_rank not in bw_delay_dict:
                             bw_delay_dict[node_rank] = {}
                         if local_rank not in bw_delay_dict[node_rank]:
@@ -890,8 +892,12 @@ class bytepsGraph:
                 avg = np.average(delays)
                 if avg < min_avg:
                     min_avg = avg
-            SingleLogger().info("BW delay of {} is {} us.".format("worker_"+node_rank, avg))
-            node_delay_dict["worker_"+node_rank] = min_avg
+            if np.isnan(min_avg) or min_avg == float("inf"):
+                SingleLogger().warn("Cannot determine the BW delay of {}.".format("worker_"+node_rank))
+                node_delay_dict["worker_"+node_rank] = 0
+            else:
+                SingleLogger().info("BW delay of {} is {} us.".format("worker_"+node_rank, min_avg))
+                node_delay_dict["worker_"+node_rank] = min_avg
 
         self.bw_delays = node_delay_dict
 
