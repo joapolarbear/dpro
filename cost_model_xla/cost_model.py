@@ -14,9 +14,10 @@ from sklearn.metrics import make_scorer
 import tensorflow as tf
 from google.protobuf import text_format
 
-from gen_dataset_utils import gen_dataset, profile_entire_graph
-from gen_samples import *
-from xlatools import gen_feature_vector, compile_to_hlo
+from .gen_dataset_utils import gen_dataset, profile_entire_graph
+from .gen_samples import *
+from .process_trace import get_execution_time_from_temp_trace
+from .xlatools import gen_feature_vector, compile_to_hlo
 
 MAX_OP_DUR_IN_US = 10000000
 
@@ -126,7 +127,7 @@ class XlaDataset(object):
                           op_times_dict = None):
         graph_json_path = os.path.join(trace_dir, "graph.json")
         op_times_dict = get_execution_time_from_temp_trace(os.path.join(trace_dir, "temp.json"))
-        gen_dataset(graph_json_path, op_times_dict, gpu_benchmark_cmd, result_dir, num_samples, min)
+        gen_dataset(trace_dir, op_times_dict, gpu_benchmark_cmd, result_dir, num_samples,min_subgraph_level=min_subgraph_level, max_subgraph_level=max_subgraph_level)
     
     # @classmethod
     # def gen_op_times_dict(cls, graph, result_dir, profile_tmp_dir = None):

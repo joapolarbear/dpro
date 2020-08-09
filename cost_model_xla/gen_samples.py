@@ -1,4 +1,5 @@
 import tensorflow as tf
+from tensorflow.core.framework import types_pb2
 from google.protobuf import text_format
 import random
 import code
@@ -36,8 +37,9 @@ def get_input_def_from_graph_(graph):
     return input_op_defs
 
 class SampleGenerator(object):
-    def __init__(self, freezed_graph_path=None, graph_def=None, cache_dir="."):
+    def __init__(self, freezed_graph_path=None, graph_def=None, shape_dict=None, cache_dir="."):
         super().__init__()
+        self.shape_dict = shape_dict
         if freezed_graph_path is None and graph_def is None:
             raise RuntimeError("At least one of freezed_graph_path and graph_def must be filled.")
         if graph_def is not None:
@@ -64,6 +66,16 @@ class SampleGenerator(object):
         self.original_graph = tf.Graph()
         with self.original_graph.as_default():
             tf.import_graph_def(graph_def, name="")
+        if self.shape_dict is not None:
+            for op in self.original_graph.get_operations():
+                for output in op.outputs:
+                    if output.name in self.shape_dict:
+                        # print("[INFO] {} set to shape {}".format(output.name, self.shape_dict[output.name]))
+                        output.set_shape(self.shape_dict[output.name])
+                    else:
+                        print("[WARNING] {} not in shape dict.".format(output.name))
+        else:
+            print("[WARNING] Shape dict is not set in sample generator. Trying to read shape from graph def.")
         self.counter_ = 0
 
     def is_equivalent_op(self, op1, op2):
@@ -81,7 +93,10 @@ class SampleGenerator(object):
         shape_att_value = tf.compat.v1.AttrValue()
         shape_att_value.shape.CopyFrom(shape_proto)
         type_att_value = tf.compat.v1.AttrValue()
-        type_att_value.type = data_type.as_datatype_enum
+        if data_type.as_datatype_enum > 100:
+            type_att_value.type =  data_type.as_datatype_enum - 100
+        else:
+            type_att_value.type = data_type.as_datatype_enum
         return shape_att_value, type_att_value
 
     def get_original_graph_def(self):
@@ -92,7 +107,16 @@ class SampleGenerator(object):
         if choose_root_from_ops is None:
             filtered_op = [op for op in self.original_graph.get_operations() if op.type != "Placeholder" and op.type != "Const" and op.type != "Identity"]
         else:
-            filtered_op = choose_root_from_ops
+            filtered_op = []
+            for op_name in choose_root_from_ops:
+                try:
+                    op = self.original_graph.get_operation_by_name(op_name)
+                except:
+                    continue
+                filtered_op.append(op)
+        if not filtered_op:
+            print(choose_root_from_ops)
+            raise RuntimeError("Empty filtered op!")
         op = random.choice(filtered_op)
         num_levels = random.randint(min_levels, max_levels)
         # print("Using max level of {}.".format(num_levels))
@@ -114,7 +138,7 @@ class SampleGenerator(object):
                 if not should_grow:
                     tmp_frontline_nodes.add(n)
                     continue
-                if n.type == 'Placeholder':
+                if n.type == 'Placeholder' or n.type == "VariableV2":
                     subgraph_input_nodes.add(n)
                 else:
                     subgraph_nodes.add(n)
@@ -142,7 +166,7 @@ class SampleGenerator(object):
             if n in processed_frontline_nodes or n in subgraph_nodes or n in subgraph_input_nodes:
                 continue
             processed_frontline_nodes.add(n)
-            if n.type == 'Placeholder':
+            if n.type == 'Placeholder' or n.type == 'VariableV2':
                 subgraph_input_nodes.add(n)
             elif len(n.inputs) == 0:
                 subgraph_nodes.add(n)
@@ -216,7 +240,13 @@ class SampleGenerator(object):
             feed_shapes = []
             for node in input_nodes:
                 feed_names.append(node.name)
-                shape_as_list = [int(value) for value in list(node.outputs[0].shape)]
+                try:
+                    shape_as_list = [int(value) for value in list(node.outputs[0].shape)]
+                except:
+                    print(node)
+                    print(node.outputs[0])
+                    print(node.outputs[0].shape)
+                    exit(0)
                 feed_shapes.append(shape_as_list)
             fetch_names = []
             for node in output_nodes:

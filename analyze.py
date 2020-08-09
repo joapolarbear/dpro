@@ -16,7 +16,7 @@ from progress_utils import progressBar
 import arg_utils
 import debug_utils
 import optimizer
-from cost_model_xla import XlaDataset, FusionCostModel
+# from cost_model_xla import XlaDataset, FusionCostModel
 
 args = arg_utils.SingleArg().args
 logger = logger_utils.SingleLogger(args.path.split(',')[0], 

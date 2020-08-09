@@ -12,11 +12,12 @@ from tensorflow.python.client import timeline
 import json
 import networkx as nx
 class TimelineSession:
-    def __init__(self, sess):
+    def __init__(self, sess, tensor_shape_ops=None):
         self.sess = sess
         self.graph = sess.graph
         self.step_cnt = 0
         self.feed_dict_meta = {}
+        self.tensor_shape_ops = tensor_shape_ops
 
         self.trace_dir = os.path.join(os.environ.get("BYTEPS_TRACE_DIR", "."), str(bps.local_rank()))
         if not os.path.exists(self.trace_dir):
@@ -91,9 +92,14 @@ class TimelineSession:
 
             ### Output traces
             if self.step_cnt == self.end_step:
-                # dump 
-                self.fetches = [tensor.name for tensor in flatten_fetch_list(args_[0])]
                 fd = kwargs_.get("feed_dict")
+                tensor_names, tensor_shape_ops = self.tensor_shape_ops
+                out_shapes = self.sess.run(tensor_shape_ops, feed_dict=fd)
+                self.tensor_shapes = {}
+                for name, shape in zip(tensor_names, out_shapes):
+                    self.tensor_shapes[name] = [int(s) for s in list(shape)]
+                # collect feed dict meta
+                self.fetches = [tensor.name for tensor in flatten_fetch_list(args_[0])]
                 for key, tensor in fd.items():
                     shape_as_list = [int(dim) for dim in tensor.shape]
                     dtype_as_str = (str(tensor.dtype).split("\'")[1] if "\'" in str(tensor.dtype) else str(tensor.dtype)).split("_ref")[0]
@@ -124,13 +130,16 @@ class TimelineSession:
         with open(os.path.join(self.trace_dir, "temp.json"), "w") as f:
             json.dump(self.traces, f, indent=4)
         
+        with open(os.path.join(self.trace_dir, "tensor_shapes.json"), "w") as f:
+            json.dump(self.tensor_shapes, f, indent=4)
+        
         with open(os.path.join(self.trace_dir, "run_meta.json"), "w") as f:
             json.dump({"fetches":self.fetches, "feed_dict": self.feed_dict_meta}, f, indent=4)
 
-        ### collect graph info
-        graphdef = tf.get_default_graph().as_graph_def()
+        ## collect graph info
+        graphdef = tf.get_default_graph().as_graph_def(add_shapes=True)
         graph_str = json.loads(MessageToJson(graphdef))
-        with open(os.path.join(self.trace_dir, "graph.json"), "w") as f:
+        with open(os.path.join(self.trace_dir, "final_graph.json"), "w") as f:
             json.dump(graph_str, f, indent=4)
 
         nx.write_gml(self.dag, os.path.join(self.trace_dir, "dag.gml"), lambda x: str(x))
@@ -143,3 +152,25 @@ def load_graph_def_from_json(graph_def_json_path):
     with open(graph_def_json_path, "r") as f:
         graph_def = parse_protobuf_json(f.read(), GraphDef())
     return graph_def
+
+def dump_computation_graph(trace_dir):
+    graphdef = tf.compat.v1.get_default_graph().as_graph_def()
+    graph_str = json.loads(MessageToJson(graphdef))
+    with open(os.path.join(trace_dir, "graph.json"), "w") as f:
+        json.dump(graph_str, f, indent=4)
+
+def add_infer_shape_ops(graph=None):
+    # add output_shape ops
+    if graph is None:
+        graph = tf.compat.v1.get_default_graph()
+    # collect tensor shapes
+    all_ops = graph.get_operations()
+    tensor_shape_ops = []
+    tensor_names = []
+    with graph.as_default():
+        for op in all_ops:
+            for output in op.outputs:
+                tensor_names.append(output.name)
+                name, idx = output.name.split(":")
+                tensor_shape_ops.append(tf.shape(output, name="final_shape/"+name+"_"+idx))
+    return (tensor_names, tensor_shape_ops)

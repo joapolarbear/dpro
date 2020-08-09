@@ -24,12 +24,13 @@ public:
     HloOpStats(xla::HloOpcode op_code): op_code_(op_code) {}
     
     void add_record(int64_t flops_count, int64_t transcendental_count, 
-                    int64_t bytes_accessed, float optimal_seconds) {
+                    int64_t bytes_accessed, float optimal_seconds, float instr_count) {
         flops_count_ += flops_count;
         transcendental_count_ += transcendental_count;
         bytes_accessed_ += bytes_accessed;
         optimal_seconds_ += optimal_seconds;
         num_ops_recorded_ += 1;
+        instr_count_ += instr_count;
     }
 
     float get_flops_count() { return flops_count_ / num_ops_recorded_;}
@@ -40,7 +41,9 @@ public:
 
     float get_optimal_seconds() { return optimal_seconds_ / num_ops_recorded_; }
 
-    float get_ops_count() {return num_ops_recorded_;}
+    float get_ops_count() { return num_ops_recorded_; }
+
+    float get_instr_count() { return instr_count_; }
 
 private:
     xla::HloOpcode op_code_;
@@ -49,6 +52,7 @@ private:
     float bytes_accessed_ = 0;
     float optimal_seconds_ = 0;
     float num_ops_recorded_ = 0;
+    float instr_count_ = 0;
 };
 
 void WriteFloatVector(std::vector<float>& out_vec, std::string& output_path) {
@@ -126,8 +130,14 @@ int GenFeatureVector(std::string& hlo_module_path, std::string& output_path,
             int64_t transcendental_count = analysis.transcendental_count(*instr);
             int64_t bytes_accessed = analysis.bytes_accessed(*instr);
             float optimal_seconds = analysis.optimal_seconds(*instr);
-            stats_map.at(instr->opcode()).add_record(flops_count, transcendental_count, 
-                                                    bytes_accessed, optimal_seconds);
+            float instruction_count = 0;
+            if (instr->opcode() == xla::HloOpcode::kFusion) {
+                instruction_count = instr->fused_instruction_count();
+            }
+            if (stats_map.find(instr->opcode()) != stats_map.end()) {
+                stats_map.at(instr->opcode()).add_record(flops_count, transcendental_count, 
+                                        bytes_accessed, optimal_seconds, instruction_count);
+            }
         }
     }
     // generate vector
@@ -147,6 +157,10 @@ int GenFeatureVector(std::string& hlo_module_path, std::string& output_path,
         feature_vector.push_back(std::isnan(transcendental_count) ? 0 : transcendental_count);
         feature_vector.push_back(std::isnan(bytes_accessed) ? 0 : bytes_accessed);
         feature_vector.push_back(std::isnan(bytes_accessed) ? 0 : optimal_seconds);
+        if (op_code == xla::HloOpcode::kFusion) {
+            float instr_count = stats_map.at(op_code).get_instr_count();
+            feature_vector.push_back(std::isnan(instr_count) ? 0 : instr_count);
+        }
     }
     WriteFloatVector(feature_vector, output_path);
     return 0;

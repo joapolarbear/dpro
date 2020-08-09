@@ -76,7 +76,7 @@ def get_execution_time_from_temp_trace(trace_path):
         except:
             pass
     for key, durs in time_dict.items():
-        time_dict[key] = sum(durs) / len(durs)
+        time_dict[key] = (sum(durs) / len(durs), len(durs))
     return time_dict
 
 def get_execution_time_from_trace(trace_path):
