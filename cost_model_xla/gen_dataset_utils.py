@@ -74,7 +74,7 @@ def profile_entire_graph(sess, sample_generator, profile_dir, num_runs_per_sampl
     return op_time_dict
 
 def run_gpu_profile(profiler_exec):
-    process = subprocess.run([profiler_exec], check=True, capture_output=True)
+    process = subprocess.run([profiler_exec], capture_output=True)
     output = process.stdout.decode("ascii")
     gflops = float(re.findall("Compute throughput: .* GFlops", output)[0].split()[2])
     gbps = float(re.findall("Memory bandwidth: .* GB/sec", output)[0].split()[2])
@@ -269,6 +269,24 @@ def gen_dataset(trace_dir, op_time_dict, gpu_benchmark_cmd, result_dir, num_samp
         shape_dict = json.load(f)
     with open(os.path.join(trace_dir, "graph.json"), "r") as f:
         graph_def_as_json = json.load(f)
+        # clean up communication nodes
+        removed_node = []
+        for node in graph_def_as_json["node"]:
+            if "BytePSPushPull" in node["name"]:
+                graph_def_as_json["node"].remove(node)
+                removed_node.append(node["name"])
+        while True:
+            removed_sth = False
+            for node in graph_def_as_json["node"]:
+                if "input" in node:
+                    for input_node in node["input"]:
+                        if input_node in removed_node and node["name"] not in removed_node:
+                            graph_def_as_json["node"].remove(node)
+                            removed_sth = True
+                            removed_node.append(node["name"])
+            if not removed_sth:
+                break
+
         for node in graph_def_as_json["node"]:
             if "input" in node:
                 cleaned_inputs = []
@@ -297,6 +315,8 @@ def gen_dataset(trace_dir, op_time_dict, gpu_benchmark_cmd, result_dir, num_samp
                     # exit(0)
                     node["attr"]["shape"] = shape_as_list_to_pb_json(shape_dict[node["name"]+":0"])
         cleaned_graph_def_str = json.dumps(graph_def_as_json)
+        with open(os.path.join(trace_dir, "cleaned_graph.json"), "w") as f_cleaned:
+            json.dump(graph_def_as_json, f_cleaned, indent=4)
         graph_def = Parse(cleaned_graph_def_str, GraphDef())
     # sess = Session()
     # import_graph_def(graph_def)
