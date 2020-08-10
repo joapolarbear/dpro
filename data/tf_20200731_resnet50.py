@@ -32,7 +32,9 @@ DEFAULT_KENREL_SIZE=3
 
 BATCH_LIST_VALUE = []
 
-RST_DIR="./data_20200804_resnet50/v100"
+RST_DIR="/Users/hhp/0/traces/traces20200806/traces20200807_01_bytedance"
+# RST_DIR="/Users/hhp/0/traces/traces20200809_resnet50_imagenet/traces20200809"
+# RST_DIR="./data_20200804_resnet50/v100/1"
 
 def str2list(_list, dtype=str):
 	assert dtype in [int, float, str]
@@ -60,23 +62,26 @@ with open(os.path.join(RST_DIR, "avg.txt"), 'r') as fp:
 	idx = 0
 	while True:
 		if "huhanpeng" in lines[idx]:
-			batchsize = int(lines[idx].split("--batch_size")[1])
+			if idx+1 < len(lines) and ("huhanpeng" in lines[idx+1] or lines[idx+1]==""):
+				idx += 1
+				continue
+			batchsize = int(lines[idx].split("--batch_size")[1].split("--")[0])
 			if "fp32" in lines[idx]:
+				BATCH_LIST_VALUE.append(batchsize)
 				_DATA = DATA_32
 			elif "fp16" in lines[idx]:
 				_DATA = DATA_16
 			else:
 				raise
 			_DATA["B=%d"%batchsize] = str2list(lines[idx+1], dtype=float)
-			BATCH_LIST_VALUE.append(batchsize)
 			idx += 2
 		else:
 			idx += 1
 		if idx >= len(lines):
 			break
-assert "network/resblock_3_1/conv_1/conv2d/Conv2D" in NAMELIST_32, "%s"%str(NAMELIST_32)
+# assert "network/resblock_3_1/conv_1/conv2d/Conv2D" in NAMELIST_32, "%s"%str(NAMELIST_32)
 
-BATCH_LIST_VALUE = [e for e in BATCH_LIST_VALUE if e >=4]
+BATCH_LIST_VALUE = [e for e in BATCH_LIST_VALUE if (e >= 0 and e <=1024)]
 BATCH_LIST_VALUE = sorted(BATCH_LIST_VALUE)
 BATCH_LIST_STR = ["B=%d"%e for e in BATCH_LIST_VALUE]
 
@@ -131,19 +136,6 @@ def infoOfDense(B, C_in, C_out):
 		sizeOutOfDense(B, C_in, C_out), \
 		sizeWeiOfDense(B, C_in, C_out)
 
-def show_model_complexity():
-	computeComplexity = [["conv_layer1", "conv_layer2", "dense", "dense1"], 
-			[numOfMulInConv(DEFAULT_BATCH_SIZE, 28, DEFAULT_KENREL_SIZE, 1, 32),
-				numOfMulInConv(DEFAULT_BATCH_SIZE, 14, DEFAULT_KENREL_SIZE, 32, 64),
-				numOfMulInDense(DEFAULT_BATCH_SIZE, 7*7*64, DEFAULT_DENSE_SIZE),
-				numOfMulInDense(DEFAULT_BATCH_SIZE, DEFAULT_DENSE_SIZE, 10)],
-			[numOfAddInConv(DEFAULT_BATCH_SIZE, 28, DEFAULT_KENREL_SIZE, 1, 32),
-				numOfAddInConv(DEFAULT_BATCH_SIZE, 14, DEFAULT_KENREL_SIZE, 32, 64),
-				numOfAddInDense(DEFAULT_BATCH_SIZE, 7*7*64, DEFAULT_DENSE_SIZE),
-				numOfAddInDense(DEFAULT_BATCH_SIZE, DEFAULT_DENSE_SIZE, 10)]]
-	for i in range(len(computeComplexity[0])):
-		print("%-20s mul:%-20d add: %-20d"%(computeComplexity[0][i], computeComplexity[1][i], computeComplexity[2][i]))
-
 def init_fig_base(cnt):
 	w = math.ceil(math.sqrt(cnt))
 	h = math.ceil(cnt / w)
@@ -156,9 +148,15 @@ OP_NAMES = [
 				'network/resblock0_1/conv_0/conv2d/Conv2D',
 				'network/resblock1_1/conv_0/conv2d/Conv2D',
 				'network/resblock2_1/conv_0/conv2d/Conv2D', 
-				'network/resblock_3_1/conv_1/conv2d/Conv2D', 			
+				'network/resblock_3_1/conv_1/conv2d/Conv2D', 	
+
+				# "network/resblock0_2/conv_0/conv2d/Conv2D",
+				# "network/resblock1_2/conv_1x1_back/conv2d/Conv2D"	
+				# "network/resblock2_2/conv_1x1_back/conv2d/Conv2D"	
+				# "network/resblock_3_2/conv_1x1_back/conv2d/Conv2D",	
 			]
 OP_LABELS = ["/".join(n.split("/")[1:]) for n in OP_NAMES]
+
 
 model_size = np.array([
 		list(zip(*[infoOfConv(b, 32, DEFAULT_KENREL_SIZE, 32, 32) for b in BATCH_LIST_VALUE])),
@@ -166,6 +164,7 @@ model_size = np.array([
 		list(zip(*[infoOfConv(b, 8, DEFAULT_KENREL_SIZE, 128, 128) for b in BATCH_LIST_VALUE])),
 		list(zip(*[infoOfConv(b, 4, DEFAULT_KENREL_SIZE, 256, 256) for b in BATCH_LIST_VALUE])),
 	])
+
 intensity = model_size[:, 0, :] / (model_size[:, 2, :] + model_size[:, 3, :] + model_size[:, 4, :])
 
 THRESHOLD = 0.00 # in ms
@@ -217,21 +216,34 @@ def plot_varyB_intensity():
 	# x_axis_names = ["S_mul", "S_add", "S_in", "S_out", "S_weight"]
 	x_axis_name = "Batch Size (B)"
 
-	def __plot(op_id):
-		ax = plt.subplot(241 + 2 * op_id)
+	def __plot(op_id, flops=False):
+		if flops:
+			ax = plt.subplot(241 + 2 * op_id)
 		avgs = vary_batch_size(NAMELIST_32.index(OP_NAMES[op_id]))
 		avgs_16 = vary_batch_size(NAMELIST_16.index(OP_NAMES[op_id]), fp16=True)
 
-		flops_32 = model_size[op_id, 0, :] / np.array(avgs)
-		flops_16 = model_size[op_id, 0, :] / np.array(avgs_16)
-		ax.plot(intensity[op_id], flops_32, '.-', label=OP_LABELS[op_id]+"_fp32_flops")
-		ax.plot(intensity[op_id], flops_16, '.-', label=OP_LABELS[op_id]+"_fp16_flops")
-		plt.legend()
-		plt.ylabel('FLOPS')
-		plt.xlabel("arithmetic intensity")
+		if flops:
+			flops_32 = model_size[op_id, 0, :] / np.array(avgs)
+			flops_16 = model_size[op_id, 0, :] / np.array(avgs_16)
+			ax.plot(intensity[op_id], flops_32, '.-', label=OP_LABELS[op_id]+"_fp32_flops")
+			ax.plot(intensity[op_id], flops_16, '.-', label=OP_LABELS[op_id]+"_fp16_flops")
+			plt.legend()
+			plt.ylabel('FLOPS')
+			plt.xlabel("arithmetic intensity")
 
-		ax = plt.subplot(242 + 2 * op_id)
+		if flops:
+			ax = plt.subplot(242 + 2 * op_id)
+		else:
+			ax = plt.subplot(221 + op_id)
 		ax.plot(BATCH_LIST_VALUE, intensity[op_id], '.-', label=OP_LABELS[op_id]+"_intensity")
+
+		y = intensity[op_id][BATCH_LIST_VALUE.index(4)]
+		ax.plot([4], [y], '^', label="B=4"+" intensity=%d"%y)
+		y = intensity[op_id][BATCH_LIST_VALUE.index(16)]
+		ax.plot([16], [y], '^', label="B=16"+" intensity=%d"%y)
+		y = intensity[op_id][BATCH_LIST_VALUE.index(64)]
+		ax.plot([64], [y], '^', label="B=64"+" intensity=%d"%y)
+
 		plt.legend()
 		plt.ylabel('Intensity')
 		plt.xlabel(x_axis_name)
@@ -420,11 +432,28 @@ def plot_varyB_resut_of_cast():
 
 	plt.show()
 
+def plot_model_complexity_combine():
+	plt.figure(num=1, figsize=(8, 6))
+	# x_axis_names = ["S_mul", "S_add", "S_in", "S_out", "S_weight"]
+	x_axis_name = "Batch Size (B)"
+
+	fig_id = 0
+	for fig_id, metric in enumerate(["mul", "input", "output", "weight"]):
+		ax = plt.subplot(221 + fig_id)
+		for op_id in range(len(OP_NAMES)):
+			ax.plot(BATCH_LIST_VALUE, model_size[op_id, fig_id if fig_id < 1 else fig_id+1, :], '.-', label=OP_LABELS[op_id])
+		plt.legend()
+		plt.ylabel('size of ' + metric)
+		plt.xlabel(x_axis_name)
+
+	plt.show()
+
 # plot_varyK_result(S_mul=True, S_add=True, S_in=True, S_out=True, S_wei=True)
 # plot_varyD_result()
 # plot_varyB_resut(S_mul=False, S_add=False, S_in=False, S_out=False, S_wei=False)
 # plot_varyB_intensity()
 # plot_varyB_intensity_combine()
+# plot_model_complexity_combine()
 # plot_varyB_resut_of_cast()
 # plot_avg_accum_distribution()
 # raise
@@ -453,7 +482,7 @@ def predict_error(_list, _list_pred):
 	diff = np.abs(_list_pred - _list) / _list
 	return diff, "%f %%"%(np.average(diff * 100))
 
-def calculationSizeAndGFLOPS2time(xs, a1, a2, a3, a4, a5, a6, a7, a8, a9, b1, b2, b3):
+def cost_func(xs, a1, a3, a4, a5, a6, a7, a8, a9, b1, b2, b3):
 	'''
 	gflops:
 		We only need a relative value of gflops, 
@@ -472,32 +501,26 @@ def calculationSizeAndGFLOPS2time(xs, a1, a2, a3, a4, a5, a6, a7, a8, a9, b1, b2
 	wei_S_all = a4 * xs[3] + a5 * xs[4] + a6 * xs[5]
 	wei_S_all2 = a7 * xs[3] + a8 * xs[4] + a9 * xs[5]
 	return (a1 * S_mul + b1) / (a3 * gflops + b2) + wei_S_all / gflops + b3 + gflops * wei_S_all2 
-	# return (a1 * xs[1] + b1) / (np.exp(a3 * xs[0] * (a4 * xs[3] + a5 * xs[4] + a6 * xs[5]) * (xs[1]/(xs[3] + xs[4] + a7 * xs[3] + a8 * xs[4] + a9 * xs[5]))) + b2) + b3 
-
-def fit_test(xs, a1, a2, a3, a4, b1):
-	gflops = xs[0]
-	S_mul = xs[1]
-	S_add = xs[2]
-	intensity = xs[1] / (xs[3] + xs[4] + xs[5])
-	return (a1 * S_mul + b1) * (1 / (a2 * gflops * intensity) + 1 / (a3 * gflops) + a4 * gflops / intensity)
-		
 
 def wrap_curve_fit(xs, ys):
 	assert isinstance(xs, list) and isinstance(ys, list)
 	return curve_fit(time2batch_size, [0] + xs, [0] + ys)
 
-lower_bounds = tuple([0]*9 + [-np.inf]*3)
+lower_bounds = tuple([0]*8 + [-np.inf]*3)
 # lower_bounds = tuple([0]*4 + [-np.inf]*1)
 up_bounds = tuple(len(lower_bounds) * [np.inf])
 p0=[0]*len(lower_bounds)
-FIT_FUNC = calculationSizeAndGFLOPS2time
-# FIT_FUNC = fit_test
+FIT_FUNC = cost_func
 
-is_show = [True, True, True, True, False, False, False, False]
+is_show = [True, True, False, True, False, False, False, False]
 GFLOPS_FP32 = 1
 GFLOPS_FP16 = 2
 
-def fit_with_S_cal_gflops(is_show):
+# least_B = [4, 8, 64, 64]
+least_B = [2, 2, 2, 2]
+train_x = train_y = None
+test_x = test_y = None
+def collect_data(is_show):
 	avgsList = []
 	gflopsList = []
 	S_mul_list = []
@@ -519,25 +542,37 @@ def fit_with_S_cal_gflops(is_show):
 
 	for i in range(len(OP_NAMES)):
 		if is_show[i]:
-			avgsList += vary_batch_size(NAMELIST_32.index(OP_NAMES[i]))
+			start_i = None
 			for b in BATCH_LIST_VALUE:
+				if b < least_B[i]:
+					continue
+				if start_i is None:
+					start_i = BATCH_LIST_VALUE.index(b)
 				S_mul, S_add, S_in, S_out, S_wei = infoOfConv(b, w_, DEFAULT_KENREL_SIZE, cin, cin)
 				__record_xdata(S_mul, S_add, S_in, S_out, S_wei, GFLOPS_FP32)
-			avgsList += vary_batch_size(NAMELIST_16.index(OP_NAMES[i]), fp16=True)
+			avgsList += vary_batch_size(NAMELIST_32.index(OP_NAMES[i]))[start_i:]
+
+			start_i = None
 			for b in BATCH_LIST_VALUE:
+				if b < least_B[i]:
+					continue
+				if start_i is None:
+					start_i = BATCH_LIST_VALUE.index(b)
 				S_mul, S_add, S_in, S_out, S_wei = infoOfConv(b, w_, DEFAULT_KENREL_SIZE, cin, cin)
 				__record_xdata(S_mul, S_add, S_in, S_out, S_wei, GFLOPS_FP16)
+			avgsList += vary_batch_size(NAMELIST_16.index(OP_NAMES[i]), fp16=True)[start_i:]
 		w_ /= 2
 		cin *=2
 
-	xdata = np.array([gflopsList, S_mul_list, S_add_list, S_in_list, S_out_list, S_wei_list])
-	ydata = np.array(avgsList)
-	_ydata, _xdata = exct_filter(ydata, xdata)
-	popt, pcov = curve_fit(FIT_FUNC, _xdata, _ydata, 
-		bounds=(lower_bounds, up_bounds), p0=p0, maxfev=10000)
-	return popt, pcov, xdata, ydata
+	all_data = np.array([avgsList, gflopsList, S_mul_list, S_add_list, S_in_list, S_out_list, S_wei_list])
+	all_data = np.random.shuffle(all_data)
 
-popt, pcov, xdata, ydata = fit_with_S_cal_gflops(is_show)
+def fit_with_S_cal_gflops(is_show):
+	popt, pcov = curve_fit(FIT_FUNC, train_x, train_y, 
+		bounds=(lower_bounds, up_bounds), p0=p0, maxfev=10000)
+	return popt, pcov
+
+popt, pcov = fit_with_S_cal_gflops(is_show)
 print(popt)
 UNIT_LEN = len(BATCH_LIST_VALUE)
 
@@ -622,11 +657,53 @@ def plot_3d_fit_result():
 
 	plt.show()
 
+# def plot_2d_fit_result(is_show):
+# 	plt.figure(num=1, figsize=(8, 6))
+
+# 	ratio_sum = []
+# 	cnt = sum([int(i) for i in is_show])
+# 	fig_base, fig_idx = init_fig_base(cnt)
+
+# 	def __plot(op_id, fig_base, fig_idx, only_16=False):
+# 		ax = plt.subplot(fig_base)
+# 		if not only_16:
+# 			avgs = vary_batch_size(NAMELIST_32.index(OP_NAMES[op_id]))
+# 			ax.plot(BATCH_LIST_VALUE, avgs, marker='.', label=OP_LABELS[op_id]+"_fp32")
+# 			avgs_pred = FIT_FUNC(xdata[:, fig_idx*UNIT_LEN:(fig_idx+1)*UNIT_LEN], *popt)
+# 			ax.plot(BATCH_LIST_VALUE, avgs_pred, "--", label=OP_LABELS[op_id]+"_fp32"+"_pred")
+# 			diff, ratio = predict_error(avgs, avgs_pred)
+# 			print(OP_LABELS[op_id]+"_fp32", ratio, diff)
+# 			fig_idx += 1
+# 			if "%" in ratio:
+# 				ratio_sum.append(float(ratio.split("%")[0]))
+
+# 		avgs_16 = vary_batch_size(NAMELIST_16.index(OP_NAMES[op_id]), fp16=True)
+# 		ax.plot(BATCH_LIST_VALUE, avgs_16, marker='^', label=OP_LABELS[op_id]+"_fp16")
+# 		avgs_pred = FIT_FUNC(xdata[:, fig_idx*UNIT_LEN:(fig_idx+1)*UNIT_LEN], *popt)
+# 		ax.plot(BATCH_LIST_VALUE, avgs_pred, "--", label=OP_LABELS[op_id]+"_fp16"+"_pred")
+# 		diff, ratio = predict_error(avgs_16, avgs_pred)
+# 		print(OP_LABELS[op_id]+"_fp16", ratio, diff)
+# 		fig_idx += 1
+# 		if "%" in ratio:
+# 			ratio_sum.append(float(ratio.split("%")[0]))
+		
+# 		plt.legend()
+# 		plt.ylabel('Average Time (ms)')
+# 		plt.xlabel("Batch Size (B)")
+# 		return fig_base+1, fig_idx
+
+# 	for op_id in range(4):
+# 		if is_show[op_id]:
+# 			fig_base, fig_idx = __plot(op_id, fig_base, fig_idx)
+	
+# 	print("average error: %f %%"%(sum(ratio_sum)/len(ratio_sum)))
+# 	plt.show()
 def plot_2d_fit_result(is_show):
 	plt.figure(num=1, figsize=(8, 6))
 
 	ratio_sum = []
-	cnt = sum([int(i) for i in is_show])
+	# cnt = sum([int(i) for i in is_show])
+	cnt = 4
 	fig_base, fig_idx = init_fig_base(cnt)
 
 	def __plot(op_id, fig_base, fig_idx, only_16=False):
@@ -634,7 +711,7 @@ def plot_2d_fit_result(is_show):
 		if not only_16:
 			avgs = vary_batch_size(NAMELIST_32.index(OP_NAMES[op_id]))
 			ax.plot(BATCH_LIST_VALUE, avgs, marker='.', label=OP_LABELS[op_id]+"_fp32")
-			avgs_pred = FIT_FUNC(xdata[:, fig_idx*UNIT_LEN:(fig_idx+1)*UNIT_LEN], *popt)
+			avgs_pred = FIT_FUNC(np.concatenate((np.array([[GFLOPS_FP32]*len(model_size[fig_idx//2, 0, :])]), model_size[fig_idx//2, :, :]), axis=0), *popt)
 			ax.plot(BATCH_LIST_VALUE, avgs_pred, "--", label=OP_LABELS[op_id]+"_fp32"+"_pred")
 			diff, ratio = predict_error(avgs, avgs_pred)
 			print(OP_LABELS[op_id]+"_fp32", ratio, diff)
@@ -644,7 +721,7 @@ def plot_2d_fit_result(is_show):
 
 		avgs_16 = vary_batch_size(NAMELIST_16.index(OP_NAMES[op_id]), fp16=True)
 		ax.plot(BATCH_LIST_VALUE, avgs_16, marker='^', label=OP_LABELS[op_id]+"_fp16")
-		avgs_pred = FIT_FUNC(xdata[:, fig_idx*UNIT_LEN:(fig_idx+1)*UNIT_LEN], *popt)
+		avgs_pred = FIT_FUNC(np.concatenate((np.array([[GFLOPS_FP16]*len(model_size[fig_idx//2, 0, :])]), model_size[fig_idx//2, :, :]), axis=0), *popt)
 		ax.plot(BATCH_LIST_VALUE, avgs_pred, "--", label=OP_LABELS[op_id]+"_fp16"+"_pred")
 		diff, ratio = predict_error(avgs_16, avgs_pred)
 		print(OP_LABELS[op_id]+"_fp16", ratio, diff)
@@ -657,9 +734,10 @@ def plot_2d_fit_result(is_show):
 		plt.xlabel("Batch Size (B)")
 		return fig_base+1, fig_idx
 
-	for op_id in range(4):
-		if is_show[op_id]:
-			fig_base, fig_idx = __plot(op_id, fig_base, fig_idx)
+	for op_id in range(cnt):
+		# if is_show[op_id]:
+		# op_id = 2
+		fig_base, fig_idx = __plot(op_id, fig_base, fig_idx)
 	
 	print("average error: %f %%"%(sum(ratio_sum)/len(ratio_sum)))
 	plt.show()
