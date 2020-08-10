@@ -8,7 +8,7 @@ import pickle
 from logger_utils import *
 from trace_utils import *
 import arg_utils
-from byteps.preprocess import preprocess_pcap, parse_server_logs
+from bps_helper.preprocess import preprocess_pcap, parse_server_logs
 
 args_ = arg_utils.SingleArg().args
 
@@ -199,6 +199,31 @@ class bytepsGraph:
         return tensor_name + "~PART" + str(part_id)
 
     def _parse_trace(self):
+        # server trace
+        for event in self.server_trace_content_:
+            if event["ph"] == "M":
+                if event["name"] == "process_name":
+                    server = event["args"]["name"].strip()
+                    self.pid_to_server[event["pid"]] = server
+
+        for event in self.server_trace_content_:
+            if event["ph"] != "M":
+                server = self.pid_to_server[event["pid"]]
+                if server not in self.servers_threads:
+                    self.servers_threads[server] = 0
+                tensor_name, op = self._parse_event_name(event["name"])
+                if tensor_name in self.gradient_assignment_dict:
+                    assert self.gradient_assignment_dict[tensor_name] == server
+                else:
+                    self.gradient_assignment_dict[tensor_name] = server
+                self._parse_partition(tensor_name)
+                self.servers_threads[server] = max(self.servers_threads[server], event["tid"])
+                if (server, tensor_name, op) not in self.comp_ops_tid:
+                    self.comp_ops_tid[(server, tensor_name, op)] = event["tid"]
+                if (server, tensor_name, op, event["tid"]) not in self.comp_ops_dict:
+                    self.comp_ops_dict[(server, tensor_name, op, event["tid"])] = []
+                self.comp_ops_dict[(server, tensor_name, op, event["tid"])].append((event["ph"], event["ts"]))
+
         # COMM trace
         for event in self.comm_trace_content_:
             if event["ph"] == "M":
@@ -206,7 +231,6 @@ class bytepsGraph:
                     process_name = event["args"]["name"]
                     source, target = self._parse_source_target(process_name)
                     self.pid_to_target[event["pid"]] = (source, target)
-
         len_count = {}
         
         for event in self.comm_trace_content_:
@@ -216,22 +240,16 @@ class bytepsGraph:
                 self._parse_partition(tensor_name)
                 if "server" in source:
                     self.workers.add(target)
-                    if source not in self.servers_threads:
-                        self.servers_threads[source] = 0
                     op += "_RES"
                     if tensor_name in self.gradient_assignment_dict:
-                        assert self.gradient_assignment_dict[tensor_name] == source
-                    else:
-                        self.gradient_assignment_dict[tensor_name] = source
+                        if self.gradient_assignment_dict[tensor_name] != source:
+                            continue
                 else:
                     self.workers.add(source)
-                    if target not in self.servers_threads:
-                        self.servers_threads[source] = 0 
                     op += "_REQ"
                     if tensor_name in self.gradient_assignment_dict:
-                        assert self.gradient_assignment_dict[tensor_name] == target
-                    else:
-                        self.gradient_assignment_dict[tensor_name] = target
+                        if self.gradient_assignment_dict[tensor_name] != target:
+                            continue
                 if (source, target, tensor_name, op) not in self.comm_ops_dict:
                     self.comm_ops_dict[(source, target, tensor_name, op)] = []
                 self.comm_ops_dict[(source, target, tensor_name, op)].append((event["ph"], event["ts"]))
@@ -249,27 +267,6 @@ class bytepsGraph:
             if key not in self.comm_durations:
                 self.comm_durations[key] = {}
             self.comm_durations[key] = durations
-
-        # server trace
-        for event in self.server_trace_content_:
-            if event["ph"] == "M":
-                if event["name"] == "process_name":
-                    server = event["args"]["name"].strip()
-                    self.pid_to_server[event["pid"]] = server
-
-        for event in self.server_trace_content_:
-            if event["ph"] != "M":
-                server = self.pid_to_server[event["pid"]]
-                tensor_name, op = self._parse_event_name(event["name"])
-                self._parse_partition(tensor_name)
-                self.servers_threads[server] = max(self.servers_threads[server], event["tid"])
-                # sanity check
-                assert self.gradient_assignment_dict[tensor_name] == server
-                if (server, tensor_name, op) not in self.comp_ops_tid:
-                    self.comp_ops_tid[(server, tensor_name, op)] = event["tid"]
-                if (server, tensor_name, op, event["tid"]) not in self.comp_ops_dict:
-                    self.comp_ops_dict[(server, tensor_name, op, event["tid"])] = []
-                self.comp_ops_dict[(server, tensor_name, op, event["tid"])].append((event["ph"], event["ts"]))
         
         for key, events in self.comp_ops_dict.items():
             durations = []
@@ -871,10 +868,12 @@ class bytepsGraph:
                         local_min_delay = float('inf')
                         for tensor_name in matched_tensor_names:
                             tensor_durations = push_req_ops["worker_"+node_rank][tensor_name]
-                            assert len(evs) == len(tensor_durations)
+                            if len(evs) != len(tensor_durations):
+                                SingleLogger().warn("Length mismatch between PUSH REQ {} and BW node {}".format(long_name, tensor_name))
+                                continue
                             bw_st, bw_ed = evs[index]
                             pu_st, pu_ed = tensor_durations[index]
-                            if not interval["worker_"+node_rank].overlap(bw_ed - 1000, bw_ed + 50):
+                            if not interval["worker_"+node_rank].overlap(bw_ed - 1000, bw_ed + 1000):
                                 local_min_delay = min(local_min_delay, pu_st - bw_ed)
                                 # print(layer_name, tensor_name, index, pu_st - bw_ed)
                         if node_rank not in bw_delay_dict:
@@ -893,8 +892,12 @@ class bytepsGraph:
                 avg = np.average(delays)
                 if avg < min_avg:
                     min_avg = avg
-            SingleLogger().info("BW delay of {} is {} us.".format("worker_"+node_rank, avg))
-            node_delay_dict["worker_"+node_rank] = min_avg
+            if np.isnan(min_avg) or min_avg == float("inf"):
+                SingleLogger().warn("Cannot determine the BW delay of {}.".format("worker_"+node_rank))
+                node_delay_dict["worker_"+node_rank] = 0
+            else:
+                SingleLogger().info("BW delay of {} is {} us.".format("worker_"+node_rank, min_avg))
+                node_delay_dict["worker_"+node_rank] = min_avg
 
         self.bw_delays = node_delay_dict
 

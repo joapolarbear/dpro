@@ -8,7 +8,7 @@ import collections
 
 from dag_utils import QueueType
 from trace_utils import *
-from byteps.graph import *
+from bps_helper.graph import *
 from progress_utils import progressBar
 import logger_utils
 import debug_utils
@@ -16,7 +16,7 @@ import debug_utils
 FIXED_GAP_us = 5
 args = arg_utils.SingleArg().args
 
-class Deivce:
+class Device:
 	def __init__(self, device_name, _replayer, infi_para=False, comm_backend = "NCCL"):
 		self.replayer = _replayer
 		self.device_time = 0
@@ -104,19 +104,16 @@ class Deivce:
 		debug_utils.DebugRecorder().debug_event_end(name, self.device_name, "mark_as_exct")
 		### TODO (huhanpeng): modify after fine-tune update
 		### Should be safe now, would be overitted by an UPDATE OP with larger UPDATE index
-		if "UPDATE" in name:
+		# if "UPDATE" in name:
 			#! current UPDATE of this GPU ends
-			pid = parse_pid_from_name(name)
-			self.replayer.step_end_time[pid] = start_t + duration
+		pid = parse_pid_from_name(name)
+		self.replayer.step_end_time[pid] = start_t + duration
 
 		#! TODO: for debug
 		debug_utils.DebugRecorder().debug_event_end(name, self.device_name, "exct")
-
-	def mark_as_exct(self, name, _start_t, _end_time):
-		''' Mark that the op has been executed '''
-
+	
+	def _update_device_time(self, name, _end_time):
 		### Apply the gap between two nodes
-		this_cat = parse_cat_from_name(name)
 		gap = 0
 		for key, value in self.replayer.dag.nodes[name].items():
 			if "GAP" in key:
@@ -127,9 +124,17 @@ class Deivce:
 					gap += value
 					if gap > 1000:
 						SingleLogger().debug("Large GAP detected: {}, key = {}, gap = {}".format(name, key, value))
+		if gap < 0:
+			raise RuntimeError("Negative GAP detected: {}, key = {}, gap = {}".format(name, key, gap))
 		self.device_time = _end_time + gap
 
+	def mark_as_exct(self, name, _start_t, _end_time):
+		''' Mark that the op has been executed '''
+
+		self._update_device_time(name, _end_time)
+
 		self.replayer.node_status.pop(name)
+		this_cat = parse_cat_from_name(name)
 		for _succ in self.replayer.dag.successors(name):
 			next_cat = parse_cat_from_name(_succ)
 			if _succ in self.replayer.node_status:
@@ -147,6 +152,8 @@ class Deivce:
 					if GAP_STR_OP2COMM in self.replayer.dag.nodes[name] and next_cat == CatName.COMM.value and this_cat == CatName.OPERATOR.value:
 					# if GAP_STR_OP2COMM in self.replayer.dag.nodes[name] and next_cat == "Comm":
 						gap += self.replayer.dag.nodes[name][GAP_STR_OP2COMM]
+						if self.replayer.dag.nodes[name][GAP_STR_OP2COMM] > 10000:
+							SingleLogger().warn("Large OP2COMM gap detected, {} -> {},  gap: {}".format(name, _succ, self.replayer.dag.nodes[name][GAP_STR_OP2COMM]))
 					_status["ready"] = (_end_time + gap) if _status["ready"] is None else max(_end_time + gap, _status["ready"])
 					
 
@@ -176,7 +183,7 @@ class Deivce:
 				ratio = self.replayer.delay_dict["DELAY_ALL"]["ratio"]
 		return delay, ratio
 
-class PSCommDevice(Deivce):
+class PSCommDevice(Device):
 	def __init__(self, device_name, _replayer, op_counter, comm_delay = 0, comm_backend = "NCCL", infi_para=False):
 		super().__init__(device_name, _replayer, infi_para=infi_para, comm_backend = comm_backend)
 		self.op_counter = op_counter
@@ -193,7 +200,8 @@ class PSCommDevice(Deivce):
 	def mark_as_exct(self, name, _start_t, _end_time):
 		next_name = self.op_counter.get_next_op(name)
 
-		self.device_time = _end_time
+		self._update_device_time(name, _end_time)
+
 		self.replayer.node_status.pop(name)
 		for _succ in self.replayer.dag.successors(name):
 			if _succ in self.replayer.node_status:
@@ -381,7 +389,7 @@ class Replayer:
 		return self.device_dict[device_id]		
 		
 	def create_device(self, device_name, infi_para=False):
-		d = Deivce(device_name, self, comm_backend = self.comm_backend, infi_para=infi_para)
+		d = Device(device_name, self, comm_backend = self.comm_backend, infi_para=infi_para)
 		return d
 
 	def create_ps_comm_device(self, device_name, infi_para=False):
