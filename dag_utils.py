@@ -5,7 +5,7 @@ import logger_utils
 import arg_utils
 from trace_utils import *
 from horovod.graph import *
-from byteps.graph import *
+from bps_helper.graph import *
 
 args_ = arg_utils.SingleArg().args
 

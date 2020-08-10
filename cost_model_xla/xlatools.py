@@ -27,13 +27,13 @@ def compile_to_hlo(graph_path, config_path, dump_path_unopt, dump_path_opt):
     _check_file_exist_for_reading(config_path)
     _check_file_available_for_writing(dump_path_unopt)
     _check_file_available_for_writing(dump_path_opt)
-    subprocess.run(["python3", "compile_to_hlo.py", "--graph_path", graph_path, "--config_path", config_path, "--unopt", dump_path_unopt, "--opt", dump_path_opt])
+    subprocess.run(["python3", "/root/byteprofile-analysis/cost_model_xla/compile_to_hlo.py", "--graph_path", graph_path, "--config_path", config_path, "--unopt", dump_path_unopt, "--opt", dump_path_opt])
 
 def gen_feature_vector(hlo_module_path, output_path, gflops_per_second, gbytes_per_second):
     _check_arg_types([hlo_module_path, output_path, gflops_per_second, gbytes_per_second], [str, str, float, float])
     _check_file_exist_for_reading(hlo_module_path)
     _check_file_available_for_writing(output_path)
-    subprocess.run(["python3", "gen_feature_vector.py", "--hlo_module_path", hlo_module_path, "--output_path", output_path, "--gflops", str(gflops_per_second), "--gbps", str(gbytes_per_second)])
+    subprocess.run(["python3", "/root/byteprofile-analysis/cost_model_xla/gen_feature_vector.py", "--hlo_module_path", hlo_module_path, "--output_path", output_path, "--gflops", str(gflops_per_second), "--gbps", str(gbytes_per_second)])
 
 def replay_hlo(hlo_path, replay_exec=None):
     if replay_exec is None:

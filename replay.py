@@ -8,7 +8,7 @@ import collections
 
 from dag_utils import QueueType
 from trace_utils import *
-from byteps.graph import *
+from bps_helper.graph import *
 from progress_utils import progressBar
 import logger_utils
 import debug_utils
@@ -104,10 +104,10 @@ class Device:
 		debug_utils.DebugRecorder().debug_event_end(name, self.device_name, "mark_as_exct")
 		### TODO (huhanpeng): modify after fine-tune update
 		### Should be safe now, would be overitted by an UPDATE OP with larger UPDATE index
-		if "UPDATE" in name:
+		# if "UPDATE" in name:
 			#! current UPDATE of this GPU ends
-			pid = parse_pid_from_name(name)
-			self.replayer.step_end_time[pid] = start_t + duration
+		pid = parse_pid_from_name(name)
+		self.replayer.step_end_time[pid] = start_t + duration
 
 		#! TODO: for debug
 		debug_utils.DebugRecorder().debug_event_end(name, self.device_name, "exct")

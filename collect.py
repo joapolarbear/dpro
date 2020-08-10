@@ -15,7 +15,7 @@ from trace_utils import *
 from dag_utils import * 
 from horovod.graph import *
 from parameter import *
-from byteps.graph import *
+from bps_helper.graph import *
 
 args_ = arg_utils.SingleArg().args
 

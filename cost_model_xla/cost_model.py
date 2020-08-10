@@ -13,7 +13,12 @@ from sklearn.model_selection import KFold
 from sklearn.metrics import make_scorer
 import tensorflow as tf
 from google.protobuf import text_format
-
+try:
+    GraphDef = tf.GraphDef
+except:
+    GraphDef = tf.compat.v1.GraphDef
+from google.protobuf.json_format import Parse
+import json
 from .gen_dataset_utils import gen_dataset, profile_entire_graph
 from .gen_samples import *
 from .process_trace import get_execution_time_from_temp_trace
@@ -127,7 +132,12 @@ class XlaDataset(object):
                           op_times_dict = None):
         graph_json_path = os.path.join(trace_dir, "graph.json")
         op_times_dict = get_execution_time_from_temp_trace(os.path.join(trace_dir, "temp.json"))
-        gen_dataset(trace_dir, op_times_dict, gpu_benchmark_cmd, result_dir, num_samples,min_subgraph_level=min_subgraph_level, max_subgraph_level=max_subgraph_level)
+        op_times_dict_dump_path = os.path.join(result_dir, "op_running_times.pickle")
+        if not os.path.isdir(result_dir):
+            os.makedirs(result_dir)
+        with open(op_times_dict_dump_path, "wb") as f:
+            pickle.dump(op_times_dict, f)     
+        # gen_dataset(trace_dir, op_times_dict, gpu_benchmark_cmd, result_dir, num_samples,min_subgraph_level=min_subgraph_level, max_subgraph_level=max_subgraph_level)
     
     # @classmethod
     # def gen_op_times_dict(cls, graph, result_dir, profile_tmp_dir = None):
@@ -154,6 +164,7 @@ class GraphDefUtil(object):
         self.original_graph = tf.Graph()
         with self.original_graph.as_default():
             tf.import_graph_def(graph_def, name="")
+        self.operation_names = set([node.name for node in self.original_graph.get_operations()])
 
     def gen_shape_type_attr_value(self, shape, data_type):
         shape_proto = shape.as_proto()
@@ -164,9 +175,15 @@ class GraphDefUtil(object):
         return shape_att_value, type_att_value
 
     def get_subgraph_def_config_from_nodes(self, node_names, output_dir, sample_index):
+        # check ops are in the graph
+        for node_name in node_names:
+            if node_name not in self.operation_names:
+                print("[Cost Model] {} not in graph ops.".format(node_name))
+                return None, None
         subgraph_nodes = set([self.original_graph.get_operation_by_name(name) for name in node_names])
         subgraph_frontline_nodes = set()
         internal_subgraph_nodes = set()
+        subgraph_input_nodes = set()
         subgraph_output_nodes = set()
         for node in subgraph_nodes:
             node_is_internal = True
@@ -177,15 +194,17 @@ class GraphDefUtil(object):
                         node_is_internal = False
                         break
             if node_is_internal:
-                internal_subgraph_nodes.add(node)
-        subgraph_input_nodes = set()
+                if node.type == 'Placeholder' or node.type == "VariableV2":
+                    subgraph_input_nodes.add(node)
+                else:
+                    internal_subgraph_nodes.add(node)
         generated_subgraph_input_defs = []
         converted_frontline_node_defs = []
         gen_placeholder_counter = 0
         for idx, n in enumerate(subgraph_frontline_nodes):
             if n in internal_subgraph_nodes or n in subgraph_input_nodes:
                 continue
-            if n.type == 'Placeholder':
+            if n.type == 'Placeholder' or n.type == "VariableV2":
                 subgraph_input_nodes.add(n)
             elif len(n.inputs) == 0:
                 internal_subgraph_nodes.add(n)
@@ -311,6 +330,12 @@ class FusionCostModel(object):
         self.graph_def = graph_def
         self.graph_def_util = GraphDefUtil(graph_def)
     
+    def set_graph_def_from_json(self, graph_def_json_path):
+        with open(graph_def_json_path, "r") as f:
+            cleaned_graph_def_str = f.read()
+        self.graph_def = Parse(cleaned_graph_def_str, GraphDef())
+        self.graph_def_util = GraphDefUtil(self.graph_def)
+    
     def set_gflops(self, gflops):
         self.gflops = gflops
 
@@ -345,6 +370,9 @@ class FusionCostModel(object):
     def predict(self, node_names):
         self._check_model_ready()
         graph_def_path, config_path = self.graph_def_util.get_subgraph_def_config_from_nodes(node_names, self._tmp_dir, 0)
+        if graph_def_path is None or config_path is None:
+            print("[Cost Model] Failed to predict the running time of ops: {}".format(node_names))
+            return -1
         unopt_hlo_path = os.path.join(self._tmp_dir, "unopt.txt")
         opt_hlo_path = os.path.join(self._tmp_dir, "opt.txt")
         feature_vec_path = os.path.join(self._tmp_dir, "feature.txt")

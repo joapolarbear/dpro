@@ -8,7 +8,7 @@ import pickle
 from logger_utils import *
 from trace_utils import *
 import arg_utils
-from byteps.preprocess import preprocess_pcap, parse_server_logs
+from bps_helper.preprocess import preprocess_pcap, parse_server_logs
 
 args_ = arg_utils.SingleArg().args
 

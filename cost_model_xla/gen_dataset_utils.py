@@ -27,10 +27,10 @@ except:
     import_graph_def = tf.compat.v1.graph_util.import_graph_def
 from google.protobuf.json_format import Parse
 import byteps.tensorflow as bps
-from execute_graph import *
-from gen_samples import *
-from process_trace import *
-from xlatools import *
+from .execute_graph import *
+from .gen_samples import *
+from .process_trace import *
+from .xlatools import *
 from tqdm import trange
 
 def clean_up(profile_dir, xla_dir):
@@ -154,7 +154,7 @@ def gen_sample_once_using_replay(sample_generator, dataset_dir, label_file_path,
         print("[WARNING] Failed to compile & replay HLO code.")
         clean_up_dir(profile_dir)
         clean_up_dir(raw_subgraph_dir)
-        return
+        return False
     # generate feature vector
     feature_path = os.path.join(feature_dir, "{}.txt".format(str(sample_id)))
     gen_feature_vector(opt_path, feature_path, gpu_gflops, gpu_gbps)
@@ -172,11 +172,12 @@ def gen_sample_once_using_replay(sample_generator, dataset_dir, label_file_path,
             f.write("{}: {}\n".format(sample_id, avg_time))
     except:
         print("[WARNING] Cannot find generated feature vector of sample {}".format(sample_id))
+        return False
     # copy and rename hlo file
     shutil.copyfile(opt_path, os.path.join(dataset_hlo_dir, "hlo_{}.txt".format(sample_id)))
     clean_up_dir(profile_dir)
     clean_up_dir(raw_subgraph_dir)
-    return
+    return True
 
 # def gen_dataset(graph_def, op_time_dict, gpu_benchmark_cmd, result_dir, num_samples=2000, 
 #                 min_subgraph_level=5, max_subgraph_level=15):
@@ -361,10 +362,13 @@ def gen_dataset(trace_dir, op_time_dict, gpu_benchmark_cmd, result_dir, num_samp
     print("Benchmarking GPU stats.")
     gflops, gbps = run_gpu_profile(gpu_benchmark_cmd)
     print("Start generation.")
+    completed_samples = 0
     for i in trange(num_samples):
-        gen_sample_once_using_replay(sample_generator, dataset_dir, label_file_path, feature_dir,
+        status = gen_sample_once_using_replay(sample_generator, dataset_dir, label_file_path, feature_dir,
                         dataset_hlo_dir, profile_dir, op_time_dict, gflops, gbps,
                         min_levels=min_subgraph_level, max_levels=max_subgraph_level, debug_dir=debug_dir)
+        if status:
+            completed_samples += 1
     if os.path.isdir(profile_dir):
         os.rmdir(profile_dir)
     print("Dataset generation complete.")
