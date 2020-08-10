@@ -1,2 +1,0 @@
-TF_XLA_FLAGS="--tf_xla_auto_jit=2 --tf_xla_cpu_global_jit" XLA_FLAGS="--xla_dump_hlo_as_text --xla_dump_to=/root/resnet_dataset/xla_dump" \
-python3 gen_dataset.py --freezed_graph_path /root/resnet/freezed_resnet_graph.pbtxt --result_dir /root/resnet_dataset --xla_dir_name xla_dump --debug --max_subgraph_level 12 --num_samples 600 --gen_feature_cmd "/root/tensorflow/bazel-bin/tensorflow/compiler/xla/tools/gen_feature_vector"
