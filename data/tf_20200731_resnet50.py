@@ -158,6 +158,7 @@ OP_NAMES = [
 OP_LABELS = ["/".join(n.split("/")[1:]) for n in OP_NAMES]
 
 
+### model_size[node_name][S_mul, S_add, ...][len= # of batch value]
 model_size = np.array([
 		list(zip(*[infoOfConv(b, 32, DEFAULT_KENREL_SIZE, 32, 32) for b in BATCH_LIST_VALUE])),
 		list(zip(*[infoOfConv(b, 16, DEFAULT_KENREL_SIZE, 64, 64) for b in BATCH_LIST_VALUE])),
@@ -463,13 +464,21 @@ def plot_model_complexity_combine():
 #############################        Start to Fit          #########################################
 ####################################################################################################
 
-def exct_filter(target, others):
-	assert len(target.shape) == 1
-	_filter = np.where(target >= THRESHOLD)
-	if len(others.shape) == 1:
-		return target[_filter], others[_filter]
+def exct_filter(target, others=None):
+	if len(target.shape) == 1:
+		_filter = np.where(target >= THRESHOLD)
+		if len(others.shape) == 1:
+			return target[_filter], others[_filter]
+		else:
+			return target[_filter], others[:, _filter].reshape(list(others.shape[:-1]) + [-1])
 	else:
-		return target[_filter], others[:, _filter].reshape(list(others.shape[:-1]) + [-1])
+		### target[sample id][avg, G, S_mul, S_add, ...]
+		_min = 100
+		_max = 100000000
+		print(target.shape)
+		target = target[((target[:, 2] > _min) & (target[:, 2] < _max))]
+		print(target.shape)
+		return target
 
 def predict_error(_list, _list_pred):
 	_list_pred = np.array(_list_pred)
@@ -520,6 +529,8 @@ GFLOPS_FP16 = 2
 least_B = [2, 2, 2, 2]
 train_x = train_y = None
 test_x = test_y = None
+TRAIN_PERCENT = 0.95
+
 def collect_data(is_show):
 	avgsList = []
 	gflopsList = []
@@ -564,14 +575,36 @@ def collect_data(is_show):
 		w_ /= 2
 		cin *=2
 
+	### all_data[S_mul, ...][# of nodes * # of batch size values]
 	all_data = np.array([avgsList, gflopsList, S_mul_list, S_add_list, S_in_list, S_out_list, S_wei_list])
-	all_data = np.random.shuffle(all_data)
+	### all_data[# of nodes * # of batch size values][S_mul, ...]
+	all_data = np.transpose(all_data)
+	### filter
+	# all_data = exct_filter(all_data)
+	arg_num = all_data.shape[1]
+	value_num = all_data.shape[0]
+	np.random.shuffle(all_data)
+
+	### split data to training data and test data
+	mask = np.zeros(value_num, dtype=bool)
+	train_idx = np.random.choice(value_num, int(TRAIN_PERCENT * value_num), replace=False)
+	mask[train_idx] = True
+	train_data = np.split(all_data[mask, :], [1], axis=1)
+	test_data = np.split(all_data[~mask, :], [1], axis=1)
+	global train_x, train_y, test_x, test_y
+	train_x, train_y = train_data[1], train_data[0]
+	test_x, test_y = test_data[1], test_data[0]
+	print("Collect training data - X:{}, Y:{}, test data - X:{}, Y:{}".format(train_x.shape, train_y.shape, test_x.shape, test_y.shape))
+
 
 def fit_with_S_cal_gflops(is_show):
-	popt, pcov = curve_fit(FIT_FUNC, train_x, train_y, 
+	_train_x = np.transpose(train_x)
+	_train_y = np.transpose(train_y).flatten()
+	popt, pcov = curve_fit(FIT_FUNC, _train_x, _train_y, 
 		bounds=(lower_bounds, up_bounds), p0=p0, maxfev=10000)
 	return popt, pcov
 
+collect_data(is_show)
 popt, pcov = fit_with_S_cal_gflops(is_show)
 print(popt)
 UNIT_LEN = len(BATCH_LIST_VALUE)
@@ -657,47 +690,6 @@ def plot_3d_fit_result():
 
 	plt.show()
 
-# def plot_2d_fit_result(is_show):
-# 	plt.figure(num=1, figsize=(8, 6))
-
-# 	ratio_sum = []
-# 	cnt = sum([int(i) for i in is_show])
-# 	fig_base, fig_idx = init_fig_base(cnt)
-
-# 	def __plot(op_id, fig_base, fig_idx, only_16=False):
-# 		ax = plt.subplot(fig_base)
-# 		if not only_16:
-# 			avgs = vary_batch_size(NAMELIST_32.index(OP_NAMES[op_id]))
-# 			ax.plot(BATCH_LIST_VALUE, avgs, marker='.', label=OP_LABELS[op_id]+"_fp32")
-# 			avgs_pred = FIT_FUNC(xdata[:, fig_idx*UNIT_LEN:(fig_idx+1)*UNIT_LEN], *popt)
-# 			ax.plot(BATCH_LIST_VALUE, avgs_pred, "--", label=OP_LABELS[op_id]+"_fp32"+"_pred")
-# 			diff, ratio = predict_error(avgs, avgs_pred)
-# 			print(OP_LABELS[op_id]+"_fp32", ratio, diff)
-# 			fig_idx += 1
-# 			if "%" in ratio:
-# 				ratio_sum.append(float(ratio.split("%")[0]))
-
-# 		avgs_16 = vary_batch_size(NAMELIST_16.index(OP_NAMES[op_id]), fp16=True)
-# 		ax.plot(BATCH_LIST_VALUE, avgs_16, marker='^', label=OP_LABELS[op_id]+"_fp16")
-# 		avgs_pred = FIT_FUNC(xdata[:, fig_idx*UNIT_LEN:(fig_idx+1)*UNIT_LEN], *popt)
-# 		ax.plot(BATCH_LIST_VALUE, avgs_pred, "--", label=OP_LABELS[op_id]+"_fp16"+"_pred")
-# 		diff, ratio = predict_error(avgs_16, avgs_pred)
-# 		print(OP_LABELS[op_id]+"_fp16", ratio, diff)
-# 		fig_idx += 1
-# 		if "%" in ratio:
-# 			ratio_sum.append(float(ratio.split("%")[0]))
-		
-# 		plt.legend()
-# 		plt.ylabel('Average Time (ms)')
-# 		plt.xlabel("Batch Size (B)")
-# 		return fig_base+1, fig_idx
-
-# 	for op_id in range(4):
-# 		if is_show[op_id]:
-# 			fig_base, fig_idx = __plot(op_id, fig_base, fig_idx)
-	
-# 	print("average error: %f %%"%(sum(ratio_sum)/len(ratio_sum)))
-# 	plt.show()
 def plot_2d_fit_result(is_show):
 	plt.figure(num=1, figsize=(8, 6))
 
@@ -742,8 +734,16 @@ def plot_2d_fit_result(is_show):
 	print("average error: %f %%"%(sum(ratio_sum)/len(ratio_sum)))
 	plt.show()
 
+def test():
+	_test_x = np.transpose(test_x)
+	_test_y = np.transpose(test_y).flatten()
+	avgs_pred = FIT_FUNC(_test_x, *popt)
+	diff, ratio = predict_error(_test_y, avgs_pred)
+	print("average error: %f %%"%(float(ratio.split("%")[0])))
+	plt.show()
+
 # plot_intensity2flops()
-plot_2d_fit_result(is_show)
+test()
 
 
 
