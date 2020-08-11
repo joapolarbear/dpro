@@ -16,7 +16,7 @@ from progress_utils import progressBar
 import arg_utils
 import debug_utils
 import optimizer
-from cost_model_xla import XlaDataset, FusionCostModel
+# from cost_model_xla import XlaDataset, FusionCostModel
 
 args = arg_utils.SingleArg().args
 logger = logger_utils.SingleLogger(args.path.split(',')[0], 
@@ -287,6 +287,14 @@ if args.option == "collect":
 				print("Average time: %f ms" % (avg))
 
 if args.option == "optimize":
+
+	from cost_model_amp.amp_pred import AMPPredictor
+	clct = Collector(path_list[0], comm_backend=args_.comm_backend)
+	clct.init(args.force)
+	amp_pred = AMPPredictor("/Users/hhp/0/traces/traces20200806/metadata.json")
+	amp_pred.collect_profile_data(clct.trail_dag)
+	amp_pred.train(test=True)
+	'''
 	if len(path_list) < 2:
 		raise RuntimeError("optimize requires positional path arguments: profile data path & cost model path.")
 	clct = Collector(path_list[0], comm_backend=args_.comm_backend)
@@ -310,7 +318,7 @@ if args.option == "optimize":
 	elif args.optimizer == "MCMC":
 		opt = optimizer.MCMCOptimizer(clct, cost_models=cost_models)
 	opt.search()
-
+	'''
 ### Output debug traces
 debug_utils.DebugRecorder().dump_traces(path_list[0])
 

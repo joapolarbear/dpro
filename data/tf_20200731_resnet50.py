@@ -740,7 +740,6 @@ def test():
 	avgs_pred = FIT_FUNC(_test_x, *popt)
 	diff, ratio = predict_error(_test_y, avgs_pred)
 	print("average error: %f %%"%(float(ratio.split("%")[0])))
-	plt.show()
 
 # plot_intensity2flops()
 test()

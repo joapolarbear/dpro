@@ -6,7 +6,7 @@ import time
 from replay import Replayer
 from trace_utils import *
 from dag_utils import *
-from cost_model_amp.amp_predictor import AMPPredictor
+from cost_model_amp.amp_pred import AMPPredictor
 
 class GraphExpand(Enum):
     NOT=0
@@ -69,7 +69,7 @@ class Optimizer:
         self.enable_defusion = False
 
         ### AMP predictor
-        self.amp_predictor = AMPPredictor(meta_path=???)
+        self.amp_predictor = AMPPredictor(meta_path=self.clct.pm.search(FileName.TF_METADATA))
 
     def relabel_dag_node(self, _dag):
         if self.platform == "TENSORFLOW":

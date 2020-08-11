@@ -1,4 +1,9 @@
-from platform.tensorflow.metadata import MetaInfo
+import os, sys
+import math
+import numpy as np
+from scipy.optimize import curve_fit
+from trace_utils import parse_layer_name
+from ml_platform.tensorflow.metadata import MetaInfo
 
 OP_TYPES = {
 			"Conv2D": {
@@ -12,10 +17,31 @@ OP_TYPES = {
 			}
           }
 
-FP32_FLOPS = 1
-FP16_FLOPS = 2
+GFLOPS_FP32 = 1
+GFLOPS_FP16 = 2
+TRAIN_PERCENT = 0.95
 
-def func_pred_time(xs, a1, a2, a3, a4, a5, a6, a7, a8, a9, b1, b2, b3):
+
+def str2list(_list, dtype=str):
+	assert dtype in [int, float, str]
+	elems = _list.split("[")[1].split("]")[0].split(", ")
+
+	if dtype == str:
+		return [str(e.split("'")[1]) for e in elems]
+	else:
+		return [dtype(e) for e in elems]
+
+def predict_error(_list, _list_pred):
+	_list_pred = np.array(_list_pred)
+	_list = np.array(_list)
+	diff = np.abs(_list_pred - _list) / _list
+	return np.average(diff)
+
+### cost function
+LOWER_BOUNDS = tuple([0]*8 + [-np.inf]*3)
+UPPER_BOUNDS = tuple(len(LOWER_BOUNDS) * [np.inf])
+P0=[0]*len(LOWER_BOUNDS)
+def func_pred_time(xs, a1, a2, a3, a4, a5, a6, a7, a8, b1, b2, b3):
 	'''
 	gflops:
 		We only need a relative value of gflops, 
@@ -31,9 +57,9 @@ def func_pred_time(xs, a1, a2, a3, a4, a5, a6, a7, a8, a9, b1, b2, b3):
 	gflops = xs[0]
 	S_mul = xs[1]
 	S_add = xs[2]
-	wei_S_all = a4 * xs[3] + a5 * xs[4] + a6 * xs[5]
-	wei_S_all2 = a7 * xs[3] + a8 * xs[4] + a9 * xs[5]
-	return (a1 * S_mul + b1) / (a3 * gflops + b2) + wei_S_all / gflops + b3 + gflops * wei_S_all2 
+	wei_S_all = a3 * xs[3] + a4 * xs[4] + a5 * xs[5]
+	wei_S_all2 = a6 * xs[3] + a7 * xs[4] + a8 * xs[5]
+	return (a1 * S_mul + b1) / (a2 * gflops + b2) + wei_S_all / gflops + b3 + gflops * wei_S_all2 
 
 
 class AMPPredictor:
@@ -43,8 +69,8 @@ class AMPPredictor:
 	def pred_amp_avg(self, op_name, _avg=None):
 		op_type, S_mul, S_add, S_in, S_out, S_wei = self.meta_info.ret_tf_metadata(op_name)
 		popt = OP_TYPES[op_type]["popt"]
-		avg_fp32 = func_pred_time([FP32_FLOPS, S_mul, S_add, S_in, S_out, S_wei], *popt)
-		avg_fp16 = func_pred_time([FP16_FLOPS, S_mul, S_add, S_in, S_out, S_wei], *popt)
+		avg_fp32 = func_pred_time([GFLOPS_FP32, S_mul, S_add, S_in, S_out, S_wei], *popt)
+		avg_fp16 = func_pred_time([GFLOPS_FP16, S_mul, S_add, S_in, S_out, S_wei], *popt)
 		if _avg is not None:
 			return _avg * avg_fp16 / avg_fp32
 		else:
@@ -125,5 +151,141 @@ class AMPPredictor:
 		if dag.nodes[op_name].get("dtype", "fp32") != "fp32":
 			return False
 
+		### TODO (huhanpeng) do not consider gradients/ nodes for mixed precision trainign
+		if "gradients/" in op_name:
+			return False
+
 		return self.is_white_for_amp(dag, op_name)
 
+	def collect_profile_data(self, dag):
+		RST_DIR="/Users/hhp/0/traces/traces20200806/traces20200807_01_bytedance"
+		self.NAMELIST_32 = None
+		self.NAMELIST_16 = None
+		self.DATA_32 = {}
+		self.DATA_16 = {}
+
+		self.BATCH_LIST_VALUE = []
+
+		with open(os.path.join(RST_DIR, "name.txt"), 'r') as fp:
+			lines = fp.read().split("\n")
+			if lines[-1] == "":
+				lines = lines[:-1]
+			for line in lines:
+				if "fp32" in line:
+					self.NAMELIST_32 = str2list(line.split(":")[1])
+				elif "fp16" in line:
+					self.NAMELIST_16 = str2list(line.split(":")[1])
+				else:
+					raise
+
+		with open(os.path.join(RST_DIR, "avg.txt"), 'r') as fp:
+			lines = fp.read().split("\n")
+			idx = 0
+			while True:
+				if "huhanpeng" in lines[idx]:
+					if idx+1 < len(lines) and ("huhanpeng" in lines[idx+1] or lines[idx+1]==""):
+						idx += 1
+						continue
+					batchsize = int(lines[idx].split("--batch_size")[1].split("--")[0])
+					if "fp32" in lines[idx]:
+						self.BATCH_LIST_VALUE.append(batchsize)
+						_DATA = self.DATA_32
+					elif "fp16" in lines[idx]:
+						_DATA = self.DATA_16
+					else:
+						raise
+					_DATA["B=%d"%batchsize] = str2list(lines[idx+1], dtype=float)
+					idx += 2
+				else:
+					idx += 1
+				if idx >= len(lines):
+					break
+
+		self.BATCH_LIST_VALUE = [e for e in self.BATCH_LIST_VALUE if (e >= 0 and e <=1024)]
+		self.BATCH_LIST_VALUE = sorted(self.BATCH_LIST_VALUE)
+		BATCH_LIST_STR = ["B=%d"%e for e in self.BATCH_LIST_VALUE]
+
+		######################################################################
+		### collect training data and test data for each op type
+		######################################################################
+		avgsList = []
+		gflopsList = []
+		S_mul_list = []
+		S_add_list = []
+		S_in_list = []
+		S_out_list = []
+		S_wei_list = []
+
+		def __record_xdata(S_mul, S_add, S_in, S_out, S_wei, gflops, avg):
+			S_mul_list.append(S_mul)
+			S_add_list.append(S_add)
+			S_in_list.append(S_in)
+			S_out_list.append(S_out)
+			S_wei_list.append(S_wei)
+			gflopsList.append(gflops)
+			avgsList.append(avg)
+
+		OP_NAMES = [
+				'network/resblock0_1/conv_0/conv2d/Conv2D',
+				'network/resblock1_1/conv_0/conv2d/Conv2D',
+				'network/resblock2_1/conv_0/conv2d/Conv2D', 
+				'network/resblock_3_1/conv_1/conv2d/Conv2D', 	
+
+				# "network/resblock0_2/conv_0/conv2d/Conv2D",
+				# "network/resblock1_2/conv_1x1_back/conv2d/Conv2D"	
+				# "network/resblock2_2/conv_1x1_back/conv2d/Conv2D"	
+				# "network/resblock_3_2/conv_1x1_back/conv2d/Conv2D",	
+			]
+		for op_name in dag.nodes:
+			op_name = parse_layer_name(op_name)
+			if op_name not in self.NAMELIST_32 or op_name not in self.NAMELIST_16:
+				continue
+			if "gradients/" in op_name:
+				continue
+			if op_name not in OP_NAMES:
+				continue
+			for b in self.BATCH_LIST_VALUE:
+				if b <= 16:
+					continue
+				try:
+					op_type, S_mul, S_add, S_in, S_out, S_wei = self.meta_info.ret_tf_metadata(op_name, batch_size=b)
+				except (NotImplementedError, KeyError) as e:
+					break
+				if op_type == "Conv2D":
+					__record_xdata(S_mul, S_add, S_in, S_out, S_wei, GFLOPS_FP32, self.DATA_32["B=%d"%b][self.NAMELIST_32.index(op_name)])
+					__record_xdata(S_mul, S_add, S_in, S_out, S_wei, GFLOPS_FP16, self.DATA_16["B=%d"%b][self.NAMELIST_16.index(op_name)])
+				else:
+					### other types of ops
+					pass
+
+		### all_data[S_mul, ...][# of nodes * # of batch size values]
+		all_data = np.array([avgsList, gflopsList, S_mul_list, S_add_list, S_in_list, S_out_list, S_wei_list])
+		### all_data[# of nodes * # of batch size values][S_mul, ...]
+		all_data = np.transpose(all_data)
+		### filter
+		# all_data = exct_filter(all_data)
+		arg_num = all_data.shape[1]
+		value_num = all_data.shape[0]
+		np.random.shuffle(all_data)
+
+		### split data to training data and test data
+		mask = np.zeros(value_num, dtype=bool)
+		train_idx = np.random.choice(value_num, int(TRAIN_PERCENT * value_num), replace=False)
+		mask[train_idx] = True
+		train_data = np.split(all_data[mask, :], [1], axis=1)
+		test_data = np.split(all_data[~mask, :], [1], axis=1)
+		self.train_x, self.train_y = train_data[1], train_data[0]
+		self.test_x, self.test_y = test_data[1], test_data[0]
+		print("Collect training data - X:{}, Y:{}, test data - X:{}, Y:{}".format(self.train_x.shape, self.train_y.shape, self.test_x.shape, self.test_y.shape))
+
+	def train(self, test=False):
+		_train_x = np.transpose(self.train_x)
+		_train_y = np.transpose(self.train_y).flatten()
+		popt, pcov = curve_fit(func_pred_time, _train_x, _train_y, bounds=(LOWER_BOUNDS, UPPER_BOUNDS), p0=P0, maxfev=10000)
+		OP_TYPES["Conv2D"]["popt"] = popt
+		if test:
+			_test_x = np.transpose(self.test_x)
+			_test_y = np.transpose(self.test_y).flatten()
+			avgs_pred = func_pred_time(_test_x, *popt)
+			error = predict_error(_test_y, avgs_pred)
+			print("average error: %f %%"%(error * 100))

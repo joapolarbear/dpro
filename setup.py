@@ -4,16 +4,18 @@ setup(name='byteprofile analysis',
       version='0.1',
       description='A profiler, replayer and optimizer for distributed ML',
       url='https://github.com/joapolarbear/byteprofile-analysis.git',
-      # author='Flying Circus',
-      # author_email='flyingcircus@example.com',
-      # license='MIT',
+      # author='xxxx',
+      # author_email='xxx',
+      # license='xxx',
       packages=find_packages(),
       install_requires=[
           'intervaltree', 
           'networkx', 
           'ujson', 
           'xlsxwriter', 
-          'scapy'
+          'scapy',
+          'xgboost',
+          'sklearn'
       ],
       # zip_safe=False
       )
