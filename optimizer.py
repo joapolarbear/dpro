@@ -70,9 +70,11 @@ class Optimizer:
     def relabel_dag_node(self, _dag):
         if self.platform == "TENSORFLOW":
             def relabel_func(old_label):
-                if "BW" in old_label or "FW" in old_label or "Comm" in old_label:
+                if ("BW" in old_label or "FW" in old_label or "Comm" in old_label) and "^" not in old_label:
                     layer_name = parse_layer_name(old_label)
                     layer_pid = parse_pid_from_name(old_label)
+                    # if layer_pid not in self.cost_models or layer_name not in self.cost_models[layer_pid].graph_def_util.operation_names:
+                    #     return "DEL~"+old_label
                     layer_index = len(self.index2name)
                     new_name = ("[%d]"%layer_index).join(old_label.split(layer_name))
                     self.index2name[layer_index] = layer_name
@@ -83,17 +85,26 @@ class Optimizer:
                     return old_label
         elif self.platform == "MXNET":
             def relabel_func(old_label):
-                if "BW" in old_label or "FW" in old_label or "Comm" in old_label:
+                if ("BW" in old_label or "FW" in old_label or "Comm" in old_label) and "^" not in old_label:
                     layer_name = parse_layer_name(old_label)
                     layer_pid = parse_pid_from_name(old_label)
+                    # if layer_pid not in self.cost_models or layer_name not in self.cost_models[layer_pid]:
+                    #     return "DEL~"+old_label
                     layer_index = self.clct.para_dict.parse_layer_index(layer_name)
                     self.index2name[layer_index] = layer_name
                     self.index2pid[layer_index] = layer_pid
                     return ("[%d]"%layer_index).join(old_label.split(layer_name))
-                else:
-                    return old_label
+                # else:
+                #     return old_label
         else:
             raise NotImplementedError("Unsupported platform {}".format(self.platform))
+        # new_dag = nx.relabel_nodes(_dag, relabel_func)
+        # nodes_to_remove = []
+        # for node, attrs in new_dag.nodes.items():
+        #     if "DEL~" in node:
+        #         nodes_to_remove.append(node)
+        # for node in nodes_to_remove:
+        #     new_dag.remove_node(node)
         return nx.relabel_nodes(_dag, relabel_func)
 
     def concat_name(self, u_, v_):
@@ -123,7 +134,7 @@ class Optimizer:
         # query cost model for exec time of a fused node u
         nodes_in_u, u_pid = self._get_original_name_pid_from_fused_node(fused_u_)
         nodes_to_fuse = set(nodes_in_u)
-        exec_time = self.cost_models[u_pid].predict(nodes_to_fuse)
+        exec_time = self.cost_models[u_pid].predict(nodes_to_fuse) / 1000
         if exec_time < 0:
             raise RuntimeError("Failed to query cost model.")
         return exec_time
@@ -355,8 +366,13 @@ class Optimizer:
         
         filtered_critical_path = []
         for (node, length) in critical_path:
-            if "BW" in node or "FW" in node:
-                filtered_critical_path.append((node, length))        
+            if "+" in node:
+                # fused node
+                filtered_critical_path.append((node, length))
+            elif "[" in node and "]" in node:
+                orig_name, pid = self._get_original_name_pid_from_index(node)
+                if orig_name in self.cost_models[pid].graph_def_util.operation_names:
+                    filtered_critical_path.append((node, length))
 
         if topk is None:
             return filtered_critical_path, new_dag
@@ -517,9 +533,10 @@ class MCMCOptimizer(Optimizer):
         candidates, _ = self.candidate_selection(G, topk=None)
         search_space, weights = self.init_search_space(candidates, G)
         SingleLogger().info("\033[94m # of candidates: {}\033[0m".format(len(candidates)))
+        candidate_orig_names = [self._get_original_name_pid_from_index(cand[0])[0] for cand in candidates]
         best_cost = cost
         best_strategy = trajectory.copy()
-
+        step = 0
         while True:
             invalid_strategies = set()
             while True and len(search_space) > 0:
@@ -536,10 +553,12 @@ class MCMCOptimizer(Optimizer):
                     # strategy invalid
                     invalid_strategies.add(strategy)
                     continue
-                SingleLogger().info("\033[94m" + "Strategy ({}, {}, {}) successfully applied.".format(*strategy) + "'\033[0m'")
+                SingleLogger().info("\033[94m" + "Strategy ({}, {}, {}) successfully applied.".format(*strategy) + "\033[0m")
                 ### Start to replay
+                cost_star, exct_dag = self.evaluate(G_star, _filename="/root/searched_graph/most_resent.json")
                 cost_star, exct_dag = self.evaluate(G_star)
-
+                SingleLogger().info("\033[94m Step: {}, Orig cost: {}, New cost: {} \033[0m".format(step, cost, cost_star))
+                step += 1
                 if self.accept_or_not(cost, cost_star):
                     invalid_strategies = set()
                     op, target, next_ = strategy
@@ -564,6 +583,9 @@ class MCMCOptimizer(Optimizer):
                     break
             SingleLogger().info("\033[94m" + "Speedup to the origin: %6.4f %%"%(100 * (self.base_cost - cost) / self.base_cost) + "'\033[0m'")
             SingleLogger().info("\033[94m" + "Best speedup: %d th acception, speed up to the origin: %6.4f %%"%(len(best_strategy), 100 * (self.base_cost - best_cost) / self.base_cost) + "'\033[0m'")
+            with open("/root/search_trajectory.txt", "a") as f:
+                f.write(str(time.time()) + ": {}".format(100 * (self.base_cost - best_cost) / self.base_cost) + "\n")
+
 
     def accept_or_not(self, cost, new_cost):
         # prob = min(1, (math.exp(beta * (cost - new_cost))))
@@ -571,11 +593,12 @@ class MCMCOptimizer(Optimizer):
             return True
         else:
             prob = math.exp(MCMC_BETA * (cost - new_cost))
-            r = random.random() 
+            r = random.random()
             if r < prob:
-                SingleLogger().info("Accept a worse action with {} < {} ".format(r, prob))
+                SingleLogger().info("\033[92m" + "Accept a worse action with {} < {} ".format(r, prob) + "\033[0m")
                 return True
             else:
+                SingleLogger().info("\033[93m" + "Rejected a worse action with {} >= {} ".format(r, prob) + "\033[0m")
                 return False
 
 class MCTSOptimizer(Optimizer):

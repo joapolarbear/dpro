@@ -31,7 +31,7 @@ from .execute_graph import *
 from .gen_samples import *
 from .process_trace import *
 from .xlatools import *
-from tqdm import trange
+from tqdm import trange, tqdm
 
 def clean_up(profile_dir, xla_dir):
     shutil.rmtree(profile_dir)
@@ -363,12 +363,14 @@ def gen_dataset(trace_dir, op_time_dict, gpu_benchmark_cmd, result_dir, num_samp
     gflops, gbps = run_gpu_profile(gpu_benchmark_cmd)
     print("Start generation.")
     completed_samples = 0
-    for i in trange(num_samples):
+    pbar = tqdm(total=num_samples)
+    while completed_samples < num_samples:
         status = gen_sample_once_using_replay(sample_generator, dataset_dir, label_file_path, feature_dir,
                         dataset_hlo_dir, profile_dir, op_time_dict, gflops, gbps,
                         min_levels=min_subgraph_level, max_levels=max_subgraph_level, debug_dir=debug_dir)
         if status:
             completed_samples += 1
+            pbar.update(1)
     if os.path.isdir(profile_dir):
         os.rmdir(profile_dir)
     print("Dataset generation complete.")
