@@ -6,6 +6,7 @@ import time
 from replay import Replayer
 from trace_utils import *
 from dag_utils import *
+from cost_model_amp.amp_predictor import AMPPredictor
 
 class GraphExpand(Enum):
     NOT=0
@@ -66,6 +67,9 @@ class Optimizer:
 
         ### Some hyper-parameter
         self.enable_defusion = False
+
+        ### AMP predictor
+        self.amp_predictor = AMPPredictor(meta_path=???)
 
     def relabel_dag_node(self, _dag):
         if self.platform == "TENSORFLOW":
@@ -401,6 +405,12 @@ class Optimizer:
                 cat = parse_cat_fine_grained(n)
                 pid = parse_pid_from_name(n)
 
+                ### check if mixed precision can be used for this node
+                ### TODO (huhanpeng) do not support quantizing fused nodes now
+                if self.amp_predictor.is_need_amp(n):
+                    search_space.append((">", n, None))
+                    weights.append(l)
+
             # if cat != "operator.FW":
             # 	### TODO (huhanpeng): only pick FW, then fuse corresponding BW
             # 	continue
@@ -468,6 +478,8 @@ class Optimizer:
                 self.op_fusion(__dag, target, next_)
             elif op == "-":
                 self.op_defusion(__dag, target, next_)
+            elif op == ">":
+                self.amp_predictor.quantize(__dag, target)
 
         if isinstance(strategy, list):
             for s in strategy:
@@ -476,7 +488,7 @@ class Optimizer:
             __apply(strategy)
         return __dag
 
-    def pick_strategy(self, search_space, weights=None, invalid_strategies = None):
+    def pick_strategy(self, search_space, weights=None, invalid_strategies=None):
         ### TODO (huhanpeng): need some priority/heuristic
         valid_search_space = search_space.copy()
         if invalid_strategies is not None:
