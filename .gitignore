@@ -4,4 +4,4 @@ __pycache__
 build/
 .vscode/
 data/data_*
-dist/*
+dist/
