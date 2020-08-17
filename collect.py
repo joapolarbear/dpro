@@ -80,6 +80,9 @@ class ClockAligner:
 
     def align(self):
         rst_traces = []
+        if len(self.traces_per_host) == 0:
+            SingleLogger().warn("no traces collected")
+            return rst_traces
         host_ids = list(self.traces_per_host.keys())
 
         def host_id_to_rank(host_id):
