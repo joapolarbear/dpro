@@ -20,7 +20,7 @@ OP_TYPES = {
 
 GFLOPS_FP32 = 1
 GFLOPS_FP16 = 2
-TRAIN_PERCENT = 0.6
+TRAIN_PERCENT = 0.99
 
 
 def str2list(_list, dtype=str):
@@ -58,10 +58,10 @@ def func_pred_time(xs, a1, a2, a3, a4, a5, a6, a7, a8, b1, b2, b3):
     gflops = xs[0]
     S_mul = xs[1]
     S_add = xs[2]
+    intensity = S_mul / (xs[3] + xs[4] + xs[5])
     wei_S_all = a3 * xs[3] + a4 * xs[4] + a5 * xs[5]
     wei_S_all2 = a6 * xs[3] + a7 * xs[4] + a8 * xs[5]
-    return (a1 * S_mul + b1) / (a2 * gflops + b2) + wei_S_all / gflops + b3 + gflops * wei_S_all2 
-
+    return intensity * (a1 * S_mul + b1) / (a2 * gflops + b2) + (wei_S_all / gflops + b3 + gflops * wei_S_all2) / intensity
 
 class AMPPredictor:
     def __init__(self, meta_path, cost_model_path):
@@ -169,8 +169,18 @@ class AMPPredictor:
 
         return self.is_white_for_amp(dag, op_name)
 
-    def collect_profile_data(self, dag):
-        RST_DIR="/Users/hhp/0/traces/traces20200806/traces20200807_01_bytedance"
+class AMPTrainer:
+    def __init__(self, meta_path, cost_model_path=None):
+        self.meta_info = MetaInfo(meta_path)
+        # with open(cost_model_path, 'r') as fp:
+        #     self.cost_model = json.load(cost_model_path)
+        self.cost_model = OP_TYPES
+
+    def collect_name_b(self, rst_dir):
+        ''' collect op names and batch sizes
+        '''
+        # rst_dir="/Users/hhp/0/traces/traces20200806/traces20200807_01_bytedance"
+        # rst_dir = "/Users/hhp/0/git/byteprofile-analysis/data/data_20200817_resnet50/v100"
         self.NAMELIST_32 = None
         self.NAMELIST_16 = None
         self.DATA_32 = {}
@@ -178,7 +188,7 @@ class AMPPredictor:
 
         self.BATCH_LIST_VALUE = []
 
-        with open(os.path.join(RST_DIR, "name.txt"), 'r') as fp:
+        with open(os.path.join(rst_dir, "name.txt"), 'r') as fp:
             lines = fp.read().split("\n")
             if lines[-1] == "":
                 lines = lines[:-1]
@@ -190,7 +200,7 @@ class AMPPredictor:
                 else:
                     raise
 
-        with open(os.path.join(RST_DIR, "avg.txt"), 'r') as fp:
+        with open(os.path.join(rst_dir, "avg.txt"), 'r') as fp:
             lines = fp.read().split("\n")
             idx = 0
             while True:
@@ -215,8 +225,8 @@ class AMPPredictor:
 
         self.BATCH_LIST_VALUE = [e for e in self.BATCH_LIST_VALUE if (e >= 0 and e <=1024)]
         self.BATCH_LIST_VALUE = sorted(self.BATCH_LIST_VALUE)
-        BATCH_LIST_STR = ["B=%d"%e for e in self.BATCH_LIST_VALUE]
 
+    def collect_train_data(self, dag):
         ######################################################################
         ### collect training data and test data for each op type
         ######################################################################
@@ -238,15 +248,38 @@ class AMPPredictor:
             avgsList.append(avg)
 
         OP_NAMES = [
-                'network/resblock0_1/conv_0/conv2d/Conv2D',
-                'network/resblock1_1/conv_0/conv2d/Conv2D',
-                'network/resblock2_1/conv_0/conv2d/Conv2D',
-                'network/resblock_3_1/conv_1/conv2d/Conv2D',
+                # 'network/resblock0_1/conv_0/conv2d/Conv2D',
+                # 'network/resblock1_1/conv_0/conv2d/Conv2D',
+                # 'network/resblock2_1/conv_0/conv2d/Conv2D',
+                # 'network/resblock_3_1/conv_1/conv2d/Conv2D',
+   
+                
+                # "network/conv/conv2d/Conv2D",
+                
+                # "network/resblock0_0/conv_0/conv2d/Conv2D",
+                # "network/resblock0_0/conv_1/conv2d/Conv2D",
+                # "network/resblock0_1/conv_0/conv2d/Conv2D",
+                # "network/resblock0_1/conv_1/conv2d/Conv2D",
 
-                # "network/resblock0_2/conv_0/conv2d/Conv2D",
-                # "network/resblock1_2/conv_1x1_back/conv2d/Conv2D"
-                # "network/resblock2_2/conv_1x1_back/conv2d/Conv2D"
-                # "network/resblock_3_2/conv_1x1_back/conv2d/Conv2D",
+                # "network/resblock1_0/conv_0/conv2d/Conv2D",
+                # "network/resblock1_0/conv_init/conv2d/Conv2D",
+                # "network/resblock1_0/conv_1/conv2d/Conv2D",
+                # "network/resblock1_1/conv_0/conv2d/Conv2D",
+                # "network/resblock1_1/conv_1/conv2d/Conv2D",
+
+                "network/resblock2_0/conv_0/conv2d/Conv2D",
+                # "network/resblock2_0/conv_init/conv2d/Conv2D",
+                # "network/resblock2_0/conv_1/conv2d/Conv2D",
+                # "network/resblock2_1/conv_0/conv2d/Conv2D",
+                # "network/resblock2_1/conv_1/conv2d/Conv2D",
+
+                "network/resblock_3_0/conv_0/conv2d/Conv2D",
+                # "network/resblock_3_0/conv_init/conv2d/Conv2D",
+                # "network/resblock_3_0/conv_1/conv2d/Conv2D",
+                # "network/resblock_3_1/conv_0/conv2d/Conv2D",
+                # "network/resblock_3_1/conv_1/conv2d/Conv2D",
+
+
             ]
         for op_name in dag.nodes:
             op_name = parse_layer_name(op_name)
@@ -254,8 +287,17 @@ class AMPPredictor:
                 continue
             if "gradients/" in op_name:
                 continue
-            if op_name not in OP_NAMES:
+            # if op_name not in OP_NAMES:
+            #     continue
+            op_type = self.meta_info.ret_op_type(op_name)
+            if op_type not in [
+                                # "Conv2D",
+                                # "MatMul",
+                                "Cast",
+                                ]:
                 continue
+
+            print(op_name)
             for b in self.BATCH_LIST_VALUE:
                 if b <= 4:
                     continue
