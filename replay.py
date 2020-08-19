@@ -412,9 +412,12 @@ class Replayer:
 	def output_traces(self, _filename=None):
 		#! Output the synthetic traces.
 		rst = {
-			"traceEvents": self.rst_traces,
+			"traceEvents": [],
 			"displayTimeUnit": "ms"
 		}
+		for trace in self.rst_traces:
+			if "^" not in trace["name"]:
+				rst["traceEvents"].append(trace)
 		TraceManager(self.rst_traces, DirLevel.TRIAL).get_iter_time()
 		filename = "synthetic.json" if _filename is None else _filename
 		with open(os.path.join(self.dump_path, filename), 'w') as f:

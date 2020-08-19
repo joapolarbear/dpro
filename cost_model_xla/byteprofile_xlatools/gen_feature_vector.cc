@@ -156,7 +156,7 @@ int GenFeatureVector(std::string& hlo_module_path, std::string& output_path,
         feature_vector.push_back(std::isnan(flops_count) ? 0 : flops_count);
         feature_vector.push_back(std::isnan(transcendental_count) ? 0 : transcendental_count);
         feature_vector.push_back(std::isnan(bytes_accessed) ? 0 : bytes_accessed);
-        feature_vector.push_back(std::isnan(bytes_accessed) ? 0 : optimal_seconds);
+        feature_vector.push_back(std::isnan(optimal_seconds) ? 0 : optimal_seconds);
         if (op_code == xla::HloOpcode::kFusion) {
             float instr_count = stats_map.at(op_code).get_instr_count();
             feature_vector.push_back(std::isnan(instr_count) ? 0 : instr_count);

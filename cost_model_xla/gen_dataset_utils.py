@@ -26,7 +26,7 @@ try:
 except:
     import_graph_def = tf.compat.v1.graph_util.import_graph_def
 from google.protobuf.json_format import Parse
-import byteps.tensorflow as bps
+# import byteps.tensorflow as bps
 from .execute_graph import *
 from .gen_samples import *
 from .process_trace import *
@@ -83,9 +83,13 @@ def run_gpu_profile(profiler_exec):
 def get_time_as_sum_of_indivisual(op_time_dict, graph_def):
     total_time = 0
     for node_def in graph_def.node:
-        if node_def.name in op_time_dict:
-            time, _ = op_time_dict[node_def.name]
+        node_name = node_def.name
+        if node_name in op_time_dict:
+            print("IN OP_TIME_DICT: ", node_name)
+            time, _ = op_time_dict[node_name]
             total_time += time
+        else:
+            print("NOT IN OP_TIME_DICT: ", node_name)
     return total_time
 
 def gen_sample_once(sample_id, sample_generator, dataset_dir, label_file_path, feature_dir, dataset_hlo_dir, 
@@ -143,6 +147,13 @@ def gen_sample_once_using_replay(sample_generator, dataset_dir, label_file_path,
     try:
         compile_to_hlo(def_path, config_path, unopt_path, opt_path)
         avg_time = replay_hlo(unopt_path) * 1e6
+        # if debug_dir:
+        #     if not os.path.isdir(debug_dir):
+        #         os.makedirs(debug_dir)
+        #     def_name = Path(def_path).name
+        #     shutil.copyfile(def_path, os.path.join(debug_dir, def_name))
+        #     config_name = Path(config_path).name
+        #     shutil.copyfile(config_path, os.path.join(debug_dir, config_name))
     except:
         if debug_dir:
             if not os.path.isdir(debug_dir):

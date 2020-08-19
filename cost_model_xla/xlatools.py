@@ -38,9 +38,11 @@ def gen_feature_vector(hlo_module_path, output_path, gflops_per_second, gbytes_p
 def replay_hlo(hlo_path, replay_exec=None):
     if replay_exec is None:
         replay_exec = "/root/tensorflow/bazel-bin/tensorflow/compiler/xla/tools/replay_computation_gpu"
-    opt_1 = "--num_runs=30"
-    opt_2 = "--use_fake_data"
-    process = subprocess.run([replay_exec, opt_1, opt_2, hlo_path], capture_output=True)
+    opt_1 = "--num_runs=800"
+    opt_2 = "--use_fake_data=true"
+    opt_3 = "--print_result=false"
+    process = subprocess.run([replay_exec, opt_1, opt_2, opt_3, hlo_path], capture_output=True)
     output = process.stderr.decode("ascii")
     times = [float(line.split()[3][:-2]) for line in re.findall("Done executing in .*s:", output)]
+    times = times[-20:]
     return sum(times) / len(times)

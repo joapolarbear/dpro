@@ -137,7 +137,7 @@ class XlaDataset(object):
             os.makedirs(result_dir)
         with open(op_times_dict_dump_path, "wb") as f:
             pickle.dump(op_times_dict, f)     
-        # gen_dataset(trace_dir, op_times_dict, gpu_benchmark_cmd, result_dir, num_samples,min_subgraph_level=min_subgraph_level, max_subgraph_level=max_subgraph_level)
+        gen_dataset(trace_dir, op_times_dict, gpu_benchmark_cmd, result_dir, num_samples,min_subgraph_level=min_subgraph_level, max_subgraph_level=max_subgraph_level)
     
     # @classmethod
     # def gen_op_times_dict(cls, graph, result_dir, profile_tmp_dir = None):
