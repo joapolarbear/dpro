@@ -4,4 +4,4 @@ __pycache__
 build/
 .vscode/
 data/data_*
-dist/
+dist/dist/byteprofile_analysis-0.1-py3.8.egg
