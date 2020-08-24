@@ -6,21 +6,11 @@ from scipy.optimize import curve_fit
 from trace_utils import *
 from ml_platform.tensorflow.metadata import MetaInfo
 
-OP_TYPES = {
-            "Conv2D": {
-                "popt": []
-                },
-            "MatMul": {
-                "popt": []
-            },
-            "Cast": {
-                "popt": []
-            }
-          }
-
 GFLOPS_FP32 = 1
 GFLOPS_FP16 = 2
 TRAIN_PERCENT = 0.99
+BATCH_LIST_VALUE = 0
+VAR_THREHOLD = 0.2
 
 
 def str2list(_list, dtype=str):
@@ -58,7 +48,8 @@ def func_pred_time(xs, a1, a2, a3, a4, a5, a6, a7, a8, b1, b2, b3):
     gflops = xs[0]
     S_mul = xs[1]
     S_add = xs[2]
-    intensity = S_mul / (xs[3] + xs[4] + xs[5])
+    # intensity = S_mul / (xs[3] + xs[4] + xs[5])
+    intensity = 1
     wei_S_all = a3 * xs[3] + a4 * xs[4] + a5 * xs[5]
     wei_S_all2 = a6 * xs[3] + a7 * xs[4] + a8 * xs[5]
     return intensity * (a1 * S_mul + b1) / (a2 * gflops + b2) + (wei_S_all / gflops + b3 + gflops * wei_S_all2) / intensity
@@ -170,13 +161,18 @@ class AMPPredictor:
         return self.is_white_for_amp(dag, op_name)
 
 class AMPTrainer:
-    def __init__(self, meta_path, cost_model_path=None):
+    def __init__(self, meta_path, cost_model_dir):
         self.meta_info = MetaInfo(meta_path)
-        # with open(cost_model_path, 'r') as fp:
-        #     self.cost_model = json.load(cost_model_path)
-        self.cost_model = OP_TYPES
+        self.cost_model_path = os.path.join(cost_model_dir, 'cost_model.json')
+        if os.path.exists(self.cost_model_path):
+            with open(self.cost_model_path, 'r') as fp:
+                self.cost_model = json.load(cost_model_dir)
+        else:
+            self.cost_model = {}
 
-    def collect_name_b(self, rst_dir):
+        self.all_data_dict = {}
+
+    def collect_raw_data(self, rst_dir):
         ''' collect op names and batch sizes
         '''
         # rst_dir="/Users/hhp/0/traces/traces20200806/traces20200807_01_bytedance"
@@ -185,6 +181,8 @@ class AMPTrainer:
         self.NAMELIST_16 = None
         self.DATA_32 = {}
         self.DATA_16 = {}
+        self.VAR_32 = {}
+        self.VAR_16 = {}
 
         self.BATCH_LIST_VALUE = []
 
@@ -203,92 +201,58 @@ class AMPTrainer:
         with open(os.path.join(rst_dir, "avg.txt"), 'r') as fp:
             lines = fp.read().split("\n")
             idx = 0
-            while True:
+            while idx < len(lines):
                 if "huhanpeng" in lines[idx]:
                     if idx+1 < len(lines) and ("huhanpeng" in lines[idx+1] or lines[idx+1]==""):
+                        ### avoid add addition batch size to BATCH_LIST_VALUE
                         idx += 1
                         continue
                     batchsize = int(lines[idx].split("--batch_size")[1].split("--")[0])
                     if "fp32" in lines[idx]:
                         self.BATCH_LIST_VALUE.append(batchsize)
                         _DATA = self.DATA_32
+                        _VAR = self.VAR_32
                     elif "fp16" in lines[idx]:
                         _DATA = self.DATA_16
+                        _VAR = self.VAR_16
                     else:
                         raise
-                    _DATA["B=%d"%batchsize] = str2list(lines[idx+1], dtype=float)
-                    idx += 2
-                else:
                     idx += 1
-                if idx >= len(lines):
-                    break
+                    if idx >= len(lines) or "huhanpeng" not in lines[idx]:
+                        _DATA["B=%d"%batchsize] = str2list(lines[idx+1], dtype=float)
+                    else:
+                        continue
+                    idx += 1
+                    if idx >= len(lines) or "huhanpeng" not in lines[idx]:
+                        _VAR["B=%d"%batchsize] = str2list(lines[idx+1], dtype=float)
+                    else:
+                        continue
+                idx += 1
 
         self.BATCH_LIST_VALUE = [e for e in self.BATCH_LIST_VALUE if (e >= 0 and e <=1024)]
         self.BATCH_LIST_VALUE = sorted(self.BATCH_LIST_VALUE)
 
-    def collect_train_data(self, dag):
+    def gen_train_data(self, dag):
         ######################################################################
         ### collect training data and test data for each op type
         ######################################################################
-        avgsList = []
-        gflopsList = []
-        S_mul_list = []
-        S_add_list = []
-        S_in_list = []
-        S_out_list = []
-        S_wei_list = []
+        def __record_xdata(S_mul, S_add, S_in, S_out, S_wei, gflops, avg, op_type):
+            if op_type not in self.all_data_dict:
+                self.all_data_dict[op_type] = [[], [], [], [], [], [], []]
+            self.all_data_dict[op_type][0].append(avg)
+            self.all_data_dict[op_type][1].append(gflops)
+            self.all_data_dict[op_type][2].append(S_mul)
+            self.all_data_dict[op_type][3].append(S_add)
+            self.all_data_dict[op_type][4].append(S_in)
+            self.all_data_dict[op_type][5].append(S_out)
+            self.all_data_dict[op_type][6].append(S_wei)
 
-        def __record_xdata(S_mul, S_add, S_in, S_out, S_wei, gflops, avg):
-            S_mul_list.append(S_mul)
-            S_add_list.append(S_add)
-            S_in_list.append(S_in)
-            S_out_list.append(S_out)
-            S_wei_list.append(S_wei)
-            gflopsList.append(gflops)
-            avgsList.append(avg)
-
-        OP_NAMES = [
-                # 'network/resblock0_1/conv_0/conv2d/Conv2D',
-                # 'network/resblock1_1/conv_0/conv2d/Conv2D',
-                # 'network/resblock2_1/conv_0/conv2d/Conv2D',
-                # 'network/resblock_3_1/conv_1/conv2d/Conv2D',
-   
-                
-                # "network/conv/conv2d/Conv2D",
-                
-                # "network/resblock0_0/conv_0/conv2d/Conv2D",
-                # "network/resblock0_0/conv_1/conv2d/Conv2D",
-                # "network/resblock0_1/conv_0/conv2d/Conv2D",
-                # "network/resblock0_1/conv_1/conv2d/Conv2D",
-
-                # "network/resblock1_0/conv_0/conv2d/Conv2D",
-                # "network/resblock1_0/conv_init/conv2d/Conv2D",
-                # "network/resblock1_0/conv_1/conv2d/Conv2D",
-                # "network/resblock1_1/conv_0/conv2d/Conv2D",
-                # "network/resblock1_1/conv_1/conv2d/Conv2D",
-
-                "network/resblock2_0/conv_0/conv2d/Conv2D",
-                # "network/resblock2_0/conv_init/conv2d/Conv2D",
-                # "network/resblock2_0/conv_1/conv2d/Conv2D",
-                # "network/resblock2_1/conv_0/conv2d/Conv2D",
-                # "network/resblock2_1/conv_1/conv2d/Conv2D",
-
-                "network/resblock_3_0/conv_0/conv2d/Conv2D",
-                # "network/resblock_3_0/conv_init/conv2d/Conv2D",
-                # "network/resblock_3_0/conv_1/conv2d/Conv2D",
-                # "network/resblock_3_1/conv_0/conv2d/Conv2D",
-                # "network/resblock_3_1/conv_1/conv2d/Conv2D",
-
-
-            ]
         for op_name in dag.nodes:
             op_name = parse_layer_name(op_name)
             if op_name not in self.NAMELIST_32 or op_name not in self.NAMELIST_16:
                 continue
             if "gradients/" in op_name:
                 continue
-            # if op_name not in OP_NAMES:
-            #     continue
             op_type = self.meta_info.ret_op_type(op_name)
             if op_type not in [
                                 # "Conv2D",
@@ -299,51 +263,77 @@ class AMPTrainer:
 
             print(op_name)
             for b in self.BATCH_LIST_VALUE:
-                if b <= 4:
+                ### filter
+                if b <= BATCH_LIST_VALUE:
                     continue
+
+                ### collect data
                 try:
                     op_type, S_mul, S_add, S_in, S_out, S_wei = self.meta_info.ret_tf_metadata(op_name, batch_size=b)
                 except (NotImplementedError, KeyError) as e:
                     break
-                if op_type == "Conv2D":
-                    __record_xdata(S_mul, S_add, S_in, S_out, S_wei, GFLOPS_FP32, self.DATA_32["B=%d"%b][self.NAMELIST_32.index(op_name)])
-                    __record_xdata(S_mul, S_add, S_in, S_out, S_wei, GFLOPS_FP16, self.DATA_16["B=%d"%b][self.NAMELIST_16.index(op_name)])
-                else:
-                    ### other types of ops
-                    pass
+                idx_in_32 = NAMELIST_32.index(op_name)
+                avg_ = self.DATA_32["B=%d"%b][idx_in_32]
+                var_ = self.VAR_32["B=%d"%b][idx_in_32] if "B=%d"%b in VAR_32 else 0
+                if (var_ / avg_) <= VAR_THREHOLD:
+                    __record_xdata(S_mul, S_add, S_in, S_out, S_wei, GFLOPS_FP32, avg_, op_type)
 
-        ### all_data[S_mul, ...][# of nodes * # of batch size values]
-        all_data = np.array([avgsList, gflopsList, S_mul_list, S_add_list, S_in_list, S_out_list, S_wei_list])
-        ### all_data[# of nodes * # of batch size values][S_mul, ...]
-        all_data = np.transpose(all_data)
-        ### filter
-        # all_data = exct_filter(all_data)
-        arg_num = all_data.shape[1]
-        value_num = all_data.shape[0]
-        np.random.shuffle(all_data)
+                idx_in_16 = NAMELIST_16.index(op_name)
+                avg_ = self.DATA_16["B=%d"%b][idx_in_16]
+                var_ = self.VAR_16["B=%d"%b][idx_in_16] if "B=%d"%b in VAR_16 else 0
+                if (var_ / avg_) <= VAR_THREHOLD:
+                    __record_xdata(S_mul, S_add, S_in, S_out, S_wei, GFLOPS_FP16, avg_, op_type)
+        
+        for op_type in self.all_data_dict.keys():   
+            ### all_data[S_mul, ...][# of nodes * # of batch size values]
+            all_data = np.array(self.all_data_dict[op_type])
+            ### all_data[# of nodes * # of batch size values][S_mul, ...]
+            all_data = np.transpose(all_data)
+            ### filter
+            # all_data = exct_filter(all_data)
+            arg_num = all_data.shape[1]
+            value_num = all_data.shape[0]
+            np.random.shuffle(all_data)
 
-        ### split data to training data and test data
-        mask = np.zeros(value_num, dtype=bool)
-        train_idx = np.random.choice(value_num, int(TRAIN_PERCENT * value_num), replace=False)
-        mask[train_idx] = True
-        train_data = np.split(all_data[mask, :], [1], axis=1)
-        test_data = np.split(all_data[~mask, :], [1], axis=1)
-        self.train_x, self.train_y = train_data[1], train_data[0]
-        self.test_x, self.test_y = test_data[1], test_data[0]
-        SingleLogger().info("Collect training data - X:{}, Y:{}, test data - X:{}, Y:{}".format(
-            self.train_x.shape, self.train_y.shape, self.test_x.shape, self.test_y.shape))
+            ### split data to training data and test data
+            mask = np.zeros(value_num, dtype=bool)
+            train_idx = np.random.choice(value_num, int(TRAIN_PERCENT * value_num), replace=False)
+            mask[train_idx] = True
+            train_data = np.split(all_data[mask, :], [1], axis=1)
+            if TRAIN_PERCENT >= 1:
+                test_data = train_data
+                SingleLogger().info("Since TRAIN_PERCENT is set to be >= 1, set test data equal to the training data")
+            else:
+                test_data = np.split(all_data[~mask, :], [1], axis=1)
+            test_data = np.split(all_data[~mask, :], [1], axis=1)
+            self.all_data_dict[op_type]["train_x"], self.all_data_dict[op_type]["train_y"] = train_data[1], train_data[0]
+            self.all_data_dict[op_type]["test_x"], self.all_data_dict[op_type]["test_y"] = test_data[1], test_data[0]
+            SingleLogger().info("OP {}: Collect training data - X:{}, Y:{}, test data - X:{}, Y:{}".format(
+                op_type, train_data[1].shape, train_data[0].shape, test_data[1].shape, test_data[0].shape))
 
-    def train(self, test=False):
-        _train_x = np.transpose(self.train_x)
-        _train_y = np.transpose(self.train_y).flatten()
+    def train_one_op(self, op_type, test=False):
+        train_x, train_y = self.all_data_dict[op_type]["train_x"], self.all_data_dict[op_type]["train_y"]
+        test_x, test_y = self.all_data_dict[op_type]["test_x"], self.all_data_dict[op_type]["test_y"]
+
+        _train_x = np.transpose(train_x)
+        _train_y = np.transpose(train_y).flatten()
         popt, pcov = curve_fit(func_pred_time, _train_x, _train_y, bounds=(LOWER_BOUNDS, UPPER_BOUNDS), p0=P0, maxfev=10000)
         try:
             self.cost_model["Conv2D"]["popt"] = popt
         except KeyError as e:
             self.cost_model["Conv2D"] = {"popt": popt}
         if test:
-            _test_x = np.transpose(self.test_x)
-            _test_y = np.transpose(self.test_y).flatten()
+            _test_x = np.transpose(test_x)
+            _test_y = np.transpose(test_y).flatten()
             avgs_pred = func_pred_time(_test_x, *popt)
             error = predict_error(_test_y, avgs_pred)
             SingleLogger().info("average error: %f %%"%(error * 100))
+
+    def train(self, op_type=None, test=False):
+        if op_type is None:
+            for key in self.all_data_dict:
+                self.train_one_op(key, test)
+
+    def dump_cost_model(self):
+        with open(self.cost_model_path, 'w') as fp:
+            json.dump(self.cost_model, fp)
