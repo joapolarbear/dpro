@@ -63,6 +63,7 @@ class ClockAligner:
         self.standard = None
         self.ref = None
         self.byteps_graph = byteps_graph
+        self.single = False
 
     def append_traces(self, host_id, traces):
         if host_id not in self.traces_per_host:
@@ -79,6 +80,13 @@ class ClockAligner:
             self.marker_per_host[host_id] = (_t, ref_name)
 
     def align(self):
+        if len(self.traces_per_host) == 1:
+            SingleLogger().warn("Only collect traces for one host/worker")
+            self.single = True
+            return list(self.traces_per_host.values())[0]
+        elif len(self.traces_per_host) == 0:
+            SingleLogger().warn("no traces collected")
+            return []
         rst_traces = []
         if len(self.traces_per_host) == 0:
             SingleLogger().warn("no traces collected")
@@ -143,6 +151,7 @@ class Collector(object):
 
         ### TODO (huhanpeng): assume different host use the same dag, original dag
         self.dag = None
+        self.single = False
 
     def update_final_traces(self, _io=False, _comm=False, _operator=False):
         trace_path = self.pm.search(FileName.TRACE)
@@ -322,7 +331,10 @@ class Collector(object):
 
         cnt = 0
         index = 0
-        dag_node_names_std = set([standard_name(n, platform=self.platform) for n in self.dag.nodes])
+        if self.platform == "MXNET":
+            dag_node_names_std = list(self.dag.nodes)
+        else:
+            dag_node_names_std = set([standard_name(n, platform=self.platform) for n in self.dag.nodes])
         while index < len(traces):
             trace = traces[index]
             index += 1
@@ -331,13 +343,6 @@ class Collector(object):
             elif self.platform == "TENSORFLOW":
                 raw_name = trace["args"]["name"]
             name = standard_name(raw_name, platform=self.platform)       
-
-            ### deduplication
-            ### TODO (huhanpeng): should be careful, only choose one prosess here
-            if one_pid is None:
-                one_pid = trace["pid"]
-            elif one_pid != trace["pid"]:
-                continue
             
             if name not in dag_node_names_std:
                 ### Only collect nodes in the dag
@@ -348,6 +353,15 @@ class Collector(object):
                     if pid is not None:
                         trace["pid"] = pid
                     rst_traces["traceEvents"].append(trace)
+                # print(trace)
+                continue
+
+            ### deduplication
+            ### TODO (huhanpeng): should be careful, only choose one prosess here
+            if one_pid is None:
+                one_pid = trace["pid"]
+            elif one_pid != trace["pid"]:
+                # print(trace, one_pid)
                 continue
 
             ### Initialize the start time of the entire running span
@@ -424,7 +438,7 @@ class Collector(object):
                                     ### Add UPDATE_CAL node
                                     rst_traces["traceEvents"].append({
                                         "name": "UPDATE_CAL",
-                                        "ts": _cal_ts,
+                                        "ts": _cal_ts if _cal_ts is not None else _update_ts,
                                         "dur": _duration,
                                         "ph": "X",
                                         "cat": "operator",
@@ -458,6 +472,7 @@ class Collector(object):
             else:
                 raise NotImplementedError("Unsupported platform {}.".format(self.platform))
         self.clock_aligner.append_traces(host_id, rst_traces["traceEvents"])
+        SingleLogger().info("Comp traces length: {}.".format(len(rst_traces["traceEvents"])))
         debug_utils.DebugRecorder().debug_event_end("collect_" + pid+"_comp", "Collct", "0")
 
     def bpf_collect_io(self, tmp_pm=None, pid=None, host_id=None):
@@ -746,6 +761,7 @@ class Collector(object):
 
             ### align the time
             rst_traces["traceEvents"] += self.clock_aligner.align()
+            self.single = self.clock_aligner.single
             self.clock_aligner = None
 
             if self.comm_backend == "NCCL" and not args_.pretty:
@@ -758,7 +774,7 @@ class Collector(object):
         if self.comm_backend == "BYTEPS":
             rst_traces["traceEvents"] += self.byteps_graph.gen_compatible_trace(dump_path=os.path.join(self.pm.path, FileName.BPS_ALIGNED_TRACE.value))
 
-        self.logger.info("Take %f s to combine all traces" % (time.time() - ts_))
+        self.logger.info("Take {} s to combine all traces of length {}".format(time.time() - ts_, len(rst_traces["traceEvents"])))
         return rst_traces["traceEvents"]
 
     def dump_traces(self):
@@ -771,7 +787,7 @@ class Collector(object):
     def collect_traces(self, force_=False):
         self.logger.info("# Collecting Traces")
         self.logger.info("Generating %s" % (FileName.TRACE.value))
-        self.traceM = TraceManager(self.iter_combine(), self.pm.dir_level)
+        self.traceM = TraceManager(self.iter_combine(), self.pm.dir_level, check=True)
 
     def iter_time(self):
         if self.traceM is None:
@@ -784,11 +800,13 @@ class Collector(object):
         info_path = self.pm.search(FileName.INFO)
         para_path = self.pm.search(FileName.TENSOR_NAME)
         if info_path is None:
-            self.logger.warn("Fail to map_tensors_to_update")
+            self.logger.warn("{} not found. Fail to map_tensors_to_update".format(FileName.INFO.value))
             aggregate_num = 0
         else:
             with open(info_path, 'r') as fp:
                 aggregate_num = json.load(fp)["opt_aggregate_num"]
+        if para_path is None:
+            self.logger.error("{} not found. Fail to map_tensors_to_update".format(FileName.TENSOR_NAME.value))
         self.para_dict = ParameterDict(para_path)
         return self.para_dict.map_tensors_to_update(aggregate_num)
 
@@ -802,17 +820,27 @@ class Collector(object):
             update_dict = self.collect_update_dict()
         else:
             update_dict = None
-        for _dir in self.pm.dirs:
-            worker_path = os.path.join(self.pm.path, _dir)
-            worker_root, worker_dirs, _ = list(os.walk(worker_path))[0]
-            for worker_dir in worker_dirs:
-                gpu_path = os.path.join(worker_root, worker_dir)
-                self.logger.info("## Collect DAG in %s" % (gpu_path))
-                dagmanager = DAGManager(gpu_path, self.traceM, self.nccl_graph, self.byteps_graph)
-                max_para_degree, _critical_path = dagmanager.gen_gpu_dag(_pretty=args_.pretty, update_dict=update_dict)
-                worker_dag_list.append(dagmanager.gpu_dag)
-                if _critical_path is not None:
-                    critical_path += _critical_path
+
+        if self.single:
+            worker_path = os.path.join(self.pm.path, self.pm.dirs[0])
+            gpu_path = os.path.join(worker_path, os.listdir(worker_path)[0])
+            self.logger.info("## Collect DAG in %s" % (gpu_path))
+            dagmanager = DAGManager(gpu_path, self.traceM, self.nccl_graph, self.byteps_graph, platform=self.platform, single=True)
+            max_para_degree, _critical_path = dagmanager.gen_gpu_dag(_pretty=args_.pretty, update_dict=update_dict)
+            worker_dag_list.append(dagmanager.gpu_dag)
+            critical_path += _critical_path
+        else:
+            for _dir in self.pm.dirs:
+                worker_path = os.path.join(self.pm.path, _dir)
+                worker_root, worker_dirs, _ = list(os.walk(worker_path))[0]
+                for worker_dir in worker_dirs:
+                    gpu_path = os.path.join(worker_root, worker_dir)
+                    self.logger.info("## Collect DAG in %s" % (gpu_path))
+                    dagmanager = DAGManager(gpu_path, self.traceM, self.nccl_graph, self.byteps_graph, platform=self.platform)
+                    max_para_degree, _critical_path = dagmanager.gen_gpu_dag(_pretty=args_.pretty, update_dict=update_dict)
+                    worker_dag_list.append(dagmanager.gpu_dag)
+                    if _critical_path is not None:
+                        critical_path += _critical_path
 
         ### Combine all worker_dag_list on one worker, build the dependency
         composed_dag = nx.compose_all(worker_dag_list)

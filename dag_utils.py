@@ -104,7 +104,7 @@ class DAGManager:
                          //                                                         V  (barrier)
     FW ---> OUTPUT ---> BW ------------------- .................. --------------------> UPDATE_CAL ---> UPDATE_<id> ---> END
     '''
-    def __init__(self, path, traceM, nccl_graph=None, byteps_graph = None, platform = "TENSORFLOW"):
+    def __init__(self, path, traceM, nccl_graph=None, byteps_graph = None, platform="TENSORFLOW", single=False):
         self.pm = PathManager(path)
         self.platform = platform
         ### traceM's DirLevel = TRAIL
@@ -124,14 +124,20 @@ class DAGManager:
         self.nccl_graph = nccl_graph
         self.byteps_graph = byteps_graph
 
+        ### is the dag for single rank
+        self.single = single
+
     def add_prefix(self, name, _prefix=None):
         if _prefix is None:
             return gen_long_name(self.prefix, name)
         else:
             return gen_long_name(_prefix, name)
 
-    def _process_edge_mxnet(self, graph, queue_type_list, u, v):
+    def _process_edge_mxnet(self, graph, queue_type_list, u, v, update_dict=None):
         if "Comm" in u:
+            if self.single:
+                ### delete Comm edges for single rank casts
+                return
             gra_name = u.split("Comm.")[1]
             update_id = 0 if update_dict is None else update_dict[gra_name]
             if self.byteps_graph is not None:
@@ -393,14 +399,21 @@ class DAGManager:
                         weight=self.traceM.lookup_stat(self.wk_prefix, self.rank_prefix, prev_node)
                     )
         elif "BW" in u and "Comm" in v:
-            ### delete edges from BW to Comm main task.
-            pass
+            if self.single:
+                ### remove comm nodes for single rank cases
+                _next = list(graph.successors(v))[0]
+                self.dag.add_edge(
+                    self.add_prefix(u), self.add_prefix(_next), 
+                    weight=self.traceM.lookup_stat(self.wk_prefix, self.rank_prefix, u))
+            else:
+                ### delete edges from BW to Comm main task.
+                return
         elif "UPDATE" in u and "FW" in v:
             ### ignore nodes from UPDATE to FW, avoid a circle
-            pass
+            return
         elif "STEP" in u or "STEP" in v:
             ### ignore "STEP" nodes
-            pass
+            return
         else:
             self.dag.add_edge(
                 self.add_prefix(u), 
@@ -409,6 +422,7 @@ class DAGManager:
             )
 
     def _process_edge_tensorflow(self, graph, queue_type_list, u, v):
+        raise NotImplemented("Implement for single machine, remove comm ops")
         if "BytePSPushPull" in u and "tensor" not in u:
             gra_name = u
             if self.byteps_graph is not None:
@@ -471,7 +485,7 @@ class DAGManager:
             if self.platform == "TENSORFLOW":
                 self._process_edge_tensorflow(mygraph, queue_type_list, u, v)
             elif self.platform == "MXNET":
-                self._process_edge_mxnet(mygraph, queue_type_list, u, v)
+                self._process_edge_mxnet(mygraph, queue_type_list, u, v, update_dict=update_dict)
         if self.platform == "MXNET":
             for update_id in range(update_dict["max"] + 1):
                 update_name = self.add_prefix("UPDATE_%d"%update_id)
