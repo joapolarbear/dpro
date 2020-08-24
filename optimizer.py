@@ -381,7 +381,7 @@ class Optimizer:
     def init_search_space(self, candidates, _dag):
         ### Based on the candidates, init the search space for the new dependency graph `_dag`
         ### TODO (huhanpeng): currently only consider fusion
-        ### 			Need to add quantization
+        ###             Need to add quantization
         search_space = []
         weights = []
         prun_cnt = 0
@@ -412,8 +412,8 @@ class Optimizer:
                     weights.append(l)
 
             # if cat != "operator.FW":
-            # 	### TODO (huhanpeng): only pick FW, then fuse corresponding BW
-            # 	continue
+            #   ### TODO (huhanpeng): only pick FW, then fuse corresponding BW
+            #   continue
 
             for succ_ in _dag.successors(n):
                 _pid = parse_pid_from_name(succ_)
@@ -432,7 +432,7 @@ class Optimizer:
                 
                 # TODO (huhanpeng): this process is only for NCCL now
                 # if args.comm_backend != "NCCL":
-                # 	raise NotImplementedError()
+                #   raise NotImplementedError()
 
                 ### Assumption 2: for edge bw_u->bw_v, if comm_bw_u > bw_v, it can not bring any speedup if fusing u and v.
                 def ret_comm_time(_node):

@@ -93,7 +93,7 @@ if args.option == "critical":
     #! used to store all dags generated from GPUs
     graphs = []
     for _dir in pm.dirs:
-        dagmanager = DAGManager(os.path.join(pm.path, _dir))
+        dagmanager = DAGManager(os.path.join(pm.path, _dir), platform=args.platform)
         dagmanager.gen_dag_with_prefix_weight()
         dag_longest_path(dagmanager.dag, dagmanager.pm, weight="weight", default_weight=0)
         graphs.append(dagmanager.dag)
@@ -111,7 +111,7 @@ if args.option == "replay":
         --path: the root path for 
         --step_num: number of steps we want to generate.
     '''    
-    clct = Collector(path_list[0], comm_backend=args_.comm_backend)
+    clct = Collector(path_list[0], comm_backend=args_.comm_backend, platform=args.platform)
     iter_times = clct.init(args.force)
 
     ### Replay traces
@@ -210,7 +210,7 @@ if args.option == "topo_sort":
     pm = PathManager(path_list[0])
     assert pm.dir_level == DirLevel.GPU
     local_rank = int(pm.path.split("/")[-1])
-    dagmanager = DAGManager(pm.path, local_rank)
+    dagmanager = DAGManager(pm.path, local_rank, platform=args.platform)
     dagmanager.gen_fw_bw_dag()
 
 '''below options use special --path'''
@@ -220,7 +220,8 @@ if args.option == "compare":
     if os.path.isfile(path_list[0]):
         traces = [read_traces(path_list[0]), read_traces(path_list[1])]
     else:
-        clct = [Collector(path_list[0]), Collector(path_list[1])]
+        clct = [Collector(path_list[0], comm_backend=args_.comm_backend, platform=args.platform), 
+            Collector(path_list[1], comm_backend=args_.comm_backend, platform=args.platform)]
         traces = [c.iter_combine() for c in clct]
     name2sta = [return_stat(_traces)[0] for _traces in traces]
     name2compare = {}
@@ -265,10 +266,14 @@ if args.option == "compare":
         line_cnt += 1
 
 if args.option == "collect":
-    clct = Collector(path_list[0])
+    clct = Collector(path_list[0], comm_backend=args_.comm_backend, platform=args.platform)
     clct.init(args.force)
     if args.sub_option == "combine":
         clct.iter_combine()
+    elif args.sub_option == "xlsx":
+        clct.traceM.export2xlsx(path_list[0])
+    elif args.sub_option == "visual_dag":
+        clct.traceM.export2xlsx(path_list[0])
     elif args.sub_option == "iter_time":
         clct.iter_time()
     elif args.sub_option == "straggler":
@@ -289,11 +294,13 @@ if args.option == "collect":
 if args.option == "optimize":
 
     from cost_model_amp.amp_pred import AMPPredictor, AMPTrainer
-    clct = Collector(path_list[0], comm_backend=args_.comm_backend)
+    clct = Collector(path_list[0], comm_backend=args_.comm_backend, platform=args.platform)
     clct.init(args.force)
-    amp_pred = AMPTrainer(os.path.join(path_list[0], "host0/0/metadata.json"))
-    amp_pred.collect_name_b(path_list[0])
-    amp_pred.collect_train_data(clct.trail_dag)
+    amp_pred = AMPTrainer(
+        os.path.join(path_list[0], "host0/0/metadata.json"),
+        path_list[0])
+    amp_pred.collect_raw_data(path_list[0])
+    amp_pred.gen_train_data(clct.trail_dag)
     amp_pred.train(test=True)
     '''
     if len(path_list) < 2:

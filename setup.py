@@ -15,7 +15,8 @@ setup(name='byteprofile analysis',
           'xlsxwriter', 
           'scapy',
           'xgboost',
-          'sklearn'
+          'sklearn',
+          'seaborn'
       ],
       # zip_safe=False
       )
