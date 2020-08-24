@@ -318,10 +318,10 @@ def load_list(path):
 
 
 class TraceManager:
-    def __init__(self, traces=None, dir_level=None):
+    def __init__(self, traces=None, dir_level=None, check=False):
         if traces is None:
             return
-        self.traces = traces
+        self.traces = self.check_traces(traces) if check else traces
         self.traces = sorted(self.traces, key=lambda x: (x["ts"], x["name"]), reverse=False)
 
         self.name2sta = None
@@ -330,6 +330,13 @@ class TraceManager:
 
         self.max_cnt = 0
         self.ret_stat()
+
+    def check_traces(self, traces):
+        for trace in traces:
+            if trace.get("name", None) is None or trace.get("ts", None) is None:
+                print(trace)
+                raise
+        return traces
         
     def _is_comm_trace(self, event):
         return event["cat"] == "Comm"
@@ -373,7 +380,8 @@ class TraceManager:
                     "max_t": event["dur"] / 1000.0,
                     # \TODO: add `cat` field for communication traces
                     # "cat": event["cat"] 
-                    "cat": event["cat"]
+                    "cat": event["cat"],
+                    "id": len(self.name2sta)
                     }
             event["args"]["cnt"] = self.name2sta[unique_name]["cnt"] - 1
                 
@@ -430,7 +438,7 @@ class TraceManager:
     def has_prefix(self, name):
         return DEL in name
 
-    def export2xlsx(self, _stats, _dir, filename=None, sheet_name=None):
+    def export2xlsx(self, _dir, _stats=None, filename=None, sheet_name=None):
         ''' Export the statitic results to an XLSX file
 
         Parameters
@@ -440,12 +448,14 @@ class TraceManager:
         _dir: str
             The directory to store the XLSX file
         '''
+        if _stats is None:
+            _stats = [self.name2sta]
         workbook = xlsxwriter.Workbook(os.path.join(_dir, 'statistic.xlsx' if filename is None else filename + ".xlsx"))
         for idx, _stat in enumerate(_stats):
             worksheet = workbook.add_worksheet(sheet_name[idx] if sheet_name is not None else None)
             row = 0
             header = []
-            for name, statistic in _stat.items():
+            for name, statistic in sorted(_stat.items()):
                 if row == 0:
                     # -- Output the header of the sheet
                     col = 0
