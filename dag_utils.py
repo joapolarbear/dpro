@@ -136,7 +136,8 @@ class DAGManager:
     def _process_edge_mxnet(self, graph, queue_type_list, u, v, update_dict=None):
         if "Comm" in u:
             if self.single:
-                ### delete Comm edges for single rank casts
+                ### add virtual Comm edges for single rank casts
+                self.dag.add_edge(self.add_prefix(u), self.add_prefix(v), weight=0)
                 return
             gra_name = u.split("Comm.")[1]
             update_id = 0 if update_dict is None else update_dict[gra_name]
@@ -400,11 +401,10 @@ class DAGManager:
                     )
         elif "BW" in u and "Comm" in v:
             if self.single:
-                ### remove comm nodes for single rank cases
-                _next = list(graph.successors(v))[0]
                 self.dag.add_edge(
-                    self.add_prefix(u), self.add_prefix(_next), 
-                    weight=self.traceM.lookup_stat(self.wk_prefix, self.rank_prefix, u))
+                    self.add_prefix(u), self.add_prefix(v), 
+                    weight=self.traceM.lookup_stat(self.wk_prefix, self.rank_prefix, u)
+                )
             else:
                 ### delete edges from BW to Comm main task.
                 return
