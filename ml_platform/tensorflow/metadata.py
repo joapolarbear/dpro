@@ -30,7 +30,6 @@ class MetaInfo:
         outputs = self.tf_meta[op_name]["output"]
         op_type = self.tf_meta[op_name]["op"]
         if op_type == "Conv2D":
-            
             assert len(outputs) == 1
             shape_ = outputs[0]["shape"]
             assert len(shape_) == 4, (outputs[0]["shape"], self.tf_meta[op_name])
