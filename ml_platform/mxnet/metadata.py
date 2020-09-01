@@ -9,6 +9,9 @@ class MetaInfo:
         with open(os.path.join(meta_dir, "metadata.json"), "r") as fp:
             self.mx_meta = json.load(fp)
 
+        self.cache_meta = {}
+        self.cache_raw_meta = {}
+
         ### dependency graph of this model
         self.dag = self.gen_dag()
 
@@ -33,14 +36,18 @@ class MetaInfo:
         '''
         node: node name in the dag
         '''
-        self.cache_meta = {}
         if node not in self.name2shape:
             raise KeyError("shape info for {} is not in the meta data".format(node))
         if "FW" not in node:
             ### only consider FW node
             return
         if node in self.cache_meta:
-            return self.cache_meta[node]
+            op_type, S_mul, S_add, S_in, S_out, S_wei = self.cache_meta[node]
+            if batch_size is not None:
+                ratio = batch_size / self.cache_raw_meta[node][-1]
+            else:
+                ratio = 1
+            return op_type, S_mul * ratio, S_add * ratio, S_in * ratio, S_out * ratio, S_wei
 
         op_type = self.parse_op_type(node)
         if op_type == "conv":
@@ -81,6 +88,7 @@ class MetaInfo:
             if batch_size is None:
                 batch_size = N
             self.cache_meta[node] = op_type, batch_size*K*P*Q*C*R*S, batch_size*K*P*Q*(C*R*S-1), batch_size*H*W*C, batch_size*P*Q*K, R*S*C*K
+            self.cache_raw_meta[node] = [H, W, C, R, S, P, Q, K, batch_size]
             return self.cache_meta[node]
         elif op_type == "dense":
             ### nexts
@@ -102,6 +110,7 @@ class MetaInfo:
             if batch_size is None:
                 batch_size = B
             self.cache_meta[node] = (op_type, batch_size*C_in*C_out, batch_size*(C_in-1)*C_out, batch_size*C_in, batch_size*C_out, C_in*C_out)
+            self.cache_raw_meta[node] = [C_in, C_out] 
             return self.cache_meta[node]
         elif op_type == "cast":
             ### nexts
@@ -154,6 +163,12 @@ class MetaInfo:
         else:
             raise NotImplementedError("Metadata for {} is not implemented yet.".format(node))
 
+    def ret_mx_rawmeta(self, node, batch_size):
+        if node not in self.cache_raw_meta:
+            self.ret_mx_metadata(node, batch_size)
+        if node not in self.cache_raw_meta:
+            raise ValueError(node)
+        return self.cache_raw_meta[node]
 
     def parse_op_type(self, op_name):
         op_name = op_name.lower()
