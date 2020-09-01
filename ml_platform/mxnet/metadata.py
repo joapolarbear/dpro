@@ -17,7 +17,7 @@ class MetaInfo:
 
         all_output = self.mx_meta["outputs"]
         all_shape = self.mx_meta["out_shapes"]
-
+        assert len(all_output) == len(all_shape)
 
         ### init name2shape dict, convert name to std. name
         self.name2shape = {}
@@ -73,7 +73,7 @@ class MetaInfo:
             bp_node = "BW.".join(node.split("FW."))
             comm_node = None
             for succ_ in self.dag.successors(bp_node):
-                if "Comm." in succ_:
+                if "Comm." in succ_ and "wei" in succ_:
                     comm_node = succ_
                     break
             if comm_node is None:
