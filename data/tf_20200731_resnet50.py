@@ -41,7 +41,8 @@ BATCH_LIST_VALUE = []
 # meta_info = MetaInfo("/Users/hhp/0/traces/traces20200806/metadata.json")
 
 
-RST_DIR="/Users/hhp/0/git/byteprofile-analysis/data/data_20200819_resnet50/v100_03"
+# RST_DIR="/Users/hhp/0/git/byteprofile-analysis/data/data_20200819_resnet50/v100_03"
+RST_DIR="/Users/hhp/0/git/byteprofile-analysis/data/data_20200824/20200827_02"
 meta_info = MetaInfo(os.path.join(RST_DIR, "host0/0/metadata.json"))
 
 # is_show = [True, True, False, True, False, False, False, False]
@@ -358,7 +359,7 @@ OP_NAMES = [
 "resnet_model/conv2d_52/Conv2D",
 
 
-"resnet_model/dense/MatMul"
+# "resnet_model/dense/MatMul"
 
             ]
 OP_LABELS = ["/".join(n.split("/")[1:]) for n in OP_NAMES]
@@ -379,7 +380,7 @@ intensity = model_size[:, 0, :] / (model_size[:, 2, :] + model_size[:, 3, :] + m
 
 THRESHOLD = 0.00 # in ms
 
-def plot_varyB_resut(S_mul=False, S_add=False, S_in=False, S_out=False, S_wei=False):
+def plot_B2cost(S_mul=False, S_add=False, S_in=False, S_out=False, S_wei=False):
     plt.figure(num=1, figsize=(8, 6))
 
     x_axis_idx = None
@@ -421,7 +422,7 @@ def plot_varyB_resut(S_mul=False, S_add=False, S_in=False, S_out=False, S_wei=Fa
 
     plt.show()
 
-def plot_batchsize_intensity():
+def plot_B2intensity():
     plt.figure(num=1, figsize=(8, 6))
 
     fig_base, fig_idx = init_fig_base(len(OP_NAMES))
@@ -451,7 +452,7 @@ def plot_batchsize_intensity():
 
     plt.show()
 
-def plot_intensity_flops():
+def plot_intensity2flops():
     plt.figure(num=1, figsize=(8, 6))
 
     fig_base, fig_idx = init_fig_base(len(OP_NAMES))
@@ -476,7 +477,7 @@ def plot_intensity_flops():
 
     plt.show()
 
-def plot_batchsize_size():
+def plot_B2metadata():
     plt.figure(num=1, figsize=(8, 6))
 
     fig_base, fig_idx = init_fig_base(len(OP_NAMES))
@@ -485,9 +486,9 @@ def plot_batchsize_size():
     def __plot(fig_base, op_id):
         ax = plt.subplot(fig_base + op_id)
         for fig_id, metric in enumerate([
-                # "mul", 
-                # "input", 
-                # "output", 
+                "mul", 
+                "input", 
+                "output", 
                 "weight",
                 ]):
             ax.plot(BATCH_LIST_VALUE, model_size[op_id, fig_id if fig_id < 1 else fig_id+1, :], DOTS[fig_id%len(DOTS)], label=OP_SHORT_LABELS[op_id]+"_"+metric)
@@ -501,7 +502,7 @@ def plot_batchsize_size():
     plt.show()
 
 
-def plot_avg_accum_distribution():
+def plot_avg2distribution():
     plt.figure(num=1, figsize=(8, 6))
     def __plot(op_id):
         ax = plt.subplot(211 + op_id)
@@ -547,7 +548,7 @@ def plot_avg_accum_distribution():
 
     plt.show()
 
-def plot_varyK_result(S_mul=False, S_add=False, S_in=False, S_out=False, S_wei=False):
+def plot_K2cost(S_mul=False, S_add=False, S_in=False, S_out=False, S_wei=False):
     plt.figure(num=1, figsize=(8, 6))
 
     cnt = 1 + int(S_mul) + int(S_add) + int(S_in) + int(S_out) + int(S_wei)
@@ -586,7 +587,7 @@ def plot_varyK_result(S_mul=False, S_add=False, S_in=False, S_out=False, S_wei=F
 
     plt.show()
 
-def plot_varyD_result():
+def plot_D2cost():
     plt.figure(num=1, figsize=(8, 6))
     ax = plt.subplot(121)
     ax.plot(DENSE_LIST_VALUE, vary_dense_size(NAMELIST_32.index('dense/MatMul')), marker='.', label="dense (3136*D)")
@@ -603,7 +604,7 @@ def plot_varyD_result():
     plt.xlabel("Dense Size (D)")
     plt.show()
 
-def plot_varyB_resut_of_cast():
+def plot_B2cost_of_cast():
     plt.figure(num=1, figsize=(8, 6))
 
     ax = plt.subplot(221)
@@ -661,7 +662,7 @@ def plot_model_complexity_combine():
 
     plt.show()
 
-def plot_bar():
+def plot_op2metadata():
     plt.figure(num=1, figsize=(8, 6))
     labels = ["S_mul", "S_in", "S_out", "S_wei"]
     xlabels = ["Computation Complexity", "Input Size", "Output Size", "Weight Size"]
@@ -674,17 +675,17 @@ def plot_bar():
         plt.ylabel(labels[idx])
     plt.show()
 
-plot_bar()
-# plot_varyK_result(S_mul=True, S_add=True, S_in=True, S_out=True, S_wei=True)
-# plot_varyD_result()
-# plot_varyB_resut(S_mul=False, S_add=False, S_in=False, S_out=False, S_wei=False)
-# plot_batchsize_intensity()
-# plot_intensity_flops()
-# plot_batchsize_size()
+# plot_op2metadata()
+# plot_K2cost(S_mul=True, S_add=True, S_in=True, S_out=True, S_wei=True)
+# plot_D2cost()
+# plot_B2cost(S_mul=False, S_add=False, S_in=False, S_out=False, S_wei=False)
+# plot_B2intensity()
+# plot_intensity2flops()
+# plot_B2metadata()
 # plot_model_complexity_combine()
-# plot_varyB_resut_of_cast()
-# plot_avg_accum_distribution()
-raise
+# plot_B2cost_of_cast()
+# plot_avg2distribution()
+# raise
 
 
 ####################################################################################################
@@ -969,7 +970,7 @@ def plot_2d_fit_result(is_show):
         
         plt.legend(fontsize=8)
         plt.ylabel('Average Time (ms)')
-        plt.ylim(0, 2)
+        # plt.ylim(0, 2)
         plt.xlabel(x_axis_names[x_axis_idx])
         return fig_base+1, fig_idx
 

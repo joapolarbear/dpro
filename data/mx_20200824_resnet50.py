@@ -1,20 +1,6 @@
 """
 Platform: On one V100 GPU, single machine
 Framework: Tensorflow 1.14, CUDA 10.2
-Model/Dataset: 2conv + 2 dense with MNIST
-    # ---------
-    # Variables: name (type shape) [size]
-    # ---------
-    # conv_layer1/conv2d/kernel:0 (float32_ref 5x5x1x32) [800, bytes: 3200]
-    # conv_layer1/conv2d/bias:0 (float32_ref 32) [32, bytes: 128]
-    # conv_layer2/conv2d/kernel:0 (float32_ref 5x5x32x64) [51200, bytes: 204800]
-    # conv_layer2/conv2d/bias:0 (float32_ref 64) [64, bytes: 256]
-    # dense/kernel:0 (float32_ref 3136x1024) [3211264, bytes: 12845056]
-    # dense/bias:0 (float32_ref 1024) [1024, bytes: 4096]
-    # dense_1/kernel:0 (float32_ref 1024x10) [10240, bytes: 40960]
-    # dense_1/bias:0 (float32_ref 10) [10, bytes: 40]
-    # Total size of variables: 3274634
-    # Total bytes of variables: 13098536
 """
 import matplotlib.pyplot as plt
 import numpy as np
@@ -23,6 +9,15 @@ from scipy.optimize import curve_fit
 import os, sys
 import seaborn as sns
 from ml_platform.mxnet.metadata import MetaInfo
+
+# is_show = [True, True, False, True, False, False, False, False]
+is_show = None
+GFLOPS_FP32 = 1
+GFLOPS_FP16 = 2
+BATCHSIZE_THESHOLD = 4
+VAR_THREHOLD = 0.2
+TRAIN_PERCENT = 1
+ADD_ADDITIONAL = True
 
 NAMELIST_32 = None
 NAMELIST_16 = None
@@ -33,26 +28,20 @@ VAR_16 = {}
 DEFAULT_BATCH_SIZE_STR="B=256"
 DEFAULT_BATCH_SIZE=int(DEFAULT_BATCH_SIZE_STR.split("=")[1])
 DEFAULT_KENREL_SIZE=3
-
 BATCH_LIST_VALUE = []
 
+data_folder = "/Users/hhp/0/git/byteprofile-analysis/data/data_20200824"
 if sys.argv[1] == 'bert':
-    RST_DIR="/Users/hhp/0/git/byteprofile-analysis/data/data_20200824/20200824_03"
+    RST_DIR=os.path.join(data_folder, "20200824_03")
+elif sys.argv[1] == 'resnet':
+    RST_DIR=os.path.join(data_folder, "20200824_02")
+    # RST_DIR="/Users/hhp/0/git/byteprofile-analysis/data/data_20200824/20200828_01"
 else:
-    RST_DIR="/Users/hhp/0/git/byteprofile-analysis/data/data_20200824/20200824_02"
+    raise
 meta_info = MetaInfo(os.path.join(RST_DIR, "host0/0"))
 
-# is_show = [True, True, False, True, False, False, False, False]
-is_show = None
-GFLOPS_FP32 = 1
-GFLOPS_FP16 = 2
-
-# BATCHSIZE_THESHOLD = [4, 8, 64, 64]
-BATCHSIZE_THESHOLD = 4
-VAR_THREHOLD = 0.2
 train_x = train_y = None
 test_x = test_y = None
-TRAIN_PERCENT = 1
 fp32_x = fp32_y = None
 fp16_x = fp16_y = None
 
@@ -88,8 +77,10 @@ with open(os.path.join(RST_DIR, "avg.txt"), 'r') as fp:
                 continue
             if sys.argv[1] == 'bert':
                 batchsize = int(lines[idx].split("--total_batch_size")[1].split("--")[0])
-            else:
+            elif sys.argv[1] == 'resnet':
                 batchsize = int(lines[idx].split("--batch-size")[1].split("--")[0])
+            else:
+                raise
             if "fp32" in lines[idx]:
                 BATCH_LIST_VALUE.append(batchsize)
                 _DATA = DATA_32
@@ -175,8 +166,8 @@ def infoOfDense(B, C_in, C_out):
         sizeWeiOfDense(B, C_in, C_out)
 
 def init_fig_base(cnt):
-    w = math.ceil(math.sqrt(cnt))
-    h = math.ceil(cnt / w)
+    h = math.ceil(math.sqrt(cnt))
+    w = math.ceil(cnt / h)
     fig_base = w * 100 + h * 10 + 1
     return fig_base, 0
 
@@ -188,7 +179,7 @@ if sys.argv[1] == "bert":
 "FW.bertmodel0_word_embed_embedding0",
     ]
     OP_LABELS = ["".join(n.split("bert")[1]) for n in OP_NAMES]
-else:
+elif sys.argv[1] == 'resnet':
     OP_NAMES = [
 "FW.resnetv10_conv0",
 "FW.resnetv10_stage1_conv0",
@@ -203,9 +194,6 @@ else:
 "FW.resnetv10_stage1_conv9",
 "FW.resnetv10_stage2_conv0",
 "FW.resnetv10_stage2_conv1",
-"FW.resnetv10_stage2_conv10",
-"FW.resnetv10_stage2_conv11",
-"FW.resnetv10_stage2_conv12",
 "FW.resnetv10_stage2_conv2",
 "FW.resnetv10_stage2_conv3",
 "FW.resnetv10_stage2_conv4",
@@ -214,8 +202,19 @@ else:
 "FW.resnetv10_stage2_conv7",
 "FW.resnetv10_stage2_conv8",
 "FW.resnetv10_stage2_conv9",
+"FW.resnetv10_stage2_conv10",
+"FW.resnetv10_stage2_conv11",
+"FW.resnetv10_stage2_conv12",
 "FW.resnetv10_stage3_conv0",
 "FW.resnetv10_stage3_conv1",
+"FW.resnetv10_stage3_conv2",
+"FW.resnetv10_stage3_conv3",
+"FW.resnetv10_stage3_conv4",
+"FW.resnetv10_stage3_conv5",
+"FW.resnetv10_stage3_conv6",
+"FW.resnetv10_stage3_conv7",
+"FW.resnetv10_stage3_conv8",
+"FW.resnetv10_stage3_conv9",
 "FW.resnetv10_stage3_conv10",
 "FW.resnetv10_stage3_conv11",
 "FW.resnetv10_stage3_conv12",
@@ -225,14 +224,6 @@ else:
 "FW.resnetv10_stage3_conv16",
 "FW.resnetv10_stage3_conv17",
 "FW.resnetv10_stage3_conv18",
-"FW.resnetv10_stage3_conv2",
-"FW.resnetv10_stage3_conv3",
-"FW.resnetv10_stage3_conv4",
-"FW.resnetv10_stage3_conv5",
-"FW.resnetv10_stage3_conv6",
-"FW.resnetv10_stage3_conv7",
-"FW.resnetv10_stage3_conv8",
-"FW.resnetv10_stage3_conv9",
 "FW.resnetv10_stage4_conv0",
 "FW.resnetv10_stage4_conv1",
 "FW.resnetv10_stage4_conv2",
@@ -245,6 +236,8 @@ else:
 "FW.resnetv10_stage4_conv9",
             ]
     OP_LABELS = ["".join(n.split("resnetv10_")[1]) for n in OP_NAMES]
+else:
+    raise
 OP_SHORT_LABELS = OP_LABELS
 DOTS = ['.-', '^--', 'x-']
 # for n in NAMELIST_32:
@@ -255,12 +248,7 @@ DOTS = ['.-', '^--', 'x-']
 
 ### model_size[node_name][S_mul, S_add, ...][len= # of batch value]
 model_size = np.array([list(zip(*[meta_info.ret_mx_metadata(op_name, batch_size=b)[1:] for b in BATCH_LIST_VALUE])) for op_name in OP_NAMES])
-# model_size = np.array([
-#         list(zip(*[infoOfConv(b, 32, DEFAULT_KENREL_SIZE, 32, 32) for b in BATCH_LIST_VALUE])),
-#         list(zip(*[infoOfConv(b, 16, DEFAULT_KENREL_SIZE, 64, 64) for b in BATCH_LIST_VALUE])),
-#         list(zip(*[infoOfConv(b, 8, DEFAULT_KENREL_SIZE, 128, 128) for b in BATCH_LIST_VALUE])),
-#         list(zip(*[infoOfConv(b, 4, DEFAULT_KENREL_SIZE, 256, 256) for b in BATCH_LIST_VALUE])),
-#     ])
+model_raw_info = np.array([list(zip(*[meta_info.ret_mx_rawmeta(op_name, batch_size=b) for b in BATCH_LIST_VALUE])) for op_name in OP_NAMES])
 
 intensity = model_size[:, 0, :] / (model_size[:, 2, :] + model_size[:, 3, :] + model_size[:, 4, :])
 
@@ -592,7 +580,37 @@ def predict_error(_list, _list_pred):
     diff = np.abs(_list_pred - _list) / _list
     return diff, "%f %%"%(np.average(diff * 100))
 
-def cost_func(xs, a1, a2, a3, a4, a5, a6, a7, a8, b1, b2, b3):
+
+# def cost_func(xs, a1, a2, a3, a4, a5, a6, a7, a8, a9, b1, b2, b3):
+#     '''
+#     gflops:
+#         We only need a relative value of gflops, 
+#         i.e., if we know fp32's is twice of fp16's, we can just fp32's = 2 and fp16's = 1,
+#         the scale is hidden in the a2 
+#         x[0]: relative gflops
+#         x[1]: num of multiplication
+#         x[2]: num of addition
+#         x[3]: input size
+#         x[4]: output size
+#         x[5]: weight size
+
+#         if len(x) > 6, there are some additional information, e.g., kernel size for Conv2D
+#     '''
+#     gflops = xs[0]
+#     S_mul = xs[1]
+#     S_add = xs[2]
+#     wei_S_all = a3 * xs[3] + a4 * xs[4] + a5 * xs[5]
+#     wei_S_all2 = a6 * xs[3] + a7 * xs[4] + a8 * xs[5]
+#     if ADD_ADDITIONAL:
+#         ### [H, W, C, R, S, P, Q, K, batch_size, use_bias]
+#         addtional_term = a9 * xs[4] * xs[6+9]
+#     else:
+#         addtional_term = 0
+#     return (a1 * S_mul + b1 + addtional_term) / (a2 * gflops + b2) + wei_S_all / gflops + b3 + gflops * wei_S_all2
+
+# lower_bounds = tuple([0]*9 + [-np.inf]*3)
+
+def cost_func(xs, a1, a3, a4, a5, a6, a7, a8, a9, b1, b2, b3):
     '''
     gflops:
         We only need a relative value of gflops, 
@@ -604,30 +622,40 @@ def cost_func(xs, a1, a2, a3, a4, a5, a6, a7, a8, b1, b2, b3):
         x[3]: input size
         x[4]: output size
         x[5]: weight size
+
+        if len(x) > 6, there are some additional information, e.g., kernel size for Conv2D
     '''
     gflops = xs[0]
-    S_mul = xs[1]
-    S_add = xs[2]
-    # intensity = S_mul / xs[3] + xs[4] + xs[5]
-    intensity = 1
-    wei_S_all = a3 * xs[3] + a4 * xs[4] + a5 * xs[5]
-    wei_S_all2 = a6 * xs[3] + a7 * xs[4] + a8 * xs[5]
-    return intensity * (a1 * S_mul + b1) / (a2 * gflops + b2) + (wei_S_all / gflops + b3 + gflops * wei_S_all2) / intensity
+    S_mul = xs[1] / 3776446464.0
+    S_add = xs[2] / 3776446464.0
+    S_in = xs[3] / 25690112.0
+    S_out = xs[4] / 25690112.0
+    S_wei = xs[5] / 2359296.0
+    wei_S_all = a3 * S_in + a4 * S_out + a5 * xs[5]
+    # wei_S_all = a3 * xs[3] + a4 * xs[4] + a5 * xs[5]
+    # wei_S_all2 = a6 * xs[3] + a7 * xs[4] + a8 * xs[5]
 
-def wrap_curve_fit(xs, ys):
-    assert isinstance(xs, list) and isinstance(ys, list)
-    return curve_fit(time2batch_size, [0] + xs, [0] + ys)
+    flops_ = gflops * (1 / (1 + np.exp(-S_mul)) - a6)
+    # flops_ = np.sqrt(a7**2 * (gflops ** 2 / (a6**2) - 1))
+    if ADD_ADDITIONAL:
+        ### [H, W, C, R, S, P, Q, K, batch_size, use_bias]
+        addtional_term = S_out * xs[6+9]
+    else:
+        addtional_term = 0
+    return (a1 * S_mul + b1 + a9 * (S_add + addtional_term)) / (flops_ + b2) + b3 + wei_S_all / gflops
 
 lower_bounds = tuple([0]*8 + [-np.inf]*3)
+
+
 # lower_bounds = tuple([0]*4 + [-np.inf]*1)
 up_bounds = tuple(len(lower_bounds) * [np.inf])
 p0=[0]*len(lower_bounds)
 FIT_FUNC = cost_func
 
-def collect_data(is_show):
+def collect_data(op_names_, add_=False, verbose=True):
     all_data_dict = {}
 
-    def __record_xdata(S_mul, S_add, S_in, S_out, S_wei, gflops, avg, op_type):
+    def __record_xdata(S_mul, S_add, S_in, S_out, S_wei, gflops, avg, op_type, addition=None):
         if op_type not in all_data_dict:
             all_data_dict[op_type] = [[], [], [], [], [], [], []]
         all_data_dict[op_type][0].append(avg)
@@ -638,34 +666,50 @@ def collect_data(is_show):
         all_data_dict[op_type][5].append(S_out)
         all_data_dict[op_type][6].append(S_wei)
 
-    for i in range(len(OP_NAMES)):
-        if is_show is None or is_show[i]:
-            for b in BATCH_LIST_VALUE:
-                ### filter
-                if b <= BATCHSIZE_THESHOLD:
-                    continue
+        if addition is not None and isinstance(addition, list):
+            for idx, e in enumerate(addition):
+                if idx+7 >= len(all_data_dict[op_type]):
+                    all_data_dict[op_type].append([addition[idx]])
+                else:
+                    all_data_dict[op_type][idx+7].append(addition[idx])
 
-                ### collect data
-                op_type, S_mul, S_add, S_in, S_out, S_wei = meta_info.ret_mx_metadata(OP_NAMES[i], batch_size=b)
+    for i in range(len(op_names_)):
+        for b in BATCH_LIST_VALUE:
+            ### filter
+            if b <= BATCHSIZE_THESHOLD:
+                continue
 
-                idx_in_32 = NAMELIST_32.index(OP_NAMES[i])
-                var_ = VAR_32["B=%d"%b][idx_in_32] if "B=%d"%b in VAR_32 else 0
-                avg_ = DATA_32["B=%d"%b][idx_in_32]
-               	if (var_ / avg_) <= VAR_THREHOLD:
-                    __record_xdata(S_mul, S_add, S_in, S_out, S_wei, GFLOPS_FP32, avg_, "Conv2D")
+            ### collect data
+            op_type, S_mul, S_add, S_in, S_out, S_wei = meta_info.ret_mx_metadata(op_names_[i], batch_size=b)
 
-                if NAMELIST_16 is not None:
-                    idx_in_16 = NAMELIST_16.index(OP_NAMES[i])
-                    var_ = VAR_16["B=%d"%b][idx_in_16] if "B=%d"%b in VAR_16 else 0
-                    avg_ = DATA_16["B=%d"%b][idx_in_16]
-                    if (var_ / avg_) <= VAR_THREHOLD:
-                        __record_xdata(S_mul, S_add, S_in, S_out, S_wei, GFLOPS_FP16, avg_, "Conv2D")
-            # __record_xdata(0, 0, 0, 0, 0, GFLOPS_FP32, 0, "Conv2D")
-            # __record_xdata(0, 0, 0, 0, 0, GFLOPS_FP16, 0, "Conv2D")
+            idx_in_32 = NAMELIST_32.index(op_names_[i])
+            var_ = VAR_32["B=%d"%b][idx_in_32] if "B=%d"%b in VAR_32 else 0
+            avg_ = DATA_32["B=%d"%b][idx_in_32]
+            if (var_ / avg_) <= VAR_THREHOLD:
+                ### [H, W, C, R, S, P, Q, K, batch_size]
+                raw_meta = meta_info.ret_mx_rawmeta(op_names_[i], batch_size=b) if add_ else None
+                __record_xdata(S_mul, S_add, S_in, S_out, S_wei, GFLOPS_FP32, avg_, "Conv2D", addition=raw_meta)
 
+            if NAMELIST_16 is not None:
+                idx_in_16 = NAMELIST_16.index(op_names_[i])
+                var_ = VAR_16["B=%d"%b][idx_in_16] if "B=%d"%b in VAR_16 else 0
+                avg_ = DATA_16["B=%d"%b][idx_in_16]
+                if (var_ / avg_) <= VAR_THREHOLD:
+                    raw_meta = meta_info.ret_mx_rawmeta(op_names_[i], batch_size=b) if add_ else None
+                    __record_xdata(S_mul, S_add, S_in, S_out, S_wei, GFLOPS_FP16, avg_, "Conv2D", addition=raw_meta)
+
+        _raw_meta =[0]*len(raw_meta) if add_ else None
+        # __record_xdata(0, 0, 0, 0, 0, GFLOPS_FP32, 0, "Conv2D", addition=_raw_meta)
+        # __record_xdata(0, 0, 0, 0, 0, GFLOPS_FP16, 0, "Conv2D", addition=_raw_meta)
+        # __record_xdata(0, 0, 0, 0, 0, GFLOPS_FP32, 0, "Conv2D", addition=None)
+        # __record_xdata(0, 0, 0, 0, 0, GFLOPS_FP16, 0, "Conv2D", addition=None)
 
     ### all_data[S_mul, ...][# of nodes * # of batch size values]
-    all_data = np.array(all_data_dict["Conv2D"])
+    try:
+        all_data = np.array(all_data_dict["Conv2D"])
+    except:
+        print(op_names_, all_data_dict)
+        raise
     ### all_data[# of nodes * # of batch size values][S_mul, ...]
     all_data = np.transpose(all_data)
     ### filter
@@ -679,7 +723,8 @@ def collect_data(is_show):
     fp16_data = all_data[all_data[:, 1] == GFLOPS_FP16]
     fp16_data = np.split(fp16_data, [1], axis=1)
     fp16_x, fp16_y = fp16_data[1], fp16_data[0]
-    print("Collect fp32 data - X:{}, Y:{}, fp16 data - X:{}, Y:{}".format(fp32_x.shape, fp32_y.shape, fp16_x.shape, fp16_y.shape))
+    if verbose:
+        print("Collect fp32 data - X:{}, Y:{}, fp16 data - X:{}, Y:{}".format(fp32_x.shape, fp32_y.shape, fp16_x.shape, fp16_y.shape))
 
     arg_num = all_data.shape[1]
     value_num = all_data.shape[0]
@@ -697,8 +742,8 @@ def collect_data(is_show):
     global train_x, train_y, test_x, test_y
     train_x, train_y = train_data[1], train_data[0]
     test_x, test_y = test_data[1], test_data[0]
-
-    print("Collect training data - X:{}, Y:{}, test data - X:{}, Y:{}".format(train_x.shape, train_y.shape, test_x.shape, test_y.shape))
+    if verbose:
+        print("Collect training data - X:{}, Y:{}, test data - X:{}, Y:{}".format(train_x.shape, train_y.shape, test_x.shape, test_y.shape))
 
 
 def fit_with_S_cal_gflops():
@@ -708,124 +753,46 @@ def fit_with_S_cal_gflops():
         bounds=(lower_bounds, up_bounds), p0=p0, maxfev=10000)
     return popt, pcov
 
-collect_data(is_show)
-popt, pcov = fit_with_S_cal_gflops()
-print(popt)
-UNIT_LEN = len(BATCH_LIST_VALUE)
-
-def plot_intensity2flops():
-    assert not is_show[4]
-    intensity = xdata[1] / (xdata[3] + xdata[4] + xdata[5])
-    flops = xdata[1] / ydata
-
-    from mpl_toolkits.mplot3d import Axes3D
-    plt.figure(num=1, figsize=(8, 6))
-    fig = plt.figure()
-    ax = fig.add_subplot(121, projection='3d')
-    ax.scatter(intensity, xdata[0], flops)
-    plt.xlabel("arithmetic intensity")
-    plt.ylabel("precision")
-
-    ax = plt.subplot(122)
-    index32 = np.where(xdata[0,:]==GFLOPS_FP32)
-    index16 = np.where(xdata[0,:]==GFLOPS_FP16)
-    intensity32 = intensity[index32]
-    flops_32_to_16 = flops[index32] / flops[index16]
-    ax.plot(intensity32, flops_32_to_16)
-    plt.xlabel("arithmetic intensity")
-    plt.ylabel("flops 32 / flops 16")
-    plt.show()
-
-def plot_3d_fit_result():
-    from mpl_toolkits.mplot3d import Axes3D
-    xdata = np.array([gflopsList, S_mul_list, S_in_list, S_out_list, S_wei_list])
-    pred = FIT_FUNC(xdata, *popt)
-    plt.figure(num=1, figsize=(8, 6))
-    fig = plt.figure()
-    fig_idx = 0
-
-    ax = fig.add_subplot(221, projection='3d')
-    ax.scatter(S_in_list[fig_idx*UNIT_LEN:(fig_idx+1)*UNIT_LEN], 
-        S_wei_list[fig_idx*UNIT_LEN:(fig_idx+1)*UNIT_LEN], 
-        avgsList[fig_idx*UNIT_LEN:(fig_idx+1)*UNIT_LEN], label="real")
-    ax.scatter(S_in_list[fig_idx*UNIT_LEN:(fig_idx+1)*UNIT_LEN], 
-        S_wei_list[fig_idx*UNIT_LEN:(fig_idx+1)*UNIT_LEN], 
-        pred[fig_idx*UNIT_LEN:(fig_idx+1)*UNIT_LEN], label="predict")
-    plt.legend()
-    plt.xlabel("Sin Conv1 32")
-    plt.ylabel("Swei")
-    fig_idx += 1
-
-    ax = fig.add_subplot(222, projection='3d')
-    ax.scatter(S_in_list[fig_idx*UNIT_LEN:(fig_idx+1)*UNIT_LEN], 
-        S_wei_list[fig_idx*UNIT_LEN:(fig_idx+1)*UNIT_LEN], 
-        avgsList[fig_idx*UNIT_LEN:(fig_idx+1)*UNIT_LEN], label="real")
-    ax.scatter(S_in_list[fig_idx*UNIT_LEN:(fig_idx+1)*UNIT_LEN], 
-        S_wei_list[fig_idx*UNIT_LEN:(fig_idx+1)*UNIT_LEN], 
-        pred[fig_idx*UNIT_LEN:(fig_idx+1)*UNIT_LEN], label="predict")
-    plt.legend()
-    plt.xlabel("Sin Conv1 16")
-    plt.ylabel("Swei")
-    fig_idx += 1
-
-    ax = fig.add_subplot(223, projection='3d')
-    ax.scatter(S_in_list[fig_idx*UNIT_LEN:(fig_idx+1)*UNIT_LEN], 
-        S_wei_list[fig_idx*UNIT_LEN:(fig_idx+1)*UNIT_LEN], 
-        avgsList[fig_idx*UNIT_LEN:(fig_idx+1)*UNIT_LEN], label="real")
-    ax.scatter(S_in_list[fig_idx*UNIT_LEN:(fig_idx+1)*UNIT_LEN], 
-        S_wei_list[fig_idx*UNIT_LEN:(fig_idx+1)*UNIT_LEN], 
-        pred[fig_idx*UNIT_LEN:(fig_idx+1)*UNIT_LEN], label="predict")
-    plt.legend()
-    plt.xlabel("Sin Conv2 32")
-    plt.ylabel("Swei")
-    fig_idx += 1
-
-    ax = fig.add_subplot(224, projection='3d')
-    ax.scatter(S_in_list[fig_idx*UNIT_LEN:(fig_idx+1)*UNIT_LEN], 
-        S_wei_list[fig_idx*UNIT_LEN:(fig_idx+1)*UNIT_LEN], 
-        avgsList[fig_idx*UNIT_LEN:(fig_idx+1)*UNIT_LEN], label="real")
-    ax.scatter(S_in_list[fig_idx*UNIT_LEN:(fig_idx+1)*UNIT_LEN], 
-        S_wei_list[fig_idx*UNIT_LEN:(fig_idx+1)*UNIT_LEN], 
-        pred[fig_idx*UNIT_LEN:(fig_idx+1)*UNIT_LEN], label="predict")
-    plt.legend()
-    plt.xlabel("Sin Conv2 16")
-    plt.ylabel("Swei")
-    fig_idx += 1
-
-    plt.show()
-
-def plot_2d_fit_result(is_show):
+def plot_2d_fit_result(is_show, op_idxs=None):
     plt.figure(num=1, figsize=(8, 6))
 
     ratio_sum = []
     # cnt = sum([int(i) for i in is_show])
-    cnt = len(OP_NAMES)
+    if op_idxs is not None:
+        op_names_ = np.array(OP_NAMES)[idxs]
+    else:
+        op_names_ = OP_NAMES
+    cnt = len(op_names_)
     fig_base, fig_idx = init_fig_base(cnt)
 
     clrs = sns.color_palette("husl", 5)
 
-    def __plot(op_id, fig_base, fig_idx, only_16=False):
+    def __plot(op_id, fig_base, fig_idx):
         x_axis_names = ["Batch Size (B)", "S_mul", "S_add", "S_in", "S_out", "S_weight"]
         x_axis_idx = 0
         xaxis = [b if x_axis_idx == 0 else meta_info.ret_mx_metadata(OP_NAMES[op_id], batch_size=b)[x_axis_idx] for b in BATCH_LIST_VALUE]
-
+        model_size_32 = np.concatenate((np.array([[GFLOPS_FP32]*len(model_size[op_id, 0, :])]), model_size[op_id, :, :], model_raw_info[op_id, :, :]), axis=0) \
+            if ADD_ADDITIONAL else np.concatenate((np.array([[GFLOPS_FP32]*len(model_size[op_id, 0, :])]), model_size[op_id, :, :]), axis=0)
+        model_size_16 = np.concatenate((np.array([[GFLOPS_FP16]*len(model_size[op_id, 0, :])]), model_size[op_id, :, :], model_raw_info[op_id, :, :]), axis=0) \
+            if ADD_ADDITIONAL else np.concatenate((np.array([[GFLOPS_FP16]*len(model_size[op_id, 0, :])]), model_size[op_id, :, :]), axis=0)
         ax = plt.subplot(fig_base)
-        if not only_16:
-            avgs = batchsize2avg(NAMELIST_32.index(OP_NAMES[op_id]))
-            ax.plot(xaxis, avgs, marker='.', label=OP_SHORT_LABELS[op_id]+"_fp32", c=clrs[0])
-            try:
-                stds = batchsize2sdt(NAMELIST_32.index(OP_NAMES[op_id]))
-                ax.fill_between(xaxis, avgs+stds, avgs-stds, alpha=0.3, facecolor=clrs[0])
-            except KeyError:
-                pass
 
-            avgs_pred = FIT_FUNC(np.concatenate((np.array([[GFLOPS_FP32]*len(model_size[fig_idx//2, 0, :])]), model_size[fig_idx//2, :, :]), axis=0), *popt)
-            ax.plot(xaxis, avgs_pred, "--", label=OP_SHORT_LABELS[op_id]+"_fp32"+"_pred", c=clrs[1])
-            diff, ratio = predict_error(avgs, avgs_pred)
-            print(OP_SHORT_LABELS[op_id]+"_fp32", ratio, diff)
-            fig_idx += 1
-            if "%" in ratio:
-                ratio_sum.append(float(ratio.split("%")[0]))
+        avgs = batchsize2avg(NAMELIST_32.index(OP_NAMES[op_id]))
+        ax.plot(xaxis, avgs, marker='.', label=OP_SHORT_LABELS[op_id]+"_fp32", c=clrs[0])
+        try:
+            stds = batchsize2sdt(NAMELIST_32.index(OP_NAMES[op_id]))
+            ax.fill_between(xaxis, avgs+stds, avgs-stds, alpha=0.3, facecolor=clrs[0])
+        except KeyError:
+            pass
+
+        avgs_pred = FIT_FUNC(model_size_32, *popt)
+        ax.plot(xaxis, avgs_pred, "--", label=OP_SHORT_LABELS[op_id]+"_fp32"+"_pred", c=clrs[1])
+        # ax.fill_between(xaxis, FIT_FUNC(model_size_32, *popt+perr), FIT_FUNC(model_size_32, *popt-perr), alpha=0.3, facecolor=clrs[1])
+        diff, ratio = predict_error(avgs, avgs_pred)
+        print(OP_SHORT_LABELS[op_id]+"_fp32", ratio, diff)
+        fig_idx += 1
+        if "%" in ratio:
+            ratio_sum.append(float(ratio.split("%")[0]))
 
         if NAMELIST_16 is not None:
             avgs_16 = batchsize2avg(NAMELIST_16.index(OP_NAMES[op_id]), fp16=True)
@@ -835,8 +802,9 @@ def plot_2d_fit_result(is_show):
                 ax.fill_between(xaxis, avgs_16+stds_16, avgs_16-stds_16, alpha=0.3, facecolor=clrs[2])
             except KeyError:
                 pass
-            avgs_pred = FIT_FUNC(np.concatenate((np.array([[GFLOPS_FP16]*len(model_size[fig_idx//2, 0, :])]), model_size[fig_idx//2, :, :]), axis=0), *popt)
+            avgs_pred = FIT_FUNC(model_size_16, *popt)
             ax.plot(xaxis, avgs_pred, "--", label=OP_SHORT_LABELS[op_id]+"_fp16"+"_pred", c=clrs[3])
+            # ax.fill_between(xaxis, FIT_FUNC(model_size_16, *popt+perr), FIT_FUNC(model_size_16, *popt-perr), alpha=0.3, facecolor=clrs[3])
             diff, ratio = predict_error(avgs_16, avgs_pred)
             print(OP_SHORT_LABELS[op_id]+"_fp16", ratio, diff)
             fig_idx += 1
@@ -849,7 +817,7 @@ def plot_2d_fit_result(is_show):
         plt.xlabel(x_axis_names[x_axis_idx])
         return fig_base+1, fig_idx
 
-    for op_id in range(cnt):
+    for op_id in op_idxs:
         # if is_show[op_id]:
         # op_id = 2
         fig_base, fig_idx = __plot(op_id, fig_base, fig_idx)
@@ -857,12 +825,16 @@ def plot_2d_fit_result(is_show):
     print("average error: %f %%"%(sum(ratio_sum)/len(ratio_sum)))
     plt.show()
 
-def test():
+def test(verbose=True):
     _test_x = np.transpose(test_x)
     _test_y = np.transpose(test_y).flatten()
     avgs_pred = FIT_FUNC(_test_x, *popt)
+    # print(_test_y, avgs_pred)
     diff, ratio = predict_error(_test_y, avgs_pred)
-    print("average error: %f %%"%(float(ratio.split("%")[0])))
+    error = float(ratio.split("%")[0])
+    if verbose:
+        print("average error: %f %%"%(error))
+    return error
 
 def test_speedup_ratio():
     _fp32_x = np.transpose(fp32_x)
@@ -880,11 +852,295 @@ def test_speedup_ratio():
     diff, ratio = predict_error(_fp16_y, (_fp16_y_pred / _fp32_y_pred) * _fp32_y)
     print("speedup ratio average error: %f %%"%(float(ratio.split("%")[0])))
 
+'''
+#####################################################################
+### Corss validation grouped by block
+resnetLayernumOfBlock = [1, 10, 13, 19, 10]
+resnetRangeUp = [sum(resnetLayernumOfBlock[:(i+1)]) for i in range(len(resnetLayernumOfBlock))]
+resnetRangeDown = [0] + resnetRangeUp[:-1]
+for i in range(len(resnetLayernumOfBlock)):
+    print("The {}th block of Resnet, from {} to {}".format(i, resnetRangeDown[i], resnetRangeUp[i]))
+    op_names_ = OP_NAMES[resnetRangeDown[i]:resnetRangeUp[i]]
+    collect_data(op_names_)
+    popt, pcov = fit_with_S_cal_gflops()
+    test()
+'''
 
-# plot_intensity2flops()
-# plot_2d_fit_result(is_show)
-test()
-# test_speedup_ratio()
+#####################################################################
+### Cross validation grouped by individual op
+# collect_data(OP_NAMES)
+# popt, pcov = fit_with_S_cal_gflops()
+# for i in range(len(OP_NAMES)):
+#     op_names_ = [OP_NAMES[i]]
+#     collect_data(op_names_)
+#     popt, pcov = fit_with_S_cal_gflops()
+#     test()
+
+#####################################################################
+### Output attribute of ops
+# for op_name in OP_NAMES:
+#     _, S_mul, _, S_in, S_out, S_wei = meta_info.ret_mx_metadata(op_name, batch_size=32)
+#     ### [H, W, C, R, S, P, Q, K, batch_size]
+#     raw_meta = meta_info.ret_mx_rawmeta(op_name, batch_size=32)
+#     print(raw_meta[0]/raw_meta[5])
+
+#####################################################################
+### Test the error on all OPs
+# idxs = np.array([3, 4])
+# op_names_ = np.array(OP_NAMES)[idxs]
+# collect_data(op_names_, add_=ADD_ADDITIONAL)
+# popt, pcov = fit_with_S_cal_gflops()
+# print(popt)
+# # plot_2d_fit_result(is_show)
+# test()
+
+#####################################################################
+#####################################################################
+# 20200831 (MON)
+### exp id 1: vary the number of operators in the training dataset
+# for i in [0.02, 0.03, 0.04, 0.05, 0.06, 0.07, 0.08, 0.09, 0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1]:
+#     pct = i
+#     error_list = []
+#     idxs_list = []
+#     for _ in range(100):
+#         idxs = np.random.choice(len(OP_NAMES), int(pct * len(OP_NAMES)), replace=False)
+#         op_names_ = np.array(OP_NAMES)[idxs]
+#         collect_data(op_names_, add_=ADD_ADDITIONAL, verbose=False)
+#         popt, pcov = fit_with_S_cal_gflops()
+#         error_list.append(test(verbose=False))
+#         idxs_list.append(idxs)
+#     error = sum(error_list) / len(error_list)
+#     rst = zip(error_list, idxs_list)
+#     rst = sorted(rst, key=lambda x: x[0])
+#     print("Percent: {}, error: {} %, std.dev: {}".format(pct, error, np.std(error_list)))
+#     print("best:", rst[:2])
+#     print("worse:", rst[-2:])
+
+#####################################################################
+### exp id 2: according to the fitting result, build dependency graph, edge connect two 'homo' nodes
+### make partition of the ops in resnet50_v1 --> Failed !!!
+# import networkx as nx
+# import matplotlib.pyplot as plt
+# graph = nx.Graph()
+# no_change_cnt = 0
+# while no_change_cnt < 10:
+#     ### if no new edge is added to the graph for continuously 10 times, stop
+#     pct = 0.1
+#     idxs = np.random.choice(len(OP_NAMES), int(pct * len(OP_NAMES)), replace=False)
+#     op_names_ = np.array(OP_NAMES)[idxs]
+#     collect_data(op_names_, add_=ADD_ADDITIONAL, verbose=False)
+#     popt, pcov = fit_with_S_cal_gflops()
+#     add_cnt = 0
+#     if test(verbose=False) < 10:
+#         for i in range(len(idxs)-1):
+#             u = idxs[i]
+#             v = idxs[i+1]
+#             if (u, v) not in graph.edges():
+#                 graph.add_edge(u, v)
+#                 add_cnt += 1
+#         if add_cnt == 0:
+#             ### no new edge is added to the graph, add the no_change_cnt by 1
+#             no_change_cnt += 1
+#         else:
+#             ### add new edges to the graph, reset the no_change_cnt
+#             no_change_cnt = 0
+
+# def visualize_gml(graph, layout="spectral"):
+#     if layout == "spectral":
+#         pos = nx.spectral_layout(graph, dim=2, scale=0.5)
+#     elif layout == "circular":
+#         pos = nx.circular_layout(graph)
+#     elif layout == "random":
+#         pos = nx.random_layout(graph)
+#     nx.draw(graph, pos, with_labels=True, font_size=6)
+#     plt.show()
+
+# cpnts = list(nx.connected_components(graph))
+# for c in cpnts:
+#     op_names_ = np.array(OP_NAMES)[np.array(list(c)).astype(int)]
+#     collect_data(op_names_, add_=ADD_ADDITIONAL, verbose=False)
+#     popt, pcov = fit_with_S_cal_gflops()
+#     print(c, test(verbose=False))
+# visualize_gml(graph)
+
+#####################################################################
+### exp id 3: according to the fitting result, create hyper_edges, where each contain multiple nodes
+# import time
+# hyper_edges = []
+# no_change_cnt = 0
+# st = time.time()
+# while no_change_cnt < 10:
+#     ### if no new edge is added to the graph for continuously 10 times, stop
+#     pct = np.random.rand()
+#     train_size = int(pct * len(OP_NAMES))
+#     if train_size <= 1:
+#         continue
+#     idxs = np.random.choice(len(OP_NAMES), train_size, replace=False)
+#     op_names_ = np.array(OP_NAMES)[idxs]
+#     collect_data(op_names_, add_=ADD_ADDITIONAL, verbose=False)
+#     popt, pcov = fit_with_S_cal_gflops()
+#     error = test(verbose=False)
+#     if error < 10:
+#         hyper_edge = set(idxs)
+#         tmp = []
+#         insert = True
+#         for edge, error_ in hyper_edges:
+#             if hyper_edge.issubset(edge):
+#                 insert = False
+#                 print("{} is subset of {}".format(hyper_edge, edge))
+#                 break
+#             elif edge.issubset(hyper_edge):
+#                 print("Remove {}".format(edge))
+#                 pass
+#             else:
+#                 tmp.append((edge, error_))
+
+#         if insert:
+#             tmp.append((hyper_edge, error))
+#             print("Add {}".format(hyper_edge))
+#             print("Time: {}, Size: {}".format(time.time() - st, len(tmp)))
+#             hyper_edges = tmp
+#             no_change_cnt = 0
+#         else:
+#             no_change_cnt += 1
+# print("Final Hyperedges:")
+# for edge, error in hyper_edges:
+#     print(error, edge)
+
+#####################################################################
+#####################################################################
+# 20200901 (Tue)
+#####################################################################
+### exp id 1: Fix the percent to 0.1 
+### according to the fitting result, create hyper_edges, where each contain multiple nodes, and 
+# hyper_edges = []
+# no_change_cnt = 0
+# while no_change_cnt < 100:
+#     ### if no new edge is added to the graph for continuously 10 times, stop
+#     train_size = int(0.1 * len(OP_NAMES))
+#     if train_size <= 1:
+#         continue
+#     idxs = np.random.choice(len(OP_NAMES), train_size, replace=False)
+#     op_names_ = np.array(OP_NAMES)[idxs]
+#     collect_data(op_names_, add_=ADD_ADDITIONAL, verbose=False)
+#     popt, pcov = fit_with_S_cal_gflops()
+#     error = test(verbose=False)
+#     if error > 20:
+#         hyper_edge = set(idxs)
+#         tmp = []
+#         if hyper_edge in hyper_edges:
+#             no_change_cnt += 1
+#         else:
+#             no_change_cnt = 0
+#             hyper_edges.append(hyper_edge)
+
+# for edge, error in hyper_edges:
+#     print(error, edge)
+
+#####################################################################
+#####################################################################
+# 20200903 (Thu)
+#####################################################################
+### exp id 1: fix the # of ops to 2
+### since the variance when # of ops = 2 is very large, see which combinations lead to large error
+idxs = np.array([1, 2])
+op_names_ = np.array(OP_NAMES)[idxs]
+# op_names_ = OP_NAMES
+collect_data(op_names_, add_=ADD_ADDITIONAL, verbose=True)
+popt, pcov = fit_with_S_cal_gflops()
+perr = np.sqrt(np.diag(pcov))
+print(popt, perr)
+test(verbose=True)
+plot_2d_fit_result(is_show, op_idxs=idxs)
+
+
+# pct = -1
+# error_list = []
+# idxs_list = []
+# for _ in range(100):
+#     # idxs = np.random.choice(len(OP_NAMES), 2, replace=False)
+#     idxs = np.array([3, 4])
+#     op_names_ = np.array(OP_NAMES)[idxs]
+#     collect_data(op_names_, add_=ADD_ADDITIONAL, verbose=False)
+#     popt, pcov = fit_with_S_cal_gflops()
+#     error_list.append(test(verbose=False))
+#     idxs_list.append(idxs)
+# error = sum(error_list) / len(error_list)
+# rst = zip(error_list, idxs_list)
+# rst = sorted(rst, key=lambda x: x[0])
+# print("Percent: {}, error: {} %, std.dev: {}".format(pct, error, np.std(error_list)))
+# print("best:", rst[:2])
+# print("worse:", rst[-2:])
+
+#####################################################################
+### exp id 2: fix the # of ops to 2, plot the heat map
+target = 'error'
+force = False
+total = len(OP_NAMES)
+if target == 'error':
+    file_path = os.path.join(RST_DIR, "2ops_cross_error.txt")
+    if not force and os.path.exists(file_path):
+        rst = np.loadtxt(file_path)
+    else:
+        rst = np.zeros((total, total), dtype=np.float)
+        for i in range(total-1):
+            for j in range(i+1, total):
+                op_names_ = [OP_NAMES[i], OP_NAMES[j]]
+                collect_data(op_names_, add_=ADD_ADDITIONAL, verbose=False)
+                popt, pcov = fit_with_S_cal_gflops()
+                error = test(verbose=False)
+                rst[i][j] = error
+        np.savetxt(file_path, rst)
+else:
+    ### for meta data
+    meta_list = []
+    for op_name in OP_NAMES:
+        _, S_mul, _, S_in, S_out, S_wei = meta_info.ret_mx_metadata(op_name, batch_size=32)
+        ### [H, W, C, R, S, P, Q, K, batch_size]
+        raw_meta = meta_info.ret_mx_rawmeta(op_name, batch_size=32)
+        if target == 'S_mul':
+            meta_list.append(S_mul)
+        elif target == 'S_in':
+            meta_list.append(S_in)
+        elif target == 'S_out':
+            meta_list.append(S_out)
+        elif target == 'S_wei':
+            meta_list.append(S_wei)
+        elif target == 'stride':
+            meta_list.append(raw_meta[0]/raw_meta[5])
+        elif target == 'kernel_size':
+            meta_list.append(raw_meta[3])
+        else:
+            raise
+    rst = np.zeros((total, total), dtype=np.float)
+    for i in range(total-1):
+        for j in range(i+1, total):
+            rst[i][j] = np.abs(meta_list[i] - meta_list[j])
+
+rst = np.transpose(rst)
+# mask = np.zeros_like(rst, dtype=np.bool)
+# mask[np.triu_indices_from(mask)] = True
+# f, ax = plt.subplots(figsize=(8,5))
+# ax = sns.heatmap(rst, mask=mask, cmap="YlGnBu")
+# if target == 'error':
+#     title = 'fitting error'
+# elif target == 'S_mul':
+#     title = 'diff of S_mul'
+# elif target == 'S_in':
+#     title = 'diff of S_in'
+# elif target == 'S_out':
+#     title = 'diff of S_out'
+# elif target == 'S_wei':
+#     title = 'diff of S_wei'
+# elif target == 'stride':
+#     title = 'diff of stride'
+# elif target == 'kernel_size':
+#     title = 'diff of kernel size'
+# else:
+#     raise
+# plt.title("Heatmap for {} for each pair of OPs in Resnet50_v1 on V100-16G".format(title))
+# plt.show()
+
 
 
 
