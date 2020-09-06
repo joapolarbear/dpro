@@ -44,7 +44,7 @@ class MetaInfo:
         if node in self.cache_meta:
             op_type, S_mul, S_add, S_in, S_out, S_wei = self.cache_meta[node]
             if batch_size is not None:
-                ratio = batch_size / self.cache_raw_meta[node][-1]
+                ratio = batch_size / self.cache_raw_meta[node][8]
             else:
                 ratio = 1
             return op_type, S_mul * ratio, S_add * ratio, S_in * ratio, S_out * ratio, S_wei
@@ -71,14 +71,18 @@ class MetaInfo:
 
             ### weights
             bp_node = "BW.".join(node.split("FW."))
-            comm_node = None
+            wei_node = bias_node = None
             for succ_ in self.dag.successors(bp_node):
-                if "Comm." in succ_ and "wei" in succ_:
-                    comm_node = succ_
-                    break
-            if comm_node is None:
+                if "Comm." in succ_:
+                    if "wei" in succ_:
+                        wei_node = succ_
+                    elif "bias" in succ_:
+                        bias_node = succ_
+                    else:
+                        raise ValueError("Conv2D node {} has undefined parameter {}".format(node, succ_))
+            if wei_node is None:
                 raise ValueError("No variable/weights for {}".format(node))
-            wei_shape = self.name2shape[comm_node]
+            wei_shape = self.name2shape[wei_node]
             # TODO (huhanpeng): still assume the kernel is a square
             if wei_shape[2] == wei_shape[3]:
                 R = S = wei_shape[2]
@@ -88,7 +92,7 @@ class MetaInfo:
             if batch_size is None:
                 batch_size = N
             self.cache_meta[node] = op_type, batch_size*K*P*Q*C*R*S, batch_size*K*P*Q*(C*R*S-1), batch_size*H*W*C, batch_size*P*Q*K, R*S*C*K
-            self.cache_raw_meta[node] = [H, W, C, R, S, P, Q, K, batch_size]
+            self.cache_raw_meta[node] = [H, W, C, R, S, P, Q, K, batch_size, 0 if bias_node is None else 1]
             return self.cache_meta[node]
         elif op_type == "dense":
             ### nexts
