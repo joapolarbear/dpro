@@ -682,7 +682,6 @@ def plot_op2metadata():
 # plot_B2intensity()
 # plot_intensity2flops()
 # plot_B2metadata()
-# plot_model_complexity_combine()
 # plot_B2cost_of_cast()
 # plot_avg2distribution()
 # raise

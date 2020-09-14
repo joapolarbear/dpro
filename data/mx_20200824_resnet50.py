@@ -498,10 +498,12 @@ def collect_data(op_names_, add_=False, verbose=True):
 
     ### the order has not been changed
     global fp32_x, fp32_y, fp16_x, fp16_y
-    fp32_data = all_data[all_data[:, 1] == GFLOPS_FP32]
+    GFLOPS_FP32_NORM = GFLOPS_FP32 / GFLOPS_FP16 if NORMALIZE else GFLOPS_FP32
+    GFLOPS_FP16_NORM = 1.0 if NORMALIZE else GFLOPS_FP16
+    fp32_data = all_data[all_data[:, 1] == GFLOPS_FP32_NORM]
     fp32_data = np.split(fp32_data, [1], axis=1)
     fp32_x, fp32_y = fp32_data[1], fp32_data[0]
-    fp16_data = all_data[all_data[:, 1] == GFLOPS_FP16]
+    fp16_data = all_data[all_data[:, 1] == GFLOPS_FP16_NORM]
     fp16_data = np.split(fp16_data, [1], axis=1)
     fp16_x, fp16_y = fp16_data[1], fp16_data[0]
     if verbose:
