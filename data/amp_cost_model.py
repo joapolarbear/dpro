@@ -1,0 +1,246 @@
+import pymc3 as pm
+import numpy as np
+import tensorflow as tf
+
+def predict_error(_list, _list_pred):
+    _list_pred = np.array(_list_pred)
+    _list = np.array(_list)
+    if len(_list) == 0:
+        return None, "Original time is too small. Ignore!!!"
+
+    diff = np.abs(_list_pred - _list) / _list
+    return diff, "%f %%"%(np.average(diff * 100))
+
+class DNNPredictor:
+    def __init__(self, train_x, train_y, test_x, test_y, headers):
+        self.headers = headers
+        self.train_x = self.array2dict(train_x)
+        self.train_y = train_y
+        self.test_x = self.array2dict(test_x)
+        self.test_y = test_y
+        self.batch_size = 8
+
+        feature_columns = []
+        for header in self.headers:
+            feature_columns.append(tf.feature_column.numeric_column(header))
+
+        # Build a DNNRegressor, with 2x20-unit hidden layers, with the feature columns
+        # defined above as input.
+        self.model = tf.estimator.DNNRegressor(hidden_units=[20, 20], 
+            feature_columns=feature_columns,
+            model_dir='.models/dnnregressor')
+
+    def array2dict(self, a):
+        assert a.shape[1] == len(self.headers)
+        _dict = {}
+        for idx, key in enumerate(self.headers):
+            _dict[key] = a[:,idx]
+        return _dict
+
+    def train(self):
+        train_input_fn = self.make_dataset(self.batch_size, self.train_x, self.train_y, True, 1000)
+        test_input_fn = self.make_dataset(len(self.test_y), self.test_x, self.test_y)
+    
+        # Hook to stop training if loss does not decrease in over 100000 steps.
+        hook = tf.estimator.experimental.stop_if_no_decrease_hook(self.model, "loss", 1000)
+        ops = tf.get_default_graph().get_operations()
+        logging_hook = tf.estimator.LoggingTensorHook({
+            "loss" : self.model['loss'], 
+            "prediction" : prediction}, every_n_iter=100)
+        train_spec = tf.estimator.TrainSpec(input_fn=train_input_fn, hooks=[hook, logging_hook])
+        eval_spec = tf.estimator.EvalSpec(input_fn=test_input_fn)
+        tf.estimator.train_and_evaluate(self.model, train_spec, eval_spec)
+        # Train the model.
+        # By default, the Estimators log output every 100 steps.
+        # self.model.train(input_fn=train_input_fn, steps=100000)
+
+    def predict(self):
+        test_input_fn = self.make_dataset(len(self.test_y), self.test_x, self.test_y)
+
+        # Evaluate how the model performs on data it has not yet seen.
+        eval_result = self.model.predict(input_fn=test_input_fn, yield_single_examples=False)
+        ypreds = np.array(list(eval_result)[0]['predictions']).reshape(-1, 1)
+        print(ypreds.shape, self.test_y.shape)
+        dirr, ratio = predict_error(self.test_y, ypreds)
+
+        # Convert MSE to Root Mean Square Error (RMSE).
+        print("\n" + 80 * "*")
+        print(ratio)
+        print()
+
+    def test(self):
+        test_input_fn = self.make_dataset(len(self.test_y), self.test_x, self.test_y)
+
+        # Evaluate how the model performs on data it has not yet seen.
+        eval_result = self.model.evaluate(input_fn=test_input_fn)
+
+        # The evaluation returns a Python dictionary. The "average_loss" key holds the
+        # Mean Squared Error (MSE).
+        average_loss = eval_result["average_loss"]
+
+        # Convert MSE to Root Mean Square Error (RMSE).
+        print("\n" + 80 * "*")
+        print("\nRMS error for the test set: {}".format(average_loss**0.5))
+        print("\nRelative error for the test set: {} %".format(100 * average_loss**0.5 / np.average(self.test_y)))
+        print()
+
+    def make_dataset(self, batch_sz, x, y, shuffle=False, shuffle_buffer_size=1000):
+        """Create a slice Dataset from a pandas DataFrame and labels"""
+
+        def input_fn():
+            dataset = tf.data.Dataset.from_tensor_slices((x, y))
+            if shuffle:
+                dataset = dataset.shuffle(shuffle_buffer_size).batch(batch_sz).repeat()
+            else:
+                dataset = dataset.batch(batch_sz)
+            # return dataset.make_one_shot_iterator().get_next()
+            return tf.compat.v1.data.make_one_shot_iterator(dataset).get_next()
+
+        return input_fn
+
+
+class BayesPredictor:
+    def __init__(self, train_x, train_y, test_x, test_y, headers):
+        self.headers = headers
+        self.train_data = self.ret_dict(train_x, train_y)
+        self.test_data = self.ret_dict(test_x, test_y)
+
+    def ret_dict(self, xdata, ydata):
+        _dict = {}
+        _dict['y'] = ydata
+        assert xdata.shape[1] == len(self.headers)
+        for idx, key in enumerate(self.headers):
+            _dict[key] = xdata[:,idx]
+        return _dict
+
+    def train(self):
+        # Context for the model
+        with pm.Model() as normal_model:
+            
+            # The prior for the data likelihood is a Normal Distribution
+            family = pm.glm.families.Normal()
+            
+            # Creating the model requires a formula and data (and optionally a family)
+            pm.GLM.from_formula('y ~ S_mul + S_add + S_in + S_out + S_wei', data=self.train_data, family=family)
+            
+            # Perform Markov Chain Monte Carlo sampling letting PyMC3 choose the algorithm
+            normal_trace = pm.sample(2000, cores=1)
+
+
+from scipy.optimize import curve_fit
+wei1, wei2 = 1, 1
+ADD_ADDITIONAL = True
+
+# def cost_func(xs, a1, a2, a3, a4, a5, a6, a7, a8, a9, b1, b2, b3):
+#     '''
+#     gflops:
+#         We only need a relative value of gflops, 
+#         i.e., if we know fp32's is twice of fp16's, we can just fp32's = 2 and fp16's = 1,
+#         the scale is hidden in the a2 
+#         x[0]: relative gflops
+#         x[1]: num of multiplication
+#         x[2]: num of addition
+#         x[3]: input size
+#         x[4]: output size
+#         x[5]: weight size
+
+#         if len(x) > 6, there are some additional information, e.g., kernel size for Conv2D
+#     '''
+#     gflops = xs[0]
+#     S_mul = xs[1]
+#     S_add = xs[2]
+#     wei_S_all = a3 * xs[3] + a4 * xs[4] + a5 * xs[5]
+#     wei_S_all2 = a6 * xs[3] + a7 * xs[4] + a8 * xs[5]
+#     if ADD_ADDITIONAL:
+#         ### [H, W, C, R, S, P, Q, K, batch_size, use_bias]
+#         addtional_term = a9 * xs[4] * xs[6+9]
+#     else:
+#         addtional_term = 0
+#     return (a1 * S_mul + b1 + addtional_term) / (a2 * gflops + b2) + wei_S_all / gflops + b3 + gflops * wei_S_all2
+
+# lower_bounds = tuple([0]*9 + [-np.inf]*3)
+
+def cost_func(xs, a1, a2, a3, a4, a5, b1):
+    '''
+    gflops:
+        We only need a relative value of gflops, 
+        i.e., if we know fp32's is twice of fp16's, we can just fp32's = 2 and fp16's = 1,
+        the scale is hidden in the a2 
+        x[0]: relative gflops
+        x[1]: num of multiplication
+        x[2]: num of addition
+        x[3]: input size
+        x[4]: output size
+        x[5]: weight size
+
+        if len(x) > 6, there are some additional information, e.g., kernel size for Conv2D
+    '''
+    G = xs[0]
+    S_mul = xs[1] 
+    S_add = xs[2]
+    S_in = xs[3]
+    S_out = xs[4]
+    S_wei = xs[5]
+    B = G
+    wei_S_all = a3 * S_in + a4 * S_out + a5 * S_wei
+    # wei_S_all = a3 * xs[3] + a4 * xs[4] + a5 * xs[5]
+    # wei_S_all2 = a6 * xs[3] + a7 * xs[4] + a8 * xs[5]
+
+    # wei1 = 1 / (1 + a9 * np.exp(a8 - S_mul))
+    # wei2 = 1 - wei1
+
+    # flops_ = G * (1 / (1 + np.exp(-S_mul)) - a6)
+    # flops_ = G * np.log(a6 * S_mul + a7)
+    flops_ = G
+    ### [H, W, C, R, S, P, Q, K, batch_size, use_bias]
+    addtional_term = S_out * xs[6+9]
+    K = xs[6+3]
+
+    # return wei1 * ((a1 * S_mul + a2 * (S_add + addtional_term)) / (flops_)) + wei2 * (wei_S_all) / B + b1
+    return wei1 * ((a1 * S_mul + a2 * (addtional_term)) / (K**2 * flops_)) + wei2 * (wei_S_all) / B + b1
+
+lower_bounds = tuple([0]*5 + [-np.inf]*1)
+
+
+# lower_bounds = tuple([0]*4 + [-np.inf]*1)
+up_bounds = tuple(len(lower_bounds) * [np.inf])
+p0=[1]*len(lower_bounds)
+
+FIT_FUNC = cost_func
+
+
+class CurveFiter:
+    def __init__(self, train_x, train_y, test_x, test_y, headers):
+        self.headers = headers
+        self.train_x = train_x
+        self.train_y = train_y
+        self.test_x = test_x
+        self.test_y = test_y
+
+    def train(self):
+        _train_x = np.transpose(self.train_x)
+        _train_y = np.transpose(self.train_y).flatten()
+        self.popt, pcov = curve_fit(FIT_FUNC, _train_x, _train_y, 
+            bounds=(lower_bounds, up_bounds), p0=p0, maxfev=10000)
+        self.perr = np.sqrt(np.diag(pcov))
+        return self.popt, self.perr
+
+    def test(self, verbose=True, popt=None):
+        _test_x = np.transpose(self.test_x)
+        _test_y = np.transpose(self.test_y).flatten()
+        if popt is not None:
+            avgs_pred = FIT_FUNC(_test_x, *popt)
+        else:
+            avgs_pred = FIT_FUNC(_test_x, *self.popt)
+        diff, ratio = predict_error(_test_y, avgs_pred)
+        error = float(ratio.split("%")[0])
+        if verbose:
+            print("average error: %f %%"%(error))
+        return error
+
+    def predict(self, xdata):
+        return FIT_FUNC(xdata, *self.popt)
+
+
+
+
