@@ -5,7 +5,8 @@ import shutil
 import numpy as np
 import xgboost as xgb
 from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import normalize
+from sklearn.preprocessing import normalize, MinMaxScaler
+from sklearn.neural_network import MLPRegressor
 from sklearn.model_selection import cross_validate
 from sklearn import metrics
 from sklearn.model_selection import GridSearchCV
@@ -19,10 +20,10 @@ except:
     GraphDef = tf.compat.v1.GraphDef
 from google.protobuf.json_format import Parse
 import json
-from .gen_dataset_utils import gen_dataset, profile_entire_graph
+from .gen_dataset_utils import gen_dataset, profile_entire_graph, run_gpu_profile
 from .gen_samples import *
 from .process_trace import get_execution_time_from_temp_trace
-from .xlatools import gen_feature_vector, compile_to_hlo
+from .xlatools import gen_feature_vector, compile_to_hlo, replay_hlo
 
 MAX_OP_DUR_IN_US = 10000000
 
@@ -50,6 +51,7 @@ class XlaDataset(object):
         self._label_file_path = os.path.join(self._dataset_path, "running_time.txt")
         self._op_time_dict_path = os.path.join(self._dataset_path, "op_running_times.pickle")
         self._feature_dir_path = os.path.join(self._dataset_path, "dataset", "feature_vecs")
+        self._gpu_stats_path = os.path.join(self._dataset_path, "gpu_stats.txt")
         if not os.path.isdir(self._feature_dir_path):
             raise NotADirectoryError("{} is not a directory.".format(self._feature_dir_path))
         feature_vec_names = os.listdir(self._feature_dir_path)
@@ -66,6 +68,14 @@ class XlaDataset(object):
             self.op_time_dict = pickle.load(f)
             if not isinstance(self.op_time_dict, dict):
                 raise TypeError("Failed to load op time dict.")
+        # load gpu stats
+        with open(self._gpu_stats_path, "r") as f:
+            gflops, gbps = f.read().split(":")
+            gflops = float(gflops.strip())
+            gbps = float(gbps.strip())
+        self.gflops = gflops
+        self.gbps = gbps
+        self.sum_op_times = []
         # load true labels
         label_dict = {}
         times = []
@@ -91,40 +101,51 @@ class XlaDataset(object):
                         value = 0
                     vec.append(value)
             feature_dict[sample_id] = np.array(vec)
+            self.sum_op_times.append(vec[0])
+        self.sum_op_times = np.array(self.sum_op_times)
         # format features and labels
         X_list = []
         y_list = []
+        sample_id_list = []
 
         for sample_id in feature_dict.keys():
             if sample_id in label_dict:
                 X_list.append(feature_dict[sample_id])
                 y_list.append(label_dict[sample_id])
+                sample_id_list.append(sample_id)
 
         X = np.array(X_list)
-        X = normalize(X, axis=0, norm='max')
-        y = np.array(y_list)
-        # y_max = y.max()
-        # y_average = np.average(y)
-        
         # remove all zero columns
         self.feature_mask = np.all(X == 0, axis=0)
         X = X[:, ~self.feature_mask]
-        
-        # X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=42)
+        # normalize X
+        # X, norm = normalize(X, axis=0, norm='max', return_norm=True)
+
+        y = np.array(y_list)
+
         self.X = X
         self.y = y
+        # self.norm = norm
+        self.sample_ids = sample_id_list
 
     def dump_dataset(self, file_path):
         with open(file_path, "wb") as f:
-            pickle.dump([self.X, self.y, self.feature_mask, self.op_time_dict], f)
+            # pickle.dump([self.X, self.y, self.feature_mask, self.op_time_dict, self.norm, self.gflops, self.gbps, self.sum_op_times, self.sample_ids], f)
+            pickle.dump([self.X, self.y, self.feature_mask, self.op_time_dict, self.gflops, self.gbps, self.sum_op_times, self.sample_ids], f)
     
     def _load_dataset(self, file_path):
         with open(file_path, "rb") as f:
-            X, y, feature_mask, op_time_dict = pickle.load(f)
+            # X, y, feature_mask, op_time_dict, norm, gflops, gbps, sum_op_times, sample_ids= pickle.load(f)
+            X, y, feature_mask, op_time_dict, gflops, gbps, sum_op_times, sample_ids= pickle.load(f)
             self.X = X
             self.y = y
             self.feature_mask = feature_mask
             self.op_time_dict = op_time_dict
+            # self.norm = norm
+            self.gflops = gflops
+            self.gbps = gbps
+            self.sum_op_times = sum_op_times
+            self.sample_ids = sample_ids
 
     @classmethod
     def construct_dataset(cls, trace_dir, result_dir, gpu_benchmark_cmd, num_samples=2000, 
@@ -133,11 +154,18 @@ class XlaDataset(object):
         graph_json_path = os.path.join(trace_dir, "graph.json")
         op_times_dict = get_execution_time_from_temp_trace(os.path.join(trace_dir, "temp.json"))
         op_times_dict_dump_path = os.path.join(result_dir, "op_running_times.pickle")
+        gpu_stats_path = os.path.join(result_dir, "gpu_stats.txt")
         if not os.path.isdir(result_dir):
             os.makedirs(result_dir)
         with open(op_times_dict_dump_path, "wb") as f:
             pickle.dump(op_times_dict, f)     
-        gen_dataset(trace_dir, op_times_dict, gpu_benchmark_cmd, result_dir, num_samples,min_subgraph_level=min_subgraph_level, max_subgraph_level=max_subgraph_level)
+        print("Benchmarking GPU stats.")
+        gflops, gbps = run_gpu_profile(gpu_benchmark_cmd)
+        with open(gpu_stats_path, "w") as f:
+            f.write(str(gflops))
+            f.write(":")
+            f.write(str(gbps))
+        gen_dataset(trace_dir, op_times_dict, gflops, gbps, result_dir, num_samples, min_subgraph_level=min_subgraph_level, max_subgraph_level=max_subgraph_level)
     
     # @classmethod
     # def gen_op_times_dict(cls, graph, result_dir, profile_tmp_dir = None):
@@ -291,24 +319,35 @@ class FusionCostModel(object):
         self.graph_def = None
         self.gflops = None
         self.gbps = None
+        # self.norm = None
+        self.predict_acceleration = None
         self._tmp_dir = tmp_dir
         if not os.path.isdir(self._tmp_dir):
             os.makedirs(self._tmp_dir)
         self._model_ready = False
-    
+
     def load(self, file_path):
-        with open(file_path, "rb") as f:
-            self.op_time_dict, self.feature_mask, self.model, self.graph_def, self.gflops, self.gbps = pickle.load(f)
+        try:
+            with open(file_path, "rb") as f:
+                # self.op_time_dict, self.feature_mask, self.model, self.graph_def, self.gflops, self.gbps, self.norm, self.predict_acceleration = pickle.load(f)
+                self.op_time_dict, self.feature_mask, self.model, self.graph_def, self.gflops, self.gbps, self.predict_acceleration = pickle.load(f)
+        except:
+            with open(file_path, "rb") as f:
+                # self.op_time_dict, self.feature_mask, self.model, self.graph_def, self.gflops, self.gbps, self.norm = pickle.load(f)
+                self.op_time_dict, self.feature_mask, self.model, self.graph_def, self.gflops, self.gbps = pickle.load(f)
         self.graph_def_util = GraphDefUtil(self.graph_def)
 
     def dump(self, file_path):
         self._check_model_ready()
         with open(file_path, "wb") as f:
-            pickle.dump([self.op_time_dict, self.feature_mask, self.model, self.graph_def, self.gflops, self.gbps], f)
+            # pickle.dump([self.op_time_dict, self.feature_mask, self.model, self.graph_def, self.gflops, self.gbps, self.norm, self.predict_acceleration], f)
+            pickle.dump([self.op_time_dict, self.feature_mask, self.model, self.graph_def, self.gflops, self.gbps, self.predict_acceleration], f)
 
     def _check_model_ready(self):
-        attrs = [self.op_time_dict, self.feature_mask, self.model, self.graph_def_util, self.gflops, self.gbps]
-        attr_names = ["Op time dict", "feature mask", "trained model", "graph def", "gflops", "gbps"]
+        # attrs = [self.op_time_dict, self.feature_mask, self.model, self.graph_def_util, self.gflops, self.gbps, self.norm, self.predict_acceleration]
+        attrs = [self.op_time_dict, self.feature_mask, self.model, self.graph_def_util, self.gflops, self.gbps, self.predict_acceleration]
+        # attr_names = ["Op time dict", "feature mask", "trained model", "graph def", "gflops", "gbps", "dataset norm", "option predict_acceleration"]
+        attr_names = ["Op time dict", "feature mask", "trained model", "graph def", "gflops", "gbps", "option predict_acceleration"]
         not_ready_attr_names = [name for _, name in zip(attrs, attr_names)]
         if not not_ready_attr_names:
             raise RuntimeError("Cost model incomplete. Missing {}.".format(not_ready_attr_names))
@@ -342,30 +381,67 @@ class FusionCostModel(object):
     def set_gbps(self, gbps):
         self.gbps = gbps
     
-    def train(self, X, y):
+    # def set_norm(self, norm):
+    #     self.norm = norm
+    
+    def init_from_dataset(self, dataset, graph_def):
+        if not isinstance(dataset, XlaDataset):
+            raise RuntimeError("{} is not an XlaDataset instance.".format(dataset))
+        self.feature_mask = dataset.feature_mask
+        self.op_time_dict = dataset.op_time_dict
+        self.gflops = dataset.gflops
+        self.gbps = dataset.gbps
+        # self.norm = dataset.norm
+        if isinstance(graph_def, str):
+            self.set_graph_def_from_json(graph_def)
+        else:
+            self.set_graph_def(graph_def)
+    
+    def train(self, X, y, predict_acceleration=True, sum_op_times = None, use_log_train_obj=False, use_mape_cv=False, n_jobs=16, train_two_models=False):
+        if predict_acceleration and sum_op_times is None:
+            raise RuntimeError("sum_op_times cannot be None when predict_acceleration is set True.")
+
+        objective_str = "reg:squaredlogerror" if use_log_train_obj else "reg:squarederror"
+
         params = {
             'learning_rate': [0.1],
             'colsample_bytree': [0.5, 0.6, 0.8, 1.0],
             'colsample_bynode': [0.2, 0.4, 0.6, 0.8, 1.0],
             'reg_alpha': [0.8, 1, 1.5, 2],
             'reg_lambda': [1,2,3,4,5],
-            'max_depth': [50],
+            'max_depth': [40],
             'n_estimators': [200],
-            'objective': ['reg:squarederror'],
+            'objective': [objective_str],
         }
 
-        xg_reg = xgb.XGBRegressor()
-        skf = KFold(n_splits=5, shuffle = True, random_state = 1001)
-        grid_search = GridSearchCV(xg_reg, params, scoring='neg_mean_squared_error', n_jobs=16, refit=True, cv=skf, verbose=2, return_train_score=True)
-        grid_search.fit(X, y)
+        def mape_loss(y_true, y_pred):
+            return np.average(np.abs(y_true - y_pred) / y_true)
+        
+        mape_scorer = make_scorer(mape_loss, greater_is_better=False)
 
-        print('Best neg mean squared error score: ')
-        print(grid_search.best_score_)
-        print('Best hyperparameters:')
-        print(grid_search.best_params_)
+        if train_two_models:
+            self.train_two_models = True
+            small_mask = sum_op_times < 200
+        else:
+            self.train_two_models = False
+            xg_reg = xgb.XGBRegressor()
+            skf = KFold(n_splits=5, shuffle = True, random_state = 1001)
+            grid_search = GridSearchCV(xg_reg, params, scoring= mape_scorer if use_mape_cv else 'neg_mean_squared_error', n_jobs=n_jobs, refit=True, cv=skf, verbose=2, return_train_score=True)
+            if predict_acceleration:
+                self.predict_acceleration = True
+                y_accel = y / sum_op_times
+                grid_search.fit(X, y_accel)
+            else:
+                self.predict_acceleration = False
+                grid_search.fit(X, y)
 
-        xg_reg_best = grid_search.best_estimator_
-        self.model = xg_reg_best
+            print('Best neg mean squared error score: ')
+            print(grid_search.best_score_)
+            print('Best hyperparameters:')
+            print(grid_search.best_params_)
+
+            xg_reg_best = grid_search.best_estimator_
+            self.model = xg_reg_best
 
     def predict(self, node_names):
         self._check_model_ready()
@@ -376,30 +452,75 @@ class FusionCostModel(object):
         unopt_hlo_path = os.path.join(self._tmp_dir, "unopt.txt")
         opt_hlo_path = os.path.join(self._tmp_dir, "opt.txt")
         feature_vec_path = os.path.join(self._tmp_dir, "feature.txt")
-        compile_to_hlo(graph_def_path, config_path, unopt_hlo_path, opt_hlo_path)
-        gen_feature_vector(opt_hlo_path, feature_vec_path, self.gflops, self.gbps)
-        # read feature vector
-        feature_vector = []
-        with open(feature_vec_path, "r") as f:
-            for line in f:
-                value = float(line)
-                if value == -1:
-                    value = 0
-                feature_vector.append(value)
-        # inject sum of running time into feature vector
-        sum_op_time = 0
-        for node_name in node_names:
-            if node_name in self.op_time_dict:
-                time, _ = self.op_time_dict[node_name]
-                sum_op_time += time
-        feature_vector.insert(0, sum_op_time)
-        x = np.expand_dims(np.array(feature_vector)[~self.feature_mask], 0)
-        predicted_time = self.model.predict(x)[0]
+        try:
+            compile_to_hlo(graph_def_path, config_path, unopt_hlo_path, opt_hlo_path)
+            gen_feature_vector(opt_hlo_path, feature_vec_path, self.gflops, self.gbps)
+            # read feature vector
+            feature_vector = []
+            with open(feature_vec_path, "r") as f:
+                for line in f:
+                    value = float(line)
+                    if value == -1:
+                        value = 0
+                    feature_vector.append(value)
+            # inject sum of running time into feature vector
+            sum_op_time = 0
+            for node_name in node_names:
+                if node_name in self.op_time_dict:
+                    time, _ = self.op_time_dict[node_name]
+                    sum_op_time += time
+            feature_vector.insert(0, sum_op_time)
+            x = np.expand_dims(np.array(feature_vector)[~self.feature_mask], 0)
+
+            if self.predict_acceleration:
+                predicted_time = self.model.predict(x)[0] * sum_op_time
+            else:
+                predicted_time = self.model.predict(x)[0]
+        except:
+            print("[Cost Model] Failed to predict the running time of ops: {}".format(node_names))
+            return -1
         # clean up
         shutil.rmtree(self._tmp_dir)
         os.makedirs(self._tmp_dir)
         return predicted_time
-    
-    def predict_from_feature(self, features):
+
+    def execute(self, node_names):
         self._check_model_ready()
-        return self.model.predict(features)
+        graph_def_path, config_path = self.graph_def_util.get_subgraph_def_config_from_nodes(node_names, self._tmp_dir, 0)
+        if graph_def_path is None or config_path is None:
+            print("[Cost Model] Failed to predict the running time of ops: {}".format(node_names))
+            return -1
+        unopt_hlo_path = os.path.join(self._tmp_dir, "unopt.txt")
+        opt_hlo_path = os.path.join(self._tmp_dir, "opt.txt")
+        feature_vec_path = os.path.join(self._tmp_dir, "feature.txt")
+        try:
+            compile_to_hlo(graph_def_path, config_path, unopt_hlo_path, opt_hlo_path)
+            predicted_time = replay_hlo(unopt_hlo_path)
+        except:
+            print("[Cost Model] Failed to predict the running time of ops: {}".format(node_names))
+            return -1
+        # clean up
+        shutil.rmtree(self._tmp_dir)
+        os.makedirs(self._tmp_dir)
+        return predicted_time * 1e6
+    
+    # def predict_from_feature(self, features, sum_op_times=None, normalized=True):
+    #     self._check_model_ready()
+    #     if normalized:
+    #         predict_features = features
+    #     else:
+    #         predict_features = features / self.norm
+    #     if self.predict_acceleration:
+    #         if sum_op_times is None:
+    #             raise RuntimeError("sum_op_time cannot be none when predict_acceleration is True.")
+    #         return self.model.predict(predict_features) * sum_op_times
+    #     else:
+    #         return self.model.predict(predict_features)
+    def predict_from_feature(self, features, sum_op_times=None):
+        self._check_model_ready()
+        if self.predict_acceleration:
+            if sum_op_times is None:
+                raise RuntimeError("sum_op_time cannot be none when predict_acceleration is True.")
+            return self.model.predict(features) * sum_op_times
+        else:
+            return self.model.predict(features)

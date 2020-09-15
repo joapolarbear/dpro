@@ -54,6 +54,12 @@ class Optimizer:
         self.index2pid = {}
         ### Get the dependency graph
         self.dag = self.relabel_dag_node(self.clct.trail_dag)
+        with open("/root/index2name.txt", "w") as f:
+            for index, name in self.index2name.items():
+                f.write(str(index))
+                f.write(" : ")
+                f.write(str(name))
+                f.write("\n")
 
         self.base_cost, _ = self.evaluate(self.dag)
         SingleLogger().info("Start to search, the original iteration time is %f" % self.base_cost)
@@ -134,7 +140,10 @@ class Optimizer:
         # query cost model for exec time of a fused node u
         nodes_in_u, u_pid = self._get_original_name_pid_from_fused_node(fused_u_)
         nodes_to_fuse = set(nodes_in_u)
-        exec_time = self.cost_models[u_pid].predict(nodes_to_fuse) / 1000
+        SingleLogger().info("[COST MODEL QUERY] Nodes to fuse: {}".format(nodes_to_fuse))
+        # exec_time = self.cost_models[u_pid].predict(nodes_to_fuse) / 1000
+        exec_time = self.cost_models[u_pid].execute(nodes_to_fuse) / 1000
+        SingleLogger().info("[COST MODEL QUERY] Exec time predicted: {}".format(exec_time))
         if exec_time < 0:
             raise RuntimeError("Failed to query cost model.")
         return exec_time
@@ -142,14 +151,15 @@ class Optimizer:
     def combine_avg(self, u, v):
         # call cost model to obtain the combined time
         fused_name = self.concat_name(u, v)
+        SingleLogger().info("[COST MODEL QUERY] BEFORE QUERYING COST MODEL.")
         return self._query_cost_model(fused_name)
 
     def combine_gap(self, ug, vg):
         ### TODO (huhanpeng): key component
         ### Use max to avoid one input is zero, 
         ### some how for the new gap x, ug < x < ug + vg, vg < x < ug + vg
-        return max(max((ug + vg) / 0.8, ug), vg)
-        return 0
+        # return max(max((ug + vg) / 0.8, ug), vg)
+        return max(ug, vg)
 
     def get_node_attr(self, n, attr_):
         if attr_ in self.node_attr_cache[n]:
@@ -171,13 +181,13 @@ class Optimizer:
     def _fuse_pair(self, _dag, u_, v_):
         # print("fuse {} {}".format(u_, v_))
         ### Cache the node attributes in case they will be used when de-fuse
+        SingleLogger().info("\033[94m Fusing pair: {}, {}\033[0m".format(u_, v_))
         if u_ not in self.node_attr_cache:
             self.cache_node_attr(u_, _dag.nodes[u_])
         if v_ not in self.node_attr_cache:
             self.cache_node_attr(v_, _dag.nodes[v_])
 
         new_name = self.concat_name(u_, v_)
-
         ### Add new nodes and get the attibute
         if new_name in self.node_attr_cache:
             _dag.add_node(new_name, **self.node_attr_cache[new_name])
@@ -246,7 +256,7 @@ class Optimizer:
             for idx in range(1, len(ns)):
                 self.combine_attr_except_avg(attrs, attrs, self.node_attr_cache[ns[idx]])
             # combine attr avg
-            target["avg"] = self._query_cost_model(new_name)
+            attrs["avg"] = self._query_cost_model(new_name)
             ### set and cache the attribute
             nx.set_node_attributes(_dag, {new_name:attrs})
             self.cache_node_attr(new_name, _dag.nodes[new_name])
@@ -422,6 +432,14 @@ class Optimizer:
             # 	continue
 
             for succ_ in _dag.successors(n):
+                edge_data = _dag.get_edge_data(n, succ_)
+                if edge_data and "exec_edges" in edge_data and edge_data["exec_edges"]:
+                    print("IGNORED EXECUTION EDGE!!!!!!!!")
+                    continue
+                else:
+                    print(n, succ_)
+                    print(edge_data)
+                    print("==================")
                 _pid = parse_pid_from_name(succ_)
                 _cat = parse_cat_fine_grained(succ_)
                 if pid != _pid or cat != _cat:
@@ -463,7 +481,7 @@ class Optimizer:
                     prun_cnt += 1
                     # G_star = self.apply_strategies(self.dag, ("+", n, succ_))
                     # iter_time, _ = self.evaluate(G_star)
-                    # SingleLogger().info("Prune fusing %s and %s, performace %f %%"%(n, succ_, 100*(self.base_cost - iter_time)/self.base_cost))
+                    SingleLogger().info("Prune fusing %s and %s"%(n, succ_))
                     continue
 
                 search_space.append(("+", n, succ_))
@@ -523,7 +541,7 @@ class MCMCOptimizer(Optimizer):
     ''' Markov Chain Monte Carlo algorithm'''
     def __init__(self, *args, **kwargs):
         super(MCMCOptimizer, self).__init__(*args, **kwargs)
-        self.enable_defusion = True
+        # self.enable_defusion = True
 
     def search(self):
         ### TODO (huhanpeng): is shallow copy is enough ???
@@ -542,6 +560,7 @@ class MCMCOptimizer(Optimizer):
             while True and len(search_space) > 0:
                 try:
                     strategy = self.pick_strategy(search_space, weights=weights, invalid_strategies=invalid_strategies)
+                    SingleLogger().info("\033[94m" + "Picked strategy ({}, {}, {}).".format(*strategy) + "\033[0m")
                 except:
                     # no valid strategies available, refresh search space
                     candidates, _ = self.candidate_selection(G, topk=None)
@@ -549,14 +568,21 @@ class MCMCOptimizer(Optimizer):
                     break
                 try:
                     G_star = self.apply_strategies(G, strategy)
-                except:
+                except Exception as e:
                     # strategy invalid
+                    print(e)
                     invalid_strategies.add(strategy)
                     continue
                 SingleLogger().info("\033[94m" + "Strategy ({}, {}, {}) successfully applied.".format(*strategy) + "\033[0m")
                 ### Start to replay
-                cost_star, exct_dag = self.evaluate(G_star, _filename="/root/searched_graph/most_resent.json")
-                cost_star, exct_dag = self.evaluate(G_star)
+                if step % 10 == 0:
+                    cost_star, exct_dag = self.evaluate(G_star, _filename="/root/searched_graph/{}.json".format(step))
+                else:
+                    cost_star, exct_dag = self.evaluate(G_star)
+                # if step < 200:
+                #     MCMC_BETA = 1
+                # else:
+                #     MCMC_BETA = args.mcmc_beta
                 SingleLogger().info("\033[94m Step: {}, Orig cost: {}, New cost: {} \033[0m".format(step, cost, cost_star))
                 step += 1
                 if self.accept_or_not(cost, cost_star):
@@ -590,6 +616,7 @@ class MCMCOptimizer(Optimizer):
     def accept_or_not(self, cost, new_cost):
         # prob = min(1, (math.exp(beta * (cost - new_cost))))
         if cost > new_cost:
+            SingleLogger().info("\033[92m" + "Accept a better action, orig cost: {}, new cost: {}".format(cost, new_cost) + "\033[0m")
             return True
         else:
             prob = math.exp(MCMC_BETA * (cost - new_cost))

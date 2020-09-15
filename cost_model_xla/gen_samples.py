@@ -113,20 +113,22 @@ class SampleGenerator(object):
                     op = self.original_graph.get_operation_by_name(op_name)
                 except:
                     continue
-                filtered_op.append(op)
+                if op.type != "Placeholder" and op.type != "Const" and op.type != "Identity" and op.type != "VariableV2":
+                    filtered_op.append(op)
         if not filtered_op:
             print(choose_root_from_ops)
             raise RuntimeError("Empty filtered op!")
         op = random.choice(filtered_op)
         num_levels = random.randint(min_levels, max_levels)
-        # print("Using max level of {}.".format(num_levels))
+        print("\033[94m Using max level of {}. \033[0m".format(num_levels))
         subgraph_nodes = set()
         subgraph_input_nodes = set()
         current_frontline_nodes = set([op])
         converted_subgraph_input_defs = []
         converted_subgraph_defs = []
+        compute_nodes = 0
         # grow the graph upwards by num_levels
-        for i in range(num_levels):
+        while current_frontline_nodes and compute_nodes < num_levels:
             tmp_frontline_nodes = set()
             processed_frontline_nodes = set()
             for n in current_frontline_nodes:
@@ -142,6 +144,8 @@ class SampleGenerator(object):
                     subgraph_input_nodes.add(n)
                 else:
                     subgraph_nodes.add(n)
+                if op.type != "Placeholder" and op.type != "Const" and op.type != "Identity" and op.type != "VariableV2":
+                    compute_nodes += 1
                 for input_tensor in n.inputs:
                     tmp_frontline_nodes.add(input_tensor.op)
             current_frontline_nodes = tmp_frontline_nodes
@@ -263,15 +267,3 @@ class SampleGenerator(object):
         self.counter_ += 1
         
         return out_graph_def_final, out_input_defs, op.node_def, self.counter_ - 1
-
-# print("Finished reading graph. Generating random subgraphs...")
-# sub_graph_def, input_defs, output_def = gen_random_subgraph(graph, min_levels=2, max_levels=10)
-# tf.io.write_graph(sub_graph_def, ".", "sub_graph.pbtxt")
-
-# input_defs_serialized = [idef.SerializeToString() for idef in input_defs]
-# output_def_serialized = [output_def.SerializeToString()]
-
-# with open("io_nodes.pickle", "wb") as f:
-#     pickle.dump([input_defs_serialized, output_def_serialized], f)
-
-# print("Generation finished.")

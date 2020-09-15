@@ -924,6 +924,13 @@ class Collector(object):
             if self.comm_backend == "NCCL":
                 self.nccl_graph.load(nccl_graph_path)
             self.trail_dag = nx.read_gml(trail_dag_path)
+        
+        for (u,v,c) in self.trail_dag.edges.data():
+            if "exec_edges" in c:
+                print(u, v, c)
+                exit(0)
+        print("FINISHEDDDDDDDDDDDDDDDDDDDD.")
+        exit(0)
 
         ### TODO (huhanpeng) dump it or not
         if self.platform == "MXNET":

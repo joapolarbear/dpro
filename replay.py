@@ -91,7 +91,7 @@ class Device:
 		if self.prev_idx is not None:
 			prev_event = self.replayer.rst_traces[self.prev_idx]
 			if (prev_event["args"]["name"], name) not in self.replayer.exct_dag.edges:
-				self.replayer.exct_dag.add_edge(prev_event["args"]["name"], name, weight=(prev_event["dur"] / 1000.0))
+				self.replayer.exct_dag.add_edge(prev_event["args"]["name"], name, weight=(prev_event["dur"] / 1000.0), exec_edges=True)
 		self.prev_idx = len(self.replayer.rst_traces)
 
 		# ### 2. Update edge weight

@@ -505,7 +505,7 @@ class DAGManager:
             self.logger.debug(e)
         # visualize_gml(self.dag, layout="circular")
         try:
-            edges = networkx.algorithms.cycles.find_cycle()
+            edges = nx.algorithms.cycles.find_cycle()
             SingleLogger().error("Found cycle {} in DAG. Abort.".format(edges))
             exit(0)
         except:
@@ -598,7 +598,9 @@ class DAGManager:
                     self.gpu_dag.add_edge(
                         self.add_prefix(prev_event["name"]), 
                         self.add_prefix(event["name"]), 
-                        weight=0)
+                        weight=0, exec_edges=True)
+                    print("FUCK! ADDED EDGE WITH exec_edges.")
+                    exit(0)
                 else:
                     ### if prev event has not ended, current node should share 
                     ### the parent ops of the prev event
@@ -607,7 +609,9 @@ class DAGManager:
                         ### TODO (huhanpeng) do not follow the dependency graph, ignore now
                         if "BW.bertencoder0_embedding0" in u or "BW.bertencoder0_embedding0" in self.add_prefix(prev_event["name"]):
                             continue
-                        self.gpu_dag.add_edge(u, self.add_prefix(event["name"]), weight=0)
+                        self.gpu_dag.add_edge(u, self.add_prefix(event["name"]), weight=0, exec_edges=True)
+                        print("FUCK! ADDED EDGE WITH exec_edges.")
+                        exit(0)
                     i += 1
 
             if len(in_process_events) + 1 > max_para_degree:
@@ -622,6 +626,7 @@ class DAGManager:
             in_process_events.append(event)
 
         self.logger.info("Maximum parallelism degree: %d, remain %d FW+BW node(s)" % (max_para_degree, len(fw_bw_arrive)))
+        exit(0)
         return max_para_degree
 
     def is_fw_bw_node(self, name):
