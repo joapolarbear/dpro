@@ -20,7 +20,7 @@ except:
     GraphDef = tf.compat.v1.GraphDef
 from google.protobuf.json_format import Parse
 import json
-from .gen_dataset_utils import gen_dataset, profile_entire_graph, run_gpu_profile
+from .gen_dataset_utils import gen_dataset, gen_kernel_dataset, profile_entire_graph, run_gpu_profile
 from .gen_samples import *
 from .process_trace import get_execution_time_from_temp_trace
 from .xlatools import gen_feature_vector, compile_to_hlo, replay_hlo
@@ -167,23 +167,18 @@ class XlaDataset(object):
             f.write(str(gbps))
         gen_dataset(trace_dir, op_times_dict, gflops, gbps, result_dir, num_samples, min_subgraph_level=min_subgraph_level, max_subgraph_level=max_subgraph_level)
     
-    # @classmethod
-    # def gen_op_times_dict(cls, graph, result_dir, profile_tmp_dir = None):
-    #     if profile_tmp_dir is None:
-    #         profile_tmp_dir = os.path.join(result_dir, "profile_tmp")
-    #     sample_generator = SampleGenerator(graph=graph)
-    #     print("Profiling entire graph.")
-    #     op_time_dict = profile_entire_graph(sample_generator, profile_tmp_dir)
-    #     if op_time_dict is None:
-    #         raise RuntimeError("Failed to profile graph.")
-    #     if not os.path.isdir(result_dir):
-    #         os.makedirs(result_dir)
-    #     output_fn = os.path.join(result_dir, "op_running_times.pickle")
-    #     with open(output_fn, "wb") as f:
-    #         pickle.dump(op_time_dict, f)
-    #     if os.path.isdir(profile_tmp_dir):
-    #         os.rmdir(profile_tmp_dir)
-    #     print("Op time profiling complete.")
+    @classmethod
+    def construct_kernel_dataset(cls, trace_dir, result_dir, num_samples=2000, 
+                          min_subgraph_level = None, max_subgraph_level = None, 
+                          op_times_dict = None):
+        graph_json_path = os.path.join(trace_dir, "graph.json")
+        op_times_dict = get_execution_time_from_temp_trace(os.path.join(trace_dir, "temp.json"))
+        op_times_dict_dump_path = os.path.join(result_dir, "op_running_times.pickle")
+        if not os.path.isdir(result_dir):
+            os.makedirs(result_dir)
+        with open(op_times_dict_dump_path, "wb") as f:
+            pickle.dump(op_times_dict, f)     
+        gen_kernel_dataset(trace_dir, op_times_dict, result_dir, num_samples, min_subgraph_level=min_subgraph_level, max_subgraph_level=max_subgraph_level)
 
 class GraphDefUtil(object):
     def __init__(self, graph_def):

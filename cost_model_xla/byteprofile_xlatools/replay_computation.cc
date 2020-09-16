@@ -321,6 +321,7 @@ StatusOr<Literal> ReplayComputation(const HloSnapshot& module,
   absl::optional<ScopedShapedBuffer> final_result;
 
   auto stat_collector = KernelStatsCollector();
+  std::string profile_path = opts.temp_dir_path + "/hlo_execution_profile_data";
 
   for (int i = 0; i < opts.num_runs; ++i) {
     // If xla_hlo_profile is enabled, print a noisy message before the last run,
@@ -346,25 +347,23 @@ StatusOr<Literal> ReplayComputation(const HloSnapshot& module,
                         executable->Run(argument_ptrs, run_options, &clock_rate_ghz));
 
     if (i >= opts.profile_start - 1 && i < opts.profile_end -1) {
-      std::string profile_path = opts.temp_dir_path + "/hlo_execution_profile_data";
-      std::cout << "Before stat_collector.Collect(" << profile_path << ")" << std::endl;
+      // std::cout << "Before stat_collector.Collect(" << profile_path << ")" << std::endl;
       stat_collector.Collect(profile_path);
       std::remove(profile_path.c_str());
     }
 
     if (i == opts.profile_end - 2) {
-      std::cout << "clock_rate_ghz: " << clock_rate_ghz << std::endl;
-      std::cout << "Before searching for hlo file name" << std::endl;
+      // std::cout << "clock_rate_ghz: " << clock_rate_ghz << std::endl;
+      // std::cout << "Before searching for hlo file name" << std::endl;
       // search for the hlo file name
       DIR *profile_dir;
       struct dirent *file_in_dir;
-      std::cout << "Before opendir" << std::endl;
+      // std::cout << "Before opendir" << std::endl;
       profile_dir = opendir(opts.temp_dir_path.c_str());
       std::string hlo_path;
       if (profile_dir != NULL) {
-        std::cout << "Before going through files" << std::endl;
+        // std::cout << "Before going through files" << std::endl;
         while (file_in_dir = readdir(profile_dir)) {
-          std::cout << file_in_dir->d_name << std::endl;
           std::string suffix("after_optimizations.txt");
           std::string fname(file_in_dir->d_name);
           if (fname.length() < suffix.length()) {
@@ -404,6 +403,7 @@ StatusOr<Literal> ReplayComputation(const HloSnapshot& module,
     // the result before rerunning the computation, so as to free up the
     // relevant memory.
     if (is_final_result) {
+      std::remove(profile_path.c_str());
       final_result = std::move(result);
     }
   }

@@ -46,3 +46,15 @@ def replay_hlo(hlo_path, replay_exec=None):
     times = [float(line.split()[3][:-2]) for line in re.findall("Done executing in .*s:", output)]
     times = times[-20:]
     return sum(times) / len(times)
+
+def replay_and_generate_kernel_sample(hlo_path, tmp_dir, dataset_path, replay_exec=None):
+    if replay_exec is None:
+        replay_exec = "/root/tensorflow/bazel-bin/tensorflow/compiler/xla/tools/replay_computation_gpu"
+    opt_1 = "--num_runs=800"
+    opt_2 = "--use_fake_data=true"
+    opt_3 = "--print_result=false"
+    opt_4 = "--dataset_path={}".format(dataset_path)
+    opt_5 = "--temp_dir_path={}".format(tmp_dir)
+    opt_6 = "--profile_start=700"
+    opt_7 = "--profile_end=800"
+    subprocess.run([replay_exec, opt_1, opt_2, opt_3, opt_4, opt_5, opt_6, opt_7, hlo_path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)

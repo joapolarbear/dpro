@@ -38,22 +38,30 @@ struct ElementaryOp {
     uint64_t hash;
     std::string SerializeToString() {
         std::string s;
-        s.append(std::to_string(static_cast<int32_t>(op_code)) + ", " + std::to_string(input_shapes.size()) + ", ");
+        s.append(xla::HloOpcodeString(op_code) + ", " + std::to_string(static_cast<int32_t>(op_code)) + ", " + std::to_string(input_shapes.size()) + ", ");
         for (auto shape: input_shapes) {
             int32_t rank = shape.dimensions_size();
-            for (int32_t dim=0; dim<rank; dim++) {
-                s.append(std::to_string(shape.dimensions(dim)));
-                if (dim != rank - 1 ) {
-                    s.append(":");
+            if (rank == 0) {
+                s.append("1");
+            } else {
+                for (int32_t dim=0; dim<rank; dim++) {
+                    s.append(std::to_string(shape.dimensions(dim)));
+                    if (dim != rank - 1 ) {
+                        s.append(":");
+                    }
                 }
             }
             s.append(", ");
         }
         int32_t output_rank = output_shape.dimensions_size();
-        for (int32_t dim=0; dim<output_rank; dim++) {
-            s.append(std::to_string(output_shape.dimensions(dim)));
-            if (dim != output_rank - 1 ) {
-                s.append(":");
+        if (output_rank == 0) {
+            s.append("1");
+        } else {
+            for (int32_t dim=0; dim<output_rank; dim++) {
+                s.append(std::to_string(output_shape.dimensions(dim)));
+                if (dim != output_rank - 1 ) {
+                    s.append(":");
+                }
             }
         }
         s.append(", " + std::to_string(hash));
@@ -89,12 +97,12 @@ struct FusedOp {
 
 std::unordered_map<std::string, int64_t> ParseProfile(std::string profile_path) {
     std::ifstream profile_file;
-    std::cout << "Before opening profile." << std::endl;
+    // std::cout << "Before opening profile." << std::endl;
     profile_file.open(profile_path);
-    std::cout << "After opening profile, before parsing" << std::endl;
+    // std::cout << "After opening profile, before parsing" << std::endl;
     xla::HloExecutionProfileData profile;
     profile.ParseFromIstream(&profile_file);
-    std::cout << "After parsing profile, getting printer data" << std::endl;
+    // std::cout << "After parsing profile, getting printer data" << std::endl;
     auto printer_data = profile.printer_data();
     std::unordered_map<std::string, int64_t> name2cycle;
     for(auto comp_info: printer_data.computation_infos()) {
@@ -119,7 +127,7 @@ std::unordered_map<std::string, int64_t> ParseProfile(std::string profile_path) 
             }
             int64_t cycle_count = profile.profile_counters(instr_info.profile_index());
             name2cycle[short_name] = cycle_count;
-            std::cout << "name: " << short_name << " , cycles: " << cycle_count << std::endl;
+            // std::cout << "name: " << short_name << " , cycles: " << cycle_count << std::endl;
         }
     }
     std::cout << "Finished getting cycle data." << std::endl;
@@ -171,7 +179,7 @@ public:
     KernelStatsCollector() = default;
 
     void Collect(std::string profile_path) {
-        std::cout << "Before ParseProfile." << std::endl;
+        // std::cout << "Before ParseProfile." << std::endl;
         auto name2cycle = ParseProfile(profile_path);
         for (auto kv: name2cycle) {
             auto name = kv.first;
@@ -228,7 +236,7 @@ public:
             feature_file.open(feature_path);
             feature_file << fused_op.SerializeToString();
             feature_file.close();
-            std::cout << fused_op.SerializeToString() << std::endl;
+            // std::cout << fused_op.SerializeToString() << std::endl;
             // labels
             if (name2cyclesum.find(name) != name2cyclesum.end()) {
                 auto total_cycles = name2cyclesum.at(name);
