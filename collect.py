@@ -797,17 +797,17 @@ class Collector(object):
 
     def collect_update_dict(self):
         ### Map tensor name to its update index
-        info_path = self.pm.search(FileName.INFO)
-        para_path = self.pm.search(FileName.TENSOR_NAME)
-        if info_path is None:
-            self.logger.warn("{} not found. Fail to map_tensors_to_update".format(FileName.INFO.value))
-            aggregate_num = 0
+        meta_path = self.pm.search(FileName.METADATA)
+        if meta_path is None:
+            self.logger.error("{} not found. Fail to map_tensors_to_update".format(FileName.METADATA.value))
         else:
-            with open(info_path, 'r') as fp:
-                aggregate_num = json.load(fp)["opt_aggregate_num"]
-        if para_path is None:
-            self.logger.error("{} not found. Fail to map_tensors_to_update".format(FileName.TENSOR_NAME.value))
-        self.para_dict = ParameterDict(para_path)
+            with open(meta_path, 'r') as fp:
+                metadata = json.load(fp)
+        if "opt_aggregate_num" in metadata:
+            aggregate_num = metadata["opt_aggregate_num"]
+        else:
+            aggregate_num = 0
+        self.para_dict = ParameterDict(metadata["gradient_name_list"])
         return self.para_dict.map_tensors_to_update(aggregate_num)
 
     def collect_trail_dag(self):

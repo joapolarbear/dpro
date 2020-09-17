@@ -9,12 +9,11 @@ class Parameter:
         self.dtype = dtype
 
 class ParameterDict:
-    def __init__(self, path_):
+    def __init__(self, raw_para_list):
         self.gradient_name_list = []
         self.name2para = {}
         self.name2layeridx = {}
         self.total_idx = 0
-        raw_para_list = load_list(path_)
         for para_ in raw_para_list:
             ### e.g., bertencoder0_position_weight;shape=(512, 1024);dtype=float16
             if isinstance(para_, list):

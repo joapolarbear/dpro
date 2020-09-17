@@ -69,7 +69,7 @@ class Optimizer:
         self.enable_defusion = False
 
         ### AMP predictor
-        self.amp_predictor = AMPPredictor(meta_path=self.clct.pm.search(FileName.TF_METADATA))
+        self.amp_predictor = AMPPredictor(meta_path=self.clct.pm.search(FileName.METADATA))
 
     def relabel_dag_node(self, _dag):
         if self.platform == "TENSORFLOW":

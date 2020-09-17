@@ -59,7 +59,7 @@ class FileName(Enum):
     KEY_DICT="key_dict.txt"
     BYTEPS_CACHE="bps_cache.pickle"
     BPS_ALIGNED_TRACE="bps_comm_aligned.json"
-    TF_METADATA="metadata.json"
+    METADATA="metadata.json"
 
 class CatName(Enum):
     OPERATOR="operator"
