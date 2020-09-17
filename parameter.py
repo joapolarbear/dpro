@@ -17,7 +17,10 @@ class ParameterDict:
         raw_para_list = load_list(path_)
         for para_ in raw_para_list:
             ### e.g., bertencoder0_position_weight;shape=(512, 1024);dtype=float16
-            para_split = para_.split(";")
+            if isinstance(para_, list):
+                para_split = para_
+            else:
+                para_split = para_.split(";")
             name_ = para_split[0]
             if len(para_split) == 1:
                 ### No shape and dtype info are provided
