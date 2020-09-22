@@ -130,6 +130,8 @@ class BayesPredictor:
 from scipy.optimize import curve_fit
 wei1, wei2 = 1, 1
 ADD_ADDITIONAL = True
+NON_LINEAR = 'exp'  # \in ['log', 'exp', sigmoid'] or None
+
 
 # def cost_func(xs, a1, a2, a3, a4, a5, a6, a7, a8, a9, b1, b2, b3):
 #     '''
@@ -160,74 +162,136 @@ ADD_ADDITIONAL = True
 
 # lower_bounds = tuple([0]*9 + [-np.inf]*3)
 
-def cost_func(xs, a1, a2, a3, a4, a5, b1):
-    '''
-    gflops:
-        We only need a relative value of gflops, 
-        i.e., if we know fp32's is twice of fp16's, we can just fp32's = 2 and fp16's = 1,
-        the scale is hidden in the a2 
-        x[0]: relative gflops
-        x[1]: num of multiplication
-        x[2]: num of addition
-        x[3]: input size
-        x[4]: output size
-        x[5]: weight size
+# def cost_func_conv2d(xs, a1, a2, a3, a4, a5, b1):
+#     # wei1 = 1 / (1 + a9 * np.exp(a8 - S_mul))
+#     # wei2 = 1 - wei1
+#     H, W, C, R, S, P, Q, K, batch_size, use_bias = xs[6:]
+#     kernel_size = R
+#     batch_size = S_mul / (K*P*Q*C*R*S)
 
-        if len(x) > 6, there are some additional information, e.g., kernel size for Conv2D
-    '''
-    G = xs[0]
-    S_mul = xs[1] 
-    S_add = xs[2]
-    S_in = xs[3]
-    S_out = xs[4]
-    S_wei = xs[5]
-    B = G
-    wei_S_all = a3 * S_in + a4 * S_out + a5 * S_wei
-    # wei_S_all = a3 * xs[3] + a4 * xs[4] + a5 * xs[5]
-    # wei_S_all2 = a6 * xs[3] + a7 * xs[4] + a8 * xs[5]
+#     # flops_ = G * (1 / (1 + np.exp(-S_mul)) - a6)
+#     # flops_ = G * np.log(a6 * S_mul + a7)
 
-    # wei1 = 1 / (1 + a9 * np.exp(a8 - S_mul))
-    # wei2 = 1 - wei1
-
-    # flops_ = G * (1 / (1 + np.exp(-S_mul)) - a6)
-    # flops_ = G * np.log(a6 * S_mul + a7)
-    flops_ = G
-    ### [H, W, C, R, S, P, Q, K, batch_size, use_bias]
-    addtional_term = S_out * xs[6+9]
-    K = xs[6+3]
-
-    # return wei1 * ((a1 * S_mul + a2 * (S_add + addtional_term)) / (flops_)) + wei2 * (wei_S_all) / B + b1
-    return wei1 * ((a1 * S_mul + a2 * (addtional_term)) / (K**2 * flops_)) + wei2 * (wei_S_all) / B + b1
-
-lower_bounds = tuple([0]*5 + [-np.inf]*1)
-
-
-# lower_bounds = tuple([0]*4 + [-np.inf]*1)
-up_bounds = tuple(len(lower_bounds) * [np.inf])
-p0=[1]*len(lower_bounds)
-
-FIT_FUNC = cost_func
-
+FIT_FUNC = None
 
 class CurveFiter:
-    def __init__(self, train_x, train_y, test_x, test_y, headers):
+    def __init__(self, train_x, train_y, test_x, test_y, headers, op_type="conv", E1_=None, E2_=None):
         self.headers = headers
         self.train_x = train_x
         self.train_y = train_y
         self.test_x = test_x
         self.test_y = test_y
 
+        E1 = 1 if E1_ is None else E1_
+        E2 = 2 if E2_ is None else E2_
+        
+        if NON_LINEAR is None:
+            def cost_func_conv2d(xs, a1, a2, a3, a4, a5, b1):
+                G, S_mul, S_add, S_in, S_out, S_wei = xs[0:6]
+                H, W, C, R, S, P, Q, K, origin_b, use_bias = xs[6:]
+
+                wei_S_all = a3 * S_in + a4 * S_out + a5 * S_wei
+                addtional_term = S_out * use_bias
+                flops_ = G
+                bandwidth = G
+                kernel_size = R
+                # return wei1 * ((a1 * S_mul + a2 * (addtional_term)) / (kernel_size**0.75 * flops_)) + wei2 * (wei_S_all) / bandwidth + b1
+                return wei1 * ((a1 * S_mul + a2 * (addtional_term)) / (kernel_size**E1 * flops_)) + wei2 * (kernel_size**E2) * (wei_S_all) / bandwidth + b1
+
+            def cost_func_dense(xs, a1, a2, a3, a4, a5, b1):
+                G, S_mul, S_add, S_in, S_out, S_wei = xs[0:6]
+                C_in, C_out, origin_b= xs[6:]
+
+                wei_S_all = a3 * S_in + a4 * S_out + a5 * S_wei
+                flops_ = G
+                bandwidth = G
+                # return wei1 * ((a1 * S_mul + a2 * (addtional_term)) / (kernel_size**0.75 * flops_)) + wei2 * (wei_S_all) / bandwidth + b1
+                return wei1 * ((a1 * S_mul) / (flops_)) + wei2 * (wei_S_all) / bandwidth + b1
+
+            lower_bounds_conv = lower_bounds_dense = tuple([0]*5 + [-np.inf]*1)
+
+        elif NON_LINEAR == 'exp':
+            def cost_func_conv2d(xs, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, a16, a17, a18, a19, b1):
+                G, S_mul, S_add, S_in, S_out, S_wei = xs[0:6]
+                H, W, C, R, S, P, Q, K, origin_b, use_bias = xs[6:]
+
+                addtional_term = S_out * use_bias
+                flops_ = G
+                bandwidth = G
+                kernel_size = R
+                batch_size = S_mul / (K*P*Q*C*R*S)
+                S_mul = np.power(batch_size, a6) *  np.power(kernel_size, a7) * np.power(P, a8) * np.power(C, a9) * np.power(K, a10)
+                S_wei = np.power(kernel_size, a11) * np.power(C, a12) * np.power(K, a13) 
+                S_in = np.power(batch_size, a14) * np.power(H, a15) * np.power(C, a16) 
+                S_out = np.power(batch_size, a17) * np.power(P, a18) * np.power(K, a19) 
+                wei_S_all = a3 * S_in + a4 * S_out + a5 * S_wei
+                return  wei1 * ((a1 * S_mul + a2 * (addtional_term)) / (flops_)) + wei2 * (wei_S_all) / bandwidth + b1
+            
+            def cost_func_dense(xs, a1, a2, a3, a4, a5, a6, a7, a8, b1):
+                G, S_mul, S_add, S_in, S_out, S_wei = xs[0:6]
+                C_in, C_out, origin_b= xs[6:]
+
+                wei_S_all = a3 * S_in + a4 * S_out + a5 * S_wei
+                flops_ = G
+                bandwidth = G
+                batch_size = S_mul / (C_in*C_out)
+                S_mul = np.power(batch_size, a6) * np.power(C_in, a7) * np.power(C_out, a8) 
+                return  wei1 * ((a1 * S_mul) / (flops_)) + wei2 * (wei_S_all) / bandwidth + b1
+            
+            lower_bounds_conv = tuple([0]*19 + [-np.inf]*1)
+            lower_bounds_dense = tuple([0]*8 + [-np.inf]*1)
+
+        elif NON_LINEAR == 'log':
+            def cost_func_conv2d(xs, a1, a2, a3, a4, a5, a6, a7, b1):
+                G, S_mul, S_add, S_in, S_out, S_wei = xs[0:6]
+                H, W, C, R, S, P, Q, K, origin_b, use_bias = xs[6:]
+                wei_S_all = a3 * S_in + a4 * S_out + a5 * S_wei
+                addtional_term = S_out * use_bias
+                kernel_size = R
+                batch_size = S_mul / (K*P*Q*C*R*S)
+                return (a1) * np.log(batch_size) + \
+                        a2 * np.log(kernel_size) + \
+                        (a3) * np.log(P) + \
+                        a4 * np.log(C) + \
+                        (a5) * np.log(K) + (a6) * np.log(H) + use_bias * a7 + b1
+            lower_bounds_conv = lower_bounds_dense = tuple([0]*7 + [-np.inf]*1)
+        else:
+            raise
+
+        global FIT_FUNC
+        if op_type == "conv":
+            FIT_FUNC = cost_func_conv2d
+            self.lower_bounds = lower_bounds_conv
+        elif op_type == "dense":
+            FIT_FUNC = cost_func_dense
+            self.lower_bounds = lower_bounds_dense
+        else:
+            raise ValueError(op_type)
+        self.up_bounds = tuple(len(self.lower_bounds) * [np.inf])
+        self.p0 = [1]*len(self.lower_bounds)
+
+
+    def no_linear_label(self, data_):
+        if NON_LINEAR is None:
+            return data_
+        if NON_LINEAR == 'exp':
+            return data_
+        elif NON_LINEAR == 'log':
+            return np.log(data_ + 1)
+        else:
+            raise ValueError("NON_LINEAR should be log:{}".format(NON_LINEAR))
+
     def train(self):
         _train_x = np.transpose(self.train_x)
-        _train_y = np.transpose(self.train_y).flatten()
+        _train_y = self.no_linear_label(np.transpose(self.train_y).flatten())
         self.popt, pcov = curve_fit(FIT_FUNC, _train_x, _train_y, 
-            bounds=(lower_bounds, up_bounds), p0=p0, maxfev=10000)
+            bounds=(self.lower_bounds, self.up_bounds), p0=self.p0, maxfev=10000)
         self.perr = np.sqrt(np.diag(pcov))
         return self.popt, self.perr
 
     def test(self, verbose=True, popt=None):
         _test_x = np.transpose(self.test_x)
-        _test_y = np.transpose(self.test_y).flatten()
+        _test_y = self.no_linear_label(np.transpose(self.test_y).flatten())
         if popt is not None:
             avgs_pred = FIT_FUNC(_test_x, *popt)
         else:

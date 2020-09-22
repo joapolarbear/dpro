@@ -17,9 +17,10 @@ BATCHSIZE_THESHOLD = 4
 VAR_THREHOLD = 0.2
 TRAIN_PERCENT = 1
 ADD_ADDITIONAL = True
-FP32_OR_FP16 = (False, True)
+FP32_OR_FP16 = (True, False)
 NORMALIZE = True
 
+OPTYPES = ["conv", "dense"]
 NAMELIST_32 = None
 NAMELIST_16 = None
 DATA_32 = {}
@@ -30,14 +31,20 @@ DEFAULT_BATCH_SIZE_STR="B=256"
 DEFAULT_BATCH_SIZE=int(DEFAULT_BATCH_SIZE_STR.split("=")[1])
 DEFAULT_KENREL_SIZE=3
 BATCH_LIST_VALUE = []
-FULL_HEADERS = ["avg", "G", "S_mul", "S_add", "S_in", "S_out", "S_wei", "H", "W", "C", "R", "S", "P", "Q", "K", "B", "use_bias"]
+FULL_HEADERS = {
+    "conv": ["avg", "G", "S_mul", "S_add", "S_in", "S_out", "S_wei", "H", "W", "C", "R", "S", "P", "Q", "K", "B", "use_bias"],
+    "dense": ["avg", "G", "S_mul", "S_add", "S_in", "S_out", "S_wei", "H", "W", "B"],
+}
 
-data_folder = "/Users/hhp/0/git/byteprofile-analysis/data/data_20200824"
 if sys.argv[1] == 'bert':
-    RST_DIR=os.path.join(data_folder, "20200824_03")
+    RST_DIR=os.path.join("/Users/hhp/0/git/byteprofile-analysis/data/data_20200824", "20200824_03")
 elif sys.argv[1] == 'resnet':
-    RST_DIR=os.path.join(data_folder, "20200824_02")
+    TARGET_OPTYPE = OPTYPES[0]
+    RST_DIR=os.path.join("/Users/hhp/0/git/byteprofile-analysis/data/data_20200824", "20200824_02")
     # RST_DIR="/Users/hhp/0/git/byteprofile-analysis/data/data_20200824/20200828_01"
+elif sys.argv[1] == 'dense':
+    TARGET_OPTYPE = OPTYPES[1]
+    RST_DIR=os.path.join("/Users/hhp/0/git/byteprofile-analysis/data/data_20200917", "20200917_06")
 else:
     raise
 meta_info = MetaInfo(os.path.join(RST_DIR, "host0/0"))
@@ -79,7 +86,7 @@ with open(os.path.join(RST_DIR, "avg.txt"), 'r') as fp:
                 continue
             if sys.argv[1] == 'bert':
                 batchsize = int(lines[idx].split("--total_batch_size")[1].split("--")[0])
-            elif sys.argv[1] == 'resnet':
+            elif sys.argv[1] == 'resnet' or sys.argv[1] == 'dense':
                 batchsize = int(lines[idx].split("--batch-size")[1].split("--")[0])
             else:
                 raise
@@ -104,7 +111,6 @@ with open(os.path.join(RST_DIR, "avg.txt"), 'r') as fp:
                 continue
         idx += 1
 # assert "network/resblock_3_1/conv_1/conv2d/Conv2D" in NAMELIST_32, "%s"%str(NAMELIST_32)
-
 BATCH_LIST_VALUE = [e for e in BATCH_LIST_VALUE if (e >= 0 and e <=1024)]
 BATCH_LIST_VALUE = sorted(BATCH_LIST_VALUE)
 BATCH_LIST_STR = ["B=%d"%e for e in BATCH_LIST_VALUE]
@@ -194,6 +200,18 @@ elif sys.argv[1] == 'resnet':
 "FW.resnetv10_stage4_conv9",
             ]
     OP_LABELS = ["".join(n.split("resnetv10_")[1]) for n in OP_NAMES]
+elif sys.argv[1] == 'dense':
+    OP_NAMES = [
+"FW.densemodel0_dense0",
+"FW.densemodel0_dense1",
+"FW.densemodel0_dense2",
+"FW.densemodel0_dense3",
+"FW.densemodel0_dense4",
+"FW.densemodel0_dense5",
+"FW.densemodel0_dense6",
+"FW.densemodel0_dense7"
+]
+    OP_LABELS = ["".join(n.split("densemodel0_")[1]) for n in OP_NAMES]
 else:
     raise
 OP_SHORT_LABELS = OP_LABELS
@@ -214,13 +232,10 @@ intensity = model_size[:, 0, :] / (model_size[:, 2, :] + model_size[:, 3, :] + m
 THRESHOLD = 0.00 # in ms
 
 def plot_group_by_op(op_idxs=None, xaxis='B', yaxiss=['avg']):
-    if op_idxs is not None:
-        op_names_ = np.array(OP_NAMES)[idxs]
-    else:
-        op_names_ = np.array(OP_NAMES)
-    op_num = len(op_names_)
-    assert op_num <= 9, "Too many ops to visual analyze, {} ops are given".format(op_num)
-    
+    if op_idxs is None:
+        op_idxs = np.arange(len(OP_NAMES))  
+    op_num = len(op_idxs)
+    assert op_num <= 9, "Too many ops to visual analyze, {} ops are given".format(op_num) 
 
     fig_base, fig_idx = init_fig_base(op_num)
     plt.figure(num=1, figsize=(8, 6))
@@ -264,7 +279,8 @@ def plot_group_by_op(op_idxs=None, xaxis='B', yaxiss=['avg']):
                     ax.plot(x_axis, data32, marker='.', label=OP_LABELS[op_id] + "_" + yaxis + "_fp32")
                     ax.plot(x_axis, data16, marker='^', label=OP_LABELS[op_id] + "_" + yaxis + "_fp16")
         else:
-            data32, data16 = __fetch_data(yaxiss)
+            yaxis = yaxiss
+            data32, data16 = __fetch_data(yaxis)
             if data16 is None:
                 ax.plot(x_axis, data32, marker='.', label=OP_LABELS[op_id])
             else:
@@ -274,6 +290,7 @@ def plot_group_by_op(op_idxs=None, xaxis='B', yaxiss=['avg']):
         plt.legend()
         plt.ylabel(yaxis)
         plt.xlabel(xaxis)
+        # plt.ylim(0., 0.2)
         return fig_base+1
 
     for op_id in op_idxs:
@@ -281,7 +298,7 @@ def plot_group_by_op(op_idxs=None, xaxis='B', yaxiss=['avg']):
 
     plt.show()
 
-def plot_B2cost(op_idxs):
+def plot_B2cost(op_idxs=None):
     plot_group_by_op(op_idxs, xaxis='B', yaxiss='avg')
 
 def plot_B2intensity(op_idxs):
@@ -384,7 +401,7 @@ def plot_B2cost_of_cast():
 
 # plot_K2cost(S_mul=True, S_add=True, S_in=True, S_out=True, S_wei=True)
 # plot_D2cost()
-# plot_B2cost(S_mul=False, S_add=False, S_in=False, S_out=False, S_wei=False)
+# plot_B2cost()
 # plot_B2intensity()
 # plot_intensity2flops()
 # plot_B2metadata()
@@ -460,7 +477,7 @@ def collect_data(op_names_, add_=False, verbose=True):
                 if (var_ / avg_) <= VAR_THREHOLD:
                     ### [H, W, C, R, S, P, Q, K, batch_size]
                     raw_meta = meta_info.ret_mx_rawmeta(op_names_[i], batch_size=b) if add_ else None
-                    __record_xdata(S_mul, S_add, S_in, S_out, S_wei, GFLOPS_FP32, avg_, "Conv2D", addition=raw_meta)
+                    __record_xdata(S_mul, S_add, S_in, S_out, S_wei, GFLOPS_FP32, avg_, op_type, addition=raw_meta)
 
             if FP32_OR_FP16[1]:
                 idx_in_16 = NAMELIST_16.index(op_names_[i])
@@ -468,7 +485,7 @@ def collect_data(op_names_, add_=False, verbose=True):
                 avg_ = DATA_16["B=%d"%b][idx_in_16]
                 if (var_ / avg_) <= VAR_THREHOLD:
                     raw_meta = meta_info.ret_mx_rawmeta(op_names_[i], batch_size=b) if add_ else None
-                    __record_xdata(S_mul, S_add, S_in, S_out, S_wei, GFLOPS_FP16, avg_, "Conv2D", addition=raw_meta)
+                    __record_xdata(S_mul, S_add, S_in, S_out, S_wei, GFLOPS_FP16, avg_, op_type, addition=raw_meta)
 
         # _raw_meta =[0]*len(raw_meta) if add_ else None
         # __record_xdata(0, 0, 0, 0, 0, GFLOPS_FP32, 0, "Conv2D", addition=_raw_meta)
@@ -478,18 +495,10 @@ def collect_data(op_names_, add_=False, verbose=True):
 
     ### all_data[avg, G, S_mul, ...][# of nodes * # of batch size values]
     try:
-        all_data = np.array(all_data_dict["Conv2D"]).astype(np.float)
+        all_data = np.array(all_data_dict[TARGET_OPTYPE]).astype(np.float)
     except:
         print(op_names_, all_data_dict)
         raise
-
-    ### normalize data
-    if NORMALIZE:
-        for i in range(1, len(all_data)):
-            if i == FULL_HEADERS.index("use_bias"):
-                pass
-            else:
-                all_data[i] = all_data[i] / max(all_data[i])
 
     ### all_data[# of nodes * # of batch size values][avg, G, S_mul, ...]
     all_data = np.transpose(all_data)
@@ -498,16 +507,26 @@ def collect_data(op_names_, add_=False, verbose=True):
 
     ### the order has not been changed
     global fp32_x, fp32_y, fp16_x, fp16_y
-    GFLOPS_FP32_NORM = GFLOPS_FP32 / GFLOPS_FP16 if NORMALIZE else GFLOPS_FP32
-    GFLOPS_FP16_NORM = 1.0 if NORMALIZE else GFLOPS_FP16
-    fp32_data = all_data[all_data[:, 1] == GFLOPS_FP32_NORM]
+    fp32_data = all_data[all_data[:, 1] == GFLOPS_FP32]
     fp32_data = np.split(fp32_data, [1], axis=1)
     fp32_x, fp32_y = fp32_data[1], fp32_data[0]
-    fp16_data = all_data[all_data[:, 1] == GFLOPS_FP16_NORM]
+    fp16_data = all_data[all_data[:, 1] == GFLOPS_FP16]
     fp16_data = np.split(fp16_data, [1], axis=1)
     fp16_x, fp16_y = fp16_data[1], fp16_data[0]
     if verbose:
         print("Collect fp32 data - X:{}, Y:{}, fp16 data - X:{}, Y:{}".format(fp32_x.shape, fp32_y.shape, fp16_x.shape, fp16_y.shape))
+
+    ### normalize data
+    if NORMALIZE:
+        if "use_bias" in FULL_HEADERS[TARGET_OPTYPE]:
+            for i in range(0, all_data.shape[1]):
+                if i == FULL_HEADERS[TARGET_OPTYPE].index("use_bias"):
+                    pass
+                else:
+                    all_data[:, i] = all_data[:, i] / max(all_data[:, i])
+        else:
+            for i in range(0, all_data.shape[1]):
+                all_data[:, i] = all_data[:, i] / max(all_data[:, i])
 
     arg_num = all_data.shape[1]
     value_num = all_data.shape[0]
@@ -529,16 +548,13 @@ def collect_data(op_names_, add_=False, verbose=True):
         print("Collect training data - X:{}, Y:{}, test data - X:{}, Y:{}".format(train_x.shape, train_y.shape, test_x.shape, test_y.shape))
 
 
-def plot_2d_fit_result(is_show, predictor, op_idxs=None):
+def plot_2d_fit_result(predictor, op_idxs=None):
     plt.figure(num=1, figsize=(8, 6))
 
     ratio_sum = []
-    # cnt = sum([int(i) for i in is_show])
-    if op_idxs is not None:
-        op_names_ = np.array(OP_NAMES)[idxs]
-    else:
-        op_names_ = OP_NAMES
-    cnt = len(op_names_)
+    if op_idxs is None:
+        op_idxs = np.arange(len(OP_NAMES))
+    cnt = len(op_idxs)
     fig_base, fig_idx = init_fig_base(cnt)
 
     clrs = sns.color_palette("husl", 5)
@@ -595,7 +611,6 @@ def plot_2d_fit_result(is_show, predictor, op_idxs=None):
         return fig_base+1, fig_idx
 
     for op_id in op_idxs:
-        # if is_show[op_id]:
         # op_id = 2
         fig_base, fig_idx = __plot(op_id, fig_base, fig_idx)
     
@@ -658,7 +673,7 @@ for i in range(len(resnetLayernumOfBlock)):
 # collect_data(op_names_, add_=ADD_ADDITIONAL)
 # popt, pcov = fit_with_S_cal_gflops()
 # print(popt)
-# # plot_2d_fit_result(is_show)
+# # plot_2d_fit_result()
 # test()
 
 #####################################################################
@@ -806,7 +821,7 @@ for i in range(len(resnetLayernumOfBlock)):
 
 #####################################################################
 #####################################################################
-# 20200903 (Thu)
+# 20200903 (Thu)  ******!!!!!******
 #####################################################################
 ### exp id 1: fix the # of ops to 2
 ### since the variance when # of ops = 2 is very large, see which combinations lead to large error
@@ -818,20 +833,26 @@ for i in range(len(resnetLayernumOfBlock)):
 # # idxs = np.array([2,6,9,12,16,19,22,25,29,32,35,38,41,44,48,51]) # normalized S_mul = 0.9
 # # idxs = np.array([0]) # normalized S_mul = 1 
 
-# # idxs = np.array([1, 2])
-# # # idxs = np.array([19, 22])
+# idxs = np.array([1, 2])
+# idxs = np.array([19, 22])
+
+#### dense
+# idxs = np.array([0,1,2,3,4,5,6,7])
+# idxs = np.array([6])
+
 # op_names_ = np.array(OP_NAMES)[idxs]
 # # op_names_ = OP_NAMES
 # collect_data(op_names_, add_=ADD_ADDITIONAL, verbose=True)
 # from amp_cost_model import CurveFiter
-# pred = CurveFiter(train_x, train_y, test_x, test_y)
+# pred = CurveFiter(train_x, train_y, test_x, test_y, FULL_HEADERS[TARGET_OPTYPE], op_type=TARGET_OPTYPE)
 # popt, pcov = pred.train()
 # print(popt)
 # pred.test(verbose=True)
 
 
-# plot_group_by_op(op_idxs=idxs, xaxis='S_mul', yaxiss=['avg'])
-# plot_2d_fit_result(is_show, pred, op_idxs=idxs)
+# # plot_group_by_op(op_idxs=idxs, xaxis='B', yaxiss=['avg'])
+# plot_2d_fit_result(pred, op_idxs=idxs)
+# raise
 
 
 # pct = -1
@@ -953,7 +974,7 @@ for i in range(len(resnetLayernumOfBlock)):
 # from amp_cost_model import DNNPredictor
 # op_names_ = OP_NAMES
 # collect_data(op_names_, add_=ADD_ADDITIONAL, verbose=True)
-# pred = DNNPredictor(train_x, train_y, test_x, test_y, FULL_HEADERS)
+# pred = DNNPredictor(train_x, train_y, test_x, test_y, FULL_HEADERS[TARGET_OPTYPE])
 # pred.train()
 # # pred.test()
 # pred.predict()
@@ -962,11 +983,11 @@ for i in range(len(resnetLayernumOfBlock)):
 # from amp_cost_model import BayesPredictor
 # op_names_ = OP_NAMES
 # collect_data(op_names_, add_=ADD_ADDITIONAL, verbose=True)
-# pred = BayesPredictor(train_x, train_y, test_x, test_y, FULL_HEADERS)
+# pred = BayesPredictor(train_x, train_y, test_x, test_y, FULL_HEADERS[TARGET_OPTYPE])
 # pred.train()
 
 
-### exp id 3:
+## exp id 3:
 from amp_cost_model import CurveFiter
 #### group by S_mul
 # idxs_list = [
@@ -993,6 +1014,19 @@ idxs_list = [
 #     np.array([0,11,14,24,27,43,46]),
 #     -1
 # ]
+
+
+### in the first group of different kernel size, more fine-grained
+# idxs_list = [
+#     np.array([1,3,4,5,7,8,10,11,13,14,15,17,18,20,21,23,24,26,27,28,30,31,33,34,36,37,39,40,42,43,45,46,47,49,50,52]),
+#     # stride=1
+#     np.array([1,3,4,5,7,8,10,13,15,17,18,20,21,23,26,28,30,31,33,34,36,37,39,40,42,45,47,49,50,52]),
+#     # stride=2
+#     np.array([11,14,24,27,43,46]),
+#     # use_bias
+#     np.array([1,3,5,7,8,10,11,13,15,17,18,20,21,23,24,26,28,30,31,33,34,36,37,39,40,42,43,45,47,49,50,52])
+# ]
+
 for idxs in idxs_list:
     if isinstance(idxs, np.ndarray):
         op_names_ = np.array(OP_NAMES)[idxs]
@@ -1001,7 +1035,7 @@ for idxs in idxs_list:
         op_names_ = OP_NAMES
         print("all ops")
     collect_data(op_names_, add_=ADD_ADDITIONAL, verbose=True)
-    pred = CurveFiter(train_x, train_y, test_x, test_y, FULL_HEADERS)
+    pred = CurveFiter(train_x, train_y, test_x, test_y, FULL_HEADERS[TARGET_OPTYPE])
     try:
         popt, pcov = pred.train()
     except:
@@ -1016,10 +1050,35 @@ for idxs in idxs_list:
 #### verify the popts trained with group by kernel with all ops
 # op_names_ = OP_NAMES
 # collect_data(op_names_, add_=ADD_ADDITIONAL, verbose=True)
-# pred = CurveFiter(train_x, train_y, test_x, test_y, FULL_HEADERS)
+# pred = CurveFiter(train_x, train_y, test_x, test_y, FULL_HEADERS[TARGET_OPTYPE])
 # popts = [
 #     [2.6056619411766158, 1.2959646709885562, 0.08360241234592686, 0.06120795436936255, 0.1559150708255634, 0.10354411725669714],
 #     [0.9575921242401884,145.0597191195498,0.4319982825529537, 0.43199827997673484,0.15762755558430627,0.07185529379153197]
 # ]
 # pred.test(verbose=True, popt=popts[0])
+
+#####################################################################
+#####################################################################
+# 20200917 (Thu)
+#####################################################################
+### exp id 1: add K^n to W1 term, K^m to W2 term, test n and m
+# from amp_cost_model import CurveFiter
+# op_names_ = OP_NAMES
+# collect_data(op_names_, add_=ADD_ADDITIONAL, verbose=True)
+# for ni in range(20):
+#     n = (ni + 1) * 0.1
+#     errors = []
+#     for mi in range(30):
+#         m = (mi + 1) * 0.1
+#         pred = CurveFiter(train_x, train_y, test_x, test_y, FULL_HEADERS[TARGET_OPTYPE], E1_=n, E2_=m)
+#         try:
+#             popt, pcov = pred.train()
+#         except:
+#             print(train_x)
+#             print(idxs)
+#             raise
+#         errors.append(pred.test(verbose=False))
+#     print("n={}: {}".format(n, "\t".join([str(e) for e in errors])))
+
+
 
