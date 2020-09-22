@@ -41,15 +41,20 @@ class MetaInfo:
         if "FW" not in node:
             ### only consider FW node
             return
+        op_type = self.parse_op_type(node)
+
         if node in self.cache_meta:
             op_type, S_mul, S_add, S_in, S_out, S_wei = self.cache_meta[node]
             if batch_size is not None:
-                ratio = batch_size / self.cache_raw_meta[node][8]
+                if op_type == "conv":
+                    ratio = batch_size / self.cache_raw_meta[node][8]
+                else:
+                    ratio = batch_size / self.cache_raw_meta[node][2]
             else:
                 ratio = 1
             return op_type, S_mul * ratio, S_add * ratio, S_in * ratio, S_out * ratio, S_wei
 
-        op_type = self.parse_op_type(node)
+        
         if op_type == "conv":
             ### outputs
             output_shape = self.name2shape[node]
@@ -103,10 +108,10 @@ class MetaInfo:
 
             ### prevs
             prevs = self.dag.in_edges(node)
-            assert len(prevs) == 1, prevs
+            assert len(prevs) == 1, (node, prevs)
             prev_, _ = list(prevs)[0]
             input_shape = self.name2shape[prev_]
-            assert input_shape[0] == (B, node, input_shape, output_shape)
+            assert input_shape[0] == B, (node, input_shape, output_shape)
             C_in = input_shape[1]
 
             ### weights
@@ -114,7 +119,7 @@ class MetaInfo:
             if batch_size is None:
                 batch_size = B
             self.cache_meta[node] = (op_type, batch_size*C_in*C_out, batch_size*(C_in-1)*C_out, batch_size*C_in, batch_size*C_out, C_in*C_out)
-            self.cache_raw_meta[node] = [C_in, C_out] 
+            self.cache_raw_meta[node] = [C_in, C_out, batch_size] 
             return self.cache_meta[node]
         elif op_type == "cast":
             ### nexts
@@ -178,7 +183,7 @@ class MetaInfo:
         op_name = op_name.lower()
         if "conv" in op_name:
             return "conv"
-        elif "dense" in op_name:
+        elif "_dense" in op_name and 'cast' not in op_name:
             return "dense"
         elif "cast" in op_name:
             return "cast"
