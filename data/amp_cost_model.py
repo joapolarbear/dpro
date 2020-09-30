@@ -130,7 +130,7 @@ class BayesPredictor:
 from scipy.optimize import curve_fit
 wei1, wei2 = 1, 1
 ADD_ADDITIONAL = True
-NON_LINEAR = 'exp'  # \in ['log', 'exp', sigmoid'] or None
+NON_LINEAR = 'max'  # \in ['log', 'exp', sigmoid', 'piecewise', 'max'] or None
 
 
 # def cost_func(xs, a1, a2, a3, a4, a5, a6, a7, a8, a9, b1, b2, b3):
@@ -211,13 +211,16 @@ class CurveFiter:
             lower_bounds_conv = lower_bounds_dense = tuple([0]*5 + [-np.inf]*1)
 
         elif NON_LINEAR == 'exp':
-            def cost_func_conv2d(xs, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, a16, a17, a18, a19, b1):
+            def cost_func_conv2d(xs, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, a16, a17, a18, a19, a20, a21, b1):
                 G, S_mul, S_add, S_in, S_out, S_wei = xs[0:6]
                 H, W, C, R, S, P, Q, K, origin_b, use_bias = xs[6:]
 
                 addtional_term = S_out * use_bias
-                flops_ = G
-                bandwidth = G
+                # flops_ = G
+                # bandwidth = G
+                flops_ = np.power(G, a20)
+                bandwidth = np.power(G, a21)
+                
                 kernel_size = R
                 batch_size = S_mul / (K*P*Q*C*R*S)
                 S_mul = np.power(batch_size, a6) *  np.power(kernel_size, a7) * np.power(P, a8) * np.power(C, a9) * np.power(K, a10)
@@ -227,34 +230,136 @@ class CurveFiter:
                 wei_S_all = a3 * S_in + a4 * S_out + a5 * S_wei
                 return  wei1 * ((a1 * S_mul + a2 * (addtional_term)) / (flops_)) + wei2 * (wei_S_all) / bandwidth + b1
             
-            def cost_func_dense(xs, a1, a2, a3, a4, a5, a6, a7, a8, b1):
+            def cost_func_dense(xs, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, a16, a17, b1):
+                G, S_mul, S_add, S_in, S_out, S_wei = xs[0:6]
+                C_in, C_out, origin_b= xs[6:]
+          
+                # flops_ = G
+                # bandwidth = G
+                flops_ = np.power(G, a15)
+                bandwidth = np.power(G, a16)
+
+                ai = S_mul / (S_in + S_out + S_wei)
+
+                wei1 = 1. / (1 + np.exp(-1.0 * a2 * (ai - a17)))
+                wei2 = 1 - wei1
+
+                batch_size = S_mul / (C_in*C_out)
+                S_mul = np.power(batch_size, a6) * np.power(C_in, a7) * np.power(C_out, a8) 
+                S_wei = np.power(C_in, a9) * np.power(C_out, a10)
+                S_in = np.power(batch_size, a11) * np.power(C_in, a12)
+                S_out = np.power(batch_size, a13) * np.power(C_out, a14)
+                wei_S_all = a3 * S_in + a4 * S_out + a5 * S_wei
+                return  wei1 * ((a1 * S_mul) / (flops_)) + wei2 * (wei_S_all) / bandwidth + b1
+            
+            lower_bounds_conv = tuple([0]*21 + [-np.inf]*1)
+            lower_bounds_dense = tuple([0]*17 + [-np.inf]*1)
+
+        elif NON_LINEAR == 'log':
+            # def cost_func_conv2d(xs, a1, a2, a3, a4, a5, a6, a7, b1):
+            #     G, S_mul, S_add, S_in, S_out, S_wei = xs[0:6]
+            #     H, W, C, R, S, P, Q, K, origin_b, use_bias = xs[6:]
+            #     wei_S_all = a3 * S_in + a4 * S_out + a5 * S_wei
+            #     addtional_term = S_out * use_bias
+            #     kernel_size = R
+            #     batch_size = S_mul / (K*P*Q*C*R*S)
+            #     return (a1) * np.log(batch_size) + \
+            #             a2 * np.log(kernel_size) + \
+            #             (a3) * np.log(P) + \
+            #             a4 * np.log(C) + \
+            #             (a5) * np.log(K) + (a6) * np.log(H) + use_bias * a7 + b1
+            # lower_bounds_conv = lower_bounds_dense = tuple([0]*7 + [-np.inf]*1)
+
+            def cost_func_conv2d(xs, a1, a2, a3, a4, a5, a6, a7, a8, a9, b1):
+                G, S_mul, S_add, S_in, S_out, S_wei = xs[0:6]
+                H, W, C, R, S, P, Q, K, origin_b, use_bias = xs[6:]
+                wei_S_all = a3 * S_in + a4 * S_out + a5 * S_wei
+                flops_ = G
+                bandwidth = G
+                addtional_term = S_out * use_bias
+                kernel_size = R
+                batch_size = S_mul / (K*P*Q*C*R*S)
+
+                S_mul = a1 * np.log(batch_size) + a6 * np.log(kernel_size) + a7 * np.log(P) + a8 * np.log(C) + a9 * np.log(K)
+
+                return wei1 * ((S_mul + a2 * (addtional_term)) / (flops_)) + wei2 * (wei_S_all) / bandwidth + b1
+
+            lower_bounds_conv = lower_bounds_dense = tuple([0]*9 + [-np.inf]*1)
+        elif NON_LINEAR == 'piecewise':
+
+            def cost_func_conv2d(xs, a1, a2, a3, a4, a5, a6, a7, a8, b1):
+                G, S_mul, S_add, S_in, S_out, S_wei = xs[0:6]
+                wei_S_all = a3 * S_in + a4 * S_out + a5 * S_wei
+
+                num_of_wave = 1 / (1 + np.exp(-1.0 * a1 * (a8*(1+np.sin(a2 * S_mul)) - a6)) + b1)
+          
+                flops_ = G
+                bandwidth = G
+                return  num_of_wave * a7 * flops_
+            lower_bounds_conv = tuple([0]*8 + [-np.inf]*1)
+
+            # def cost_func_dense(xs, a1, a2, a3, a4, b1):
+            #     G, S_mul, S_add, S_in, S_out, S_wei = xs[0:6]
+            #     num_of_wave = 1 / (1 + np.exp(-1.0 * a1 * (np.sin(a2 * S_mul) - a3)) + b1)
+          
+            #     flops_ = G
+            #     bandwidth = G
+            #     return  num_of_wave * a4 * flops_
+            # lower_bounds_dense = tuple([0]*4 + [-np.inf]*1)
+
+            def cost_func_dense(xs, a1, a2, a3, a4, a5, a6, b1):
+                G, S_mul, S_add, S_in, S_out, S_wei = xs[0:6]
+                C_in, C_out, origin_b= xs[6:]
+                batch_size = S_mul / (C_in*C_out)
+
+                wei_S_all = a3 * S_in + a4 * S_out + a5 * S_wei
+                flops_ = G
+                bandwidth = G
+                # return wei1 * ((a1 * S_mul + a2 * (addtional_term)) / (kernel_size**0.75 * flops_)) + wei2 * (wei_S_all) / bandwidth + b1
+                return wei1 * ((a1 * np.ceil(batch_size*C_out / a6)*C_in) / (flops_)) + wei2 * (wei_S_all) / bandwidth + b1
+            lower_bounds_dense = tuple([0]*6 + [-np.inf]*1)
+
+        elif NON_LINEAR == 'max':
+            def cost_func_conv2d(xs, a1, a2, a3, a4, a5, b1):
+                G, S_mul, S_add, S_in, S_out, S_wei = xs[0:6]
+                H, W, C, R, S, P, Q, K, origin_b, use_bias = xs[6:]
+
+                wei_S_all = a3 * S_in + a4 * S_out + a5 * S_wei
+                addtional_term = S_out * use_bias
+                flops_ = G
+                bandwidth = G
+                kernel_size = R
+
+                alpha = 100
+
+                term1 = wei1 * ((a1 * S_mul + a2 * (addtional_term)) / (flops_))
+                term2 =  wei2 * (wei_S_all) / bandwidth
+                maxterm = (term1 * np.exp(alpha * term1) + term2 * np.exp(alpha * term2)) / (np.exp(alpha * term1) + np.exp(alpha * term2))
+                # return wei1 * ((a1 * S_mul + a2 * (addtional_term)) / (kernel_size**0.75 * flops_)) + wei2 * (wei_S_all) / bandwidth + b1
+                return  maxterm + b1
+
+            lower_bounds_conv = tuple([0]*5 + [-np.inf]*1)
+
+            def cost_func_dense(xs, a1, a2, a3, a4, a5, b1):
                 G, S_mul, S_add, S_in, S_out, S_wei = xs[0:6]
                 C_in, C_out, origin_b= xs[6:]
 
                 wei_S_all = a3 * S_in + a4 * S_out + a5 * S_wei
                 flops_ = G
                 bandwidth = G
-                batch_size = S_mul / (C_in*C_out)
-                S_mul = np.power(batch_size, a6) * np.power(C_in, a7) * np.power(C_out, a8) 
-                return  wei1 * ((a1 * S_mul) / (flops_)) + wei2 * (wei_S_all) / bandwidth + b1
-            
-            lower_bounds_conv = tuple([0]*19 + [-np.inf]*1)
-            lower_bounds_dense = tuple([0]*8 + [-np.inf]*1)
 
-        elif NON_LINEAR == 'log':
-            def cost_func_conv2d(xs, a1, a2, a3, a4, a5, a6, a7, b1):
-                G, S_mul, S_add, S_in, S_out, S_wei = xs[0:6]
-                H, W, C, R, S, P, Q, K, origin_b, use_bias = xs[6:]
-                wei_S_all = a3 * S_in + a4 * S_out + a5 * S_wei
-                addtional_term = S_out * use_bias
-                kernel_size = R
-                batch_size = S_mul / (K*P*Q*C*R*S)
-                return (a1) * np.log(batch_size) + \
-                        a2 * np.log(kernel_size) + \
-                        (a3) * np.log(P) + \
-                        a4 * np.log(C) + \
-                        (a5) * np.log(K) + (a6) * np.log(H) + use_bias * a7 + b1
-            lower_bounds_conv = lower_bounds_dense = tuple([0]*7 + [-np.inf]*1)
+                alpha = 100
+
+                term1 = wei1 * ((a1 * S_mul) / (flops_))
+                term2 =  wei2 * (wei_S_all) / bandwidth
+                maxterm = (term1 * np.exp(alpha * term1) + term2 * np.exp(alpha * term2)) / (np.exp(alpha * term1) + np.exp(alpha * term2))
+                
+
+                # return wei1 * ((a1 * S_mul + a2 * (addtional_term)) / (kernel_size**0.75 * flops_)) + wei2 * (wei_S_all) / bandwidth + b1
+                return  maxterm + b1
+
+            lower_bounds_dense = tuple([0]*5 + [-np.inf]*1)
+            
         else:
             raise
 
@@ -277,13 +382,17 @@ class CurveFiter:
         if NON_LINEAR == 'exp':
             return data_
         elif NON_LINEAR == 'log':
+            # return data_
             return np.log(data_ + 1)
+        elif NON_LINEAR in ['piecewise', 'max'] :
+            return data_
         else:
             raise ValueError("NON_LINEAR should be log:{}".format(NON_LINEAR))
 
     def train(self):
         _train_x = np.transpose(self.train_x)
         _train_y = self.no_linear_label(np.transpose(self.train_y).flatten())
+        # FIT_FUNC(_train_x, *self.p0)
         self.popt, pcov = curve_fit(FIT_FUNC, _train_x, _train_y, 
             bounds=(self.lower_bounds, self.up_bounds), p0=self.p0, maxfev=10000)
         self.perr = np.sqrt(np.diag(pcov))
