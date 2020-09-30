@@ -17,9 +17,10 @@ BATCHSIZE_THESHOLD = 4
 VAR_THREHOLD = 0.2
 TRAIN_PERCENT = 1
 ADD_ADDITIONAL = True
-FP32_OR_FP16 = (True, False)
+FP32_OR_FP16 = (True, True)
 NORMALIZE = True
 
+NORMALIZE_MAX = None
 OPTYPES = ["conv", "dense"]
 NAMELIST_32 = None
 NAMELIST_16 = None
@@ -32,19 +33,26 @@ DEFAULT_BATCH_SIZE=int(DEFAULT_BATCH_SIZE_STR.split("=")[1])
 DEFAULT_KENREL_SIZE=3
 BATCH_LIST_VALUE = []
 FULL_HEADERS = {
+    "base": ["avg", "G", "S_mul", "S_add", "S_in", "S_out", "S_wei"],
     "conv": ["avg", "G", "S_mul", "S_add", "S_in", "S_out", "S_wei", "H", "W", "C", "R", "S", "P", "Q", "K", "B", "use_bias"],
-    "dense": ["avg", "G", "S_mul", "S_add", "S_in", "S_out", "S_wei", "H", "W", "B"],
+    "dense": ["avg", "G", "S_mul", "S_add", "S_in", "S_out", "S_wei", "C_in", "C_out", "B"],
 }
 
 if sys.argv[1] == 'bert':
     RST_DIR=os.path.join("/Users/hhp/0/git/byteprofile-analysis/data/data_20200824", "20200824_03")
 elif sys.argv[1] == 'resnet':
     TARGET_OPTYPE = OPTYPES[0]
+    ### V100
     RST_DIR=os.path.join("/Users/hhp/0/git/byteprofile-analysis/data/data_20200824", "20200824_02")
     # RST_DIR="/Users/hhp/0/git/byteprofile-analysis/data/data_20200824/20200828_01"
+    ### 1080Ti
+    RST_DIR=os.path.join("/Users/hhp/0/git/byteprofile-analysis/data/data_20200930", "20200930_01")
 elif sys.argv[1] == 'dense':
     TARGET_OPTYPE = OPTYPES[1]
-    RST_DIR=os.path.join("/Users/hhp/0/git/byteprofile-analysis/data/data_20200917", "20200917_06")
+    # RST_DIR=os.path.join("/Users/hhp/0/git/byteprofile-analysis/data/data_20200917", "20200917_06")
+    RST_DIR=os.path.join("/Users/hhp/0/git/byteprofile-analysis/data/data_20200924", "20200924_01")
+    ### 1080Ti
+    RST_DIR=os.path.join("/Users/hhp/0/git/byteprofile-analysis/data/data_20200930", "20200930_03")
 else:
     raise
 meta_info = MetaInfo(os.path.join(RST_DIR, "host0/0"))
@@ -122,7 +130,7 @@ def batchsize2avg(index, fp16=False):
         avg.append(_DATA[e][index])
     return avg
 
-def batchsize2sdt(index, fp16=False):
+def batchsize2dev(index, fp16=False):
     vars_ = []
     _VAR = VAR_16 if fp16 else VAR_32
     for e in BATCH_LIST_STR:
@@ -209,7 +217,50 @@ elif sys.argv[1] == 'dense':
 "FW.densemodel0_dense4",
 "FW.densemodel0_dense5",
 "FW.densemodel0_dense6",
-"FW.densemodel0_dense7"
+"FW.densemodel0_dense7",
+"FW.densemodel0_dense8",
+"FW.densemodel0_dense9",
+"FW.densemodel0_dense10",
+"FW.densemodel0_dense11",
+"FW.densemodel0_dense12",
+"FW.densemodel0_dense13",
+"FW.densemodel0_dense14",
+"FW.densemodel0_dense15",
+"FW.densemodel0_dense16",
+"FW.densemodel0_dense17",
+"FW.densemodel0_dense18",
+"FW.densemodel0_dense19",
+"FW.densemodel0_dense20",
+"FW.densemodel0_dense21",
+"FW.densemodel0_dense22",
+"FW.densemodel0_dense23",
+"FW.densemodel0_dense24",
+"FW.densemodel0_dense25",
+"FW.densemodel0_dense26",
+"FW.densemodel0_dense27",
+"FW.densemodel0_dense28",
+"FW.densemodel0_dense29",
+"FW.densemodel0_dense30",
+"FW.densemodel0_dense31",
+"FW.densemodel0_dense32",
+"FW.densemodel0_dense33",
+"FW.densemodel0_dense34",
+"FW.densemodel0_dense35",
+"FW.densemodel0_dense36",
+"FW.densemodel0_dense37",
+"FW.densemodel0_dense38",
+"FW.densemodel0_dense39",
+"FW.densemodel0_dense40",
+"FW.densemodel0_dense41",
+"FW.densemodel0_dense42",
+"FW.densemodel0_dense43",
+"FW.densemodel0_dense44",
+"FW.densemodel0_dense45",
+"FW.densemodel0_dense46",
+"FW.densemodel0_dense47",
+"FW.densemodel0_dense48",
+"FW.densemodel0_dense49",
+"FW.densemodel0_dense50",
 ]
     OP_LABELS = ["".join(n.split("densemodel0_")[1]) for n in OP_NAMES]
 else:
@@ -239,11 +290,15 @@ def plot_group_by_op(op_idxs=None, xaxis='B', yaxiss=['avg']):
 
     fig_base, fig_idx = init_fig_base(op_num)
     plt.figure(num=1, figsize=(8, 6))
+    clrs = sns.color_palette("husl", 5)
 
     def __fetch_data(_axis):
+        dev32 = dev16 = None
         if _axis == 'avg':
             data32 = batchsize2avg(NAMELIST_32.index(OP_NAMES[op_id]))
+            dev32 = batchsize2dev(NAMELIST_32.index(OP_NAMES[op_id]))
             data16 = batchsize2avg(NAMELIST_16.index(OP_NAMES[op_id]), fp16=True)
+            dev16 = batchsize2dev(NAMELIST_16.index(OP_NAMES[op_id]), fp16=True)
         elif _axis in METANAME:
             data32 = model_size[op_id, METANAME.index(_axis), :]
             data16 = None
@@ -261,35 +316,45 @@ def plot_group_by_op(op_idxs=None, xaxis='B', yaxiss=['avg']):
         else:
             raise ValueError("axis choice should be in {} or avg, intensity, flops. {} is given".format(METANAME, _axis))
 
-        return data32, data16
+        return data32, data16, dev32, dev16
 
     def __plot(op_id, fig_base):
         ax = plt.subplot(fig_base)
 
         ### select x-axis
-        x_axis, _ = __fetch_data(xaxis)
-
+        x_axis, _, _, _ = __fetch_data(xaxis)
         if isinstance(yaxiss, list):
             for yaxis in yaxiss:
                 ### select y-axis
-                data32, data16 = __fetch_data(yaxis)
+                data32, data16, dev32, dev16 = __fetch_data(yaxis)
                 if data16 is None:
-                    ax.plot(x_axis, data32, marker='.', label=OP_LABELS[op_id] + "_" + yaxis)
+                    ax.plot(x_axis, data32, marker='.', label=OP_LABELS[op_id] + "_" + yaxis, c=clrs[0])
                 else:
-                    ax.plot(x_axis, data32, marker='.', label=OP_LABELS[op_id] + "_" + yaxis + "_fp32")
-                    ax.plot(x_axis, data16, marker='^', label=OP_LABELS[op_id] + "_" + yaxis + "_fp16")
+                    ax.plot(x_axis, data32, marker='.', label=OP_LABELS[op_id] + "_" + yaxis + "_fp32", c=clrs[0])
+                    if dev32 is not None:
+                        ax.fill_between(x_axis, data32+dev32, data32-dev32, alpha=0.3, facecolor=clrs[0])
+                    ax.plot(x_axis, data16, marker='^', label=OP_LABELS[op_id] + "_" + yaxis + "_fp16", c=clrs[1])
+                    if dev16 is not None:
+                        ax.fill_between(x_axis, data16+dev16, data16-dev16, alpha=0.3, facecolor=clrs[1])
         else:
             yaxis = yaxiss
-            data32, data16 = __fetch_data(yaxis)
+            data32, data16, dev32, dev16 = __fetch_data(yaxis)
             if data16 is None:
-                ax.plot(x_axis, data32, marker='.', label=OP_LABELS[op_id])
+                ax.plot(x_axis, data32, marker='.', label=OP_LABELS[op_id], c=clrs[0])
+                if dev32 is not None:
+                    ax.fill_between(x_axis, data32+dev32, data32-dev32, alpha=0.3, facecolor=clrs[0])
             else:
-                ax.plot(x_axis, data32, marker='.', label=OP_LABELS[op_id] + "_fp32")
-                ax.plot(x_axis, data16, marker='^', label=OP_LABELS[op_id] + "_fp16")
+                ax.plot(x_axis, data32, marker='.', label=OP_LABELS[op_id] + "_fp32", c=clrs[0])
+                if dev32 is not None:
+                    ax.fill_between(x_axis, data32+dev32, data32-dev32, alpha=0.3, facecolor=clrs[0])
+                ax.plot(x_axis, data16, marker='^', label=OP_LABELS[op_id] + "_fp16", c=clrs[1])
+                if dev16 is not None:
+                    ax.fill_between(x_axis, data16+dev16, data16-dev16, alpha=0.3, facecolor=clrs[1])
 
         plt.legend()
-        plt.ylabel(yaxis)
-        plt.xlabel(xaxis)
+        AXIS_NAMES = {"B":"Batch Size", "avg": "Duration (ms)"}
+        plt.ylabel(yaxis if yaxis not in AXIS_NAMES else AXIS_NAMES[yaxis])
+        plt.xlabel(xaxis if xaxis not in AXIS_NAMES else AXIS_NAMES[xaxis])
         # plt.ylim(0., 0.2)
         return fig_base+1
 
@@ -501,6 +566,7 @@ def collect_data(op_names_, add_=False, verbose=True):
         raise
 
     ### all_data[# of nodes * # of batch size values][avg, G, S_mul, ...]
+    ###  ==> shape = (n_samples, n_dims)
     all_data = np.transpose(all_data)
     ### filter
     # all_data = exct_filter(all_data)
@@ -518,16 +584,20 @@ def collect_data(op_names_, add_=False, verbose=True):
 
     ### normalize data
     if NORMALIZE:
+        global NORMALIZE_MAX
+        NORMALIZE_MAX = []
         if "use_bias" in FULL_HEADERS[TARGET_OPTYPE]:
             for i in range(0, all_data.shape[1]):
                 if i == FULL_HEADERS[TARGET_OPTYPE].index("use_bias"):
-                    pass
+                    NORMALIZE_MAX.append(1)
                 else:
-                    all_data[:, i] = all_data[:, i] / max(all_data[:, i])
+                    NORMALIZE_MAX.append(max(all_data[:, i]))
+                    all_data[:, i] = all_data[:, i] / max(all_data[:, i])     
         else:
             for i in range(0, all_data.shape[1]):
+                NORMALIZE_MAX.append(max(all_data[:, i]))
                 all_data[:, i] = all_data[:, i] / max(all_data[:, i])
-
+        NORMALIZE_MAX = np.array(NORMALIZE_MAX)
     arg_num = all_data.shape[1]
     value_num = all_data.shape[0]
     np.random.shuffle(all_data)
@@ -547,6 +617,10 @@ def collect_data(op_names_, add_=False, verbose=True):
     if verbose:
         print("Collect training data - X:{}, Y:{}, test data - X:{}, Y:{}".format(train_x.shape, train_y.shape, test_x.shape, test_y.shape))
 
+    from dim_reduce import DimReducer
+    dim_reducer = DimReducer(train_x, train_y)
+    dim_reducer.do_reduction(algo=['MDS', 'LLE', 'LDA'])
+    raise
 
 def plot_2d_fit_result(predictor, op_idxs=None):
     plt.figure(num=1, figsize=(8, 6))
@@ -559,6 +633,8 @@ def plot_2d_fit_result(predictor, op_idxs=None):
 
     clrs = sns.color_palette("husl", 5)
 
+    max_avg = NORMALIZE_MAX[FULL_HEADERS[TARGET_OPTYPE].index('avg')]
+
     def __plot(op_id, fig_base, fig_idx):
         x_axis_names = ["Batch Size (B)", "S_mul", "S_add", "S_in", "S_out", "S_weight"]
         x_axis_idx = 0
@@ -567,13 +643,17 @@ def plot_2d_fit_result(predictor, op_idxs=None):
             if ADD_ADDITIONAL else np.concatenate((np.array([[GFLOPS_FP32]*len(model_size[op_id, 0, :])]), model_size[op_id, :, :]), axis=0)
         model_size_16 = np.concatenate((np.array([[GFLOPS_FP16]*len(model_size[op_id, 0, :])]), model_size[op_id, :, :], model_raw_info[op_id, :, :]), axis=0) \
             if ADD_ADDITIONAL else np.concatenate((np.array([[GFLOPS_FP16]*len(model_size[op_id, 0, :])]), model_size[op_id, :, :]), axis=0)
+        
+        model_size_32 = np.divide(model_size_32, NORMALIZE_MAX[1:, None])
+        model_size_16 = np.divide(model_size_16, NORMALIZE_MAX[1:, None])
+
         ax = plt.subplot(fig_base)
 
         if FP32_OR_FP16[0]:
-            avgs = batchsize2avg(NAMELIST_32.index(OP_NAMES[op_id]))
+            avgs = np.array(batchsize2avg(NAMELIST_32.index(OP_NAMES[op_id]))) / max_avg
             ax.plot(xaxis, avgs, marker='.', label=OP_SHORT_LABELS[op_id]+"_fp32", c=clrs[0])
             try:
-                stds = batchsize2sdt(NAMELIST_32.index(OP_NAMES[op_id]))
+                stds = np.array(batchsize2dev(NAMELIST_32.index(OP_NAMES[op_id]))) / max_avg
                 ax.fill_between(xaxis, avgs+stds, avgs-stds, alpha=0.3, facecolor=clrs[0])
             except KeyError:
                 pass
@@ -582,16 +662,16 @@ def plot_2d_fit_result(predictor, op_idxs=None):
             ax.plot(xaxis, avgs_pred, "--", label=OP_SHORT_LABELS[op_id]+"_fp32"+"_pred", c=clrs[1])
             # ax.fill_between(xaxis, predictor.predict(model_size_32, *popt+perr), predictor.predict(model_size_32, *popt-perr), alpha=0.3, facecolor=clrs[1])
             diff, ratio = predict_error(avgs, avgs_pred)
-            print(OP_SHORT_LABELS[op_id]+"_fp32", ratio, diff)
+            print(OP_SHORT_LABELS[op_id]+"_fp32", ratio)
             fig_idx += 1
             if "%" in ratio:
                 ratio_sum.append(float(ratio.split("%")[0]))
 
         if FP32_OR_FP16[1]:
-            avgs_16 = batchsize2avg(NAMELIST_16.index(OP_NAMES[op_id]), fp16=True)
+            avgs_16 = np.array(batchsize2avg(NAMELIST_16.index(OP_NAMES[op_id]), fp16=True)) / max_avg
             ax.plot(xaxis, avgs_16, marker='^', label=OP_SHORT_LABELS[op_id]+"_fp16", c=clrs[2])
             try:
-                stds_16 = batchsize2sdt(NAMELIST_16.index(OP_NAMES[op_id]), fp16=True)
+                stds_16 = np.array(batchsize2dev(NAMELIST_16.index(OP_NAMES[op_id]), fp16=True)) / max_avg
                 ax.fill_between(xaxis, avgs_16+stds_16, avgs_16-stds_16, alpha=0.3, facecolor=clrs[2])
             except KeyError:
                 pass
@@ -599,13 +679,13 @@ def plot_2d_fit_result(predictor, op_idxs=None):
             ax.plot(xaxis, avgs_pred, "--", label=OP_SHORT_LABELS[op_id]+"_fp16"+"_pred", c=clrs[3])
             # ax.fill_between(xaxis, predictor.predict(model_size_16, *popt+perr), predictor.predict(model_size_16, *popt-perr), alpha=0.3, facecolor=clrs[3])
             diff, ratio = predict_error(avgs_16, avgs_pred)
-            print(OP_SHORT_LABELS[op_id]+"_fp16", ratio, diff)
+            print(OP_SHORT_LABELS[op_id]+"_fp16", ratio)
             fig_idx += 1
             if "%" in ratio:
                 ratio_sum.append(float(ratio.split("%")[0]))
         
         plt.legend(fontsize=8)
-        plt.ylabel('Average Time (ms)')
+        plt.ylabel('Normalized Average Time (ms)')
         # plt.ylim(0, 2)
         plt.xlabel(x_axis_names[x_axis_idx])
         return fig_base+1, fig_idx
@@ -648,33 +728,42 @@ for i in range(len(resnetLayernumOfBlock)):
 '''
 
 #####################################################################
-### Cross validation grouped by individual op
-# collect_data(OP_NAMES)
-# popt, pcov = fit_with_S_cal_gflops()
-# for i in range(len(OP_NAMES)):
-#     op_names_ = [OP_NAMES[i]]
-#     collect_data(op_names_)
-#     popt, pcov = fit_with_S_cal_gflops()
-#     test()
-
-#####################################################################
 ### Output attribute of ops
-# for op_name in OP_NAMES:
-#     _, S_mul, _, S_in, S_out, S_wei = meta_info.ret_mx_metadata(op_name, batch_size=32)
-#     ### [H, W, C, R, S, P, Q, K, batch_size, use_bias]
-#     raw_meta = meta_info.ret_mx_rawmeta(op_name, batch_size=32)
-#     # print(raw_meta[0]/raw_meta[5]) # stride
-#     print(raw_meta[9])
+def output_rawdata_all_op(attr, default_B=32):
+    if attr == 'avg':
+        for op_name in OP_NAMES:
+            print(batchsize2avg(NAMELIST_32.index(op_name))[BATCH_LIST_VALUE.index(default_B)])
+        return
+    elif attr == 'std.dev':
+        for op_name in OP_NAMES:
+            print(batchsize2dev(NAMELIST_32.index(op_name))[BATCH_LIST_VALUE.index(default_B)])
+        return
+    idx = FULL_HEADERS[TARGET_OPTYPE].index(attr)
+    if idx >= len(FULL_HEADERS['base']):
+        for op_name in OP_NAMES:
+            raw_meta = meta_info.ret_mx_rawmeta(op_name, batch_size=32)
+            print(raw_meta[idx-len(FULL_HEADERS['base'])])
+    elif idx >= 2:
+        for op_name in OP_NAMES:
+            meta = meta_info.ret_mx_metadata(op_name, batch_size=32)
+            print(meta[1+idx-2])
+# output_rawdata_all_op('std.dev')
+# raise
 
 #####################################################################
 ### Test the error on all OPs
-# idxs = np.array([3, 4])
-# op_names_ = np.array(OP_NAMES)[idxs]
-# collect_data(op_names_, add_=ADD_ADDITIONAL)
-# popt, pcov = fit_with_S_cal_gflops()
-# print(popt)
-# # plot_2d_fit_result()
-# test()
+### Cross validation grouped by individual op
+from amp_cost_model import CurveFiter
+def test_grouped_by_individual_op():
+    for i in range(len(OP_NAMES)):
+        idxs = np.array([i])
+        op_names_ = np.array(OP_NAMES)[idxs]
+        collect_data(op_names_, add_=ADD_ADDITIONAL, verbose=False)
+        pred = CurveFiter(train_x, train_y, test_x, test_y, FULL_HEADERS[TARGET_OPTYPE], op_type=TARGET_OPTYPE)
+        popt, pcov = pred.train()
+        print(pred.test(verbose=False))
+# test_grouped_by_individual_op()
+# raise
 
 #####################################################################
 #####################################################################
@@ -826,32 +915,34 @@ for i in range(len(resnetLayernumOfBlock)):
 ### exp id 1: fix the # of ops to 2
 ### since the variance when # of ops = 2 is very large, see which combinations lead to large error
 
-# idxs = np.array([1]) # normalized S_mul = 0.1 
-# idxs = np.array([11, 24, 43]) # normalized S_mul = 0.2
-# idxs = np.array([3, 4, 5, 7, 8, 10, 13, 15, 17, 18, 20, 21, 23, 26, 28, 30, 31, 33, 34, 36, 37, 39, 40, 42, 45, 47, 49, 50, 52])
-# idxs = np.array([14,27,46]) # normalized S_mul = 0.8
-# # idxs = np.array([2,6,9,12,16,19,22,25,29,32,35,38,41,44,48,51]) # normalized S_mul = 0.9
-# # idxs = np.array([0]) # normalized S_mul = 1 
+def try_diff_combination():
+    # idxs = np.array([1]) # normalized S_mul = 0.1 
+    # idxs = np.array([11, 24, 43]) # normalized S_mul = 0.2
+    # idxs = np.array([3, 4, 5, 7, 8, 10, 13, 15, 17, 18, 20, 21, 23, 26, 28, 30, 31, 33, 34, 36, 37, 39, 40, 42, 45, 47, 49, 50, 52])
+    # idxs = np.array([14,27,46]) # normalized S_mul = 0.8
+    # # idxs = np.array([2,6,9,12,16,19,22,25,29,32,35,38,41,44,48,51]) # normalized S_mul = 0.9
+    # # idxs = np.array([0]) # normalized S_mul = 1 
 
-# idxs = np.array([1, 2])
-# idxs = np.array([19, 22])
+    # idxs = np.array([1, 2])
+    # idxs = np.array([19, 22])
 
-#### dense
-# idxs = np.array([0,1,2,3,4,5,6,7])
-# idxs = np.array([6])
+    ### dense
+    idxs = np.arange(0, 9)
+    # idxs = np.array([1])
+    # idxs = np.arange(41, 50)
 
-# op_names_ = np.array(OP_NAMES)[idxs]
-# # op_names_ = OP_NAMES
-# collect_data(op_names_, add_=ADD_ADDITIONAL, verbose=True)
-# from amp_cost_model import CurveFiter
-# pred = CurveFiter(train_x, train_y, test_x, test_y, FULL_HEADERS[TARGET_OPTYPE], op_type=TARGET_OPTYPE)
-# popt, pcov = pred.train()
-# print(popt)
-# pred.test(verbose=True)
+    # op_names_ = np.array(OP_NAMES)[idxs]
+    # # op_names_ = OP_NAMES
+    # collect_data(op_names_, add_=ADD_ADDITIONAL, verbose=True)
+    # from amp_cost_model import CurveFiter
+    # pred = CurveFiter(train_x, train_y, test_x, test_y, FULL_HEADERS[TARGET_OPTYPE], op_type=TARGET_OPTYPE)
+    # popt, pcov = pred.train()
+    # print(popt)
+    # pred.test(verbose=True)
 
-
-# # plot_group_by_op(op_idxs=idxs, xaxis='B', yaxiss=['avg'])
-# plot_2d_fit_result(pred, op_idxs=idxs)
+    plot_group_by_op(op_idxs=idxs, xaxis='intensity', yaxiss=['flops'])
+    # plot_2d_fit_result(pred, op_idxs=idxs)
+# try_diff_combination()
 # raise
 
 
@@ -988,7 +1079,7 @@ for i in range(len(resnetLayernumOfBlock)):
 
 
 ## exp id 3:
-from amp_cost_model import CurveFiter
+# from amp_cost_model import CurveFiter
 #### group by S_mul
 # idxs_list = [
 #     np.array([1]),
@@ -1001,12 +1092,12 @@ from amp_cost_model import CurveFiter
 # ]
 
 #### group by kernel size
-idxs_list = [
-    np.array([1,3,4,5,7,8,10,11,13,14,15,17,18,20,21,23,24,26,27,28,30,31,33,34,36,37,39,40,42,43,45,46,47,49,50,52]),
-    np.array([2,6,9,12,16,19,22,25,29,32,35,38,41,44,48,51]),
-    np.array([0]),
-    -1
-]
+# idxs_list = [
+#     np.array([1,3,4,5,7,8,10,11,13,14,15,17,18,20,21,23,24,26,27,28,30,31,33,34,36,37,39,40,42,43,45,46,47,49,50,52]),
+#     np.array([2,6,9,12,16,19,22,25,29,32,35,38,41,44,48,51]),
+#     np.array([0]),
+#     -1
+# ]
 
 #### grouped by stride
 # idxs_list = [
@@ -1027,6 +1118,18 @@ idxs_list = [
 #     np.array([1,3,5,7,8,10,11,13,15,17,18,20,21,23,24,26,28,30,31,33,34,36,37,39,40,42,43,45,47,49,50,52])
 # ]
 
+### dense
+idxs_list = [
+    # np.arange(0,9),
+    # np.arange(10,20),
+    # np.arange(20,30),
+    # np.arange(30,40),
+    # np.arange(40,50),
+    # np.arange(10,30),
+    # np.array([43]),
+    -1
+]
+
 for idxs in idxs_list:
     if isinstance(idxs, np.ndarray):
         op_names_ = np.array(OP_NAMES)[idxs]
@@ -1035,7 +1138,7 @@ for idxs in idxs_list:
         op_names_ = OP_NAMES
         print("all ops")
     collect_data(op_names_, add_=ADD_ADDITIONAL, verbose=True)
-    pred = CurveFiter(train_x, train_y, test_x, test_y, FULL_HEADERS[TARGET_OPTYPE])
+    pred = CurveFiter(train_x, train_y, test_x, test_y, FULL_HEADERS[TARGET_OPTYPE], op_type=TARGET_OPTYPE)
     try:
         popt, pcov = pred.train()
     except:
