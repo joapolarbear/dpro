@@ -3,11 +3,32 @@ import numpy as np
 import os, sys
 import networkx as nx
 
+FULL_HEADERS = {
+    "base": ["avg", "G", "S_mul", "S_add", "S_in", "S_out", "S_wei"],
+    "conv": ["avg", "G", "S_mul", "S_add", "S_in", "S_out", "S_wei", "H", "W", "C", "R", "S", "P", "Q", "K", "B", "use_bias"],
+    "dense": ["avg", "G", "S_mul", "S_add", "S_in", "S_out", "S_wei", "C_in", "C_out", "B"],
+}
+
+
+class GPUInfo:
+    def __init__(self, flops32, flops16):
+        self.GFLOPS_FP32 = flops32
+        self.GFLOPS_FP16 = flops16
+
+### TODO (huhanpeng), how to initialize these GPU info
+GPUSINFO = {
+    'V100': GPUInfo(1, 2),
+    '1080Ti': GPUInfo(1, 2)
+}
+
 class MetaInfo:
-    def __init__(self, meta_dir):
+    def __init__(self, meta_dir, gpu_name=None):
         self.meta_dir = meta_dir
         with open(os.path.join(meta_dir, "metadata.json"), "r") as fp:
             self.mx_meta = json.load(fp)
+
+        self.gpu_name = gpu_name
+        self.gpu_info = GPUSINFO[self.gpu_name] if gpu_name is not None else None
 
         self.cache_meta = {}
         self.cache_raw_meta = {}

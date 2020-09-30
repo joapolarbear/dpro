@@ -130,7 +130,7 @@ class BayesPredictor:
 from scipy.optimize import curve_fit
 wei1, wei2 = 1, 1
 ADD_ADDITIONAL = True
-NON_LINEAR = 'max'  # \in ['log', 'exp', sigmoid', 'piecewise', 'max'] or None
+NON_LINEAR = 'exp'  # \in ['log', 'exp', sigmoid', 'piecewise', 'max'] or None
 
 
 # def cost_func(xs, a1, a2, a3, a4, a5, a6, a7, a8, a9, b1, b2, b3):
@@ -241,8 +241,8 @@ class CurveFiter:
 
                 ai = S_mul / (S_in + S_out + S_wei)
 
-                wei1 = 1. / (1 + np.exp(-1.0 * a2 * (ai - a17)))
-                wei2 = 1 - wei1
+                # wei1 = 1. / (1 + np.exp(-1.0 * a2 * (ai - a17)))
+                # wei2 = 1 - wei1
 
                 batch_size = S_mul / (C_in*C_out)
                 S_mul = np.power(batch_size, a6) * np.power(C_in, a7) * np.power(C_out, a8) 
