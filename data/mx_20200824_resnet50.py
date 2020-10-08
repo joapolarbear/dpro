@@ -15,16 +15,16 @@ if sys.argv[1] == 'bert':
 elif sys.argv[1] == 'resnet':
     TARGET_OPTYPE = OPTYPES[0]
     ### V100
-    RST_DIR=os.path.join("/Users/hhp/0/git/byteprofile-analysis/data/data_20200824", "20200824_02")
-    # RST_DIR="/Users/hhp/0/git/byteprofile-analysis/data/data_20200824/20200828_01"
+    # RST_DIR=os.path.join("/Users/hhp/0/git/byteprofile-analysis/data/data_20200824", "20200824_02")
     ### 1080Ti
-    # RST_DIR=os.path.join("/Users/hhp/0/git/byteprofile-analysis/data/data_20200930", "20200930_01")
+    RST_DIR=os.path.join("/Users/hhp/0/git/byteprofile-analysis/data/data_20200930", "20200930_05")
 elif sys.argv[1] == 'dense':
     TARGET_OPTYPE = OPTYPES[1]
     # RST_DIR=os.path.join("/Users/hhp/0/git/byteprofile-analysis/data/data_20200917", "20200917_06")
-    RST_DIR=os.path.join("/Users/hhp/0/git/byteprofile-analysis/data/data_20200924", "20200924_01")
+    # RST_DIR=os.path.join("/Users/hhp/0/git/byteprofile-analysis/data/data_20200924", "20200924_01")
     ### 1080Ti
     # RST_DIR=os.path.join("/Users/hhp/0/git/byteprofile-analysis/data/data_20200930", "20200930_03")
+    RST_DIR=os.path.join("/Users/hhp/0/git/byteprofile-analysis/data/data_20200930", "20200930_06")
 else:
     raise
 
@@ -490,8 +490,8 @@ def try_diff_combination():
 
     ### dense
     # idxs = np.arange(0, 9)
-    idxs = np.array([0, 1])
-    # idxs = np.arange(41, 50)
+    # idxs = np.array([0, 1])
+    idxs = np.arange(41, 50)
     # data_ld.plot_group_by_op(OP_NAMES, OP_LABELS, op_idxs=idxs, xaxis='B', yaxiss=['avg'])
 
     op_names_ = np.array(OP_NAMES)[idxs]
@@ -688,6 +688,9 @@ idxs_list = [
     # np.arange(20,30),
     # np.arange(30,40),
     # np.arange(40,50),
+    # np.arange(0,10),
+    # np.arange(40,50),
+    # np.concatenate((np.arange(0,10), np.arange(40,50))),
     # np.arange(10,30),
     # np.array([43]),
     -1
@@ -701,6 +704,10 @@ for idxs in idxs_list:
         op_names_ = OP_NAMES
         print("all ops")
     train_x, train_y, test_x, test_y = data_ld.collect_data(op_names_, TARGET_OPTYPE, verbose=True)
+
+    # data_ld.plot_max_comp_mem(TARGET_OPTYPE)
+    # data_ld.plot_avg2distribution(TARGET_OPTYPE)
+    # raise
     pred = CurveFiter(train_x, train_y, test_x, test_y, FULL_HEADERS[TARGET_OPTYPE], op_type=TARGET_OPTYPE)
     try:
         popt, pcov = pred.train()
