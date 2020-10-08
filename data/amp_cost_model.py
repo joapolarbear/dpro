@@ -130,7 +130,7 @@ class BayesPredictor:
 from scipy.optimize import curve_fit
 wei1, wei2 = 1, 1
 ADD_ADDITIONAL = True
-NON_LINEAR = 'exp'  # \in ['log', 'exp', sigmoid', 'piecewise', 'max'] or None
+NON_LINEAR = None # \in ['log', 'exp', sigmoid', 'piecewise', 'max'] or None
 
 
 # def cost_func(xs, a1, a2, a3, a4, a5, a6, a7, a8, a9, b1, b2, b3):
@@ -184,6 +184,7 @@ class CurveFiter:
 
         E1 = 1 if E1_ is None else E1_
         E2 = 2 if E2_ is None else E2_
+        E1 = E2 = 0
         
         if NON_LINEAR is None:
             def cost_func_conv2d(xs, a1, a2, a3, a4, a5, b1):
@@ -320,46 +321,101 @@ class CurveFiter:
             lower_bounds_dense = tuple([0]*6 + [-np.inf]*1)
 
         elif NON_LINEAR == 'max':
-            def cost_func_conv2d(xs, a1, a2, a3, a4, a5, b1):
+            # def cost_func_conv2d(xs, a1, a2, a3, a4, a5, a6, b1):
+            #     G, S_mul, S_add, S_in, S_out, S_wei = xs[0:6]
+            #     H, W, C, R, S, P, Q, K, origin_b, use_bias = xs[6:]
+
+            #     wei_S_all = a3 * S_in + a4 * S_out + a5 * S_wei
+            #     addtional_term = S_out * use_bias
+            #     flops_ = G
+            #     bandwidth = G
+            #     kernel_size = R
+
+            #     alpha = a6
+
+            #     term1 = wei1 * ((a1 * S_mul + a2 * (addtional_term)) / (flops_))
+            #     term2 =  wei2 * (wei_S_all) / bandwidth
+            #     # maxterm = (term1 * np.exp(alpha * term1) + term2 * np.exp(alpha * term2)) / (np.exp(alpha * term1) + np.exp(alpha * term2))
+            #     maxterm = np.log(np.exp(alpha * term1) + np.exp(alpha * term2)) / alpha
+            #     return  maxterm + b1
+
+            # lower_bounds_conv = tuple([0]*6 + [-np.inf]*1)
+
+            def cost_func_conv2d(xs, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, a16, a17, a18, a19, a20, a21, a22, b1):
                 G, S_mul, S_add, S_in, S_out, S_wei = xs[0:6]
                 H, W, C, R, S, P, Q, K, origin_b, use_bias = xs[6:]
 
-                wei_S_all = a3 * S_in + a4 * S_out + a5 * S_wei
                 addtional_term = S_out * use_bias
-                flops_ = G
-                bandwidth = G
+                # flops_ = G
+                # bandwidth = G
+                flops_ = np.power(G, a20)
+                bandwidth = np.power(G, a21)
+                
                 kernel_size = R
+                batch_size = S_mul / (K*P*Q*C*R*S)
+                S_mul = np.power(batch_size, a6) *  np.power(kernel_size, a7) * np.power(P, a8) * np.power(C, a9) * np.power(K, a10)
+                S_wei = np.power(kernel_size, a11) * np.power(C, a12) * np.power(K, a13) 
+                S_in = np.power(batch_size, a14) * np.power(H, a15) * np.power(C, a16) 
+                S_out = np.power(batch_size, a17) * np.power(P, a18) * np.power(K, a19) 
+                wei_S_all = a3 * S_in + a4 * S_out + a5 * S_wei
 
-                alpha = 100
-
+                alpha = a22
                 term1 = wei1 * ((a1 * S_mul + a2 * (addtional_term)) / (flops_))
-                term2 =  wei2 * (wei_S_all) / bandwidth
-                maxterm = (term1 * np.exp(alpha * term1) + term2 * np.exp(alpha * term2)) / (np.exp(alpha * term1) + np.exp(alpha * term2))
-                # return wei1 * ((a1 * S_mul + a2 * (addtional_term)) / (kernel_size**0.75 * flops_)) + wei2 * (wei_S_all) / bandwidth + b1
+                term2 = wei2 * (wei_S_all) / bandwidth
+                # maxterm = (term1 * np.exp(alpha * term1) + term2 * np.exp(alpha * term2)) / (np.exp(alpha * term1) + np.exp(alpha * term2))
+                maxterm = np.log(np.exp(alpha * term1) + np.exp(alpha * term2)) / alpha
                 return  maxterm + b1
+            lower_bounds_conv = tuple([0]*22 + [-np.inf]*1)
 
-            lower_bounds_conv = tuple([0]*5 + [-np.inf]*1)
+            # def cost_func_dense(xs, a1, a2, a3, a4, a5, a6, b1):
+            #     G, S_mul, S_add, S_in, S_out, S_wei = xs[0:6]
+            #     C_in, C_out, origin_b= xs[6:]
 
-            def cost_func_dense(xs, a1, a2, a3, a4, a5, b1):
+            #     wei_S_all = a3 * S_in + a4 * S_out + a5 * S_wei
+            #     flops_ = G
+            #     bandwidth = G
+
+            #     alpha = a6
+
+            #     term1 = wei1 * ((a1 * S_mul) / (flops_))
+            #     term2 =  wei2 * (wei_S_all) / bandwidth
+            #     # maxterm = (term1 * np.exp(alpha * term1) + term2 * np.exp(alpha * term2)) / (np.exp(alpha * term1) + np.exp(alpha * term2))
+            #     maxterm = np.log(np.exp(alpha * term1) + np.exp(alpha * term2)) / alpha
+
+            #     # return wei1 * ((a1 * S_mul + a2 * (addtional_term)) / (kernel_size**0.75 * flops_)) + wei2 * (wei_S_all) / bandwidth + b1
+            #     return  maxterm + b1
+
+            # lower_bounds_dense = tuple([0]*6 + [-np.inf]*1)
+
+            def cost_func_dense(xs, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, a16, a17, a18, b1):
                 G, S_mul, S_add, S_in, S_out, S_wei = xs[0:6]
                 C_in, C_out, origin_b= xs[6:]
+          
+                # flops_ = G
+                # bandwidth = G
+                flops_ = np.power(G, a15)
+                bandwidth = np.power(G, a16)
 
+                ai = S_mul / (S_in + S_out + S_wei)
+
+                # wei1 = 1. / (1 + np.exp(-1.0 * a2 * (ai - a17)))
+                # wei2 = 1 - wei1
+
+                batch_size = S_mul / (C_in*C_out)
+                S_mul = np.power(batch_size, a6) * np.power(C_in, a7) * np.power(C_out, a8) 
+                S_wei = np.power(C_in, a9) * np.power(C_out, a10)
+                S_in = np.power(batch_size, a11) * np.power(C_in, a12)
+                S_out = np.power(batch_size, a13) * np.power(C_out, a14)
                 wei_S_all = a3 * S_in + a4 * S_out + a5 * S_wei
-                flops_ = G
-                bandwidth = G
 
-                alpha = 100
-
+                alpha = a18
                 term1 = wei1 * ((a1 * S_mul) / (flops_))
-                term2 =  wei2 * (wei_S_all) / bandwidth
-                maxterm = (term1 * np.exp(alpha * term1) + term2 * np.exp(alpha * term2)) / (np.exp(alpha * term1) + np.exp(alpha * term2))
-                
-
-                # return wei1 * ((a1 * S_mul + a2 * (addtional_term)) / (kernel_size**0.75 * flops_)) + wei2 * (wei_S_all) / bandwidth + b1
+                term2 = wei2 * (wei_S_all) / bandwidth
+                # maxterm = (term1 * np.exp(alpha * term1) + term2 * np.exp(alpha * term2)) / (np.exp(alpha * term1) + np.exp(alpha * term2))
+                maxterm = np.log(np.exp(alpha * term1) + np.exp(alpha * term2)) / alpha
                 return  maxterm + b1
+            lower_bounds_dense = tuple([0]*18 + [-np.inf]*1)
 
-            lower_bounds_dense = tuple([0]*5 + [-np.inf]*1)
-            
         else:
             raise
 
@@ -374,6 +430,9 @@ class CurveFiter:
             raise ValueError(op_type)
         self.up_bounds = tuple(len(self.lower_bounds) * [np.inf])
         self.p0 = [1]*len(self.lower_bounds)
+
+        # if NON_LINEAR == 'max':
+        #     self.p0[21] = 0.0001
 
 
     def no_linear_label(self, data_):
