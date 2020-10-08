@@ -7,10 +7,10 @@ import math
 
 BATCHSIZE_THESHOLD = 4
 VAR_THREHOLD = 0.2
-AVG_THREHOLD = 0.1
+AVG_THREHOLD = 0
 
 TRAIN_PERCENT = 1
-FP32_OR_FP16 = (True, True)
+FP32_OR_FP16 = (True, False)
 METANAME = ["S_mul", "S_add", "S_in", "S_out", "S_wei"]
 
 ### TODO (urgent), replace this
@@ -165,7 +165,7 @@ class DataLoader(BasicLoader):
                         continue
                 idx += 1
 
-        # self.BATCH_LIST_VALUE = [e for e in self.BATCH_LIST_VALUE if (e >= 0 and e <=1024)]
+        self.BATCH_LIST_VALUE = [e for e in self.BATCH_LIST_VALUE if (e >= 0 and e <=1024)]
         self.BATCH_LIST_VALUE = sorted(self.BATCH_LIST_VALUE)
         self.BATCH_LIST_STR = ["B=%d"%e for e in self.BATCH_LIST_VALUE]
 
@@ -363,51 +363,56 @@ class DataLoader(BasicLoader):
         assert metric in METANAME
         plot_group_by_op(op_names, op_labels, op_idxs, xaxis='B', yaxiss=metric)
 
-    def plot_avg2distribution():
-        raise NotImplementedError()
+    def plot_avg2distribution(self, target_optype_):
         plt.figure(num=1, figsize=(8, 6))
-        def __plot(op_id):
-            ax = plt.subplot(211 + op_id)
+        THRESHOLD = 0.1
+        all_data = np.array(self.all_data_dict[target_optype_]).astype(np.float)
+        all_avgs = np.copy(all_data[FULL_HEADERS[target_optype_].index("avg")])
 
-            avgs = batchsize2avg(NAMELIST_32.index(OP_NAMES[op_id]))
-            avgs_16 = batchsize2avg(NAMELIST_16.index(OP_NAMES[op_id]), fp16=True)
+        def _gen(_array):
+            assert len(_array.shape)==1
+            _array = np.sort(_array)
+            _len = _array.shape[0]
+            dist = []
+            ret = None
+            for i in range(_len):
+                dist.append(100 * i / _len)
+                if ret is None and _array[i] > THRESHOLD:
+                    ret = 100 * i / _len
+            return _array, np.array(dist), ret
 
-            op_id += 1
+        x1, y1, ret1 = _gen(all_avgs)
+        plt.plot(x1, y1, label="%f: %6.4f %%"%(THRESHOLD, ret1))
+        plt.legend()
+        plt.ylabel('Cumulative Distribution (%)')
+        plt.xlabel("Execution time (ms)")
 
-            avgs_ = batchsize2avg(NAMELIST_32.index(OP_NAMES[op_id]))
-            avgs_16_ = batchsize2avg(NAMELIST_16.index(OP_NAMES[op_id]), fp16=True)
+        plt.show()
 
-            avgs = np.concatenate((avgs, avgs_))
-            avgs_16 = np.concatenate((avgs_16, avgs_16_))
+    def plot_max_comp_mem(self, target_optype_):
+        all_data = np.array(self.all_data_dict[target_optype_]).astype(np.float)
+        if 'use_bias' in FULL_HEADERS[target_optype_]:
+            comp = all_data[FULL_HEADERS[target_optype_].index("S_mul")] + \
+                all_data[FULL_HEADERS[target_optype_].index("S_out")] * all_data[FULL_HEADERS[target_optype_].index("use_bias")]
+        else:
+            comp = all_data[FULL_HEADERS[target_optype_].index("S_mul")]
 
-            def _gen(_array):
-                assert len(_array.shape)==1
-                _array = np.sort(_array)
-                _len = _array.shape[0]
-                dist = []
-                ret = None
-                for i in range(_len):
-                    dist.append(100 * i / _len)
-                    if ret is None and _array[i] > THRESHOLD:
-                        ret = 100 * i / _len
-                return _array, np.array(dist), ret
+        comp = comp / max(comp)
 
-            x1, y1, ret1 = _gen(avgs)
-            x2, y2, ret2 = _gen(avgs_16)
+        mem = all_data[FULL_HEADERS[target_optype_].index("S_in")] + all_data[FULL_HEADERS[target_optype_].index("S_out")] \
+            + all_data[FULL_HEADERS[target_optype_].index("S_wei")]
+        mem = mem / max(mem)
 
-            ax.plot(x1, y1, label="fp32" + ", fp32 == %f: %6.4f %%"%(THRESHOLD, ret1))
-            ax.plot(x2, y2, label="fp16" + ", fp16 == %f: %6.4f %%"%(THRESHOLD, ret2))
+        avgs = all_data[FULL_HEADERS[target_optype_].index("avg")]
+        avgs = avgs / max(avgs)
 
-            # ax.text(0.1, ret1, "fp32: {}, {} %".format(0.1, ret1))
-            # ax.text(0.1, ret2, "fp16: {}, {} %".format(0.1, ret2))
-
-            plt.legend()
-            plt.ylabel('Cumulative Distribution (%)')
-            plt.xlabel("Execution time (ms)")
-
-        for op_id in range(2):
-            __plot(op_id)
-
+        fig = plt.figure(num=1, figsize=(8, 6))
+        ax = fig.add_subplot(111, projection='3d')
+        ax.scatter(comp, mem, avgs, label='Norm Execution Time')
+        ax.scatter(comp, mem, np.maximum(comp, mem), label='Max')
+        plt.xlabel("Computation Term")
+        plt.ylabel("Memory Term")
+        plt.legend()
         plt.show()
 
     def plot_B2cost_of_cast():
