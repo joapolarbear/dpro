@@ -449,21 +449,30 @@ class CurveFiter:
             raise ValueError("NON_LINEAR should be log:{}".format(NON_LINEAR))
 
     def train(self):
-        _train_x = np.transpose(self.train_x)
-        _train_y = self.no_linear_label(np.transpose(self.train_y).flatten())
-        # FIT_FUNC(_train_x, *self.p0)
-        self.popt, pcov = curve_fit(FIT_FUNC, _train_x, _train_y, 
-            bounds=(self.lower_bounds, self.up_bounds), p0=self.p0, maxfev=10000)
-        self.perr = np.sqrt(np.diag(pcov))
+        if len(self.train_x) == 0:
+            print("[Warning]: the size of training dataset is 0, skip...")
+            self.popt = self.perr = None
+        else:
+            _train_x = np.transpose(self.train_x)
+            _train_y = self.no_linear_label(np.transpose(self.train_y).flatten())
+            # FIT_FUNC(_train_x, *self.p0)
+            self.popt, pcov = curve_fit(FIT_FUNC, _train_x, _train_y, 
+                bounds=(self.lower_bounds, self.up_bounds), p0=self.p0, maxfev=100000)
+            self.perr = np.sqrt(np.diag(pcov))
         return self.popt, self.perr
 
     def test(self, verbose=True, popt=None):
+        if len(self.test_x) == 0:
+            print("[Warning]: the size of test dataset is 0, skip...")
+            return None
         _test_x = np.transpose(self.test_x)
         _test_y = self.no_linear_label(np.transpose(self.test_y).flatten())
         if popt is not None:
             avgs_pred = FIT_FUNC(_test_x, *popt)
-        else:
+        elif self.popt is not None:
             avgs_pred = FIT_FUNC(_test_x, *self.popt)
+        else:
+            return None
         diff, ratio = predict_error(_test_y, avgs_pred)
         error = float(ratio.split("%")[0])
         if verbose:
