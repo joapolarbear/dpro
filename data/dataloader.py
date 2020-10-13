@@ -10,7 +10,7 @@ VAR_THREHOLD = 0.2
 AVG_THREHOLD = 0
 
 TRAIN_PERCENT = 1
-FP32_OR_FP16 = (True, False)
+FP32_OR_FP16 = (True, True)
 METANAME = ["S_mul", "S_add", "S_in", "S_out", "S_wei"]
 
 ### TODO (urgent), replace this
@@ -38,7 +38,7 @@ class BasicLoader:
         and perform some filtering
         -----
         Return:
-            self.all_data_dict: shape = (n_features, n_samples)
+            self.all_data_dict: shape = (n_samples, n_features)
         '''
         all_data = np.array(self.all_data_dict[target_optype_]).astype(np.float)
 
@@ -73,8 +73,8 @@ class BasicLoader:
                 all_data[:, i] = all_data[:, i] / max(all_data[:, i])
         self.max_of_each_dim = np.array(self.max_of_each_dim)
 
-        n_features = all_data.shape[1]
         n_samples = all_data.shape[0]
+        n_features = all_data.shape[1]
         np.random.shuffle(all_data)
 
         ### split data to training data and test data
