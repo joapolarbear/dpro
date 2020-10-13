@@ -7,6 +7,7 @@ import numpy as np
 import os, sys
 from dataloader import DataLoader, MultiDataLoader, init_fig_base, FP32_OR_FP16, FULL_HEADERS, GFLOPS_FP32, GFLOPS_FP16
 import seaborn as sns
+from amp_cost_model import CurveFiter
 
 OPTYPES = ["conv", "dense"]
 
@@ -15,16 +16,16 @@ if sys.argv[1] == 'bert':
 elif sys.argv[1] == 'resnet':
     TARGET_OPTYPE = OPTYPES[0]
     ### V100
-    # RST_DIR=os.path.join("/Users/hhp/0/git/byteprofile-analysis/data/data_20200824", "20200824_02")
+    RST_DIR=os.path.join("/Users/hhp/0/git/byteprofile-analysis/data/data_20200824", "20200824_02")
     ### 1080Ti
-    RST_DIR=os.path.join("/Users/hhp/0/git/byteprofile-analysis/data/data_20200930", "20200930_05")
+    # RST_DIR=os.path.join("/Users/hhp/0/git/byteprofile-analysis/data/data_20200930", "20200930_05")
 elif sys.argv[1] == 'dense':
     TARGET_OPTYPE = OPTYPES[1]
     # RST_DIR=os.path.join("/Users/hhp/0/git/byteprofile-analysis/data/data_20200917", "20200917_06")
-    # RST_DIR=os.path.join("/Users/hhp/0/git/byteprofile-analysis/data/data_20200924", "20200924_01")
+    RST_DIR=os.path.join("/Users/hhp/0/git/byteprofile-analysis/data/data_20200924", "20200924_01")
     ### 1080Ti
     # RST_DIR=os.path.join("/Users/hhp/0/git/byteprofile-analysis/data/data_20200930", "20200930_03")
-    RST_DIR=os.path.join("/Users/hhp/0/git/byteprofile-analysis/data/data_20200930", "20200930_06")
+    # RST_DIR=os.path.join("/Users/hhp/0/git/byteprofile-analysis/data/data_20200930", "20200930_06")
 else:
     raise
 
@@ -315,7 +316,6 @@ def output_rawdata_all_op(attr, default_B=32):
 #####################################################################
 ### Test the error on all OPs
 ### Cross validation grouped by individual op
-from amp_cost_model import CurveFiter
 def test_grouped_by_individual_op():
     for i in range(1, len(OP_NAMES)):
         idxs = np.array([i])
@@ -497,7 +497,6 @@ def try_diff_combination():
     op_names_ = np.array(OP_NAMES)[idxs]
     # # op_names_ = OP_NAMES
     train_x, train_y, test_x, test_y = data_ld.collect_data(op_names_, TARGET_OPTYPE, verbose=True)
-    from amp_cost_model import CurveFiter
     pred = CurveFiter(train_x, train_y, test_x, test_y, FULL_HEADERS[TARGET_OPTYPE], op_type=TARGET_OPTYPE)
     popt, pcov = pred.train()
     print(popt)
@@ -642,7 +641,6 @@ def try_diff_combination():
 
 
 ## exp id 3:
-# from amp_cost_model import CurveFiter
 #### group by S_mul
 # idxs_list = [
 #     np.array([1]),
@@ -734,8 +732,7 @@ for idxs in idxs_list:
 #####################################################################
 # 20200917 (Thu)
 #####################################################################
-### exp id 1: add K^n to W1 term, K^m to W2 term, test n and m
-# from amp_cost_model import CurveFiter
+### exp id 1: add K^n to W1 term, K^m to W2 term, find the optimal n and m
 # op_names_ = OP_NAMES
 # train_x, train_y, test_x, test_y = data_ld.collect_data(op_names_, TARGET_OPTYPE, verbose=True)
 # for ni in range(20):
@@ -752,6 +749,34 @@ for idxs in idxs_list:
 #             raise
 #         errors.append(pred.test(verbose=False))
 #     print("n={}: {}".format(n, "\t".join([str(e) for e in errors])))
+
+
+#####################################################################
+#####################################################################
+# 20201008 (Thu)
+#####################################################################
+### exp id 1: create a group divider, control the td_len and fe_len
+
+
+op_names_ = OP_NAMES
+train_x, train_y, test_x, test_y = data_ld.collect_data(op_names_, TARGET_OPTYPE, verbose=True)
+
+from grouper import Grouper
+
+# target_dim = "avg"
+# grp = Grouper(td_len=0.1, fd_len=0.01, unit_len=0.001)
+# grp.divide_by_len("avg", train_x, train_y, test_x, test_y, headers=FULL_HEADERS[TARGET_OPTYPE])
+
+target_dim = "S_mul"
+grp = Grouper(td_len=0.01, fd_len=0.001, unit_len=0.0001)
+grp.divide_by_len(target_dim, train_x, train_y, test_x, test_y, headers=FULL_HEADERS[TARGET_OPTYPE])
+
+# target_dim = "S_mul"
+# grp = Grouper(td_len=0.001, fd_len=0., unit_len=0.0001)
+# grp.divide_with_upper(target_dim, train_x, train_y, test_x, test_y, headers=FULL_HEADERS[TARGET_OPTYPE])
+
+
+grp.train_test(target_dim, headers=FULL_HEADERS[TARGET_OPTYPE], op_type=TARGET_OPTYPE)
 
 
 
