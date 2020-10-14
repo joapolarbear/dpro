@@ -36,6 +36,22 @@ if args.option not in ['critical', 'combine', 'compare', "replay", "topo_sort", 
     traces = read_traces(pm.search(FileName.TRACE))
     name2sta, cat2sta = return_stat(traces)
 
+if args.option == "combine":
+    rst = []
+    for path in path_list:
+        rst += read_traces(path)
+    save_path = os.path.join(os.path.dirname(path_list[0]), "combine{}Json.json".format(len(path_list)))
+    with open(save_path, 'w') as fp:
+        json.dump(rst, fp)
+
+### map from operators to CUDA kernels, path[0] should be operator level traces and path[1] should be kernel level traces
+if args.option == "mapping":
+    op_traces = sorted(read_traces(path_list[0]), key=lambda x: x["ts"])
+    kernel_traces = sorted(read_traces(path_list[1]), key=lambda x: x["ts"])
+    for op_trace in op_traces:
+        pass
+
+    
 if args.option == "statistic":
     """ Output the statistic results """
     # \TODO: device id
