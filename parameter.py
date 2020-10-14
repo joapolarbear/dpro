@@ -1,3 +1,5 @@
+''' Manage the parameter info of a DNN model
+'''
 import re
 from trace_utils import *
 

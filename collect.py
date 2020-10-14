@@ -152,31 +152,7 @@ class Collector(object):
         ### TODO (huhanpeng): assume different host use the same dag, original dag
         self.dag = None
         self.single = False
-
-    def update_final_traces(self, _io=False, _comm=False, _operator=False):
-        trace_path = self.pm.search(FileName.TRACE)
-        assert os.path.exists(trace_path)
-        self.logger.info("Updating " + trace_path) 
-        with open(trace_path, 'r') as f:
-            self.time_dict = json.load(f)
-
-        if _io is True:
-            self.delete_traces_by_cat("I/O")
-            self.bpf_collect_io()
-
-        if _comm is True:
-            self.delete_traces_by_cat("Comm")
-            self.bpf_collect_comm()
-
-        if _operator is True:
-            self.delete_traces_by_cat("operator")
-            self.bpf_collect_comp()
-
-        TraceManager(self.time_dict, self.pm.dir_level).get_iter_time()
-
-        with open(trace_path, 'w') as f:
-            json.dump(self.time_dict, f, indent=4)
-
+        
     def delete_traces_by_cat(self, _cat):
         _rst_traces = {"traceEvents": []}
         _rst_traces["traceEvents"] = [_trace for _trace in self.time_dict["traceEvents"] if _trace["cat"] != _cat]
@@ -713,14 +689,6 @@ class Collector(object):
         with open(self.path_dict["update"], 'r') as f:
             rst_traces = json.load(f)
         self.time_dict["traceEvents"] += rst_traces["traceEvents"]
-
-    ### TODO (huhanpeng): delete
-    def loop_collect(self, sub_option):
-        if self.pm.dir_level == DirLevel.GPU:
-            if sub_option == "operator":
-                self.update_final_traces(_operator=True)
-            else:
-                self.re_gen_final_traces()
 
     def iter_combine(self):
         ts_ = time.time()
