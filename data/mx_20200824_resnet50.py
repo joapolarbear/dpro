@@ -201,7 +201,7 @@ def plot_2d_fit_result(predictor, op_idxs=None):
     def __plot(op_id, fig_base, fig_idx):
         x_axis_names = ["Batch Size", "S_mul", "S_add", "S_in", "S_out", "S_weight"]
         x_axis_idx = 0
-        xaxis = [b if x_axis_idx == 0 else meta_info.ret_mx_metadata(OP_NAMES[op_id], batch_size=b)[x_axis_idx] for b in data_ld.BATCH_LIST_VALUE]
+        xaxis = [b if x_axis_idx == 0 else data_ld.meta_info.ret_mx_metadata(OP_NAMES[op_id], batch_size=b)[x_axis_idx] for b in data_ld.BATCH_LIST_VALUE]
         model_size_32 = np.concatenate((np.array([[GFLOPS_FP32]*len(data_ld.model_size[op_id, 0, :])]), data_ld.model_size[op_id, :, :], data_ld.model_raw_info[op_id, :, :]), axis=0)
         model_size_16 = np.concatenate((np.array([[GFLOPS_FP16]*len(data_ld.model_size[op_id, 0, :])]), data_ld.model_size[op_id, :, :], data_ld.model_raw_info[op_id, :, :]), axis=0)
         
@@ -304,26 +304,26 @@ def output_rawdata_all_op(attr, default_B=32):
     idx = FULL_HEADERS[TARGET_OPTYPE].index(attr)
     if idx >= len(FULL_HEADERS['base']):
         for op_name in OP_NAMES:
-            raw_meta = meta_info.ret_mx_rawmeta(op_name, batch_size=32)
+            raw_meta = data_ld.meta_info.ret_mx_rawmeta(op_name, batch_size=32)
             print(raw_meta[idx-len(FULL_HEADERS['base'])])
     elif idx >= 2:
         for op_name in OP_NAMES:
-            meta = meta_info.ret_mx_metadata(op_name, batch_size=32)
+            meta = data_ld.meta_info.ret_mx_metadata(op_name, batch_size=32)
             print(meta[1+idx-2])
-# output_rawdata_all_op('std.dev')
+# output_rawdata_all_op('R')
 # raise
 
 #####################################################################
 ### Test the error on all OPs
 ### Cross validation grouped by individual op
 def test_grouped_by_individual_op():
-    for i in range(1, len(OP_NAMES)):
+    for i in range(0, len(OP_NAMES)):
         idxs = np.array([i])
         op_names_ = np.array(OP_NAMES)[idxs]
         train_x, train_y, test_x, test_y = data_ld.collect_data(op_names_, TARGET_OPTYPE, verbose=False)
         pred = CurveFiter(train_x, train_y, test_x, test_y, FULL_HEADERS[TARGET_OPTYPE], op_type=TARGET_OPTYPE)
         popt, pcov = pred.train()
-        print(pred.test(verbose=False))
+        print(i, pred.test(verbose=False))
 # test_grouped_by_individual_op()
 # raise
 
@@ -491,7 +491,7 @@ def try_diff_combination():
     ### dense
     # idxs = np.arange(0, 9)
     # idxs = np.array([0, 1])
-    idxs = np.arange(41, 50)
+    idxs = np.arange(0, 8)
     # data_ld.plot_group_by_op(OP_NAMES, OP_LABELS, op_idxs=idxs, xaxis='B', yaxiss=['avg'])
 
     op_names_ = np.array(OP_NAMES)[idxs]
@@ -549,9 +549,9 @@ def try_diff_combination():
 #     ### for meta data
 #     meta_list = []
 #     for op_name in OP_NAMES:
-#         _, S_mul, _, S_in, S_out, S_wei = meta_info.ret_mx_metadata(op_name, batch_size=32)
+#         _, S_mul, _, S_in, S_out, S_wei = data_ld.meta_info.ret_mx_metadata(op_name, batch_size=32)
 #         ### [H, W, C, R, S, P, Q, K, batch_size]
-#         raw_meta = meta_info.ret_mx_rawmeta(op_name, batch_size=32)
+#         raw_meta = data_ld.meta_info.ret_mx_rawmeta(op_name, batch_size=32)
 #         if target == 'S_mul':
 #             meta_list.append(S_mul)
 #         elif target == 'S_in':
@@ -757,7 +757,7 @@ for idxs in idxs_list:
 #####################################################################
 ### exp id 1: create a group divider, control the td_len and fe_len
 
-
+# '''
 op_names_ = OP_NAMES
 train_x, train_y, test_x, test_y = data_ld.collect_data(op_names_, TARGET_OPTYPE, verbose=True)
 
@@ -767,16 +767,21 @@ from grouper import Grouper
 # grp = Grouper(td_len=0.1, fd_len=0.01, unit_len=0.001)
 # grp.divide_by_len("avg", train_x, train_y, test_x, test_y, headers=FULL_HEADERS[TARGET_OPTYPE])
 
-target_dim = "S_mul"
-grp = Grouper(td_len=0.01, fd_len=0.001, unit_len=0.0001)
-grp.divide_by_len(target_dim, train_x, train_y, test_x, test_y, headers=FULL_HEADERS[TARGET_OPTYPE])
+# target_dim = "S_mul"
+# grp = Grouper(td_len=0.01, fd_len=0.001, unit_len=0.0001)
+# grp.divide_by_len(target_dim, train_x, train_y, test_x, test_y, headers=FULL_HEADERS[TARGET_OPTYPE])
 
 # target_dim = "S_mul"
 # grp = Grouper(td_len=0.001, fd_len=0., unit_len=0.0001)
 # grp.divide_with_upper(target_dim, train_x, train_y, test_x, test_y, headers=FULL_HEADERS[TARGET_OPTYPE])
 
+### divided by kernel size, note do not use K, since K denotes the output channel
+target_dim = "R"
+grp = Grouper(td_len=0.1, fd_len=0., unit_len=1)
+grp.divide_by_len(target_dim, train_x, train_y, test_x, test_y, headers=FULL_HEADERS[TARGET_OPTYPE])
+
 
 grp.train_test(target_dim, headers=FULL_HEADERS[TARGET_OPTYPE], op_type=TARGET_OPTYPE)
 
-
+# '''
 

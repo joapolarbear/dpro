@@ -66,6 +66,7 @@ class Grouper:
                 x = train_x[i, target_idx]
             else:
                 x = train_x[i, target_idx]
+
             grp_id = "%03d_%03d"%(int(x / self.td_len), int((x % self.td_len) % self.fd_len / self.unit_len)) \
                 if self.fd_len > 0 else "%03d_%03d"%(int(x / self.td_len), 0)
             if grp_id not in self.fitter_table:

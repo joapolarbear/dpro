@@ -10,7 +10,7 @@ VAR_THREHOLD = 0.2
 AVG_THREHOLD = 0
 
 TRAIN_PERCENT = 1
-FP32_OR_FP16 = (True, True)
+FP32_OR_FP16 = (True, False)
 METANAME = ["S_mul", "S_add", "S_in", "S_out", "S_wei"]
 
 ### TODO (urgent), replace this
@@ -31,6 +31,19 @@ def init_fig_base(cnt):
     w = math.ceil(cnt / h)
     fig_base = w * 100 + h * 10 + 1
     return fig_base, 0
+
+def print_array_values(a, idx):
+    ''' Used to check the values in an array
+    Parameters
+    ----------
+    a : array-like, shape = (n_samples, n_features)
+    idx: integer, target index of the second dimension
+    '''
+    value_dict = []
+    for i in range(a.shape[0]):
+        if a[i, idx] not in value_dict:
+            value_dict.append(a[i, idx])
+            print(a[i, idx])
 
 class BasicLoader:
     def gen_train_test_data(self, target_optype_, verbose=True):
@@ -57,6 +70,8 @@ class BasicLoader:
             print("Collect fp32 data - X:{}, Y:{}, fp16 data - X:{}, Y:{}".format(
                 self.fp32_x.shape, self.fp32_y.shape, self.fp16_x.shape, self.fp16_y.shape))
 
+        # print_array_values(all_data, 10)
+
         ### normalize data
         ### record the max value of each dimension
         self.max_of_each_dim = []
@@ -72,6 +87,8 @@ class BasicLoader:
                 self.max_of_each_dim.append(max(all_data[:, i]))
                 all_data[:, i] = all_data[:, i] / max(all_data[:, i])
         self.max_of_each_dim = np.array(self.max_of_each_dim)
+
+        # print_array_values(all_data, 10)
 
         n_samples = all_data.shape[0]
         n_features = all_data.shape[1]

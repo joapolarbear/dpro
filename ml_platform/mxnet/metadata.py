@@ -75,7 +75,6 @@ class MetaInfo:
                 ratio = 1
             return op_type, S_mul * ratio, S_add * ratio, S_in * ratio, S_out * ratio, S_wei
 
-        
         if op_type == "conv":
             ### outputs
             output_shape = self.name2shape[node]
