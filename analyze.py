@@ -31,7 +31,7 @@ sys.setrecursionlimit(1000000)
 
 path_list = args.path.split(',')
 """ Read traces and prepare statitic info"""
-if args.option not in ['critical', 'combine', 'compare', "replay", "topo_sort", "collect", "3dcompare", "optimize"]:
+if args.option not in ['critical', 'combine', 'mapping', 'compare', "replay", "topo_sort", "collect", "3dcompare", "optimize"]:
     pm = PathManager(path_list[0])
     traces = read_traces(pm.search(FileName.TRACE))
     name2sta, cat2sta = return_stat(traces)
@@ -48,10 +48,78 @@ if args.option == "combine":
 if args.option == "mapping":
     op_traces = sorted(read_traces(path_list[0]), key=lambda x: x["ts"])
     kernel_traces = sorted(read_traces(path_list[1]), key=lambda x: x["ts"])
-    for op_trace in op_traces:
-        pass
-
+    kernel_idx = 0
+    max_bias = 0 # real ts of kernel traces = trace['ts'] - max_bias
     
+    op_name2kernels = {}
+    kernels_table = {}
+    kernel_cnt = 0
+
+    def kernel_trace_ts(_idx, _bias=None):
+        return kernel_traces[_idx]['ts'] if _bias is None else kernel_traces[_idx]['ts'] - _bias
+
+    for op_trace in op_traces:
+        if 'args' not in op_trace:
+            continue
+        if op_trace['args']['cnt'] == 0:
+            ### for the first iteration, check the bias
+            while kernel_trace_ts(kernel_idx) < op_trace["ts"]:
+                kernel_idx += 1
+            while kernel_trace_ts(kernel_idx) < op_trace["ts"] + op_trace["dur"]:
+                ### check those relatively large kernel-level traces
+                ### it overlapping with a op-level trace but is not convered by that
+                ### NOTE: time unit is `ns`
+                if kernel_traces[kernel_idx]['dur'] > 100 and kernel_trace_ts(kernel_idx) + kernel_traces[kernel_idx]['dur'] > \
+                    op_trace['ts'] + op_trace['dur']:
+                    ### check the overlapping ratio, if the ratio > a threshold, take this kernel trace as a mapping from the op trace
+                    overlapping_ratio = ((op_trace['ts'] + op_trace['dur']) - (kernel_trace_ts(kernel_idx))) / kernel_traces[kernel_idx]['dur']
+                    if overlapping_ratio > 0.9:
+                        bias = (kernel_trace_ts(kernel_idx) + kernel_traces[kernel_idx]['dur']) - (op_trace['ts'] + op_trace['dur'])
+                        max_bias = max(bias, max_bias)
+                        logger.info("Update kernel-level traces bias: {}".format(max_bias))
+                kernel_idx += 1
+        elif op_trace['args']['cnt'] == 1:
+            ### for the second iteration, generate the mapping
+            op_name2kernels[op_trace['name']] = []
+            while kernel_trace_ts(kernel_idx, _bias=max_bias) < op_trace["ts"]:
+                kernel_idx += 1
+            while kernel_trace_ts(kernel_idx, _bias=max_bias) < op_trace["ts"] + op_trace["dur"]:
+                if kernel_traces[kernel_idx]['name'] not in kernels_table:
+                    kernels_table[kernel_traces[kernel_idx]['name']] = kernel_cnt
+                    op_name2kernels[op_trace['name']].append(kernel_cnt)
+                    kernel_cnt += 1
+                else:
+                    op_name2kernels[op_trace['name']].append(kernels_table[kernel_traces[kernel_idx]['name']])
+                kernel_idx += 1
+        else:
+            break
+
+    import xlsxwriter
+    workbook = xlsxwriter.Workbook(os.path.join(os.path.dirname(path_list[1]), 'mapfrom_op2kernels.xlsx'))
+    worksheet = workbook.add_worksheet("resnet50_v1_B32_1080Ti")
+    row = 0
+    for name, kernels in sorted(op_name2kernels.items()):
+        if row == 0:
+            # -- Output the header of the sheet
+            worksheet.write(0, 0, "operator name")
+            worksheet.write(0, 1, "kernel name")
+        row += 1
+        col = 0
+        worksheet.write(row, col, name)
+        for _k in kernels:
+            col += 1
+            worksheet.write(row, col, _k)
+    worksheet = workbook.add_worksheet("kernel_name2index")
+    row = 0
+    for name, idx in sorted(kernels_table.items(), key=lambda x: x[1]):
+        if row == 0:
+            worksheet.write(0, 0, "index")
+            worksheet.write(0, 1, "kernel name")
+        row += 1
+        worksheet.write(row, 0, idx)
+        worksheet.write(row, 1, name)
+    workbook.close()
+
 if args.option == "statistic":
     """ Output the statistic results """
     # \TODO: device id
