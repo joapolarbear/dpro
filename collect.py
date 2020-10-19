@@ -778,6 +778,13 @@ class Collector(object):
         self.para_dict = ParameterDict(metadata["gradient_name_list"])
         return self.para_dict.map_tensors_to_update(aggregate_num)
 
+    def first_valid_dir(self, _path):
+        for _dir in os.listdir(_path):
+            if _dir.startswith('.'):
+                continue
+            return _dir
+        raise ValueError("No valid directory under {}".format(_path))
+
     def collect_trail_dag(self):
         assert self.pm.dir_level == DirLevel.TRIAL
         self.logger.info("# Collecting DAG")
@@ -791,7 +798,7 @@ class Collector(object):
 
         if self.single:
             worker_path = os.path.join(self.pm.path, self.pm.dirs[0])
-            gpu_path = os.path.join(worker_path, os.listdir(worker_path)[0])
+            gpu_path = os.path.join(worker_path, self.first_valid_dir(worker_path))
             self.logger.info("## Collect DAG in %s" % (gpu_path))
             dagmanager = DAGManager(gpu_path, self.traceM, self.nccl_graph, self.byteps_graph, platform=self.platform, single=True)
             max_para_degree, _critical_path = dagmanager.gen_gpu_dag(_pretty=args_.pretty, update_dict=update_dict)

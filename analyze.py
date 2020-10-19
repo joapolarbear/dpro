@@ -59,7 +59,9 @@ if args.option == "mapping":
         return kernel_traces[_idx]['ts'] if _bias is None else kernel_traces[_idx]['ts'] - _bias
 
     for op_trace in op_traces:
-        if 'args' not in op_trace:
+        if 'args' not in op_trace or 'BW' in op_trace['name']:
+            continue
+        if 'FW' not in op_trace['name']:
             continue
         if op_trace['args']['cnt'] == 0:
             ### for the first iteration, check the bias
@@ -92,7 +94,14 @@ if args.option == "mapping":
                     op_name2kernels[op_trace['name']].append(kernels_table[kernel_traces[kernel_idx]['name']])
                 kernel_idx += 1
         else:
-            break
+            assert op_trace['name'] in op_name2kernels
+            while kernel_idx < len(kernel_traces) and kernel_trace_ts(kernel_idx, _bias=max_bias) < op_trace["ts"]:
+                kernel_idx += 1
+            while kernel_idx < len(kernel_traces) and kernel_trace_ts(kernel_idx, _bias=max_bias) < op_trace["ts"] + op_trace["dur"]:
+                assert kernel_traces[kernel_idx]['name'] in kernels_table
+                if kernels_table[kernel_traces[kernel_idx]['name']] not in op_name2kernels[op_trace['name']]:
+                    logger.info("{} has addional kernels in the following iterations".format(op_trace['name']))
+                kernel_idx += 1
 
     import xlsxwriter
     workbook = xlsxwriter.Workbook(os.path.join(os.path.dirname(path_list[1]), 'mapfrom_op2kernels.xlsx'))
