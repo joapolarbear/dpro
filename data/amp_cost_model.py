@@ -287,7 +287,6 @@ class CurveFiter:
 
             lower_bounds_conv = lower_bounds_dense = tuple([0]*9 + [-np.inf]*1)
         elif NON_LINEAR == 'piecewise':
-
             def cost_func_conv2d(xs, a1, a2, a3, a4, a5, a6, a7, a8, b1):
                 G, S_mul, S_add, S_in, S_out, S_wei = xs[0:6]
                 wei_S_all = a3 * S_in + a4 * S_out + a5 * S_wei
@@ -320,27 +319,47 @@ class CurveFiter:
                 return wei1 * ((a1 * np.ceil(batch_size*C_out / a6)*C_in) / (flops_)) + wei2 * (wei_S_all) / bandwidth + b1
             lower_bounds_dense = tuple([0]*6 + [-np.inf]*1)
 
-        elif NON_LINEAR == 'max':
-            # def cost_func_conv2d(xs, a1, a2, a3, a4, a5, a6, b1):
-            #     G, S_mul, S_add, S_in, S_out, S_wei = xs[0:6]
-            #     H, W, C, R, S, P, Q, K, origin_b, use_bias = xs[6:]
+        elif NON_LINEAR == 'max_linear':
+            def cost_func_conv2d(xs, a1, a2, a3, a4, a5, a6, b1):
+                G, S_mul, S_add, S_in, S_out, S_wei = xs[0:6]
+                H, W, C, R, S, P, Q, K, origin_b, use_bias = xs[6:]
 
-            #     wei_S_all = a3 * S_in + a4 * S_out + a5 * S_wei
-            #     addtional_term = S_out * use_bias
-            #     flops_ = G
-            #     bandwidth = G
-            #     kernel_size = R
+                wei_S_all = a3 * S_in + a4 * S_out + a5 * S_wei
+                addtional_term = S_out * use_bias
+                flops_ = G
+                bandwidth = G
+                kernel_size = R
 
-            #     alpha = a6
+                alpha = a6
 
-            #     term1 = wei1 * ((a1 * S_mul + a2 * (addtional_term)) / (flops_))
-            #     term2 =  wei2 * (wei_S_all) / bandwidth
-            #     # maxterm = (term1 * np.exp(alpha * term1) + term2 * np.exp(alpha * term2)) / (np.exp(alpha * term1) + np.exp(alpha * term2))
-            #     maxterm = np.log(np.exp(alpha * term1) + np.exp(alpha * term2)) / alpha
-            #     return  maxterm + b1
+                term1 = wei1 * ((a1 * S_mul + a2 * (addtional_term)) / (flops_))
+                term2 =  wei2 * (wei_S_all) / bandwidth
+                # maxterm = (term1 * np.exp(alpha * term1) + term2 * np.exp(alpha * term2)) / (np.exp(alpha * term1) + np.exp(alpha * term2))
+                maxterm = np.log(np.exp(alpha * term1) + np.exp(alpha * term2)) / alpha
+                return  maxterm + b1
+            lower_bounds_conv = tuple([0]*6 + [-np.inf]*1)
 
-            # lower_bounds_conv = tuple([0]*6 + [-np.inf]*1)
+            def cost_func_dense(xs, a1, a2, a3, a4, a5, a6, b1):
+                G, S_mul, S_add, S_in, S_out, S_wei = xs[0:6]
+                C_in, C_out, origin_b= xs[6:]
 
+                wei_S_all = a3 * S_in + a4 * S_out + a5 * S_wei
+                flops_ = G
+                bandwidth = G
+
+                alpha = a6
+
+                term1 = wei1 * ((a1 * S_mul) / (flops_))
+                term2 =  wei2 * (wei_S_all) / bandwidth
+                # maxterm = (term1 * np.exp(alpha * term1) + term2 * np.exp(alpha * term2)) / (np.exp(alpha * term1) + np.exp(alpha * term2))
+                maxterm = np.log(np.exp(alpha * term1) + np.exp(alpha * term2)) / alpha
+
+                # return wei1 * ((a1 * S_mul + a2 * (addtional_term)) / (kernel_size**0.75 * flops_)) + wei2 * (wei_S_all) / bandwidth + b1
+                return  maxterm + b1
+
+            lower_bounds_dense = tuple([0]*6 + [-np.inf]*1)
+
+        elif NON_LINEAR == 'max_exp':
             def cost_func_conv2d(xs, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, a16, a17, a18, a19, a20, a21, a22, b1):
                 G, S_mul, S_add, S_in, S_out, S_wei = xs[0:6]
                 H, W, C, R, S, P, Q, K, origin_b, use_bias = xs[6:]
@@ -366,26 +385,6 @@ class CurveFiter:
                 maxterm = np.log(np.exp(alpha * term1) + np.exp(alpha * term2)) / alpha
                 return  maxterm + b1
             lower_bounds_conv = tuple([0]*22 + [-np.inf]*1)
-
-            # def cost_func_dense(xs, a1, a2, a3, a4, a5, a6, b1):
-            #     G, S_mul, S_add, S_in, S_out, S_wei = xs[0:6]
-            #     C_in, C_out, origin_b= xs[6:]
-
-            #     wei_S_all = a3 * S_in + a4 * S_out + a5 * S_wei
-            #     flops_ = G
-            #     bandwidth = G
-
-            #     alpha = a6
-
-            #     term1 = wei1 * ((a1 * S_mul) / (flops_))
-            #     term2 =  wei2 * (wei_S_all) / bandwidth
-            #     # maxterm = (term1 * np.exp(alpha * term1) + term2 * np.exp(alpha * term2)) / (np.exp(alpha * term1) + np.exp(alpha * term2))
-            #     maxterm = np.log(np.exp(alpha * term1) + np.exp(alpha * term2)) / alpha
-
-            #     # return wei1 * ((a1 * S_mul + a2 * (addtional_term)) / (kernel_size**0.75 * flops_)) + wei2 * (wei_S_all) / bandwidth + b1
-            #     return  maxterm + b1
-
-            # lower_bounds_dense = tuple([0]*6 + [-np.inf]*1)
 
             def cost_func_dense(xs, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, a16, a17, a18, b1):
                 G, S_mul, S_add, S_in, S_out, S_wei = xs[0:6]
@@ -443,7 +442,7 @@ class CurveFiter:
         elif NON_LINEAR == 'log':
             # return data_
             return np.log(data_ + 1)
-        elif NON_LINEAR in ['piecewise', 'max'] :
+        elif NON_LINEAR in ['piecewise', 'max_linear', 'max_exp'] :
             return data_
         else:
             raise ValueError("NON_LINEAR should be log:{}".format(NON_LINEAR))

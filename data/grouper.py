@@ -3,24 +3,25 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import numpy as np
 
-class Grouper:
-    def __init__(self, td_len=0.1, fd_len=0.01, unit_len=0.001, max_grp_size=20):
-        self.fitter_table = {}
-
+class Delimiter:
+    def __init__(self, target_dim, td_len=1., fd_len=0., unit_len=1., max_grp_size=20):
         assert td_len <= 1 and fd_len <= fd_len, "td_len ({}) must be <= 1 and fd_len ({}) must be <= td_len".format(td_len, fd_len)
         # assert fd_len == 0 or td_len % fd_len == 0, "td_len ({}) must be divisible by fd_len ({}) but {} or fd_len = 0".format(td_len, fd_len, td_len % fd_len)
         # assert 1 % td_len == 0, "1 must be divisible by td_len ({})".format(td_len)
+        self.target_dim = target_dim
         self.td_len = td_len
         self.fd_len = fd_len
-
         ### unit_len is used since the target dimension may not be integer
         self.unit_len = unit_len
-
         self.max_grp_size = max_grp_size
 
-    def divide_with_upper(self, target_dim, train_x, train_y, test_x, test_y, headers, op_type="conv", visual=True):
-        if target_dim != 'avg' and target_dim != 'intensity':
-            target_idx = headers.index(target_dim) - 1
+class Grouper:
+    def __init__(self, ):
+        self.fitter_table = {}  
+
+    def divide_with_upper(self, dels, train_x, train_y, test_x, test_y, headers, op_type="conv", visual=True):
+        if dels.target_dim != 'avg' and dels.target_dim != 'intensity':
+            target_idx = headers.index(dels.target_dim) - 1
 
         sort_ind = np.argsort(train_x[:, target_idx])
         grp_id = 0
@@ -38,37 +39,23 @@ class Grouper:
             self.fitter_table[grp_id]["test_y"].append(train_y[i])
 
             grp_size += 1
-            if grp_size >= self.max_grp_size:
+            if grp_size >= dels.max_grp_size:
                 grp_id += 1
                 grp_size = 0
 
-
-    def divide_by_len(self, target_dim, train_x, train_y, test_x, test_y, headers):
+    def divide_by_len(self, dels, train_x, train_y, test_x, test_y, headers):
         """
         Parameters
         ----------
-        target_dim: traget dimension used for division
+        dels: class `Delimiter` or a list of class `Delimiter`, containing traget dimension, fd_len, ... used for division
         train_x : shape = (n_samples, n_features)
         ...
         """
-        ### target dimension index needs to exclude avg
-        if target_dim != 'avg' and target_dim != 'intensity':
-            target_idx = headers.index(target_dim) - 1
-
-        # self.unit_len = min(min(train_x[target_idx, :]), min(test_x[target_idx, :]))
+        if not isinstance(dels, list):
+            dels = [dels]
 
         for i in range(train_x.shape[0]):
-            if target_dim == 'avg':
-                x = train_y[i, 0]
-            elif target_dim == 'intensity':
-                raise
-            elif target_dim == 'B':
-                x = train_x[i, target_idx]
-            else:
-                x = train_x[i, target_idx]
-
-            grp_id = "%03d_%03d"%(int(x / self.td_len), int((x % self.td_len) % self.fd_len / self.unit_len)) \
-                if self.fd_len > 0 else "%03d_%03d"%(int(x / self.td_len), 0)
+            grp_id = self.gen_grp_id(dels, train_x[i], train_y[i], headers)
             if grp_id not in self.fitter_table:
                 self.fitter_table[grp_id] = {
                     "train_x": [], "train_y": [],
@@ -77,14 +64,7 @@ class Grouper:
             self.fitter_table[grp_id]["train_y"].append(train_y[i])
 
         for i in range(test_x.shape[0]):
-            if target_dim == 'avg':
-                x = test_y[i, 0]
-            elif target_dim == 'intensity':
-                raise
-            else:
-                x = test_x[i, target_idx]
-            grp_id = "%03d_%03d"%(int(x / self.td_len), int((x % self.td_len) % self.fd_len / self.unit_len)) \
-                if self.fd_len > 0 else "%03d_%03d"%(int(x / self.td_len), 0)
+            grp_id = self.gen_grp_id(dels, test_x[i], test_y[i], headers)
             if grp_id not in self.fitter_table:
                 self.fitter_table[grp_id] = {
                     "train_x": [], "train_y": [],
@@ -93,7 +73,42 @@ class Grouper:
             self.fitter_table[grp_id]["test_x"].append(test_x[i])
             self.fitter_table[grp_id]["test_y"].append(test_y[i])
 
-    def train_test(self, target_dim, headers, op_type="conv", visual=True):
+    def gen_grp_id(self, delimiters, xdata, ydata, headers):
+        """
+        Parameters
+        ----------
+        delimiters: a list of class `Delimiter`, containing traget dimension, fd_len, ... used for division
+        xdata : shape = (n_features)
+        ...
+        """
+        grp_ids = []
+        for delimiter in delimiters:
+            ### select the refer according to the target dimension
+            if delimiter.target_dim == 'avg':
+                x = ydata[0]
+            elif delimiter.target_dim == 'intensity':
+                raise
+            else:
+                ### target dimension index needs to exclude avg
+                target_idx = headers.index(delimiter.target_dim) - 1
+                x = xdata[target_idx]
+            grp_id = "%03d_%03d"%(int(x / delimiter.td_len), int((x % delimiter.td_len) % delimiter.fd_len / delimiter.unit_len)) \
+                if delimiter.fd_len > 0 else "%03d"%(int(x / delimiter.td_len))
+            grp_ids.append(grp_id)
+        return '-'.join(grp_ids)
+
+    def print_dels(self, dels):
+        rst = None
+        for _del in dels:
+            if rst is None: 
+                rst = "del={}, td_len={}, fd_len={}, unit_len={}, max_grp_size={}".format(_del.target_dim, _del.td_len, _del.fd_len, _del.unit_len, _del.max_grp_size)
+            else:
+                rst += "\ndel={}, td_len={}, fd_len={}, unit_len={}, max_grp_size={}".format(_del.target_dim, _del.td_len, _del.fd_len, _del.unit_len, _del.max_grp_size)
+        return rst
+
+    def train_test(self, dels, headers, op_type="conv", visual=True):
+        if not isinstance(dels, list):
+            dels = [dels]
         print("Total number of groups: {}".format(len(self.fitter_table)))
         plots = [[], [], [], []]
         for grp_id in sorted(self.fitter_table.keys()):
@@ -110,8 +125,12 @@ class Grouper:
                     self.fitter_table[grp_id]["fitter"].train_y.shape, 
                     self.fitter_table[grp_id]["fitter"].test_x.shape, 
                     self.fitter_table[grp_id]["fitter"].test_y.shape))
-            popt, pcov = self.fitter_table[grp_id]["fitter"].train()
-            error = self.fitter_table[grp_id]["fitter"].test(verbose=True)
+            try:
+                popt, pcov = self.fitter_table[grp_id]["fitter"].train()
+                error = self.fitter_table[grp_id]["fitter"].test(verbose=True)
+            except RuntimeError:
+                print("[WARNING] RuntimeError")
+                error = None
 
             if error is not None:
                 plots[0].append(grp_id)
@@ -126,19 +145,19 @@ class Grouper:
             bar_width = 0.4
 
             fig, ax= plt.subplots()
-            ax.set_xlabel(target_dim)
+            ax.set_xlabel('Group ID')
             ax.bar(xaxis, plots[1], label='training data size', width=bar_width, color=clrs[0])
             ax.bar(xaxis + bar_width, plots[2], label='test data size', width=bar_width, color=clrs[2])
             plt.xticks(xaxis + bar_width/2, plots[0], rotation=80)
-            plt.legend(loc=1)
+            plt.legend(loc=2)
             
             ax = ax.twinx()
             ax.plot(plots[0], plots[3], '.-', label='fitting error = %6.4f %%'%(sum(plots[3])/len(plots[3])))
             ax.set_ylabel("Fitting error (%)")
-            plt.legend(loc=2)
+            plt.legend(loc=1)
 
             ax.tick_params(axis='y', labelcolor=clrs[3])
-            plt.title("Data size and fitting error of each group \n (td_len={}, fd_len={}, unit_len={})".format(self.td_len, self.fd_len, self.unit_len))
+            plt.title("Data size and fitting error of each group \n{}".format(self.print_dels(dels)))
 
             fig.tight_layout()  # otherwise the right y-label is slightly clipped
             plt.show()
