@@ -5,6 +5,12 @@ import numpy as np
 
 class Delimiter:
     def __init__(self, target_dim, td_len=1., fd_len=0., unit_len=1., max_grp_size=20):
+        """
+        Parameters
+        ----------
+        target_dim : str, the target dimension used to divide the dataset
+        td_len : integer
+        """
         assert td_len <= 1 and fd_len <= fd_len, "td_len ({}) must be <= 1 and fd_len ({}) must be <= td_len".format(td_len, fd_len)
         # assert fd_len == 0 or td_len % fd_len == 0, "td_len ({}) must be divisible by fd_len ({}) but {} or fd_len = 0".format(td_len, fd_len, td_len % fd_len)
         # assert 1 % td_len == 0, "1 must be divisible by td_len ({})".format(td_len)
