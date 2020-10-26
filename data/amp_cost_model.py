@@ -189,7 +189,7 @@ class CurveFiter:
         if LINEARITY == 'linear':
             def cost_func_conv2d(xs, a1, a2, a3, a4, a5, b1):
                 G, S_mul, S_add, S_in, S_out, S_wei = xs[0:6]
-                H, W, C, R, S, P, Q, K, origin_b, use_bias = xs[6:]
+                H, W, C, R, S, P, Q, K, batch_size, use_bias = xs[6:]
 
                 wei_S_all = a3 * S_in + a4 * S_out + a5 * S_wei
                 addtional_term = S_out * use_bias
@@ -201,7 +201,7 @@ class CurveFiter:
 
             def cost_func_dense(xs, a1, a2, a3, a4, a5, b1):
                 G, S_mul, S_add, S_in, S_out, S_wei = xs[0:6]
-                C_in, C_out, origin_b= xs[6:]
+                C_in, C_out, batch_size = xs[6:]
 
                 wei_S_all = a3 * S_in + a4 * S_out + a5 * S_wei
                 flops_ = G
@@ -214,7 +214,7 @@ class CurveFiter:
         elif LINEARITY == 'exp':
             def cost_func_conv2d(xs, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, a16, a17, a18, a19, a20, a21, b1):
                 G, S_mul, S_add, S_in, S_out, S_wei = xs[0:6]
-                H, W, C, R, S, P, Q, K, origin_b, use_bias = xs[6:]
+                H, W, C, R, S, P, Q, K, batch_size, use_bias = xs[6:]
 
                 addtional_term = S_out * use_bias
                 # flops_ = G
@@ -223,7 +223,6 @@ class CurveFiter:
                 bandwidth = np.power(G, a21)
                 
                 kernel_size = R
-                batch_size = S_mul / (K*P*Q*C*R*S)
                 S_mul = np.power(batch_size, a6) *  np.power(kernel_size, a7) * np.power(P, a8) * np.power(C, a9) * np.power(K, a10)
                 S_wei = np.power(kernel_size, a11) * np.power(C, a12) * np.power(K, a13) 
                 S_in = np.power(batch_size, a14) * np.power(H, a15) * np.power(C, a16) 
@@ -233,7 +232,7 @@ class CurveFiter:
             
             def cost_func_dense(xs, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, a16, a17, b1):
                 G, S_mul, S_add, S_in, S_out, S_wei = xs[0:6]
-                C_in, C_out, origin_b= xs[6:]
+                C_in, C_out, batch_size= xs[6:]
           
                 # flops_ = G
                 # bandwidth = G
@@ -245,7 +244,6 @@ class CurveFiter:
                 # wei1 = 1. / (1 + np.exp(-1.0 * a2 * (ai - a17)))
                 # wei2 = 1 - wei1
 
-                batch_size = S_mul / (C_in*C_out)
                 S_mul = np.power(batch_size, a6) * np.power(C_in, a7) * np.power(C_out, a8) 
                 S_wei = np.power(C_in, a9) * np.power(C_out, a10)
                 S_in = np.power(batch_size, a11) * np.power(C_in, a12)
@@ -259,11 +257,10 @@ class CurveFiter:
         elif LINEARITY == 'log':
             # def cost_func_conv2d(xs, a1, a2, a3, a4, a5, a6, a7, b1):
             #     G, S_mul, S_add, S_in, S_out, S_wei = xs[0:6]
-            #     H, W, C, R, S, P, Q, K, origin_b, use_bias = xs[6:]
+            #     H, W, C, R, S, P, Q, K, batch_size, use_bias = xs[6:]
             #     wei_S_all = a3 * S_in + a4 * S_out + a5 * S_wei
             #     addtional_term = S_out * use_bias
             #     kernel_size = R
-            #     batch_size = S_mul / (K*P*Q*C*R*S)
             #     return (a1) * np.log(batch_size) + \
             #             a2 * np.log(kernel_size) + \
             #             (a3) * np.log(P) + \
@@ -273,13 +270,12 @@ class CurveFiter:
 
             def cost_func_conv2d(xs, a1, a2, a3, a4, a5, a6, a7, a8, a9, b1):
                 G, S_mul, S_add, S_in, S_out, S_wei = xs[0:6]
-                H, W, C, R, S, P, Q, K, origin_b, use_bias = xs[6:]
+                H, W, C, R, S, P, Q, K, batch_size, use_bias = xs[6:]
                 wei_S_all = a3 * S_in + a4 * S_out + a5 * S_wei
                 flops_ = G
                 bandwidth = G
                 addtional_term = S_out * use_bias
                 kernel_size = R
-                batch_size = S_mul / (K*P*Q*C*R*S)
 
                 S_mul = a1 * np.log(batch_size) + a6 * np.log(kernel_size) + a7 * np.log(P) + a8 * np.log(C) + a9 * np.log(K)
 
@@ -309,8 +305,7 @@ class CurveFiter:
 
             def cost_func_dense(xs, a1, a2, a3, a4, a5, a6, b1):
                 G, S_mul, S_add, S_in, S_out, S_wei = xs[0:6]
-                C_in, C_out, origin_b= xs[6:]
-                batch_size = S_mul / (C_in*C_out)
+                C_in, C_out, batch_size= xs[6:]
 
                 wei_S_all = a3 * S_in + a4 * S_out + a5 * S_wei
                 flops_ = G
@@ -322,7 +317,7 @@ class CurveFiter:
         elif LINEARITY == 'max_linear':
             def cost_func_conv2d(xs, a1, a2, a3, a4, a5, a6, b1):
                 G, S_mul, S_add, S_in, S_out, S_wei = xs[0:6]
-                H, W, C, R, S, P, Q, K, origin_b, use_bias = xs[6:]
+                H, W, C, R, S, P, Q, K, batch_size, use_bias = xs[6:]
 
                 wei_S_all = a3 * S_in + a4 * S_out + a5 * S_wei
                 addtional_term = S_out * use_bias
@@ -341,7 +336,7 @@ class CurveFiter:
 
             def cost_func_dense(xs, a1, a2, a3, a4, a5, a6, b1):
                 G, S_mul, S_add, S_in, S_out, S_wei = xs[0:6]
-                C_in, C_out, origin_b= xs[6:]
+                C_in, C_out, batch_size= xs[6:]
 
                 wei_S_all = a3 * S_in + a4 * S_out + a5 * S_wei
                 flops_ = G
@@ -362,7 +357,7 @@ class CurveFiter:
         elif LINEARITY == 'max_exp':
             def cost_func_conv2d(xs, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, a16, a17, a18, a19, a20, a21, a22, b1):
                 G, S_mul, S_add, S_in, S_out, S_wei = xs[0:6]
-                H, W, C, R, S, P, Q, K, origin_b, use_bias = xs[6:]
+                H, W, C, R, S, P, Q, K, batch_size, use_bias = xs[6:]
 
                 addtional_term = S_out * use_bias
                 # flops_ = G
@@ -371,7 +366,6 @@ class CurveFiter:
                 bandwidth = np.power(G, a21)
                 
                 kernel_size = R
-                batch_size = S_mul / (K*P*Q*C*R*S)
                 S_mul = np.power(batch_size, a6) *  np.power(kernel_size, a7) * np.power(P, a8) * np.power(C, a9) * np.power(K, a10)
                 S_wei = np.power(kernel_size, a11) * np.power(C, a12) * np.power(K, a13) 
                 S_in = np.power(batch_size, a14) * np.power(H, a15) * np.power(C, a16) 
@@ -388,7 +382,7 @@ class CurveFiter:
 
             def cost_func_dense(xs, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, a16, a17, a18, b1):
                 G, S_mul, S_add, S_in, S_out, S_wei = xs[0:6]
-                C_in, C_out, origin_b= xs[6:]
+                C_in, C_out, batch_size = xs[6:]
           
                 # flops_ = G
                 # bandwidth = G
@@ -400,7 +394,6 @@ class CurveFiter:
                 # wei1 = 1. / (1 + np.exp(-1.0 * a2 * (ai - a17)))
                 # wei2 = 1 - wei1
 
-                batch_size = S_mul / (C_in*C_out)
                 S_mul = np.power(batch_size, a6) * np.power(C_in, a7) * np.power(C_out, a8) 
                 S_wei = np.power(C_in, a9) * np.power(C_out, a10)
                 S_in = np.power(batch_size, a11) * np.power(C_in, a12)

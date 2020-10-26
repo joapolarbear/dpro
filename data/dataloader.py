@@ -1,13 +1,13 @@
 import os
 import numpy as np
-from ml_platform.mxnet.metadata import MetaInfo, FULL_HEADERS
+from ml_platform.mxnet.metadata import MetaInfo, FULL_HEADERS, OP_HYPER_PARAMETERS, BASE_HEADER_LEN
 import matplotlib.pyplot as plt
 import seaborn as sns
 import math
 
 BATCHSIZE_THESHOLD = 512
 BATCHSIZE_UPPER = 1e6
-VAR_THREHOLD = 0.2
+STDDEV_THREHOLD = 0.2
 AVG_THREHOLD = 0
 
 TRAIN_PERCENT = 0.9
@@ -195,7 +195,7 @@ class DataLoader(BasicLoader):
         '''
         ### model_size[node_name][S_mul, S_add, ...][len= # of batch value]
         ### shape = (n_nodes, len(METANAME), n_batchsize_values)
-        self.model_size = np.array([list(zip(*[self.meta_info.ret_mx_metadata(op_name, batch_size=b)[1:] for b in self.BATCH_LIST_VALUE])) for op_name in op_names])
+        self.model_size = np.array([list(zip(*[self.meta_info.ret_mx_metadata(op_name, batch_size=b) for b in self.BATCH_LIST_VALUE])) for op_name in op_names])
         self.model_raw_info = np.array([list(zip(*[self.meta_info.ret_mx_rawmeta(op_name, batch_size=b) for b in self.BATCH_LIST_VALUE])) for op_name in op_names])
         self.intensity = self.model_size[:, 0, :] / (self.model_size[:, 2, :] + self.model_size[:, 3, :] + self.model_size[:, 4, :])
 
@@ -226,7 +226,13 @@ class DataLoader(BasicLoader):
             ### Used to collect data from multiple dataloaders
             _all_data_dict = multi_data_dict
 
-        def __record_xdata(S_mul, S_add, S_in, S_out, S_wei, gflops, avg, op_type, addition=None):
+        def __record_xdata(metadata, gflops, avg, op_type, addition=None, batch_size=None):
+            """ record one data sample 
+            Parameters
+            ----------
+            metadata: list
+            """
+            S_mul, S_add, S_in, S_out, S_wei = metadata
             if op_type not in _all_data_dict:
                 _all_data_dict[op_type] = [[], [], [], [], [], [], []]
             _all_data_dict[op_type][0].append(avg)
@@ -237,12 +243,16 @@ class DataLoader(BasicLoader):
             _all_data_dict[op_type][5].append(S_out)
             _all_data_dict[op_type][6].append(S_wei)
 
+            ### Dynamically add hyperparametes to the dataset
             if addition is not None and isinstance(addition, list):
+                ### update the value of batch size
+                batch_size_idx = OP_HYPER_PARAMETERS[op_type].index('B')
                 for idx, e in enumerate(addition):
-                    if idx+7 >= len(_all_data_dict[op_type]):
-                        _all_data_dict[op_type].append([addition[idx]])
+                    value = addition[idx] if idx != batch_size_idx else batch_size
+                    if idx+BASE_HEADER_LEN >= len(_all_data_dict[op_type]):
+                        _all_data_dict[op_type].append([value])
                     else:
-                        _all_data_dict[op_type][idx+7].append(addition[idx])
+                        _all_data_dict[op_type][idx+BASE_HEADER_LEN].append(value)
 
         for i in range(len(op_names_)):
             for b in self.BATCH_LIST_VALUE:
@@ -251,24 +261,25 @@ class DataLoader(BasicLoader):
                     continue
 
                 ### collect data
-                op_type, S_mul, S_add, S_in, S_out, S_wei = self.meta_info.ret_mx_metadata(op_names_[i], batch_size=b)
+                op_type = self.meta_info.parse_op_type(op_names_[i])
+                metadata = self.meta_info.ret_mx_metadata(op_names_[i], batch_size=b)
 
                 if FP32_OR_FP16[0]:
                     idx_in_32 = self.NAMELIST_32.index(op_names_[i])
                     var_ = self.VAR_32["B=%d"%b][idx_in_32] if "B=%d"%b in self.VAR_32 else 0
                     avg_ = self.DATA_32["B=%d"%b][idx_in_32]
-                    if avg_ >= AVG_THREHOLD and (var_ / avg_) <= VAR_THREHOLD:
+                    if avg_ >= AVG_THREHOLD and (np.sqrt(var_) / avg_) <= STDDEV_THREHOLD:
                         ### [H, W, C, R, S, P, Q, K, batch_size]
                         raw_meta = self.meta_info.ret_mx_rawmeta(op_names_[i], batch_size=b)
-                        __record_xdata(S_mul, S_add, S_in, S_out, S_wei, GFLOPS_FP32, avg_, op_type, addition=raw_meta)
+                        __record_xdata(metadata, GFLOPS_FP32, avg_, op_type, addition=raw_meta, batch_size=b)
 
                 if FP32_OR_FP16[1]:
                     idx_in_16 = self.NAMELIST_16.index(op_names_[i])
                     var_ = self.VAR_16["B=%d"%b][idx_in_16] if "B=%d"%b in self.VAR_16 else 0
                     avg_ = self.DATA_16["B=%d"%b][idx_in_16]
-                    if avg_ >= AVG_THREHOLD and (var_ / avg_) <= VAR_THREHOLD:
+                    if avg_ >= AVG_THREHOLD and (np.sqrt(var_) / avg_) <= STDDEV_THREHOLD:
                         raw_meta = self.meta_info.ret_mx_rawmeta(op_names_[i], batch_size=b)
-                        __record_xdata(S_mul, S_add, S_in, S_out, S_wei, GFLOPS_FP16, avg_, op_type, addition=raw_meta)
+                        __record_xdata(metadata, GFLOPS_FP16, avg_, op_type, addition=raw_meta, batch_size=b)
 
             # _raw_meta =[0]*len(raw_meta)
             # __record_xdata(0, 0, 0, 0, 0, GFLOPS_FP32, 0, "Conv2D", addition=_raw_meta)
