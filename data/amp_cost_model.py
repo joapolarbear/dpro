@@ -130,7 +130,7 @@ class BayesPredictor:
 from scipy.optimize import curve_fit
 wei1, wei2 = 1, 1
 ADD_ADDITIONAL = True
-NON_LINEAR = None # \in ['log', 'exp', sigmoid', 'piecewise', 'max'] or None
+LINEARITY = 'linear' # \in ['linear', log', 'exp', sigmoid', 'piecewise', 'max'] or None
 
 
 # def cost_func(xs, a1, a2, a3, a4, a5, a6, a7, a8, a9, b1, b2, b3):
@@ -186,7 +186,7 @@ class CurveFiter:
         E2 = 2 if E2_ is None else E2_
         E1 = E2 = 0
         
-        if NON_LINEAR is None:
+        if LINEARITY == 'linear':
             def cost_func_conv2d(xs, a1, a2, a3, a4, a5, b1):
                 G, S_mul, S_add, S_in, S_out, S_wei = xs[0:6]
                 H, W, C, R, S, P, Q, K, origin_b, use_bias = xs[6:]
@@ -211,7 +211,7 @@ class CurveFiter:
 
             lower_bounds_conv = lower_bounds_dense = tuple([0]*5 + [-np.inf]*1)
 
-        elif NON_LINEAR == 'exp':
+        elif LINEARITY == 'exp':
             def cost_func_conv2d(xs, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, a16, a17, a18, a19, a20, a21, b1):
                 G, S_mul, S_add, S_in, S_out, S_wei = xs[0:6]
                 H, W, C, R, S, P, Q, K, origin_b, use_bias = xs[6:]
@@ -256,7 +256,7 @@ class CurveFiter:
             lower_bounds_conv = tuple([0]*21 + [-np.inf]*1)
             lower_bounds_dense = tuple([0]*17 + [-np.inf]*1)
 
-        elif NON_LINEAR == 'log':
+        elif LINEARITY == 'log':
             # def cost_func_conv2d(xs, a1, a2, a3, a4, a5, a6, a7, b1):
             #     G, S_mul, S_add, S_in, S_out, S_wei = xs[0:6]
             #     H, W, C, R, S, P, Q, K, origin_b, use_bias = xs[6:]
@@ -286,7 +286,7 @@ class CurveFiter:
                 return wei1 * ((S_mul + a2 * (addtional_term)) / (flops_)) + wei2 * (wei_S_all) / bandwidth + b1
 
             lower_bounds_conv = lower_bounds_dense = tuple([0]*9 + [-np.inf]*1)
-        elif NON_LINEAR == 'piecewise':
+        elif LINEARITY == 'piecewise':
             def cost_func_conv2d(xs, a1, a2, a3, a4, a5, a6, a7, a8, b1):
                 G, S_mul, S_add, S_in, S_out, S_wei = xs[0:6]
                 wei_S_all = a3 * S_in + a4 * S_out + a5 * S_wei
@@ -319,7 +319,7 @@ class CurveFiter:
                 return wei1 * ((a1 * np.ceil(batch_size*C_out / a6)*C_in) / (flops_)) + wei2 * (wei_S_all) / bandwidth + b1
             lower_bounds_dense = tuple([0]*6 + [-np.inf]*1)
 
-        elif NON_LINEAR == 'max_linear':
+        elif LINEARITY == 'max_linear':
             def cost_func_conv2d(xs, a1, a2, a3, a4, a5, a6, b1):
                 G, S_mul, S_add, S_in, S_out, S_wei = xs[0:6]
                 H, W, C, R, S, P, Q, K, origin_b, use_bias = xs[6:]
@@ -359,7 +359,7 @@ class CurveFiter:
 
             lower_bounds_dense = tuple([0]*6 + [-np.inf]*1)
 
-        elif NON_LINEAR == 'max_exp':
+        elif LINEARITY == 'max_exp':
             def cost_func_conv2d(xs, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, a16, a17, a18, a19, a20, a21, a22, b1):
                 G, S_mul, S_add, S_in, S_out, S_wei = xs[0:6]
                 H, W, C, R, S, P, Q, K, origin_b, use_bias = xs[6:]
@@ -430,22 +430,22 @@ class CurveFiter:
         self.up_bounds = tuple(len(self.lower_bounds) * [np.inf])
         self.p0 = [1]*len(self.lower_bounds)
 
-        # if NON_LINEAR == 'max':
+        # if LINEARITY == 'max':
         #     self.p0[21] = 0.0001
 
 
     def no_linear_label(self, data_):
-        if NON_LINEAR is None:
+        if LINEARITY == 'linear':
             return data_
-        if NON_LINEAR == 'exp':
+        if LINEARITY == 'exp':
             return data_
-        elif NON_LINEAR == 'log':
+        elif LINEARITY == 'log':
             # return data_
             return np.log(data_ + 1)
-        elif NON_LINEAR in ['piecewise', 'max_linear', 'max_exp'] :
+        elif LINEARITY in ['piecewise', 'max_linear', 'max_exp'] :
             return data_
         else:
-            raise ValueError("NON_LINEAR should be log:{}".format(NON_LINEAR))
+            raise ValueError("LINEARITY should be log:{}".format(LINEARITY))
 
     def train(self):
         if len(self.train_x) == 0:

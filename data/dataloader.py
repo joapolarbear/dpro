@@ -5,12 +5,13 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import math
 
-BATCHSIZE_THESHOLD = 4
+BATCHSIZE_THESHOLD = 512
+BATCHSIZE_UPPER = 1e6
 VAR_THREHOLD = 0.2
 AVG_THREHOLD = 0
 
-TRAIN_PERCENT = 1
-FP32_OR_FP16 = (True, False)
+TRAIN_PERCENT = 0.9
+FP32_OR_FP16 = (True, True)
 METANAME = ["S_mul", "S_add", "S_in", "S_out", "S_wei"]
 
 ### TODO (urgent), replace this
@@ -182,7 +183,7 @@ class DataLoader(BasicLoader):
                         continue
                 idx += 1
 
-        self.BATCH_LIST_VALUE = [e for e in self.BATCH_LIST_VALUE if (e >= 0 and e <=1024)]
+        self.BATCH_LIST_VALUE = [e for e in self.BATCH_LIST_VALUE if (e >= BATCHSIZE_THESHOLD and e <= BATCHSIZE_UPPER)]
         self.BATCH_LIST_VALUE = sorted(self.BATCH_LIST_VALUE)
         self.BATCH_LIST_STR = ["B=%d"%e for e in self.BATCH_LIST_VALUE]
 

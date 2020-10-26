@@ -25,7 +25,8 @@ elif sys.argv[1] == 'dense':
     # RST_DIR=os.path.join("/Users/hhp/0/git/byteprofile-analysis/data/data_20200924", "20200924_01")
     ### 1080Ti
     # RST_DIR=os.path.join("/Users/hhp/0/git/byteprofile-analysis/data/data_20200930", "20200930_03")
-    RST_DIR=os.path.join("/Users/hhp/0/git/byteprofile-analysis/data/data_20200930", "20200930_06")
+    # RST_DIR=os.path.join("/Users/hhp/0/git/byteprofile-analysis/data/data_20200930", "20200930_06")
+    RST_DIR=os.path.join("/Users/hhp/0/git/byteprofile-analysis/data/data_20200930", "20201020_01")
 else:
     raise
 
@@ -316,9 +317,10 @@ def output_rawdata_all_op(attr, default_B=32):
 #####################################################################
 ### Test the error on all OPs
 ### Cross validation grouped by individual op
-def test_grouped_by_individual_op():
-    idxs = np.arange(0, 9)
-    plt.figure(num=1, figsize=(8, 6))
+def test_grouped_by_individual_op(visual=True):
+    idxs = np.arange(40, 49)
+    if visual:
+        plt.figure(num=1, figsize=(8, 6))
     cnt = len(idxs)
     fig_base, fig_idx = init_fig_base(cnt)
     clrs = sns.color_palette("husl", 5)
@@ -327,31 +329,34 @@ def test_grouped_by_individual_op():
         x_axis_names = ["Batch Size", "S_mul", "S_add", "S_in", "S_out", "S_weight"]
         x_axis_idx = 0
         xaxis = [b if x_axis_idx == 0 else data_ld.meta_info.ret_mx_metadata(OP_NAMES[op_id], batch_size=b)[x_axis_idx] for b in data_ld.BATCH_LIST_VALUE]
-        ax = plt.subplot(fig_base)
+        if visual:
+            ax = plt.subplot(fig_base)
 
         if FP32_OR_FP16[0]:
             avgs = np.array(data_ld.batchsize2avg(data_ld.NAMELIST_32.index(OP_NAMES[op_id])))
-            ax.plot(xaxis, avgs, marker='.', label=OP_SHORT_LABELS[op_id]+"_fp32", c=clrs[0])
-            try:
-                stds = np.array(data_ld.batchsize2dev(data_ld.NAMELIST_32.index(OP_NAMES[op_id])))
-                ax.fill_between(xaxis, avgs+stds, avgs-stds, alpha=0.3, facecolor=clrs[0])
-            except KeyError:
-                pass
+            if visual:
+                ax.plot(xaxis, avgs, marker='.', label=OP_SHORT_LABELS[op_id]+"_fp32", c=clrs[0])
+                try:
+                    stds = np.array(data_ld.batchsize2dev(data_ld.NAMELIST_32.index(OP_NAMES[op_id])))
+                    ax.fill_between(xaxis, avgs+stds, avgs-stds, alpha=0.3, facecolor=clrs[0])
+                except KeyError:
+                    pass
 
         if FP32_OR_FP16[1]:
             avgs_16 = np.array(data_ld.batchsize2avg(data_ld.NAMELIST_16.index(OP_NAMES[op_id]), fp16=True))
-            ax.plot(xaxis, avgs_16, marker='^', label=OP_SHORT_LABELS[op_id]+"_fp16", c=clrs[2])
-            try:
-                stds_16 = np.array(data_ld.batchsize2dev(data_ld.NAMELIST_16.index(OP_NAMES[op_id]), fp16=True))
-                ax.fill_between(xaxis, avgs_16+stds_16, avgs_16-stds_16, alpha=0.3, facecolor=clrs[2])
-            except KeyError:
-                pass
-        
-        plt.legend(fontsize=8)
-        plt.ylabel('Average Time (ms)')
-        # plt.ylim(0, 2)
-        plt.xlabel(x_axis_names[x_axis_idx])
-        plt.title("OP ID {} - fitting error: {} %".format(op_id, err))
+            if visual:
+                ax.plot(xaxis, avgs_16, marker='^', label=OP_SHORT_LABELS[op_id]+"_fp16", c=clrs[2])
+                try:
+                    stds_16 = np.array(data_ld.batchsize2dev(data_ld.NAMELIST_16.index(OP_NAMES[op_id]), fp16=True))
+                    ax.fill_between(xaxis, avgs_16+stds_16, avgs_16-stds_16, alpha=0.3, facecolor=clrs[2])
+                except KeyError:
+                    pass
+        if visual:
+            plt.legend(fontsize=8)
+            plt.ylabel('Average Time (ms)')
+            # plt.ylim(0, 2)
+            plt.xlabel(x_axis_names[x_axis_idx])
+            plt.title("OP ID {} - fitting error: {} %".format(op_id, err))
         return fig_base+1, fig_idx
 
     for op_id in idxs:
@@ -362,8 +367,9 @@ def test_grouped_by_individual_op():
         err = pred.test(verbose=False)
         print(op_id, op_names_[0], err)
         fig_base, fig_idx = __plot(op_id, fig_base, fig_idx, err)
-    plt.show()
-# test_grouped_by_individual_op()
+    if visual:
+        plt.show()
+# test_grouped_by_individual_op(visual=True)
 # raise
 
 #####################################################################
@@ -719,55 +725,56 @@ def try_diff_combination():
 # ]
 
 ### group by CUDA kernels used
-idxs_list = [
-    np.array([25, 35, 38, 41, 29, 32, 44, 48, 51]),
-    np.array([3, 7, 10, 11, 21, 23, 13, 15, 17, 18, 20, 24, 34, 36, 37, 39, 40, 42, 26, 28, 30, 31, 33, 43, 45, 47, 49, 50, 52]),
-    np.array([1, 5, 8]),
-    np.array([0]),
-    np.array([4, 14, 27, 46]),
-    np.array([2, 6, 9]),
-    np.array([12, 22, 16, 19]),
-    -1
-]
-
-### dense
 # idxs_list = [
-#     # np.arange(0,9),
-#     # np.arange(10,20),
-#     # np.arange(20,30),
-#     # np.arange(30,40),
-#     # np.arange(40,50),
-#     # np.arange(0,10),
-#     # np.arange(40,50),
-#     # np.concatenate((np.arange(0,10), np.arange(40,50))),
-#     # np.arange(10,30),
-#     # np.array([43]),
+#     np.array([25, 35, 38, 41, 29, 32, 44, 48, 51]),
+#     np.array([3, 7, 10, 11, 21, 23, 13, 15, 17, 18, 20, 24, 34, 36, 37, 39, 40, 42, 26, 28, 30, 31, 33, 43, 45, 47, 49, 50, 52]),
+#     np.array([1, 5, 8]),
+#     np.array([0]),
+#     np.array([4, 14, 27, 46]),
+#     np.array([2, 6, 9]),
+#     np.array([12, 22, 16, 19]),
 #     -1
 # ]
 
-# for idxs in idxs_list:
-#     if isinstance(idxs, np.ndarray):
-#         op_names_ = np.array(OP_NAMES)[idxs]
-#         print(list(idxs))
-#     else:
-#         op_names_ = OP_NAMES
-#         print("all ops")
-#     train_x, train_y, test_x, test_y = data_ld.collect_data(op_names_, TARGET_OPTYPE, verbose=True)
+### dense
+idxs_list = [
+    np.arange(0,9),
+    np.arange(10,20),
+    np.arange(20,30),
+    np.arange(30,40),
+    np.arange(40,50),
+    # np.arange(0,10),
+    # np.arange(40,50),
+    # np.concatenate((np.arange(0,10), np.arange(40,50))),
+    # np.arange(10,30),
+    # np.array([43]),
+    -1
+]
 
-#     # data_ld.plot_max_comp_mem(TARGET_OPTYPE)
-#     # data_ld.plot_avg2distribution(TARGET_OPTYPE)
-#     # raise
-#     pred = CurveFiter(train_x, train_y, test_x, test_y, FULL_HEADERS[TARGET_OPTYPE], op_type=TARGET_OPTYPE)
-#     try:
-#         popt, pcov = pred.train()
-#     except:
-#         print(train_x)
-#         print(idxs)
-#         raise
+for idxs in idxs_list:
+    if isinstance(idxs, np.ndarray):
+        op_names_ = np.array(OP_NAMES)[idxs]
+        print(list(idxs))
+    else:
+        op_names_ = OP_NAMES
+        print("all ops")
+    train_x, train_y, test_x, test_y = data_ld.collect_data(op_names_, TARGET_OPTYPE, verbose=True)
+
+    # data_ld.plot_max_comp_mem(TARGET_OPTYPE)
+    # data_ld.plot_avg2distribution(TARGET_OPTYPE)
+    # raise
+    pred = CurveFiter(train_x, train_y, test_x, test_y, FULL_HEADERS[TARGET_OPTYPE], op_type=TARGET_OPTYPE)
+    try:
+        popt, pcov = pred.train()
+    except:
+        print(train_x)
+        print(idxs)
+        raise
     
-#     print("\t".join([str(e) for e in popt]))
-#     pred.test(verbose=True)
+    print("\t".join([str(e) for e in popt]))
+    pred.test(verbose=True)
 
+# raise
 
 #### verify the popts trained with group by kernel with all ops
 # op_names_ = OP_NAMES
@@ -815,12 +822,13 @@ train_x, train_y, test_x, test_y = data_ld.collect_data(op_names_, TARGET_OPTYPE
 from grouper import Grouper, Delimiter
 grp = Grouper()
 
-
+#############################################
+### define delimieter
 # dels = Delimiter("avg", td_len=0.1, fd_len=0.01, unit_len=0.001)
 # dels = Delimiter("S_mul", td_len=0.01, fd_len=0.001, unit_len=0.0001)
 
 ### used for euqally divided
-dels = Delimiter("S_mul", max_grp_size=10)
+# dels = Delimiter("S_mul", max_grp_size=10)
 
 ### divided by kernel size, note do not use K, since K denotes the output channel
 # dels = [
@@ -828,16 +836,21 @@ dels = Delimiter("S_mul", max_grp_size=10)
 #     Delimiter("G", td_len=0.1, fd_len=0., unit_len=0.1)
 # ]
 
-
 ### divided by C_in
-dels = Delimiter("C_in", td_len=0.1, fd_len=0., unit_len=0.1)
+dels = [
+    # Delimiter("S_mul", td_len=0.01, fd_len=0., unit_len=0.0001),
+    Delimiter("C_in", td_len=0.1, fd_len=0., unit_len=0.1),
+    Delimiter("C_out", td_len=0.1, fd_len=0., unit_len=0.1),
+    Delimiter("G", td_len=0.1, fd_len=0., unit_len=0.1)
+]
 
-
+#############################################
+### apply the delimiter
 # grp.divide_with_upper(dels, train_x, train_y, test_x, test_y, headers=FULL_HEADERS[TARGET_OPTYPE])
 grp.divide_by_len(dels, train_x, train_y, test_x, test_y, headers=FULL_HEADERS[TARGET_OPTYPE])
 
 
-
+### train and test
 grp.train_test(dels, headers=FULL_HEADERS[TARGET_OPTYPE], op_type=TARGET_OPTYPE)
 
 # '''
