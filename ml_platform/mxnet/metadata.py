@@ -3,6 +3,7 @@ import numpy as np
 import os, sys
 import networkx as nx
 
+# (TODO): delete, 20201026
 # FULL_HEADERS = {
 #     "base": ["avg", "G", "S_mul", "S_add", "S_in", "S_out", "S_wei"],
 #     "conv": ["avg", "G", "S_mul", "S_add", "S_in", "S_out", "S_wei", "H", "W", "C", "R", "S", "P", "Q", "K", "B", "use_bias"],
@@ -12,12 +13,13 @@ import networkx as nx
 OP_HYPER_PARAMETERS = {
     "conv": ["H", "W", "C", "R", "S", "P", "Q", "K", "B", "use_bias"],
     "dense": ["C_in", "C_out", "B"],
+    'lstm': 
 }
 
 FULL_HEADERS = {"base": ["avg", "G", "S_mul", "S_add", "S_in", "S_out", "S_wei"]}
 BASE_HEADER_LEN = len(FULL_HEADERS['base'])
-FULL_HEADERS["conv"] = FULL_HEADERS["base"] + OP_HYPER_PARAMETERS['conv']
-FULL_HEADERS["dense"] = FULL_HEADERS["base"] + OP_HYPER_PARAMETERS['dense']
+for key in OP_HYPER_PARAMETERS:
+    FULL_HEADERS[key] = FULL_HEADERS["base"] + OP_HYPER_PARAMETERS[key]
 
 class GPUInfo:
     def __init__(self, flops32, flops16):
@@ -60,7 +62,10 @@ class MetaInfo:
             else:
                 ### weights or variables
                 std_name = "Comm." + out_
-            self.name2shape[std_name] = all_shape[idx]
+            if std_name in self.name2shape:
+                print("[WARNING] {} has multiple outputs, assume to use the first output as the input of the next op".format(std_name))
+            else:
+                self.name2shape[std_name] = all_shape[idx]
 
         self.get_hyper_para()
 
@@ -133,7 +138,8 @@ class MetaInfo:
                 ### weights
                 ### No need to read weights
                 self.cache_hyper_para[node] = [C_in, C_out, B] 
-
+            elif op_type == 'lstm':
+                
             elif op_type == "cast":
                 ### (TODO) 
                 continue
@@ -188,6 +194,8 @@ class MetaInfo:
                 # print(input_shape, output_shape, wei_shape)
 
                 self.cache_meta[node] = (op_type, input_size*wei_size, 0, input_size, output_size, wei_size) 
+
+
             else:
                 # raise NotImplementedError("Metadata for {} is not implemented yet.".format(node))
                 ### (TODO) should raise error
@@ -228,6 +236,8 @@ class MetaInfo:
             return "cast"
         elif "embedding" in op_name:
             return "embedding"
+        elif "lstm" in op_name:
+            return "lstm"
         else:
             # raise ValueError("Undefined op type for {}".format(op_name))
             return "undefined"
