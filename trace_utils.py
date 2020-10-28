@@ -514,7 +514,12 @@ class TraceManager:
                     if iter_cnt == -1:
                         continue
                     if event["args"]["cnt"] < iter_cnt:
-                        SingleLogger().warn("Illegal cnt field for this event %s %s %d" % (event["pid"], event["name"], event["args"]["cnt"]))
+                        ### TODO (huhanpeng), since there are some recompute if the gradients are overflow, 
+                        #### some iterations will be aborted, no UPDATE_ operators.
+                        if "UPDATE_" in event['name']:
+                            pass
+                        else:
+                            SingleLogger().warn("Illegal cnt field for this event %s %s %d" % (event["pid"], event["name"], event["args"]["cnt"]))
                         continue
                     iter_list.append((cur_iter_time - step_start_ts) / 1000.0)
                     fw_bw_list.append((fw_bw_end - step_start_ts) / 1000.0)
