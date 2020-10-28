@@ -13,7 +13,6 @@ import networkx as nx
 OP_HYPER_PARAMETERS = {
     "conv": ["H", "W", "C", "R", "S", "P", "Q", "K", "B", "use_bias"],
     "dense": ["C_in", "C_out", "B"],
-    'lstm': 
 }
 
 FULL_HEADERS = {"base": ["avg", "G", "S_mul", "S_add", "S_in", "S_out", "S_wei"]}
