@@ -10,25 +10,25 @@ import seaborn as sns
 from amp_cost_model import CurveFiter
 
 OPTYPES = ["conv", "dense"]
-
+USER_PATH = '/Users/hhp/'
 if sys.argv[1] == 'bert':
-    RST_DIR=os.path.join("/Users/hhp/0/git/byteprofile-analysis/data/data_20200824", "20200824_03")
+    RST_DIR=os.path.join(USER_PATH + "0/git/byteprofile-analysis/data/data_20200824", "20200824_03")
 elif sys.argv[1] == 'resnet':
     TARGET_OPTYPE = OPTYPES[0]
     ### V100
-    RST_DIR=os.path.join("/Users/hhp/0/git/byteprofile-analysis/data/data_20200824", "20200824_02")
+    RST_DIR=os.path.join(USER_PATH + "0/git/byteprofile-analysis/data/data_20200824", "20200824_02")
     ### 1080Ti
-    # RST_DIR=os.path.join("/Users/hhp/0/git/byteprofile-analysis/data/data_20200930", "20200930_05")
+    # RST_DIR=os.path.join(USER_PATH + "0/git/byteprofile-analysis/data/data_20200930", "20200930_05")
 elif sys.argv[1] == 'dense':
     TARGET_OPTYPE = OPTYPES[1]
-    # RST_DIR=os.path.join("/Users/hhp/0/git/byteprofile-analysis/data/data_20200917", "20200917_06")
-    # RST_DIR=os.path.join("/Users/hhp/0/git/byteprofile-analysis/data/data_20200924", "20200924_01")
+    # RST_DIR=os.path.join(USER_PATH + "0/git/byteprofile-analysis/data/data_20200917", "20200917_06")
+    # RST_DIR=os.path.join(USER_PATH + "0/git/byteprofile-analysis/data/data_20200924", "20200924_01")
     ### 1080Ti
-    # RST_DIR=os.path.join("/Users/hhp/0/git/byteprofile-analysis/data/data_20200930", "20200930_03")
-    # RST_DIR=os.path.join("/Users/hhp/0/git/byteprofile-analysis/data/data_20200930", "20200930_06")
-    RST_DIR = os.path.join("/Users/hhp/0/git/byteprofile-analysis/data/data_20200930", "20201020_01")
+    # RST_DIR=os.path.join(USER_PATH + "0/git/byteprofile-analysis/data/data_20200930", "20200930_03")
+    # RST_DIR=os.path.join(USER_PATH + "0/git/byteprofile-analysis/data/data_20200930", "20200930_06")
+    RST_DIR = os.path.join(USER_PATH + "0/git/byteprofile-analysis/data/data_20200930", "20201020_01")
 elif sys.argv[1] == 'lstm':
-    RST_DIR = os.path.join("/Users/hhp/0/git/byteprofile-analysis/data/data_20201027", "20201028_01")
+    RST_DIR = os.path.join(USER_PATH + "0/git/byteprofile-analysis/data/data_20201027", "20201028_01")
 else:
     raise
 
