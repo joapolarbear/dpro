@@ -1,5 +1,24 @@
 from setuptools import setup, find_packages
 
+def fix_setuptools():
+    """Work around bugs in setuptools.                                                                                                                                                        
+
+    Some versions of setuptools are broken and raise SandboxViolation for normal                                                                                                              
+    operations in a virtualenv. We therefore disable the sandbox to avoid these                                                                                                               
+    issues.                                                                                                                                                                                   
+    """
+    try:
+        from setuptools.sandbox import DirectorySandbox
+        def violation(operation, *args, **_):
+            print("SandboxViolation: %s" % (args,))
+
+        DirectorySandbox._violation = violation
+    except ImportError:
+        pass
+
+# Fix bugs in setuptools.                                                                                                                                                                     
+fix_setuptools()
+
 setup(name='byteprofile analysis',
       version='0.1',
       description='A profiler, replayer and optimizer for distributed ML',
@@ -16,7 +35,10 @@ setup(name='byteprofile analysis',
           'scapy',
           'xgboost',
           'sklearn',
-          'seaborn'
+          'seaborn',
+          'matplotlib',
+          'pymc3',
+          'tensorflow'
       ],
       # zip_safe=False
       )
