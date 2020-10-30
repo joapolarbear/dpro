@@ -79,9 +79,9 @@ class MetaInfo:
             if self.is_ignore(node):
                 continue
             op_type = self.parse_op_type(node)
+            output_shape = self.name2shape[node]
             if op_type == "conv":
                 ### outputs
-                output_shape = self.name2shape[node]
                 assert len(output_shape) == 4, (node, output_shape)
                 N = output_shape[0]
                 ### TODO (huhanpeng): assume the width=height, the same for input shape
@@ -120,31 +120,33 @@ class MetaInfo:
                 self.cache_hyper_para[node] = [H, W, C, R, S, P, Q, K, N, 0 if bias_node is None else 1]
 
             elif op_type == "dense":
-                ### nexts
-                output_shape = self.name2shape[node]
-                assert len(output_shape) == 2, (node, output_shape)
                 B = output_shape[0]
                 C_out = output_shape[1]
-
                 ### prevs
                 prevs = self.dag.in_edges(node)
                 assert len(prevs) == 1, (node, prevs)
                 prev_, _ = list(prevs)[0]
                 input_shape = self.name2shape[prev_]
-                assert input_shape[0] == B, (node, input_shape, output_shape)
-                C_in = input_shape[1]
-
-                ### weights
-                ### No need to read weights
+                if len(input_shape) == 2 or len(input_shape) == 4:
+                    assert input_shape[0] == B, (node, input_shape, output_shape)
+                    C_in = input_shape[1]   
+                elif len(input_shape) == 3:
+                    assert input_shape[1] == B, (node, input_shape, output_shape)
+                    C_in = input_shape[0] * input_shape[2]
+                else:
+                    print(node, input_shape, output_shape)
+                    raise
                 self.cache_hyper_para[node] = [C_in, C_out, B] 
-            elif op_type == 'lstm':
-                
+            elif op_type == 'lstm_param_concat':
+                pass
+            elif op_type == 'lstm_rnn':
+                pass
+            elif op_type == 'lstm_reshape':
+                pass
             elif op_type == "cast":
                 ### (TODO) 
                 continue
                 raise NotImplementedError()
-                ### nexts
-                output_shape = self.name2shape[node]
         
                 ### prevs
                 prevs = self.dag.in_edges(node)
@@ -159,7 +161,6 @@ class MetaInfo:
                 ### (TODO) 
                 continue
                 raise NotImplementedError()
-                output_shape = self.name2shape[node]
                 output_size = np.prod(output_shape)
                 if len(output_shape) == 2:
                     ### no batch size
@@ -236,7 +237,12 @@ class MetaInfo:
         elif "embedding" in op_name:
             return "embedding"
         elif "lstm" in op_name:
-            return "lstm"
+            if "param_concat" in op_name:
+                return "lstm_param_concat"
+            elif "_rnn" in op_name:
+                return "lstm_rnn"
+            else:
+                return "lstm_reshape"
         else:
             # raise ValueError("Undefined op type for {}".format(op_name))
             return "undefined"

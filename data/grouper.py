@@ -93,7 +93,7 @@ class Grouper:
             if delimiter.target_dim == 'avg':
                 x = ydata[0]
             elif delimiter.target_dim == 'intensity':
-                raise
+                x = xdata[headers.index('S_mul') - 1] / (xdata[headers.index('S_in') - 1] + xdata[headers.index('S_out') - 1] + xdata[headers.index('S_wei') - 1])
             else:
                 ### target dimension index needs to exclude avg
                 target_idx = headers.index(delimiter.target_dim) - 1

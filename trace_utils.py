@@ -516,7 +516,7 @@ class TraceManager:
                     if event["args"]["cnt"] < iter_cnt:
                         ### TODO (huhanpeng), since there are some recompute if the gradients are overflow, 
                         #### some iterations will be aborted, no UPDATE_ operators.
-                        if "UPDATE_" in event['name']:
+                        if "UPDATE_" in event['name'] or "BW" in event["name"]:
                             pass
                         else:
                             SingleLogger().warn("Illegal cnt field for this event %s %s %d" % (event["pid"], event["name"], event["args"]["cnt"]))

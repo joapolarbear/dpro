@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import math
 
-BATCHSIZE_THESHOLD = 512
+BATCHSIZE_THESHOLD = 4
 BATCHSIZE_UPPER = 1e6
 STDDEV_THREHOLD = 0.2
 AVG_THREHOLD = 0
@@ -88,6 +88,9 @@ class BasicLoader:
                 self.max_of_each_dim.append(max(all_data[:, i]))
                 all_data[:, i] = all_data[:, i] / max(all_data[:, i])
         self.max_of_each_dim = np.array(self.max_of_each_dim)
+        if verbose:
+            print("Headers for {}: {}".format(target_optype_, FULL_HEADERS[target_optype_]))
+            print("Maximum value for each dimension: {}".format(self.max_of_each_dim))
 
         # print_array_values(all_data, 10)
 
@@ -263,6 +266,8 @@ class DataLoader(BasicLoader):
                 ### collect data
                 op_type = self.meta_info.parse_op_type(op_names_[i])
                 metadata = self.meta_info.ret_mx_metadata(op_names_[i], batch_size=b)
+
+                intensity = metadata[0] / (metadata[2] + metadata[3] + metadata[4])
 
                 if FP32_OR_FP16[0]:
                     idx_in_32 = self.NAMELIST_32.index(op_names_[i])
