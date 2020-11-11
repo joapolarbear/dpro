@@ -237,8 +237,12 @@ class ncclGraph:
 
 
     def parse_traces(self, traces):
-        ''' `traces` must be sorted according to `ts` '''
-        if self.trace_parsed and self.algo == NCCL_ALGO.RING:
+        ''' Parse traces from one GPU, to get NCCL hyper-parameters: chunkNum, sliceNum, channelNum and loopNum
+        * We assume each GPU share the same hyper-parameters
+        * After NCCL hyper-parameters are parsed, set the flag self.trace_parsed to True to avoid parsing repeatedly
+        * `traces` must be sorted according to `ts` 
+        '''
+        if (self.trace_parsed and self.algo == NCCL_ALGO.RING) or len(traces) == 0:
             return
 
         self.trace_parsed = True
