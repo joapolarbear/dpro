@@ -1,6 +1,7 @@
 import os
 import ujson as json
 import random
+import math
 import xlsxwriter
 import traceback
 import logger_utils
@@ -356,7 +357,7 @@ class TraceManager:
             suffix=None
         return gen_long_name(event["pid"], event["name"], suffix=suffix)
 
-    def ret_stat(self):
+    def ret_stat(self, cal_median=False):
         """ Basic Statistic """
         self.name2sta = {}
         self.cat2sta = {}
@@ -369,13 +370,16 @@ class TraceManager:
                     event["args"]["cnt"] = -1
                     continue
                 self.name2sta[unique_name]["cnt"] += 1
-                self.name2sta[unique_name]["time"] += event["dur"] / 1000.0
+                if cal_median:
+                    self.name2sta[unique_name]["time"].append(event["dur"] / 1000.0)
+                else:
+                    self.name2sta[unique_name]["time"] += event["dur"] / 1000.0
                 self.name2sta[unique_name]["min_t"] = min(self.name2sta[unique_name]["min_t"], event["dur"] / 1000.0)
                 self.name2sta[unique_name]["max_t"] = max(self.name2sta[unique_name]["max_t"], event["dur"] / 1000.0)
             else:
                 self.name2sta[unique_name] = {
                     "cnt": 1, 
-                    "time": event["dur"] / 1000.0, 
+                    "time": [event["dur"] / 1000.0] if cal_median else event["dur"] / 1000.0, 
                     "min_t": event["dur"] / 1000.0, 
                     "max_t": event["dur"] / 1000.0,
                     # \TODO: add `cat` field for communication traces
@@ -387,7 +391,11 @@ class TraceManager:
                 
         """calculate the avg """
         for name, statistic in self.name2sta.items():
-            statistic["avg"] = statistic["time"] / statistic["cnt"]
+            if cal_median:
+                statistic["avg"] = sum(statistic["time"]) / statistic["cnt"]
+                statistic["median"] = sorted(statistic["time"])[int(statistic["cnt"]/2)]
+            else:
+                statistic["avg"] = statistic["time"] / statistic["cnt"]
             statistic["var"] = 0.0
 
             # assert statistic["time"] != 0
@@ -398,7 +406,7 @@ class TraceManager:
                     self.cat2sta[cat]["max_name"] = name
             else:
                 self.cat2sta[cat] = {"max_t": statistic["avg"], "max_name": name, "time": 0, "cnt": 0, "op_cnt":0}
-            self.cat2sta[cat]["time"] += statistic["time"]
+            self.cat2sta[cat]["time"] += sum(statistic["time"]) if cal_median else statistic["time"]
             self.cat2sta[cat]["cnt"] += statistic["cnt"]
             self.cat2sta[cat]["op_cnt"] += 1
 
@@ -414,6 +422,41 @@ class TraceManager:
         for name, statistic in self.name2sta.items():
             statistic["var"] = statistic["var"] / float(statistic["cnt"])
             self.max_cnt = max(statistic["cnt"], self.max_cnt)
+
+    def print_stat(self, sort=True, line_num=None):
+        if sort:
+            sort_sta = sorted(self.name2sta.items(), key=lambda x: x[1]["avg"], reverse=True)
+        else:
+            sort_sta = self.name2sta.items()
+        SingleLogger().info("Profile Statistics.")
+        SingleLogger().info("===================")
+        SingleLogger().info("%-80s\t Total Count\t Min Time (ms)\t Max Time (ms)\t Avg Time (ms)\t Std.dev (ms)\t Median (ms)" % ("Name"))
+        SingleLogger().info("%-80s\t -----------\t -------------\t -------------\t -------------\t ---------------\t ---------------" % ("----"))
+        line_cnt = 0
+        for name, statistic in sort_sta:
+            if (line_num and line_cnt >= line_num):
+                break        
+            SingleLogger().info("%-80s\t %11d\t %12.4f\t %13.4f\t %13.4f\t %13.4f\t %13.4f" % 
+                    (name,
+                    statistic["cnt"],
+                    statistic["min_t"],
+                    statistic["max_t"],
+                    statistic["avg"],
+                    math.sqrt(statistic["var"]),
+                    statistic.get('median', -1)
+                    ))
+            line_cnt += 1
+
+        # Group by category
+        SingleLogger().info("")
+        SingleLogger().info("Group by category")
+        SingleLogger().info("===================")
+        line_cnt = 0
+        for cat, statistic in self.cat2sta.items():
+            if (line_num and line_cnt >= line_num):
+                    break
+            SingleLogger().info("Category: %-10s\t The most time-consuming OP: %-30s -> %13.4f (ms)" % (cat, statistic["max_name"], statistic["max_t"] / 1000.0))
+            line_cnt += 1
 
     def lookup_stat(self, wk_prefix, rank_prefix, name,  _field="avg"):
         ''' look up data from the stat info, return average time in ms by default

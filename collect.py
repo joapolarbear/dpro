@@ -142,7 +142,6 @@ class Collector(object):
         else:
             # BYTEPS
             self.byteps_graph = bytepsGraph()
-        self.trail_dag = None
 
         self.time_dict = None
         self.run_span = {}
@@ -152,7 +151,8 @@ class Collector(object):
 
         ### TODO (huhanpeng): assume different host use the same dag, original dag
         self.dag = None
-        self.single = False
+        self.trail_dag = None # global dag
+        self.single = False # use to denote whether this is a single-GPU trial
         
     def delete_traces_by_cat(self, _cat):
         _rst_traces = {"traceEvents": []}
@@ -550,7 +550,8 @@ class Collector(object):
                 trace["pid"] = pid
             rst_traces.append(trace)
 
-        assert len(rst_traces) > 0
+        if len(rst_traces) ==  0:
+            SingleLogger().warn("No comm_detail traces for {}".format(comm_d_path))
 
         self.nccl_graph.parse_traces(rst_traces)
         self.clock_aligner.append_traces(host_id, rst_traces)
@@ -747,13 +748,6 @@ class Collector(object):
         self.logger.info("Take {} s to combine all traces of length {}".format(time.time() - ts_, len(rst_traces["traceEvents"])))
         return rst_traces["traceEvents"]
 
-    def dump_traces(self):
-        if rst_traces is None:
-            rst_traces = self.traceM.traces
-        rst_traces = sorted(rst_traces, key=lambda x: (x["pid"], x["tid"]))
-        with open(os.path.join(self.pm.path, FileName.TRACE.value), 'w') as f:
-            json.dump(rst_traces, f)
-
     def collect_traces(self, force_=False):
         self.logger.info("# Collecting Traces")
         self.logger.info("Generating %s" % (FileName.TRACE.value))
@@ -787,7 +781,7 @@ class Collector(object):
             return _dir
         raise ValueError("No valid directory under {}".format(_path))
 
-    def collect_trail_dag(self):
+    def collect_trial_dag(self):
         assert self.pm.dir_level == DirLevel.TRIAL
         self.logger.info("# Collecting DAG")
         critical_path = []
@@ -810,7 +804,7 @@ class Collector(object):
             for _dir in self.pm.dirs:
                 worker_path = os.path.join(self.pm.path, _dir)
                 worker_root, worker_dirs, _ = list(os.walk(worker_path))[0]
-                for worker_dir in worker_dirs:
+                for worker_dir in sorted(worker_dirs):
                     gpu_path = os.path.join(worker_root, worker_dir)
                     self.logger.info("## Collect DAG in %s" % (gpu_path))
                     dagmanager = DAGManager(gpu_path, self.traceM, self.nccl_graph, self.byteps_graph, platform=self.platform)
@@ -894,7 +888,7 @@ class Collector(object):
         trail_dag_path = self.pm.search(FileName.TRAIL_DAG)
         if force_ or trace_path is None or (self.comm_backend == "NCCL" and nccl_graph_path is None) or trail_dag_path is None:
             self.collect_traces()
-            self.collect_trail_dag()
+            self.collect_trial_dag()
             self.fine_tune_trace_dag()
             ### Cache these info
             self.traceM.dump(self.pm.path)

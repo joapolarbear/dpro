@@ -10,7 +10,7 @@ import seaborn as sns
 from amp_cost_model import CurveFiter
 
 OPTYPES = ["conv", "dense"]
-USER_PATH = '/Users/hhp/'
+USER_PATH = '/Users/bytedance/'
 if sys.argv[1] == 'bert':
     RST_DIR=os.path.join(USER_PATH + "0/git/byteprofile-analysis/data/data_20200824", "20200824_03")
 elif sys.argv[1] == 'resnet':
@@ -952,20 +952,20 @@ grp = Grouper()
 # dels = Delimiter("S_mul", max_grp_size=10)
 
 ### divided by kernel size, note do not use K, since K denotes the output channel
-# dels = [
-#     Delimiter("R", td_len=0.1, fd_len=0., unit_len=0.1),
-#     Delimiter("G", td_len=0.1, fd_len=0., unit_len=0.1)
-# ]
+dels = [
+    Delimiter("R", td_len=0.1, fd_len=0., unit_len=0.1),
+    Delimiter("G", td_len=0.1, fd_len=0., unit_len=0.1)
+]
 
 ### divided by C_in
-dels = [
-    # Delimiter("S_mul", td_len=0.01, fd_len=0., unit_len=0.0001),
-    # Delimiter("intensity", td_len=0.01, fd_len=0., unit_len=0.0001),
-    Delimiter("B", td_len=0.51, fd_len=0., unit_len=0.1),
-    Delimiter("C_in", td_len=0.1, fd_len=0., unit_len=0.1),
-    Delimiter("C_out", td_len=0.1, fd_len=0., unit_len=0.1),
-    Delimiter("G", td_len=0.1, fd_len=0., unit_len=0.1),  
-]
+# dels = [
+#     # Delimiter("S_mul", td_len=0.01, fd_len=0., unit_len=0.0001),
+#     # Delimiter("intensity", td_len=0.01, fd_len=0., unit_len=0.0001),
+#     Delimiter("B", td_len=0.51, fd_len=0., unit_len=0.1),
+#     Delimiter("C_in", td_len=0.1, fd_len=0., unit_len=0.1),
+#     Delimiter("C_out", td_len=0.1, fd_len=0., unit_len=0.1),
+#     Delimiter("G", td_len=0.1, fd_len=0., unit_len=0.1),  
+# ]
 
 #############################################
 ### apply the delimiter

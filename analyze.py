@@ -30,19 +30,6 @@ debug_utils.DebugRecorder(is_enable=args.debug_traces)
 sys.setrecursionlimit(1000000)
 
 path_list = args.path.split(',')
-""" Read traces and prepare statitic info"""
-if args.option not in ['critical', 'combine', 'mapping', 'compare', "replay", "topo_sort", "collect", "3dcompare", "optimize"]:
-    pm = PathManager(path_list[0])
-    traces = read_traces(pm.search(FileName.TRACE))
-    name2sta, cat2sta = return_stat(traces)
-
-if args.option == "combine":
-    rst = []
-    for path in path_list:
-        rst += read_traces(path)
-    save_path = os.path.join(os.path.dirname(path_list[0]), "combine{}Json.json".format(len(path_list)))
-    with open(save_path, 'w') as fp:
-        json.dump(rst, fp)
 
 ### map from operators to CUDA kernels, path[0] should be operator level traces and path[1] should be kernel level traces
 if args.option == "mapping":
@@ -129,73 +116,15 @@ if args.option == "mapping":
         worksheet.write(row, 1, name)
     workbook.close()
 
+clct = Collector(path_list[0], comm_backend=args_.comm_backend, platform=args.platform)
+iter_times = clct.init(args.force)
+
 if args.option == "statistic":
     """ Output the statistic results """
-    # \TODO: device id
-    def output(_name2sta):
-        logger.info("Profile Statistics.")
-        logger.info("===================")
-        logger.info("%-60s\t Total Count\t Time (ms)\t Min Time (ms)\t Max Time (ms)\t Avg Time (ms)\t Variance (ms^2)" % "Name")
-        logger.info("%-60s\t -----------\t ---------\t -------------\t -------------\t -------------\t ---------------" % "----")
-        line_cnt = 0
-        for name, statistic in _name2sta:
-            if (args.head and line_cnt >= args.head):
-                break        
-            logger.info("%-60s\t %11d\t %9.4f\t %12.4f\t %13.4f\t %13.4f\t %13.4f" % 
-                    (name,
-                    statistic["cnt"],
-                    statistic["time"],
-                    statistic["min_t"],
-                    statistic["max_t"],
-                    statistic["avg"],
-                    statistic["var"]
-                    ))
-            line_cnt += 1
-
-    # output(sorted(name2sta.items(), lambda x, y: cmp(x[1]["avg"], y[1]["avg"])))
-    if args.sort:
-        sort_sta = sorted(name2sta.items(), key=lambda x: x[1]["avg"], reverse=True)
-    else:
-        sort_sta = name2sta.items()
-    output(sort_sta)
+    clct.traceM.ret_stat(cal_median=True)
+    clct.traceM.print_stat(args.sort, args.head)
     if args.xlsx:
-        export2xlsx([name2sta], os.path.dirname(path_dict["trace_path"]))
-
-    # Group by category
-    logger.info("")
-    logger.info("Group by category")
-    logger.info("===================")
-    line_cnt = 0
-    for cat, statistic in cat2sta.items():
-        if (args.head and line_cnt >= args.head):
-                break
-        logger.info("Category: %-10s\t The most time-consuming OP: %-30s -> %13.4f (ms)" % (cat, statistic["max_name"], statistic["max_t"] / 1000.0))
-        line_cnt += 1
-
-if args.option == "graph":
-    mygraph = nx.read_gml(pm.search(FileName.DAG))
-    visualize_gml(mygraph)
-
-if args.option == "critical":
-    ''' 
-    Args:
-        -- args.path: the dir of a worker, which contains multiple folders 
-                        storing traces of GPUs of this worker
-    '''
-    assert pm.dir_level == DirLevel.WORKER
-    #! used to store all dags generated from GPUs
-    graphs = []
-    for _dir in pm.dirs:
-        dagmanager = DAGManager(os.path.join(pm.path, _dir), platform=args.platform)
-        dagmanager.gen_dag_with_prefix_weight()
-        dag_longest_path(dagmanager.dag, dagmanager.pm, weight="weight", default_weight=0)
-        graphs.append(dagmanager.dag)
-
-    graph = nx.compose_all(graphs)
-    dag_longest_path(graph, pm, weight="weight", default_weight=0)
-
-if args.option == "timeline":
-    raise NotImplementedError()
+        clct.traceM.export2xlsx(path_list[0])
 
 if args.option == "replay":
     ''' Re-generate the timeline according to the dependency 
@@ -204,8 +133,6 @@ if args.option == "replay":
         --path: the root path for 
         --step_num: number of steps we want to generate.
     '''    
-    clct = Collector(path_list[0], comm_backend=args_.comm_backend, platform=args.platform)
-    iter_times = clct.init(args.force)
 
     ### Replay traces
     logger.info("# Start to Replay")
@@ -299,14 +226,65 @@ if args.option == "replay":
         with open(os.path.join(clct.pm.path, "replay_compare.json"), 'w') as f:
             json.dump(rst, f)
 
-if args.option == "topo_sort":
-    pm = PathManager(path_list[0])
-    assert pm.dir_level == DirLevel.GPU
-    local_rank = int(pm.path.split("/")[-1])
-    dagmanager = DAGManager(pm.path, local_rank, platform=args.platform)
-    dagmanager.gen_fw_bw_dag()
+if args.option == "collect":
+    if args.sub_option == "combine":
+        pass
+    elif args.sub_option == "xlsx":
+        clct.traceM.export2xlsx(path_list[0])
+    elif args.sub_option == "visual_dag":
+        clct.traceM.export2xlsx(path_list[0])
+    elif args.sub_option == "iter_time":
+        clct.iter_time()
+    elif args.sub_option == "straggler":
+        clct.detect_straggler1()
+    elif args.sub_option == "bottleneck":
+        clct.detect_bottleneck1()
+    elif args.sub_option == "query":
+        while True:
+            name = input("\nQuerying: \n\t 1). The tensor name \n\t 2). \\sta_by_cnt \n\t 3). q or Q to quit \nInput your command: ")
+            if name.lower() == "q":
+                break
+            elif "\\sta_by_cnt" in name or name == "2":
+                clct.detect_straggler1()
+            else:
+                avg = clct.traceM.lookup_stat(None, None, name)
+                print("Average time: %f ms" % (avg))
 
-'''below options use special --path'''
+if args.option == "optimize":
+    from cost_model_amp.amp_pred import AMPPredictor, AMPTrainer
+    amp_pred = AMPTrainer(
+        os.path.join(path_list[0], "host0/0/metadata.json"),
+        path_list[0])
+    amp_pred.collect_raw_data(path_list[0])
+    amp_pred.gen_train_data(clct.trail_dag)
+    amp_pred.train(test=True)
+    '''
+    if len(path_list) < 2:
+        raise RuntimeError("optimize requires positional path arguments: profile data path & cost model path.")
+    clct = Collector(path_list[0], comm_backend=args_.comm_backend)
+    models_dir = path_list[1]
+    clct.init(args.force)
+    cost_models = {}
+    logger.info("Searching for model dumps in {}".format(models_dir))
+    for model_dump in os.listdir(models_dir):
+        model_path = os.path.join(models_dir, model_dump)
+        p = Path(model_path)
+        if p.is_file():
+            node_name = p.stem
+            cm = FusionCostModel(os.path.join(args.cost_model_tmp_dir, node_name))
+            cm.load(model_path)
+            cost_models[node_name] = cm
+            logger.info("Added cost model for {}".format(node_name))
+        else:
+            logger.warn("{} not a file.".format(model_path))
+    if args.optimizer == "MCTS":
+        opt = optimizer.MCTSOptimizer(clct, cost_models=cost_models, ucb_type=args.ucb_type, no_mutation=args.no_mutation)
+    elif args.optimizer == "MCMC":
+        opt = optimizer.MCMCOptimizer(clct, cost_models=cost_models)
+    opt.search()
+    '''
+
+### below options use special --path
 if args.option == "compare":
     if len(path_list) < 2:
         raise ValueError("To compare two files, two paths must be given")
@@ -358,70 +336,52 @@ if args.option == "compare":
                 (name, compare["avg_absolute"], compare["avg_relative"]))
         line_cnt += 1
 
-if args.option == "collect":
-    clct = Collector(path_list[0], comm_backend=args_.comm_backend, platform=args.platform)
-    clct.init(args.force)
-    if args.sub_option == "combine":
-        clct.iter_combine()
-    elif args.sub_option == "xlsx":
-        clct.traceM.export2xlsx(path_list[0])
-    elif args.sub_option == "visual_dag":
-        clct.traceM.export2xlsx(path_list[0])
-    elif args.sub_option == "iter_time":
-        clct.iter_time()
-    elif args.sub_option == "straggler":
-        clct.detect_straggler1()
-    elif args.sub_option == "bottleneck":
-        clct.detect_bottleneck1()
-    elif args.sub_option == "query":
-        while True:
-            name = input("\nQuerying: \n\t 1). The tensor name \n\t 2). \\sta_by_cnt \n\t 3). q or Q to quit \nInput your command: ")
-            if name.lower() == "q":
-                break
-            elif "\\sta_by_cnt" in name or name == "2":
-                clct.detect_straggler1()
-            else:
-                avg = clct.traceM.lookup_stat(None, None, name)
-                print("Average time: %f ms" % (avg))
+if args.option == "combine":
+    rst = []
+    for idx, path in enumerate(path_list):
+        clct = Collector(path, comm_backend=args_.comm_backend, platform=args.platform)
+        clct.init(args.force)
+        for trace in clct.traceM.traces:
+            trace['pid'] = 'trial%d.%s'.format(idx, trace['pid'])
+            rst.append(trace)
+    save_path = os.path.join(os.path.dirname(path_list[0]), "combine{}Json.json".format(len(path_list)))
+    with open(save_path, 'w') as fp:
+        json.dump(rst, fp)
 
-if args.option == "optimize":
 
-    from cost_model_amp.amp_pred import AMPPredictor, AMPTrainer
-    clct = Collector(path_list[0], comm_backend=args_.comm_backend, platform=args.platform)
-    clct.init(args.force)
-    amp_pred = AMPTrainer(
-        os.path.join(path_list[0], "host0/0/metadata.json"),
-        path_list[0])
-    amp_pred.collect_raw_data(path_list[0])
-    amp_pred.gen_train_data(clct.trail_dag)
-    amp_pred.train(test=True)
+### some trival options
+
+if args.option == "topo_sort":
+    pm = PathManager(path_list[0])
+    assert pm.dir_level == DirLevel.GPU
+    local_rank = int(pm.path.split("/")[-1])
+    dagmanager = DAGManager(pm.path, local_rank, platform=args.platform)
+    dagmanager.gen_fw_bw_dag()
+
+if args.option == "graph":
+    mygraph = nx.read_gml(pm.search(FileName.DAG))
+    visualize_gml(mygraph)
+
+if args.option == "critical":
+    ''' 
+    Args:
+        -- args.path: the dir of a worker, which contains multiple folders 
+                        storing traces of GPUs of this worker
     '''
-    if len(path_list) < 2:
-        raise RuntimeError("optimize requires positional path arguments: profile data path & cost model path.")
-    clct = Collector(path_list[0], comm_backend=args_.comm_backend)
-    models_dir = path_list[1]
-    clct.init(args.force)
-    cost_models = {}
-    logger.info("Searching for model dumps in {}".format(models_dir))
-    for model_dump in os.listdir(models_dir):
-        model_path = os.path.join(models_dir, model_dump)
-        p = Path(model_path)
-        if p.is_file():
-            node_name = p.stem
-            cm = FusionCostModel(os.path.join(args.cost_model_tmp_dir, node_name))
-            cm.load(model_path)
-            cost_models[node_name] = cm
-            logger.info("Added cost model for {}".format(node_name))
-        else:
-            logger.warn("{} not a file.".format(model_path))
-    if args.optimizer == "MCTS":
-        opt = optimizer.MCTSOptimizer(clct, cost_models=cost_models, ucb_type=args.ucb_type, no_mutation=args.no_mutation)
-    elif args.optimizer == "MCMC":
-        opt = optimizer.MCMCOptimizer(clct, cost_models=cost_models)
-    opt.search()
-    '''
+    assert pm.dir_level == DirLevel.WORKER
+    #! used to store all dags generated from GPUs
+    graphs = []
+    for _dir in pm.dirs:
+        dagmanager = DAGManager(os.path.join(pm.path, _dir), platform=args.platform)
+        dagmanager.gen_dag_with_prefix_weight()
+        dag_longest_path(dagmanager.dag, dagmanager.pm, weight="weight", default_weight=0)
+        graphs.append(dagmanager.dag)
+
+    graph = nx.compose_all(graphs)
+    dag_longest_path(graph, pm, weight="weight", default_weight=0)
+
+if args.option == "timeline":
+    raise NotImplementedError()
+
 ### Output debug traces
 debug_utils.DebugRecorder().dump_traces(path_list[0])
-
-
-
