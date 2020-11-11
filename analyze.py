@@ -249,6 +249,8 @@ if args.option == "collect":
             else:
                 avg = clct.traceM.lookup_stat(None, None, name)
                 print("Average time: %f ms" % (avg))
+    elif args.sub_option == "gap":
+        clct.list_max_gap(args.head)
 
 if args.option == "optimize":
     from cost_model_amp.amp_pred import AMPPredictor, AMPTrainer

@@ -1034,21 +1034,8 @@ class Collector(object):
         ''' Add gaps for each node '''
         self.logger.info("Add gap to dependency DAG nodes...")
         prev_events_dict = {}
-        self.name2idxlist = {}
+        self.name2idxlist = self.traceM.map_name2idxlist()
         for idx, event in enumerate(self.traceM.traces):
-            if self.traceM._is_ignore_for_sta(event):
-                continue
-
-            ### Map the trace name to its indexs in all traces, 
-            ### e.g. trace_name --> [idx0, idx1, None, ...], traces[idx0][name] = trace_name
-            unique_name = self.traceM.ret_unique_name(event)
-            if unique_name not in self.trail_dag.nodes:
-                continue
-            if unique_name not in self.name2idxlist:
-                self.name2idxlist[unique_name] = [None] * self.traceM.max_cnt
-            if event["args"]["cnt"] != -1:
-                self.name2idxlist[unique_name][event["args"]["cnt"]] = idx
-
             ### Get previous event for this pid
             if event["pid"] not in prev_events_dict:
                 prev_events_dict[event["pid"]] = {}
@@ -1194,17 +1181,7 @@ class Collector(object):
         ''' According to the traces and DAG, add a 'gap' field for each edge (u, v)
         which denotes the gap between two events u and v.
         '''
-        name2idxlist = {}
-        for idx, event in enumerate(self.traceM.traces):
-            if self.traceM._is_ignore_for_sta(event):
-                continue
-
-            unique_name = self.traceM.ret_unique_name(event)
-            if unique_name not in name2idxlist:
-                name2idxlist[unique_name] = [None] * self.traceM.max_cnt
-
-            if event["args"]["cnt"] != -1:
-                name2idxlist[unique_name][event["args"]["cnt"]] = idx
+        name2idxlist = self.traceM.map_name2idxlist()
 
         ### Calculate the average gap for each edge
         for u, v in self.trail_dag.edges:
@@ -1307,5 +1284,44 @@ class Collector(object):
         # critical_path = dag_longest_path(self.trail_dag, self.pm, weight="cost", default_weight=0, _debug_level=2)
         critical_path = dag_longest_path(self.trail_dag, self.pm, weight="weight", default_weight=0, _debug_level=2)
         return critical_path
+
+    def list_max_gap(self, head=None):
+        SingleLogger().info("Calculating the minimum gap before each node ... ")
+        name2idxlist = self.traceM.map_name2idxlist()
+        name2depend = {}
+        for v in self.trail_dag.nodes:
+            if v not in name2idxlist:
+                continue
+            v_idx_l = name2idxlist[v]
+            for u, _ in self.trail_dag.in_edges(v):
+                if u not in name2idxlist:
+                    continue
+                u_idx_l = name2idxlist[u]
+                cnt = 0.
+                for cnt_ in range(self.traceM.max_cnt):
+                    u_idx, v_idx = u_idx_l[cnt_], v_idx_l[cnt_]
+                    if u_idx is None or v_idx is None:
+                        continue
+                    if v not in name2depend:
+                        name2depend[v] = {u: 0}
+                    elif u not in name2depend[v]:
+                        name2depend[v][u] = 0
+                    name2depend[v][u] += (self.traceM.traces[v_idx]["ts"] - (self.traceM.traces[u_idx]["ts"] + self.traceM.traces[u_idx]["dur"]))
+                    cnt += 1.
+                if cnt > 0:
+                    name2depend[v][u] /= cnt
+                    if 'min_gap' not in name2depend[v] or name2depend[v][u] < name2depend[v]['min_gap']:
+                        name2depend[v]['min_gap'] = name2depend[v][u]
+                        name2depend[v]['min_node'] = u
+        name2depend = sorted(name2depend.items(), key=lambda x: x[1]['min_gap'], reverse=True)
+        for idx, (name, depend) in enumerate(name2depend):
+            if head and idx >= head:
+                break
+            print("Name: {}, min_gap: {} ({})".format(name, depend['min_gap'], depend['min_node']))
+
+
+
+
+
 
 

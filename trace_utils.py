@@ -329,6 +329,8 @@ class TraceManager:
         self.cat2sta = None
         self.dir_level = dir_level
 
+        self.name2idxlist = {}
+
         self.max_cnt = 0
         self.ret_stat()
 
@@ -628,6 +630,20 @@ class TraceManager:
         self.name2sta = eval(str_[1])
         self.cat2sta = eval(str_[2])
 
+        self.name2idxlist = {}
+
+    def map_name2idxlist(self):
+        ''' map the trace name to the list of indexes in the trace list '''
+        if len(self.name2idxlist.keys()) == 0:
+            for idx, event in enumerate(self.traces):
+                if self._is_ignore_for_sta(event):
+                    continue
+                unique_name = self.ret_unique_name(event)
+                if unique_name not in self.name2idxlist:
+                    self.name2idxlist[unique_name] = [None] * self.max_cnt
+                if event["args"]["cnt"] != -1:
+                    self.name2idxlist[unique_name][event["args"]["cnt"]] = idx
+        return self.name2idxlist
 
 class BiasRange:
     def __init__(self, _l, _r):
