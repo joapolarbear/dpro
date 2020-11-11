@@ -113,6 +113,7 @@ class ClockAligner:
                 #     raise
                 if self.byteps_graph is None:
                     t, n = self.marker_per_host[host_id]
+                    SingleLogger().info('Host {} align to {} based on {}'.format(host_id, base_host_name, n))
                     bias = standard_time - t
                 else:
                     bias = self.byteps_graph.time_drift[host_id_to_rank(host_id)]
@@ -248,7 +249,7 @@ class Collector(object):
 
         debug_utils.DebugRecorder().debug_event_start()
         traces = sorted(traces, key=lambda x: x["ts"], reverse=False)
-        SingleLogger().info("Comp traces length: {}.".format(len(traces)))
+        SingleLogger().info("Original Comp traces length: {}.".format(len(traces)))
         debug_utils.DebugRecorder().debug_event_end("collect_" + pid+"_comp.sorted", "Collct", "0")
 
         ### find the last BP op in the timeline
@@ -499,9 +500,9 @@ class Collector(object):
         try:
             with open(comm_d_path, 'r') as f:
                 traces = json.load(f)
-        except json.decoder.JSONDecodeError:
-            traceback.print_exc()
-            traces = []
+        except ValueError:
+            ### in case some comm_detail trace files are empty
+            return
         debug_utils.DebugRecorder().debug_event_end("collect_" + pid+"_comm_detail.jsonload", "Collct", "0")
 
         algo = args_.nccl_algo
@@ -512,8 +513,9 @@ class Collector(object):
         elif algo.lower() == "ring":
             self.nccl_graph.parse_ring_topo(traces["RealRing"], map_to=pid)  
             # self.nccl_graph.parse_connect_topo(traces["Ring"], map_to=pid)  
-        if isinstance(traces, dict):    
-            traces = traces["traceEvents"]
+        if isinstance(traces, dict): 
+            ### there may be no NCCL traces for intro-machien GPUs
+            traces = traces.get("traceEvents", [])
 
         traces = sorted(traces, key=lambda x: x["ts"], reverse=False)
         first_op = None
@@ -648,8 +650,8 @@ class Collector(object):
 
                 if "Sync" in process_name and "none" not in op_name:
                     if self.clock_aligner is not None and host_id is not None:
-                            ### register the start time of first UPDATE
-                            self.clock_aligner.mark_ref_time(host_id, ts, "%s.%s"%(process_name, op_name))
+                            ### register the end time of the first sync operators
+                            self.clock_aligner.mark_ref_time(host_id, trace["ts"], "%s.%s"%(process_name, op_name))
 
                 if "Sync" in process_name and args_.trace_level != "debug":
                     continue
