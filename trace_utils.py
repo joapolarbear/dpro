@@ -539,14 +539,17 @@ class TraceManager:
         ret = []
         for prefix in sorted(operator_traces_list.keys()):
             operator_traces = operator_traces_list[prefix] 
-            fw_bw_list = []
+            fw_list = []
+            bw_list = []
             iter_list = []
             operator_traces = sorted(operator_traces, key=lambda x: x["ts"])
 
             iter_cnt = None
             step_start_ts = None
             cur_iter_time = 0
-            fw_bw_end = 0
+            fw_end = None
+            bw_start = None
+            bw_end = None
             for event in operator_traces:
                 if iter_cnt is None:
                     ### initialization
@@ -567,10 +570,12 @@ class TraceManager:
                             SingleLogger().warn("Illegal cnt field for this event %s %s %d" % (event["pid"], event["name"], event["args"]["cnt"]))
                         continue
                     iter_list.append((cur_iter_time - step_start_ts) / 1000.0)
-                    fw_bw_list.append((fw_bw_end - step_start_ts) / 1000.0)
+                    fw_list.append((fw_end - step_start_ts) / 1000.0)
+                    bw_list.append((bw_end - bw_start) / 1000.0)
                     # SingleLogger().info("%s - the %d th iteration: FW+BW: %f, Iteration time: %f" % (prefix, len(iter_list), fw_bw_list[-1], iter_list[-1]))
-                    SingleLogger().debug("%s - the %d th iteration: FW+BW: %f, Iteration time: %f" % (prefix, len(iter_list), fw_bw_list[-1], iter_list[-1]))
+                    SingleLogger().debug("%s - the %d th iteration: FW: %f, BW: %f, Iteration time: %f" % (prefix, len(iter_list), fw_list[-1], bw_list[-1], iter_list[-1]))
                     step_start_ts = event['ts']
+                    bw_start = None
                     cur_iter_time = event['ts'] + event['dur']
                     iter_cnt = event["args"]["cnt"]
                 else:
@@ -579,19 +584,25 @@ class TraceManager:
 
                     ### TODO (huhanpeng): change after fine-tune update
                     ### here we assume UPDATE is following the last BP op.
-                    if "FW" in event["name"] or "BW" in event["name"]:
-                        fw_bw_end = cur_iter_time
+                    if "FW" in event["name"]:
+                        fw_end = cur_iter_time
+                    if "BW" in event["name"]:
+                        if bw_start is None:
+                            bw_start = cur_iter_time
+                        bw_end = cur_iter_time
                     
             ### Needed if there is only one step
             iter_list.append((cur_iter_time - step_start_ts) / 1000.0)
-            fw_bw_list.append((fw_bw_end - step_start_ts) / 1000.0)
-            SingleLogger().debug("%s - the %d th iteration: FW+BW: %f, Iteration time: %f" % (prefix, len(iter_list), fw_bw_list[-1], iter_list[-1]))
+            fw_list.append((fw_end - step_start_ts) / 1000.0)
+            bw_list.append((bw_end - bw_start) / 1000.0)
+            SingleLogger().debug("%s - the %d th iteration: FW:%f, BW: %f, Iteration time: %f" % (prefix, len(iter_list), fw_list[-1], bw_list[-1], iter_list[-1]))
 
-            fw_bw_time = sum(fw_bw_list) / float(len(fw_bw_list))
+            fw_time = sum(fw_list) / float(len(fw_list))
+            bw_time = sum(bw_list) / float(len(bw_list))
             iter_time = sum(iter_list) / float(len(iter_list))
-            ret.append((prefix, fw_bw_time, iter_time))
-            SingleLogger().info("<%s> fw + bw: %f ms -- iteration time: %f ms" % (prefix,
-                    fw_bw_time, iter_time))
+            ret.append((prefix, fw_time, bw_time, iter_time))
+            SingleLogger().info("<%s> fw : %f, bw: %f ms -- iteration time: %f ms" % (prefix,
+                    fw_time, bw_time, iter_time))
         return ret
 
     def group_computation_op_by_prefix(self):
