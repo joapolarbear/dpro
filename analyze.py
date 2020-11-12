@@ -141,7 +141,8 @@ if args.option == "replay":
             leaf_dirs=clct.all_prefix_list(), 
             dump_path=clct.pm.path,
             comm_backend=clct.comm_backend,
-            byteps_graph=clct.byteps_graph)
+            byteps_graph=clct.byteps_graph,
+            show_queue=args.show_queue)
     
     def replay_with_delay(idx_, rst, node_name=None):
         logger.info(node_name)

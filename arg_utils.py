@@ -41,6 +41,7 @@ parser.add_argument("--update_barrier", type=bool, default=False, help="If true,
 parser.add_argument("--step_num", type=int, default="1", help="Default step numbers to replay.")
 parser.add_argument("--delay_ratio", type=float, default=1.1, help="delay ratio")
 parser.add_argument("--full_trace", action="store_true", help="If this arg is set, simulate traces with detailed dependency info.")
+parser.add_argument("--show_queue", action="store_true", help="If this arg is set, record the queue status of each device during replaying.")
 
 ### Optimize
 parser.add_argument("--optimizer", type=str, default="MCTS", choices=["MCTS", "MCMC"], help="The algorithm used to search the optimal optimzation strategy")

@@ -313,21 +313,16 @@ class ncclGraph:
         else:
             raise NotImplementedError()
 
-    def send_to_recv(self, prefix, chunkId, channelId):
+    def send_to_recv(self, prefix, chunkStep, channelId):
         ''' Given a Send op, find the Recv Op 
         '''
         ### for the remaining steps
         if self.algo == NCCL_ALGO.RING:
-            ### For ring, chunkId denotes the step of each chunk of tensor
-            rank = self.prefix2rank[prefix]
-            c, k = self.ring_step_to_chunk_order_id(rank, chunkId, Send=True)
+            ### For ring, chunkStep denotes the step of each process
             ### !!! dependency
+            rank = self.prefix2rank[prefix]
             next_rank = self.graph["Ring"][channelId][rank]["next"]
-            nc = c
-            nk = k
-            next_chunkId = self.ring_chunk_order_id_to_step(next_rank, nc, nk, Send=False)
-            
-            return self.rank2prefix[next_rank], next_chunkId
+            return self.rank2prefix[next_rank], chunkStep
 
         elif self.algo == NCCL_ALGO.TREE:
             # TODO (huhanpeng)
@@ -335,43 +330,27 @@ class ncclGraph:
         else:
             raise ValueError("NCCL_ALGO error: %s" % self.algo.value)
 
-    def send_to_last_recv(self, prefix, chunkId):
+    def send_to_last_recv(self, prefix, chunkStep):
         ''' Given a Send op, find the *last* Recv Op 
         '''
         ### for the remaining steps
         if self.algo == NCCL_ALGO.RING:
-            ### For ring, chunkId denotes the step of each chunk of tensor
-            rank = self.prefix2rank[prefix]
-            c, k = self.ring_step_to_chunk_order_id(rank, chunkId, Send=True)
-            ### !!! dependency
-            last_rank = rank
-            lc = c
-            lk = k - 1 if (k > 0 and c == rank) else k
-            last_chunkId = self.ring_chunk_order_id_to_step(last_rank, lc, lk, Send=False)
-            
-            return self.rank2prefix[last_rank], last_chunkId
-
+            ### For ring, chunkStep denotes the step of each chunk of tensor
+            assert chunkStep > 0
+            return prefix, chunkStep-1
         elif self.algo == NCCL_ALGO.TREE:
             # TODO (huhanpeng)
             raise NotImplementedError()
         else:
             raise ValueError("NCCL_ALGO error: %s" % self.algo.value)
 
-    def recv_to_send(self, prefix, chunkId, sliceId, channelId):
+    def recv_to_send(self, prefix, chunkId, sliceId, chunkStep):
         ''' Given a Recv op, find the Send Op 
         '''
         ### for the remaining steps
         if self.algo == NCCL_ALGO.RING:
             ### For ring, chunkId denotes the step of each chunk of tensor
-            rank = self.prefix2rank[prefix]
-            c, k = self.ring_step_to_chunk_order_id(rank, chunkId, Send=False)
-            ### !!! dependency
-            next_rank = rank
-            nc = c
-            nk = k + 1 if c == rank else k
-            next_chunkId = self.ring_chunk_order_id_to_step(next_rank, nc, nk, Send=True)
-            
-            return self.rank2prefix[next_rank], next_chunkId, sliceId, channelId
+            return prefix, chunkStep+1
 
         elif self.algo == NCCL_ALGO.TREE:
             # TODO (huhanpeng)
