@@ -16,7 +16,7 @@ parser.add_argument("--sort", action="store_true", help="Sorted in descending or
 parser.add_argument("--head", type=int, default=None, help="Print the first few lines")
 parser.add_argument("--xlsx", action="store_true", help="Output XLSX file of the statistic results")
 parser.add_argument("--del_queue", action="store_true", help="If set True, delete the queue time in communication traces. ")
-parser.add_argument("--logging_level", type=int, default="20", help="Logging level")
+parser.add_argument("--logging_level", type=str, default="INFO", help="Logging level")
 parser.add_argument("--clean", action="store_true", help="Flush the log file")
 
 parser.add_argument("--pretty", action="store_true", help="Output necessary info if set")

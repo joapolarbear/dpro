@@ -6,7 +6,6 @@ import sys, os
 import re
 import ujson as json
 import networkx as nx
-import threading
 import time
 import logger_utils
 import arg_utils
@@ -701,12 +700,6 @@ class Collector(object):
                 pass
         return ret
 
-    def bpf_collect_update(self):
-        raise NotImplementedError()
-        with open(self.path_dict["update"], 'r') as f:
-            rst_traces = json.load(f)
-        self.time_dict["traceEvents"] += rst_traces["traceEvents"]
-
     def iter_combine(self):
         ts_ = time.time()
         rst_traces = {"traceEvents": []}
@@ -896,13 +889,15 @@ class Collector(object):
         trail_dag_path = self.pm.search(FileName.TRAIL_DAG)
         if force_ or trace_path is None or (self.comm_backend == "NCCL" and nccl_graph_path is None) or trail_dag_path is None:
             self.collect_traces()
-            self.collect_trial_dag()
-            self.fine_tune_trace_dag()
-            ### Cache these info
+            # self.collect_trial_dag()
+            # self.fine_tune_trace_dag()
+            ### Asynchonously cache these info
             self.traceM.dump(self.pm.path)
-            if self.comm_backend == "NCCL":
-                self.nccl_graph.dump(os.path.join(self.pm.path, FileName.NCCL_GRAPH.value))
-            nx.write_gml(self.trail_dag, os.path.join(self.pm.path, FileName.TRAIL_DAG.value), lambda x: str(x))
+            # graph_thread = threading.Thread(target=nx.write_gml, 
+            #     args=(self.trail_dag, os.path.join(self.pm.path, FileName.TRAIL_DAG.value), lambda x: str(x)))
+            # graph_thread.start()
+            # if self.comm_backend == "NCCL":
+            #     self.nccl_graph.dump(os.path.join(self.pm.path, FileName.NCCL_GRAPH.value))
         else:
             self.traceM = TraceManager()
             self.traceM.load(self.pm.path)
