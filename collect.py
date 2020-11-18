@@ -3,6 +3,7 @@ import os
 
 # append for auto_profiling
 import sys, os
+import re
 import ujson as json
 import networkx as nx
 import threading
@@ -10,6 +11,7 @@ import time
 import logger_utils
 import arg_utils
 import debug_utils
+import numpy as np
 
 from trace_utils import *
 from dag_utils import * 
@@ -151,6 +153,7 @@ class Collector(object):
 
         ### TODO (huhanpeng): assume different host use the same dag, original dag
         self.dag = None
+        self.metadata = None
         self.trail_dag = None # global dag
         self.single = False # use to denote whether this is a single-GPU trial
         
@@ -158,19 +161,6 @@ class Collector(object):
         _rst_traces = {"traceEvents": []}
         _rst_traces["traceEvents"] = [_trace for _trace in self.time_dict["traceEvents"] if _trace["cat"] != _cat]
         self.time_dict = _rst_traces
-
-    def re_gen_final_traces(self):
-        trace_path = self.pm.search(FileName.TRACE)
-        self.logger.info("Recombining " + trace_path)
-        self.time_dict = {"traceEvents":[]}
-        ### Apply dependencies in dag to the mxnet traces.
-        self.bpf_collect_comp()
-        ### Collect communication traces, IO traces and UPDATE traces and apply dependency
-        self.bpf_collect_io()
-        self.bpf_collect_comm()
-        TraceManager(self.time_dict, self.pm.dir_level).get_iter_time()
-        with open(trace_path, 'w') as f:
-            json.dump(self.time_dict, f, indent=4)
 
     def bpf_collect_for_rank(self, _path, pid, host_id=None):
         tmp_pm = PathManager(_path)
@@ -506,22 +496,30 @@ class Collector(object):
         debug_utils.DebugRecorder().debug_event_end("collect_" + pid+"_comm_detail.jsonload", "Collct", "0")
 
         algo = args_.nccl_algo
+        nccl_rank_graph_path = self.pm.search(FileName.NCCL_RANK_GRAPH) if tmp_pm is None else tmp_pm.search(FileName.NCCL_RANK_GRAPH)
+        with open(nccl_rank_graph_path, 'r') as f:
+            nccl_rank_graph = json.load(f)
         if algo is None:
             raise ValueError("--nccl_algo must be given")
         elif algo.lower() == "tree":
-            self.nccl_graph.parse_tree_topo(traces["Tree"], map_to=pid)
+            self.nccl_graph.parse_tree_topo(nccl_rank_graph["Tree"], map_to=pid)
         elif algo.lower() == "ring":
-            self.nccl_graph.parse_ring_topo(traces["RealRing"], map_to=pid)  
+            self.nccl_graph.parse_ring_topo(nccl_rank_graph["RealRing"], map_to=pid)  
             # self.nccl_graph.parse_connect_topo(traces["Ring"], map_to=pid)  
         if isinstance(traces, dict): 
             ### there may be no NCCL traces for intro-machien GPUs
             traces = traces.get("traceEvents", [])
 
+        # self.tensor2group = []
+        # for _ in self.metadata["gradient_name_list"]:
+        #     self.tensor2group.append([])
+        # self.groupname = []
+
         traces = sorted(traces, key=lambda x: x["ts"], reverse=False)
         first_op = None
         for trace in traces:
             ### ignore digit
-            if trace["name"].split(".")[-2].isdigit():
+            if re.match("[^.]+\.[0-9+]+\.(SEND|RECV)", trace["name"]) is None:
                 continue
 
             if first_op is None:
@@ -535,20 +533,36 @@ class Collector(object):
                 break
 
             if trace["ph"].lower() == "i":
-                if args_.trace_level != "debug":
-                    continue
-                trace["s"] = "p"
+                continue
 
-            trace["name"] = "Comm." + trace["name"].split("horovod_allreduce.")[1]
+            trace["name"] = "Comm." + ".".join(trace["name"].split(".")[1:])
             trace["args"]["name"] = gen_long_name(None, trace["name"], suffix=("%d_%d_%d_%d"%(
                                     int(trace["args"]["loopId"]),
                                     int(trace["args"]["channelId"]),
                                     int(trace["args"]["chunkId"]), 
                                     int(trace["args"]["sliceId"]))))
+
+            ### add dependency info the traces
+            # tensor_list = re.findall("[0-9]+", trace["name"].split(".")[1])     # a str list, each element is the index of tensor
+            # tensor_list = sorted([int(e) for e in tensor_list])
+            # sorted_name = "+".join([str(e) for e in tensor_list])
+            # if sorted_name not in self.groupname:
+            #     self.groupname.append(sorted_name)
+            # for tensor_id in tensor_list:
+            #     # tensor_name = self.metadata["gradient_name_list"][int(tensor_id)]
+            #     group_id = self.groupname.index(sorted_name)
+            #     # if group_id not in self.tensor2group[tensor_id]:
+            #     self.tensor2group[tensor_id].append(group_id)
+
             if pid is not None:
                 trace["tid"] = trace["pid"]
                 trace["pid"] = pid
             rst_traces.append(trace)
+
+        # self.tensor2group = np.array(self.tensor2group)
+        # print(self.tensor2group)
+        # self.tensor2group.dump(os.path.join(tmp_pm.path, "fusion_combination.txt"))
+        # raise
 
         if len(rst_traces) ==  0:
             SingleLogger().warn("No comm_detail traces for {}".format(comm_d_path))
@@ -751,35 +765,23 @@ class Collector(object):
     def collect_traces(self, force_=False):
         self.logger.info("# Collecting Traces")
         self.logger.info("Generating %s" % (FileName.TRACE.value))
-        self.traceM = TraceManager(self.iter_combine(), self.pm.dir_level, check=True)
-
-    def iter_time(self):
-        if self.traceM is None:
-            self.collect_traces()
-        self.logger.info("Original Iteration Time")
-        return self.traceM.get_iter_time()
-
-    def collect_update_dict(self):
-        ### Map tensor name to its update index
+        ### collect metadata
         meta_path = self.pm.search(FileName.METADATA)
         if meta_path is None:
             self.logger.error("{} not found. Fail to map_tensors_to_update".format(FileName.METADATA.value))
         else:
             with open(meta_path, 'r') as fp:
-                metadata = json.load(fp)
-        if "opt_aggregate_num" in metadata:
-            aggregate_num = metadata["opt_aggregate_num"]
+                self.metadata = json.load(fp)
+        self.traceM = TraceManager(self.iter_combine(), self.pm.dir_level, check=True)
+
+    def collect_update_dict(self):
+        ### Map tensor name to its update index
+        if "opt_aggregate_num" in self.metadata:
+            aggregate_num = self.metadata["opt_aggregate_num"]
         else:
             aggregate_num = 0
-        self.para_dict = ParameterDict(metadata["gradient_name_list"])
+        self.para_dict = ParameterDict(self.metadata["gradient_name_list"])
         return self.para_dict.map_tensors_to_update(aggregate_num)
-
-    def first_valid_dir(self, _path):
-        for _dir in os.listdir(_path):
-            if _dir.startswith('.'):
-                continue
-            return _dir
-        raise ValueError("No valid directory under {}".format(_path))
 
     def collect_trial_dag(self):
         assert self.pm.dir_level == DirLevel.TRIAL
@@ -794,12 +796,12 @@ class Collector(object):
 
         if self.single:
             worker_path = os.path.join(self.pm.path, self.pm.dirs[0])
-            gpu_path = os.path.join(worker_path, self.first_valid_dir(worker_path))
+            gpu_path = os.path.join(worker_path, first_valid_dir(worker_path))
             self.logger.info("## Collect DAG in %s" % (gpu_path))
             dagmanager = DAGManager(gpu_path, self.traceM, self.nccl_graph, self.byteps_graph, platform=self.platform, single=True)
             max_para_degree, _critical_path = dagmanager.gen_gpu_dag(_pretty=args_.pretty, update_dict=update_dict)
             worker_dag_list.append(dagmanager.gpu_dag)
-            critical_path += _critical_path
+            critical_path = [_critical_path]
         else:
             for _dir in self.pm.dirs:
                 worker_path = os.path.join(self.pm.path, _dir)
@@ -819,6 +821,12 @@ class Collector(object):
             composed_dag = nx.compose(composed_dag, self.byteps_graph.get_comm_graph())
 
         self.trail_dag = composed_dag
+
+    def iter_time(self):
+        if self.traceM is None:
+            self.collect_traces()
+        self.logger.info("Original Iteration Time")
+        return self.traceM.get_iter_time()
 
     def init(self, force_=False):
         trace_path = self.pm.search(FileName.TRACE)

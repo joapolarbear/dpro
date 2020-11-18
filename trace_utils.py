@@ -52,6 +52,7 @@ class FileName(Enum):
     COMM_DETAIL="comm_detail.json"
     INFO="info.json"
     NCCL_GRAPH="nccl_graph.txt"
+    NCCL_RANK_GRAPH="nccl_rank_graph.json"
     TRAIL_DAG="trail_dag.gml"
     STATISTIC="statistic.txt"
     BPS_COMM_DETAIL="comm_timeline.json"
@@ -96,6 +97,13 @@ def read_traces(traces_path):
 
 def _is_comm_trace(trace):
     return trace["cat"] == "Comm"
+
+def first_valid_dir(_path):
+    for _dir in os.listdir(_path):
+        if _dir.startswith('.'):
+            continue
+        return _dir
+    raise ValueError("No valid directory under {}".format(_path))
 
 ######################## Delete ########################
 def return_stat(traces):
@@ -142,46 +150,6 @@ def return_stat(traces):
         statistic["var"] = statistic["var"] / float(statistic["cnt"])
     return name2sta, cat2sta
 
-
-def return_path_dict(root_path):
-    ### TODO : delete
-    ''' Map the paths of each file from its name
-    Args:
-        root_path: the root path for one GPU
-    '''
-    assert os.path.isdir(root_path)
-    root_path = os.path.abspath(root_path)
-    __root, _, files = list(os.walk(root_path))[0]
-    path_dict = {"root": __root}
-    path_dict["local_rank"] = int(__root.split("/")[-1])
-    for __file in files:
-        cur_path = os.path.join(__root, __file)
-        if FileName.TRACE.value in __file:
-            path_dict[FileName.TRACE.value] = cur_path
-        elif __file == FileName.DAG.value:
-            # mygraph = nx.read_gml(cur_path)
-            path_dict[FileName.DAG.value] = cur_path
-        elif __file == FileName.COMP.value:
-            path_dict[FileName.COMP.value] = cur_path
-        elif __file == FileName.COMM.value:
-            path_dict[FileName.COMM.value] = cur_path
-        elif __file == FileName.IO.value:
-            path_dict[FileName.IO.value] = cur_path
-        elif "loss" in __file:
-            idx = int(__file.split("loss")[1].split(".")[0])
-            if "loss" not in path_dict:
-                path_dict["loss"] = {idx: cur_path}
-            else:
-                path_dict["loss"][idx] = cur_path
-        elif __file == FileName.SYMBOL.value:
-            path_dict[FileName.SYMBOL.value] = cur_path
-        elif __file == FileName.TENSOR_NAME.value:
-            path_dict[FileName.TENSOR_NAME.value] = cur_path
-        elif __file == FileName.COMM_DETAIL.value:
-            path_dict[FileName.COMM_DETAIL.value] = cur_path
-        else:
-            pass
-    return path_dict
 ######################## Delete ########################
 
 
@@ -717,8 +685,6 @@ class PathManager:
         ### get the sub files and directories
         _, self.dirs, self.files = list(os.walk(self.path))[0]
         self.dirs = sorted(self.dirs)
-        ### only for DirLevel.GPU path
-        self.path_dict = return_path_dict(self.path) if self.dir_level == DirLevel.GPU else None
 
     def get_dir_level(self, _dir):
         ''' return the level of the current dir '''
@@ -728,7 +694,11 @@ class PathManager:
                 return 0
             else:
                 return 1 + recur_look_up(os.path.join(root, dirs[0]))
-        level = recur_look_up(_dir)
+        try:
+            level = recur_look_up(_dir)
+        except:
+            print(_dir)
+            raise
         return DirLevel(level)
 
     def search_comm(self):
@@ -738,28 +708,14 @@ class PathManager:
         ''' Search the target file, if not exit, return None '''
         if isinstance(target, Enum):
             target = target.value
-        
-        if self.dir_level == DirLevel.GPU: 
-            if target in self.path_dict:
-                return self.path_dict[target]
-            else:
-                ### only allow to traceback to one upper folder
-                parent_path = os.path.dirname(self.path)
-                root, dirs, files = list(os.walk(parent_path))[0]
-                if target in files:
-                    return os.path.join(root, target)
-                else:
-                    SingleLogger().warn("Fail to find %s in path %s" % (str(target), self.path))
-                    return
-        elif self.dir_level == DirLevel.WORKER:
-            if target in self.files:
-                return os.path.join(self.path, target)
-            else:
-                SingleLogger().warn("Fail to find %s in path %s" % (str(target), self.path))
-                return
+        if target in self.files:
+            return os.path.join(self.path, target)
+        if self.dir_level == DirLevel.WORKER:
+            for worker_dir in self.dirs:
+                gpu_root, gpu_dirs, gpu_files = list(os.walk(os.path.join(self.path, worker_dir)))[0]
+                if target in gpu_files:
+                    return os.path.join(gpu_root, target)
         elif self.dir_level == DirLevel.TRIAL:
-            if target in self.files:
-                return os.path.join(self.path, target)
             for _dir in self.dirs:
                 worker_root, worker_dirs, worker_files = list(os.walk(os.path.join(self.path, _dir)))[0]
                 if target in worker_files:
@@ -769,8 +725,8 @@ class PathManager:
                         gpu_root, gpu_dirs, gpu_files = list(os.walk(os.path.join(worker_root, worker_dir)))[0]
                         if target in gpu_files:
                             return os.path.join(gpu_root, target)
-            SingleLogger().warn("Fail to find %s in path %s" % (str(target), self.path))
-            return
+        SingleLogger().warn("Fail to find %s in path %s" % (str(target), self.path))
+        return
 
     """
     def fuzzy_search(self, target):
