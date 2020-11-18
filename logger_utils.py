@@ -27,20 +27,31 @@ class SingleLogger:
             os.remove(logfile)
         #! config logging
         self.logger = logging.getLogger(name)
-        self.logger.setLevel(level=logging_level)
+        log_level = logging_level.lower()
+        if log_level == "trace":
+            _log_level = logging.TRACE
+        elif log_level == "debug":
+            _log_level = logging.DEBUG
+        elif log_level == "warn" or log_level == "warning":
+            _log_level = logging.WARNING
+        elif log_level == "error":
+            _log_level = logging.ERROR
+        else:
+            _log_level = logging.INFO
+        self.logger.setLevel(level=_log_level)
 
         formatter = logging.Formatter('[%(asctime)s] [%(filename)s:%(lineno)d] %(levelname)s - %(message)s', datefmt="%Y-%m-%d %H:%M:%S")
 
         #! bind some file stream
         handler = logging.FileHandler(logfile)
-        handler.setLevel(logging_level)
+        handler.setLevel(_log_level)
         handler.setFormatter(formatter)
         self.logger.addHandler(handler)
 
         if not show_progress: 
             #! if we want show progress, no need to bind the output stream 
             console = logging.StreamHandler()
-            console.setLevel(logging.INFO)
+            console.setLevel(_log_level)
             console.setFormatter(formatter)
             self.logger.addHandler(console)
 
