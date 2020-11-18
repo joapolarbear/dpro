@@ -5,6 +5,7 @@ import math
 import xlsxwriter
 import traceback
 import logger_utils
+import threading
 from enum import Enum
 from logger_utils import Singleton, SingleLogger
 
@@ -301,6 +302,7 @@ class TraceManager:
 
         self.max_cnt = 0
         self.ret_stat()
+        self.add_step_cnt()
 
     def check_traces(self, traces):
         for trace in traces:
@@ -495,6 +497,27 @@ class TraceManager:
                 return idx, self.traces[idx]
         return None, None
 
+    def add_step_cnt(self):
+        ### based on the assumption that FW or IO is the start of a step
+        AS_START_CAT = ["I/O", "operator.FW"]
+        operator_traces_list = self.group_op_by_prefix()
+        for prefix in sorted(operator_traces_list.keys()):
+            cat_cursor = None
+            step_cnt = 0
+            operator_traces = operator_traces_list[prefix]
+            # operator_traces = sorted(operator_traces, key=lambda x: x["ts"])
+            for event in operator_traces:
+                cat = parse_cat_fine_grained(event["name"])
+                if cat_cursor is None:
+                    pass
+                elif cat_cursor not in AS_START_CAT and cat in AS_START_CAT:
+                    step_cnt += 1
+                elif cat_cursor in AS_START_CAT and cat == "operator.UPDATE":
+                    ### handle the overlapping cases between UPDATE and (IO, FW)
+                    step_cnt -= 1
+                event["args"]["step"] = step_cnt
+                cat_cursor = cat
+
     def get_iter_time(self):
         ''' print the iteration time and computation time
         *Note* that this function is strongly dependent on how the bps_trace_final.json
@@ -502,7 +525,8 @@ class TraceManager:
         the bps_trace_final.json
         '''
         assert isinstance(self.traces, list)
-        operator_traces_list = self.group_computation_op_by_prefix()
+        ### When calculate the iteration time, ignore IO and Comm, since they are asynchronous
+        operator_traces_list = self.group_op_by_prefix(cat_name=CatName.OPERATOR.value)
 
         ret = []
         for prefix in sorted(operator_traces_list.keys()):
@@ -510,33 +534,26 @@ class TraceManager:
             fw_list = []
             bw_list = []
             iter_list = []
-            operator_traces = sorted(operator_traces, key=lambda x: x["ts"])
+            # operator_traces = sorted(operator_traces, key=lambda x: x["ts"])
 
-            iter_cnt = None
+            step_cnt = None
             step_start_ts = None
             cur_iter_time = 0
             fw_end = None
             bw_start = None
             bw_end = None
             for event in operator_traces:
-                if iter_cnt is None:
+                if step_cnt is None:
                     ### initialization
                     step_start_ts = event['ts']
                     cur_iter_time = event['ts'] + event['dur']
-                    iter_cnt = event["args"]["cnt"]
-                elif iter_cnt != event["args"]["cnt"]:
+                    step_cnt = event["args"]["step"]
+                elif step_cnt != event["args"]["step"]:
                     ### a new iteration
                     assert step_start_ts is not None
-                    if iter_cnt == -1:
+                    if step_cnt == -1:
                         continue
-                    if event["args"]["cnt"] < iter_cnt:
-                        ### TODO (huhanpeng), since there are some recompute if the gradients are overflow, 
-                        #### some iterations will be aborted, no UPDATE_ operators.
-                        if "UPDATE_" in event['name'] or "BW" in event["name"]:
-                            pass
-                        else:
-                            SingleLogger().warn("Illegal cnt field for this event %s %s %d" % (event["pid"], event["name"], event["args"]["cnt"]))
-                        continue
+                    assert event["args"]["step"] > step_cnt
                     iter_list.append((cur_iter_time - step_start_ts) / 1000.0)
                     fw_list.append((fw_end - step_start_ts) / 1000.0)
                     bw_list.append((bw_end - bw_start) / 1000.0)
@@ -545,7 +562,7 @@ class TraceManager:
                     step_start_ts = event['ts']
                     bw_start = None
                     cur_iter_time = event['ts'] + event['dur']
-                    iter_cnt = event["args"]["cnt"]
+                    step_cnt = event["args"]["step"]
                 else:
                     ### during an iteration
                     cur_iter_time = event['ts'] + event['dur']
@@ -573,7 +590,7 @@ class TraceManager:
                     fw_time, bw_time, iter_time))
         return ret
 
-    def group_computation_op_by_prefix(self):
+    def group_op_by_prefix(self, cat_name=None):
         prefix2traces = {}
         def _get_prefix(e):
             prefix = e["pid"]
@@ -581,11 +598,15 @@ class TraceManager:
                 prefix2traces[prefix] = []
             return prefix
         for event in self.traces:
-            if event["cat"] == "operator" and not self._is_ignore_for_sta(event):
+            if (cat_name is None or parse_cat_from_name(event["name"]) == cat_name) and not self._is_ignore_for_sta(event):
                 prefix2traces[_get_prefix(event)].append(event)
         return prefix2traces
 
     def dump(self, dir_):
+        trace_thread = threading.Thread(target=self._dump, args=(dir_,))
+        trace_thread.start()
+
+    def _dump(self, dir_):
         rst_traces = sorted(self.traces, key=lambda x: (x["pid"], x["tid"]))
         with open(os.path.join(dir_, FileName.TRACE.value), 'w') as f:
             json.dump(rst_traces, f)
