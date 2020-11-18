@@ -7,6 +7,7 @@ import traceback
 import logger_utils
 import threading
 from enum import Enum
+import numpy as np
 from logger_utils import Singleton, SingleLogger
 
 QUEUETYPE = {
@@ -207,6 +208,7 @@ def parse_rawname_from_name(name):
         return name.split(DEL)[1]
 
 def parse_layer_name(name):
+    SingleLogger().warn("parse_layer_name may be layer not safe")
     if DEL in name:
         name = name.split(DEL)[1]
     if DDEL in name:
@@ -256,6 +258,7 @@ def parse_cat_fine_grained(name_):
     elif "COMM" in name_:
         ret_cat = "operator.COMM"
     elif "COMP" in name_:
+        # TODO (delete)
         ret_cat = "operator.COMP"
     elif "UPDATE_" in name_:
         ret_cat = "operator.UPDATE"
@@ -293,16 +296,45 @@ class TraceManager:
             return
         self.traces = self.check_traces(traces) if check else traces
         self.traces = sorted(self.traces, key=lambda x: (x["ts"], x["name"]), reverse=False)
+        
+        self.dir_level = dir_level
+        self.max_cnt = 0
+        self.opt_step = 0   # which step has the cloest performance to the average performance
 
         self.name2sta = None
         self.cat2sta = None
-        self.dir_level = dir_level
-
         self.name2idxlist = {}
-
-        self.max_cnt = 0
+          
         self.ret_stat()
         self.add_step_cnt()
+
+    def dump(self, dir_):
+        trace_thread = threading.Thread(target=self._dump, args=(dir_,))
+        trace_thread.start()
+
+    def _dump(self, dir_):
+        rst_traces = sorted(self.traces, key=lambda x: (x["pid"], x["tid"]))
+        with open(os.path.join(dir_, FileName.TRACE.value), 'w') as f:
+            json.dump(rst_traces, f)
+        str_ = "%d,%d,%d\n"%(self.dir_level.value, self.max_cnt, self.opt_step)
+        str_ += str(self.name2sta) + "\n"
+        str_ += str(self.cat2sta)
+        with open(os.path.join(dir_, FileName.STATISTIC.value), 'w') as fp:
+            fp.write(str_)
+
+    def load(self, dir_):
+        self.traces = read_traces(os.path.join(dir_, FileName.TRACE.value))
+        with open(os.path.join(dir_, FileName.STATISTIC.value), 'r') as fp:
+            str_ = fp.read().split("\n")
+
+        dir_level, max_cnt, opt_step = str_[0].split(",")
+        self.dir_level = DirLevel(int(dir_level))
+        self.max_cnt = int(max_cnt)
+        self.opt_step = int(opt_step)
+
+        self.name2sta = eval(str_[1])
+        self.cat2sta = eval(str_[2])
+        self.name2idxlist = {}
 
     def check_traces(self, traces):
         for trace in traces:
@@ -523,12 +555,19 @@ class TraceManager:
         *Note* that this function is strongly dependent on how the bps_trace_final.json
         is generated based on the temp.json, i.e., which ops of temp.json are used in 
         the bps_trace_final.json
+
+        Returns
+        -------
+        iter_time: float, average iteration time, overall
+        self.opt_step: int, the index of the step where the iteration 
+            time is the cloest to the average performance, used for
+            converting dynamic graph into static graph.
         '''
         assert isinstance(self.traces, list)
         ### When calculate the iteration time, ignore IO and Comm, since they are asynchronous
         operator_traces_list = self.group_op_by_prefix(cat_name=CatName.OPERATOR.value)
 
-        ret = []
+        iter_list_all = []
         for prefix in sorted(operator_traces_list.keys()):
             operator_traces = operator_traces_list[prefix] 
             fw_list = []
@@ -585,10 +624,16 @@ class TraceManager:
             fw_time = sum(fw_list) / float(len(fw_list))
             bw_time = sum(bw_list) / float(len(bw_list))
             iter_time = sum(iter_list) / float(len(iter_list))
-            ret.append((prefix, fw_time, bw_time, iter_time))
+            iter_list_all.append(iter_list)
             SingleLogger().info("<%s> fw : %f, bw: %f ms -- iteration time: %f ms" % (prefix,
                     fw_time, bw_time, iter_time))
-        return ret
+
+        ### iter_list_all, shape = (n_GPUs, n_steps) ==> (n_steps)
+        iter_list_all = np.average(np.array(iter_list_all), axis=0)
+        iter_time = np.average(iter_list_all)
+        self.opt_step = np.argmin(np.abs(iter_list_all - iter_time))
+        SingleLogger().info("<Overall> step %d is the one closest to average %f - %s" % (self.opt_step, iter_time, iter_list_all))
+        return iter_time, self.opt_step
 
     def group_op_by_prefix(self, cat_name=None):
         prefix2traces = {}
@@ -601,36 +646,6 @@ class TraceManager:
             if (cat_name is None or parse_cat_from_name(event["name"]) == cat_name) and not self._is_ignore_for_sta(event):
                 prefix2traces[_get_prefix(event)].append(event)
         return prefix2traces
-
-    def dump(self, dir_):
-        trace_thread = threading.Thread(target=self._dump, args=(dir_,))
-        trace_thread.start()
-
-    def _dump(self, dir_):
-        rst_traces = sorted(self.traces, key=lambda x: (x["pid"], x["tid"]))
-        with open(os.path.join(dir_, FileName.TRACE.value), 'w') as f:
-            json.dump(rst_traces, f)
-
-        str_ = "%d,%d\n"%(self.dir_level.value, self.max_cnt)
-        str_ += str(self.name2sta) + "\n"
-        str_ += str(self.cat2sta)
-        with open(os.path.join(dir_, FileName.STATISTIC.value), 'w') as fp:
-            fp.write(str_)
-
-    def load(self, dir_):
-        self.traces = read_traces(os.path.join(dir_, FileName.TRACE.value))
-
-        with open(os.path.join(dir_, FileName.STATISTIC.value), 'r') as fp:
-            str_ = fp.read().split("\n")
-
-        dir_level, max_cnt = str_[0].split(",")
-        self.dir_level = DirLevel(int(dir_level))
-        self.max_cnt = int(max_cnt)
-
-        self.name2sta = eval(str_[1])
-        self.cat2sta = eval(str_[2])
-
-        self.name2idxlist = {}
 
     def map_name2idxlist(self):
         ''' map the trace name to the list of indexes in the trace list '''
