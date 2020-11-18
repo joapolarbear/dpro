@@ -11,7 +11,7 @@ Use `nvprof` to collect NvProf traces.
 
 In the meanwhile, you should customized the source code and enable BPF_related environment variabless correspondingly to collect ByteProfile Traces. 
 
-Then you can run `python3 nvprof2json.py --filename <nvprof_path>` to convert NvProf Traces from `.nvvp` to `JSON` format.
+Then you can run `python3 nvprof2json.py --filename <nvprof_path> > <target_path>` to convert NvProf Traces from `.nvvp` to `JSON` format.
 
 ## Comparison
 

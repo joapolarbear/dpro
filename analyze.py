@@ -42,8 +42,9 @@ if args.option == "mapping":
     kernels_table = {}
     kernel_cnt = 0
 
+    FIX_BIAS = 0
     def kernel_trace_ts(_idx, _bias=None):
-        return kernel_traces[_idx]['ts'] if _bias is None else kernel_traces[_idx]['ts'] - _bias
+        return (kernel_traces[_idx]['ts'] if _bias is None else kernel_traces[_idx]['ts'] - _bias)
 
     for op_trace in op_traces:
         if 'args' not in op_trace or 'BW' in op_trace['name']:
@@ -115,6 +116,12 @@ if args.option == "mapping":
         worksheet.write(row, 0, idx)
         worksheet.write(row, 1, name)
     workbook.close()
+
+    for k_trace in kernel_traces:
+        k_trace['ts'] -= (0 + FIX_BIAS)
+    rst_trace = op_traces + kernel_traces
+    with open(os.path.join(os.path.dirname(path_list[0]), "op_kernel_mapping.json"), 'w') as fp:
+        json.dump(rst_trace, fp)
 
 clct = Collector(path_list[0], comm_backend=args_.comm_backend, platform=args.platform)
 iter_times = clct.init(args.force)
