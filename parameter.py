@@ -1,4 +1,5 @@
 ''' Manage the parameter info of a DNN model
+### TODO (huhanpeng): mitigrate to ml_platform/mxnet/metadata.py
 '''
 import re
 from trace_utils import *
@@ -13,7 +14,10 @@ class Parameter:
 class ParameterDict:
     def __init__(self, raw_para_list):
         self.gradient_name_list = []
-        self.name2para = {}
+        self.parameters = []
+        ### name2layeridx is used to map op_name to index to reduce op_name length
+        ### TODO (huhanpeng), but sometimes, computation names can not be parsed from communication names
+        ### The correct method should be using DAG
         self.name2layeridx = {}
         self.total_idx = 0
         for para_ in raw_para_list:
@@ -31,7 +35,7 @@ class ParameterDict:
                 shape_ = [int(e) for e in re.findall(r"\d+", para_split[1])]
                 dtype_ = para_split[2].split("dtype=")[1]
             self.gradient_name_list.append(name_)
-            self.name2para[name_] = Parameter(self.total_idx, name_, shape_, dtype_)
+            self.parameters.append(Parameter(self.total_idx, name_, shape_, dtype_))
             self.total_idx += 1
             layer_name = parse_layer_name(name_)
             if layer_name not in self.name2layeridx:
@@ -42,16 +46,22 @@ class ParameterDict:
         self.tensor2update = {}
 
     def map_tensors_to_update(self, aggregate_num=0):
-        ''' Map each tensor to its corresponding update operation
+        ''' Map each tensor id to its corresponding update operation
         For MXNet
         '''
         max_update_id = 0
         for idx in range(self.cnt):
-            gra = self.gradient_name_list[self.cnt - 1 - idx]
-            self.tensor2update[gra] = idx if aggregate_num == 0 else int(idx / aggregate_num)
-            max_update_id = max(max_update_id, self.tensor2update[gra])
+            gra_idx = self.cnt - 1 - idx
+            self.tensor2update[gra_idx] = idx if aggregate_num == 0 else int(idx / aggregate_num)
+            max_update_id = max(max_update_id, self.tensor2update[gra_idx])
         self.tensor2update["max"] = max_update_id
         return self.tensor2update
+
+    def name_to_tensor_id(self, name):
+        return self.gradient_name_list.index(name)
+
+    def tensor_id_to_name(self, tensor_id):
+        return self.gradient_name_list[tensor_id]
 
     def parse_layer_index(self, layer_name):
         try:

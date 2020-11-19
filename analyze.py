@@ -124,7 +124,7 @@ if args.option == "mapping":
         json.dump(rst_trace, fp)
 
 clct = Collector(path_list[0], comm_backend=args_.comm_backend, platform=args.platform)
-iter_times = clct.init(args.force)
+iter_time = clct.init(args.force)
 
 if args.option == "statistic":
     """ Output the statistic results """
@@ -175,7 +175,6 @@ if args.option == "replay":
         step_end_time = replayer.replayAndDelay(delay_dict, _output=True)
     elif args.sub_option == "map_delay":
         ''' Replay and add delays to each node respectively.'''
-        iter_time = max([e[2] for e in iter_times])
         node_lists = list(wk_dag.nodes())
         total_len = len(node_lists)
         pgsbar = progressBar(start=0, end=total_len)
@@ -199,7 +198,6 @@ if args.option == "replay":
         critical_path = sorted(critical_path, key=lambda x: x[1], reverse=True)
         total_len = len(critical_path)
         pgsbar = progressBar(start=0, end=total_len)
-        iter_time = max([e[2] for e in iter_times])
         idx = 0
         max_diff = 0
         bottleneckt_ = None
@@ -212,7 +210,7 @@ if args.option == "replay":
             ### TODO (huhanpeng): change the value 10
             delay_dict = {nodename: {"delay": -5, "ratio": 1}}
             step_end_time_ms = [t / 1000 for t in replayer.replayAndDelay(delay_dict, _ouput=False).values()]
-            cur_iter_time_ = max(step_end_time_ms)
+            cur_iter_time_ = sum(step_end_time_ms)/len(step_end_time_ms)
             diff_ = cur_iter_time_ - iter_time if cur_iter_time_ > iter_time else iter_time - cur_iter_time_
             logger.info("Delay %s" % (nodename))
             logger.info(" ==> %s." % (str(step_end_time_ms)))

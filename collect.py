@@ -7,7 +7,6 @@ import re
 import ujson as json
 import networkx as nx
 import time
-import logger_utils
 import arg_utils
 import debug_utils
 import numpy as np
@@ -81,6 +80,7 @@ class ClockAligner:
             self.marker_per_host[host_id] = (_t, ref_name)
 
     def align(self):
+        SingleLogger().info("Combine and align traces ...")
         if len(self.traces_per_host) == 1:
             SingleLogger().warn("Only collect traces for one host/worker")
             self.single = True
@@ -127,7 +127,6 @@ class ClockAligner:
 class Collector(object):
     #! class used to go through the file system and collect info
     def __init__(self, root_path, comm_backend = "NCCL", platform = "TENSORFLOW"):
-        self.logger = logger_utils.SingleLogger()
         self.pm = PathManager(root_path)
         self.traceM = None
         self.comm_backend = comm_backend.upper()
@@ -162,12 +161,16 @@ class Collector(object):
         self.time_dict = _rst_traces
 
     def bpf_collect_for_rank(self, _path, pid, host_id=None):
+        SingleLogger().info("Collec traces for {} ...".format(_path))
         tmp_pm = PathManager(_path)
         assert tmp_pm.dir_level == DirLevel.GPU
         self.bpf_collect_comp(tmp_pm, pid, host_id)
         self.bpf_collect_io(tmp_pm, pid, host_id)
         self.bpf_collect_comm_detail(tmp_pm, pid, host_id)
         self.bpf_collect_comm(tmp_pm, pid, host_id)
+        if self.comm_backend == "NCCL":
+            self.bpf_collect_nccl_graph(tmp_pm, pid, host_id)
+
 
     def bpf_collect_comp(self, tmp_pm=None, pid=None, host_id=None):
         '''Apply dependency info to the mxnet trace results
@@ -238,7 +241,7 @@ class Collector(object):
 
         debug_utils.DebugRecorder().debug_event_start()
         traces = sorted(traces, key=lambda x: x["ts"], reverse=False)
-        SingleLogger().info("Original Comp traces length: {}.".format(len(traces)))
+        SingleLogger().debug("Original Comp traces length: {}.".format(len(traces)))
         debug_utils.DebugRecorder().debug_event_end("collect_" + pid+"_comp.sorted", "Collct", "0")
 
         ### find the last BP op in the timeline
@@ -438,7 +441,7 @@ class Collector(object):
             else:
                 raise NotImplementedError("Unsupported platform {}.".format(self.platform))
         self.clock_aligner.append_traces(host_id, rst_traces["traceEvents"])
-        SingleLogger().info("Comp traces length: {}.".format(len(rst_traces["traceEvents"])))
+        SingleLogger().debug("Comp traces length: {}.".format(len(rst_traces["traceEvents"])))
         debug_utils.DebugRecorder().debug_event_end("collect_" + pid+"_comp", "Collct", "0")
 
     def bpf_collect_io(self, tmp_pm=None, pid=None, host_id=None):
@@ -472,6 +475,19 @@ class Collector(object):
         self.clock_aligner.append_traces(host_id, rst_traces)
         debug_utils.DebugRecorder().debug_event_end("collect_" + pid+"_io", "Collct", "0")
 
+    def bpf_collect_nccl_graph(self, tmp_pm=None, pid=None, host_id=None):
+        algo = args_.nccl_algo
+        nccl_rank_graph_path = self.pm.search(FileName.NCCL_RANK_GRAPH) if tmp_pm is None else tmp_pm.search(FileName.NCCL_RANK_GRAPH)
+        with open(nccl_rank_graph_path, 'r') as f:
+            nccl_rank_graph = json.load(f)
+        if algo is None:
+            raise ValueError("--nccl_algo must be given")
+        elif algo.lower() == "tree":
+            self.nccl_graph.parse_tree_topo(nccl_rank_graph["Tree"], map_to=pid)
+        elif algo.lower() == "ring":
+            self.nccl_graph.parse_ring_topo(nccl_rank_graph["RealRing"], map_to=pid)
+            # self.nccl_graph.parse_connect_topo(traces["Ring"], map_to=pid)
+
     def bpf_collect_comm_detail(self, tmp_pm, pid=None, host_id=None):
         if self.comm_backend != "NCCL":
             return
@@ -494,17 +510,6 @@ class Collector(object):
             return
         debug_utils.DebugRecorder().debug_event_end("collect_" + pid+"_comm_detail.jsonload", "Collct", "0")
 
-        algo = args_.nccl_algo
-        nccl_rank_graph_path = self.pm.search(FileName.NCCL_RANK_GRAPH) if tmp_pm is None else tmp_pm.search(FileName.NCCL_RANK_GRAPH)
-        with open(nccl_rank_graph_path, 'r') as f:
-            nccl_rank_graph = json.load(f)
-        if algo is None:
-            raise ValueError("--nccl_algo must be given")
-        elif algo.lower() == "tree":
-            self.nccl_graph.parse_tree_topo(nccl_rank_graph["Tree"], map_to=pid)
-        elif algo.lower() == "ring":
-            self.nccl_graph.parse_ring_topo(nccl_rank_graph["RealRing"], map_to=pid)  
-            # self.nccl_graph.parse_connect_topo(traces["Ring"], map_to=pid)  
         if isinstance(traces, dict): 
             ### there may be no NCCL traces for intro-machien GPUs
             traces = traces.get("traceEvents", [])
@@ -534,7 +539,11 @@ class Collector(object):
             if trace["ph"].lower() == "i":
                 continue
 
-            trace["name"] = "Comm." + ".".join(trace["name"].split(".")[1:])
+            ### If this is a communication event and fuse multiple tensors, **sort** these tensor
+            _, op_name, sub_op = trace["name"].split(".")
+            tensor_list = re.findall("[0-9]+", op_name)
+            tensor_list = sorted([int(e) for e in tensor_list])
+            trace["name"] = "{}.{}.{}".format("Comm", "+".join([str(e) for e in tensor_list]), sub_op)
             trace["args"]["name"] = gen_long_name(None, trace["name"], suffix=("%d_%d_%d_%d"%(
                                     int(trace["args"]["loopId"]),
                                     int(trace["args"]["channelId"]),
@@ -678,7 +687,7 @@ class Collector(object):
                     input0 = list(input_nodes)[0]
                 elif len(input_nodes) == 0:
                     input0 = None
-                    # self.logger.warn("%s has no in edges" % process_name)
+                    # SingleLogger().warn("%s has no in edges" % process_name)
                 else:
                     raise ValueError("Each communication node can not "
                         "have more than 1 in-edge nodes: %s" % process_name)
@@ -752,20 +761,23 @@ class Collector(object):
         if self.comm_backend == "BYTEPS":
             rst_traces["traceEvents"] += self.byteps_graph.gen_compatible_trace(dump_path=os.path.join(self.pm.path, FileName.BPS_ALIGNED_TRACE.value))
 
-        self.logger.info("Take {} s to combine all traces of length {}".format(time.time() - ts_, len(rst_traces["traceEvents"])))
+        SingleLogger().info("Take {} s to combine all traces of length {}".format(time.time() - ts_, len(rst_traces["traceEvents"])))
         return rst_traces["traceEvents"]
 
     def collect_traces(self, force_=False):
-        self.logger.info("# Collecting Traces")
-        self.logger.info("Generating %s" % (FileName.TRACE.value))
+        SingleLogger().info("# Collecting Traces")
+        SingleLogger().info("Generating %s" % (FileName.TRACE.value))
+        self.collect_meta_data()
+        self.traceM = TraceManager(self.iter_combine(), self.pm.dir_level, check=True)
+
+    def collect_meta_data(self):
         ### collect metadata
         meta_path = self.pm.search(FileName.METADATA)
         if meta_path is None:
-            self.logger.error("{} not found. Fail to map_tensors_to_update".format(FileName.METADATA.value))
+            SingleLogger().error("{} not found. Fail to map_tensors_to_update".format(FileName.METADATA.value))
         else:
             with open(meta_path, 'r') as fp:
                 self.metadata = json.load(fp)
-        self.traceM = TraceManager(self.iter_combine(), self.pm.dir_level, check=True)
 
     def collect_update_dict(self):
         ### Map tensor name to its update index
@@ -774,26 +786,26 @@ class Collector(object):
         else:
             aggregate_num = 0
         self.para_dict = ParameterDict(self.metadata["gradient_name_list"])
-        return self.para_dict.map_tensors_to_update(aggregate_num)
+        self.para_dict.map_tensors_to_update(aggregate_num)
 
     def collect_trial_dag(self):
         assert self.pm.dir_level == DirLevel.TRIAL
-        self.logger.info("# Collecting DAG")
+        SingleLogger().info("Collecting DAG ...")
         critical_path = []
         worker_dag_list = []
 
         if self.platform == "MXNET":
-            update_dict = self.collect_update_dict()
+            self.collect_update_dict()
         else:
             update_dict = None
 
         if self.single:
             worker_path = os.path.join(self.pm.path, self.pm.dirs[0])
             gpu_path = os.path.join(worker_path, first_valid_dir(worker_path))
-            self.logger.info("## Collect DAG in %s" % (gpu_path))
+            SingleLogger().info("- Collect DAG in %s" % (gpu_path))
             dagmanager = DAGManager(gpu_path, self.traceM, self.nccl_graph, self.byteps_graph, platform=self.platform, single=True)
-            max_para_degree, _critical_path = dagmanager.gen_gpu_dag(_pretty=args_.pretty, update_dict=update_dict)
-            worker_dag_list.append(dagmanager.gpu_dag)
+            max_para_degree, _critical_path = dagmanager.gen_gpu_dag(_pretty=args_.pretty, para_dict=self.para_dict)
+            worker_dag_list.append(dagmanager.dag)
             critical_path = [_critical_path]
         else:
             for _dir in self.pm.dirs:
@@ -801,10 +813,10 @@ class Collector(object):
                 worker_root, worker_dirs, _ = list(os.walk(worker_path))[0]
                 for worker_dir in sorted(worker_dirs):
                     gpu_path = os.path.join(worker_root, worker_dir)
-                    self.logger.info("## Collect DAG in %s" % (gpu_path))
+                    SingleLogger().info("- Collect DAG in %s ..." % (gpu_path))
                     dagmanager = DAGManager(gpu_path, self.traceM, self.nccl_graph, self.byteps_graph, platform=self.platform)
-                    max_para_degree, _critical_path = dagmanager.gen_gpu_dag(_pretty=args_.pretty, update_dict=update_dict)
-                    worker_dag_list.append(dagmanager.gpu_dag)
+                    max_para_degree, _critical_path = dagmanager.gen_gpu_dag(_pretty=args_.pretty, para_dict=self.para_dict)
+                    worker_dag_list.append(dagmanager.dag)
                     if _critical_path is not None:
                         critical_path += _critical_path
 
@@ -818,7 +830,7 @@ class Collector(object):
     def iter_time(self):
         if self.traceM is None:
             self.collect_traces()
-        self.logger.info("Original Iteration Time")
+        SingleLogger().info("Original Iteration Time")
         return self.traceM.get_iter_time()
 
     def init(self, force_=False):
@@ -889,28 +901,31 @@ class Collector(object):
         trail_dag_path = self.pm.search(FileName.TRAIL_DAG)
         if force_ or trace_path is None or (self.comm_backend == "NCCL" and nccl_graph_path is None) or trail_dag_path is None:
             self.collect_traces()
-            # self.collect_trial_dag()
-            # self.fine_tune_trace_dag()
+            iter_time, step_idx = self.iter_time()
+            self.nccl_graph.init_nccl_fusion(self.traceM, len(self.metadata["gradient_name_list"]))
+            self.collect_trial_dag()
+            self.fine_tune_trace_dag()
             ### Asynchonously cache these info
             self.traceM.dump(self.pm.path)
-            # graph_thread = threading.Thread(target=nx.write_gml, 
-            #     args=(self.trail_dag, os.path.join(self.pm.path, FileName.TRAIL_DAG.value), lambda x: str(x)))
-            # graph_thread.start()
-            # if self.comm_backend == "NCCL":
-            #     self.nccl_graph.dump(os.path.join(self.pm.path, FileName.NCCL_GRAPH.value))
+            graph_thread = threading.Thread(target=nx.write_gml, 
+                args=(self.trail_dag, os.path.join(self.pm.path, FileName.TRAIL_DAG.value), lambda x: str(x)))
+            graph_thread.start()
+            if self.comm_backend == "NCCL":
+                self.nccl_graph.dump(os.path.join(self.pm.path, FileName.NCCL_GRAPH.value))
         else:
             self.traceM = TraceManager()
             self.traceM.load(self.pm.path)
+            iter_time, _ = self.iter_time()
             if self.comm_backend == "NCCL":
                 self.nccl_graph.load(nccl_graph_path)
             self.trail_dag = nx.read_gml(trail_dag_path)
 
-        ### TODO (huhanpeng) dump it or not
-        if self.platform == "MXNET":
-            if self.para_dict is None:
+            ### TODO (huhanpeng) dump it or not
+            if self.platform == "MXNET":
+                self.collect_meta_data()
                 self.collect_update_dict()
 
-        return self.iter_time()    
+        return iter_time
         
     def all_prefix_list(self):
         ''' Return all prefixes under the dirctory.
@@ -1035,7 +1050,7 @@ class Collector(object):
 
     def add_gap_to_nodes(self):
         ''' Add gaps for each node '''
-        self.logger.info("Add gap to dependency DAG nodes...")
+        SingleLogger().info("Add gap to dependency DAG nodes...")
         prev_events_dict = {}
         self.name2idxlist = self.traceM.map_name2idxlist()
         for idx, event in enumerate(self.traceM.traces):
@@ -1047,7 +1062,7 @@ class Collector(object):
             ### Handle the gap among FW, BW and OUTPUT nodes (exclude BW->UPDATE)
             cat_ = parse_cat_from_name(event["name"])
             if self.comm_backend == "NCCL":
-                ### TODO(huhanpeng): Only calculate gaps for operator nodes now
+                ### Calculate gaps for operator nodes now
                 is_need_gap = (cat_ in cur_pid_dict and cat_ == CatName.OPERATOR.value)
             else:
                 ### BYTEPS
@@ -1099,7 +1114,7 @@ class Collector(object):
                         continue
                     gap = 0
                     cnt = 0
-                    for cnt_ in range(self.traceM.max_cnt):
+                    for cnt_ in range(self.traceM.max_step):
                         u_idx, v_idx = u_idx_l[cnt_], v_idx_l[cnt_]
                         if u_idx is None or v_idx is None:
                             continue
@@ -1118,7 +1133,7 @@ class Collector(object):
                     self.trail_dag.nodes[node_][GAP_STR_OP2COMM] = gap
 
     def clip_recv_events(self):
-        self.logger.info("Clip RECV events...")
+        SingleLogger().info("Clip RECV events...")
         for u, v in self.trail_dag.edges:
             if "I/O" in u:
                 continue
@@ -1135,7 +1150,7 @@ class Collector(object):
                 ### Revise RECV events according to SEND-RECV dependents
                 ### TODO (huhanpeng): cat2sta's maximum has not be updated
                 recv_dict = None
-                for cnt_ in range(self.traceM.max_cnt):
+                for cnt_ in range(self.traceM.max_step):
                     u_idx, v_idx = u_idx_l[cnt_], v_idx_l[cnt_]
                     if u_idx is None or v_idx is None:
                         continue
@@ -1208,7 +1223,7 @@ class Collector(object):
                 ### Revise RECV events according to SEND-RECV dependents
                 ### TODO (huhanpeng): cat2sta's maximum has not be updated
                 recv_dict = None
-                for cnt_ in range(self.traceM.max_cnt):
+                for cnt_ in range(self.traceM.max_step):
                     u_idx, v_idx = u_idx_l[cnt_], v_idx_l[cnt_]
                     if u_idx is None or v_idx is None:
                         continue
@@ -1248,14 +1263,14 @@ class Collector(object):
                     for next_ in self.trail_dag.successors(name_):
                         self.trail_dag.edges[name_, next_]["weight"] = avg
             else:
-                for cnt_ in range(self.traceM.max_cnt):
+                for cnt_ in range(self.traceM.max_step):
                     u_idx, v_idx = u_idx_l[cnt_], v_idx_l[cnt_]
                     if u_idx is None or v_idx is None:
                         continue
                     gap += (self.traceM.traces[v_idx]["ts"] - (self.traceM.traces[u_idx]["ts"] + self.traceM.traces[u_idx]["dur"]))
                     n += 1
             if gap < 0 and not ("SEND" in u and "RECV" in v):
-                self.logger.warn("The gap < 0 between %s and %s" % (u, v))
+                SingleLogger().warn("The gap < 0 between %s and %s" % (u, v))
                 # raise
             gap = 0 if n == 0 else gap / float(n)
             self.trail_dag.edges[u, v]["gap"] = gap
@@ -1301,7 +1316,7 @@ class Collector(object):
                     continue
                 u_idx_l = name2idxlist[u]
                 cnt = 0.
-                for cnt_ in range(self.traceM.max_cnt):
+                for cnt_ in range(self.traceM.max_step):
                     u_idx, v_idx = u_idx_l[cnt_], v_idx_l[cnt_]
                     if u_idx is None or v_idx is None:
                         continue

@@ -2,7 +2,7 @@
 
 ## Trace Format
 
-```
+```python
 ### Uniform template
 {
     "name": op_cat.name.sub_op,
@@ -25,11 +25,11 @@
 Name should be tensor index `tensor_id` or `tensor_id_1+tensor_id_2+...+tensor_id_n` and the corresponding name should be stored in the `gradient_name_list` field in `<gpu_dir>/metadata.json`.
 
 ### Detailed communication traces
-`"comm_detail"` in `ace["tid"]`
+`"comm_detail"` in `trace["tid"]`
 
 
 ## Trace Statistic Format
-```
+``` python
 name2sta = {
     op_long_name: {
         "avg": ...
@@ -44,4 +44,28 @@ name2sta = {
 op_long_name = event["pid"]->event["name"] 
         or event["pid"]->event["name"]~>suffix
 ```
+
+## Dependency Graph
+Nodes: 
+```python
+op_long_name: {
+    "avg": time_in_us,
+    gap_string:time_in_us
+}
+```
+`gap_string` denotes different kinds of gaps
+
+## NCCL Graph
+- During trace collection, NCCL graph needs to parse at least one GPU's NCCL traces to get `chunkNum`, `sliceNum`, `channelNum`, `loopNum` for each `raw_name` (`op_cat.op_name`, without `sub_op`)
+- During trace collection, we need to parse `nccl_rank_graph.json` to get the connection information of this GPU.
+
+## ParameterDict
+Manage the parameter info of a DNN model. Seek to implement a unified `ParameterDict`, but now, it is only for MXNet.
+
+### MXNet
+Contains:
+- `gradient_name_list`, which maps `tensor_id` to `tensor_name`;
+- `tensor2update`, which maps `tensor_id` to `update_id`
+
+
 

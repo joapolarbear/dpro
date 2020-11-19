@@ -7,6 +7,8 @@ import math
 import arg_utils
 args = arg_utils.SingleArg().args
 
+''' visualize the number of operators being queued on each device for replayer
+'''
 
 def init_fig_base(cnt):
     h = math.ceil(math.sqrt(cnt))

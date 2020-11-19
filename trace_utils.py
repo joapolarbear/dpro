@@ -1,4 +1,5 @@
 import os
+import re
 import ujson as json
 import random
 import math
@@ -207,8 +208,12 @@ def parse_rawname_from_name(name):
     else:
         return name.split(DEL)[1]
 
+warned = False
 def parse_layer_name(name):
-    SingleLogger().warn("parse_layer_name may be layer not safe")
+    global warned
+    if not warned:
+        SingleLogger().warn("parse_layer_name() may be not safe")
+        warned = True
     if DEL in name:
         name = name.split(DEL)[1]
     if DDEL in name:
@@ -298,15 +303,15 @@ class TraceManager:
         self.traces = sorted(self.traces, key=lambda x: (x["ts"], x["name"]), reverse=False)
         
         self.dir_level = dir_level
-        self.max_cnt = 0
+        self.max_step = 0
         self.opt_step = 0   # which step has the cloest performance to the average performance
 
         self.name2sta = None
         self.cat2sta = None
         self.name2idxlist = {}
-          
-        self.ret_stat()
+
         self.add_step_cnt()
+        self.ret_stat()
 
     def dump(self, dir_):
         trace_thread = threading.Thread(target=self._dump, args=(dir_,))
@@ -316,7 +321,7 @@ class TraceManager:
         rst_traces = sorted(self.traces, key=lambda x: (x["pid"], x["tid"]))
         with open(os.path.join(dir_, FileName.TRACE.value), 'w') as f:
             json.dump(rst_traces, f)
-        str_ = "%d,%d,%d\n"%(self.dir_level.value, self.max_cnt, self.opt_step)
+        str_ = "%d,%d,%d\n"%(self.dir_level.value, self.max_step, self.opt_step)
         str_ += str(self.name2sta) + "\n"
         str_ += str(self.cat2sta)
         with open(os.path.join(dir_, FileName.STATISTIC.value), 'w') as fp:
@@ -327,9 +332,9 @@ class TraceManager:
         with open(os.path.join(dir_, FileName.STATISTIC.value), 'r') as fp:
             str_ = fp.read().split("\n")
 
-        dir_level, max_cnt, opt_step = str_[0].split(",")
+        dir_level, max_step, opt_step = str_[0].split(",")
         self.dir_level = DirLevel(int(dir_level))
-        self.max_cnt = int(max_cnt)
+        self.max_step = int(max_step)
         self.opt_step = int(opt_step)
 
         self.name2sta = eval(str_[1])
@@ -392,6 +397,7 @@ class TraceManager:
                     "id": len(self.name2sta)
                     }
             event["args"]["cnt"] = self.name2sta[unique_name]["cnt"] - 1
+            self.max_step = max(event["args"]["step"], self.max_step)
                 
         """calculate the avg """
         for name, statistic in self.name2sta.items():
@@ -425,7 +431,6 @@ class TraceManager:
             self.name2sta[unique_name]["var"] += pow(event["dur"] / 1000.0 - self.name2sta[unique_name]["avg"], 2)
         for name, statistic in self.name2sta.items():
             statistic["var"] = statistic["var"] / float(statistic["cnt"])
-            self.max_cnt = max(statistic["cnt"], self.max_cnt)
 
     def print_stat(self, sort=True, line_num=None):
         if sort:
@@ -655,9 +660,9 @@ class TraceManager:
                     continue
                 unique_name = self.ret_unique_name(event)
                 if unique_name not in self.name2idxlist:
-                    self.name2idxlist[unique_name] = [None] * self.max_cnt
-                if event["args"]["cnt"] != -1:
-                    self.name2idxlist[unique_name][event["args"]["cnt"]] = idx
+                    self.name2idxlist[unique_name] = [None] * (self.max_step+1)
+                if event["args"]["step"] != -1:
+                    self.name2idxlist[unique_name][event["args"]["step"]] = idx
         return self.name2idxlist
 
 class BiasRange:

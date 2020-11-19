@@ -1,4 +1,6 @@
 from enum import Enum
+import re
+
 class NCCL_ALGO(Enum):
     TREE=0
     RING=1
@@ -73,6 +75,7 @@ class ncclGraph:
         self.host_id2prefix = {}
         self.host_prefix2id = {}
 
+        self.nccl_fusion = {"grp_names": [], "tensor2grpID": []}
        
     def parse_tree_topo(self, tree_dict, map_to=None):
         ''' If `map_to` is set, map the rank to the given prefix '''
@@ -189,7 +192,6 @@ class ncclGraph:
                 self.graph["Ring"][channel_id][sender]["next"] = recver
                 self.graph["Ring"][channel_id][recver]["prev"] = sender
 
-
     def map_rank2prefix(self, rank, prefix):
         if rank not in self.rank2prefix:
             self.rank2prefix[rank] = prefix
@@ -246,16 +248,8 @@ class ncclGraph:
             return
 
         self.trace_parsed = True
-        first_fwd = None
         if self.algo == NCCL_ALGO.RING or self.algo == NCCL_ALGO.TREE:
             for trace in traces:
-                ### Stop the loop early if one FW trace appears twice
-                if "FW" in trace["name"]:
-                    if first_fwd is None:
-                        first_fwd = trace["name"]
-                    elif trace["name"] == first_fwd:       
-                        break
-
                 ### Just check traces whose pid is comm_detail
                 if "comm_detail" not in trace["tid"] and "comm_detail" not in trace["pid"]:
                     continue
@@ -422,8 +416,8 @@ class ncclGraph:
         str_ += str(self.prefix2rank) + "\n"
 
         str_ += str(self.host_id2prefix) + "\n"
-        str_ += str(self.host_prefix2id)
-
+        str_ += str(self.host_prefix2id) + "\n"
+        str_ += str(self.nccl_fusion)
         with open(path_, 'w') as fp:
             fp.write(str_)
 
@@ -443,8 +437,33 @@ class ncclGraph:
 
         self.host_id2prefix = eval(str_[5])
         self.host_prefix2id = eval(str_[6])
+        self.nccl_fusion = eval(str_[7])
 
+    def init_nccl_fusion(self, traceM, grad_num, show=False):
+        ### go over traces and store all combinations of traces
+        self.nccl_fusion["tensor2grpID"] = [None] * grad_num
+        for event in traceM.traces:
+            if event["args"]["step"] > (traceM.opt_step + 1):
+                ### only go through one step of traces, even if there exists overlapping,
+                # no possible overlapping between three steps
+                break
+            elif event["args"]["step"] != traceM.opt_step or "Comm." not in event["name"]:
+                continue
+            tensor_list = re.findall("[0-9]+", event["name"].split(".")[1])
+            # tensor_list = sorted([int(e) for e in tensor_list])
+            sorted_name = "+".join([str(e) for e in tensor_list])
+            if sorted_name not in self.nccl_fusion["grp_names"]:
+                for tensor_id in tensor_list:
+                    self.nccl_fusion["tensor2grpID"][int(tensor_id)] = len(self.nccl_fusion["grp_names"])
+                self.nccl_fusion["grp_names"].append(sorted_name)
+        if show:
+            for tensor_id, grp_id in enumerate(self.nccl_fusion["tensor2grpID"]):
+                print("Tensor ID: {} -> Group ID: {}".format(tensor_id, grp_id))
+            for grp_id, grp_name in enumerate(self.nccl_fusion["grp_names"]):
+                print("Group ID: {} --> Group Name: {}".format(grp_id, grp_name))
 
+    def tensor2group_name(self, tensor_id):
+        return self.nccl_fusion["grp_names"][self.nccl_fusion["tensor2grpID"][tensor_id]]
 
 
 
