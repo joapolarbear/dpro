@@ -1015,7 +1015,6 @@ class Collector(object):
         ''' Add gaps for each node '''
         SingleLogger().info("Add gap to dependency DAG nodes...")
         prev_events_dict = {}
-        self.name2idxlist = self.traceM.map_name2idxlist()
         for idx, event in enumerate(self.traceM.traces):
             ### Get previous event for this pid
             if event["pid"] not in prev_events_dict:
@@ -1071,7 +1070,7 @@ class Collector(object):
                             comm_node = succ_
                             break
                     try:
-                        u_idx_l, v_idx_l = self.name2idxlist[bw_node], self.name2idxlist[comm_node] 
+                        u_idx_l, v_idx_l = self.traceM.map_name2idxlist(bw_node), self.traceM.map_name2idxlist(comm_node)
                     except KeyError:
                         ### Some rank does not have SEND nodes
                         continue
@@ -1101,8 +1100,11 @@ class Collector(object):
             if "I/O" in u:
                 continue
 
-            u_idx_l = self.name2idxlist[u] if u in self.name2idxlist else None
-            v_idx_l = self.name2idxlist[v] if v in self.name2idxlist else None
+            try:
+                u_idx_l = self.traceM.map_name2idxlist(u)
+                v_idx_l = self.traceM.map_name2idxlist(v)
+            except KeyError:
+                continue
             if u_idx_l is None or v_idx_l is None:
                 ### some dag nodes do not appear in the traces
                 continue

@@ -309,7 +309,6 @@ class TraceManager:
 
         self.name2sta = None
         self.cat2sta = None
-        self.name2idxlist = {}
         self.ret_stat()
 
     def dump(self, dir_):
@@ -339,7 +338,6 @@ class TraceManager:
 
         self.name2sta = eval(str_[1])
         self.cat2sta = eval(str_[2])
-        self.name2idxlist = {}
 
     def check_traces(self, traces):
         for trace in traces:
@@ -521,11 +519,17 @@ class TraceManager:
             statistic["avg"] = statistic["time"] / statistic["cnt"]
 
         """calculate the variance"""
-        for event in self.traces:
+        for idx, event in enumerate(self.traces):
             if self._is_ignore_for_sta(event):
                 continue
             unique_name = self.ret_unique_name(event)
             self.name2sta[unique_name]["var"] += pow(event["dur"] / 1000.0 - self.name2sta[unique_name]["avg"], 2)
+            
+            ### record which steps this operator occurs in
+            if "step_ids" not in self.name2sta[unique_name]:
+                self.name2sta[unique_name]["step_ids"] = [None] * (self.max_step + 1)
+            self.name2sta[unique_name]["step_ids"][event["args"]["step"]] = idx
+
         for name, statistic in self.name2sta.items():
             statistic["var"] = statistic["var"] / float(statistic["cnt"])
 
@@ -658,18 +662,15 @@ class TraceManager:
                 prefix2traces[_get_prefix(event)].append(event)
         return prefix2traces
 
-    def map_name2idxlist(self):
-        ''' map the trace name to the list of indexes in the trace list '''
-        if len(self.name2idxlist.keys()) == 0:
-            for idx, event in enumerate(self.traces):
-                if self._is_ignore_for_sta(event):
-                    continue
-                unique_name = self.ret_unique_name(event)
-                if unique_name not in self.name2idxlist:
-                    self.name2idxlist[unique_name] = [None] * (self.max_step+1)
-                if event["args"]["step"] != -1:
-                    self.name2idxlist[unique_name][event["args"]["step"]] = idx
-        return self.name2idxlist
+    def map_name2idxlist(self, name):
+        ''' map the trace name to the list of indexes in the traces
+        Returns
+        -------
+        A list of indexs, some elements may be None 
+
+        '''
+        assert self.has_prefix(name) or name == "END", name
+        return self.name2sta[name]["step_ids"]
 
 class BiasRange:
     def __init__(self, _l, _r):

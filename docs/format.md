@@ -38,7 +38,7 @@ name2sta = {
         "min_t":
         "max_t":
         "id": ,# the order the op is created in the dict
-    }
+        "step_ids": [] # a list of index, denotes where this operator appears in the traces
 }
 
 op_long_name = event["pid"]->event["name"] 
@@ -54,6 +54,8 @@ op_long_name: {
 }
 ```
 `gap_string` denotes different kinds of gaps
+
+Special Nodes `END`, the end node.
 
 ## NCCL Graph
 - During trace collection, NCCL graph needs to parse at least one GPU's NCCL traces to get `chunkNum`, `sliceNum`, `channelNum`, `loopNum` for each `raw_name` (`op_cat.op_name`, without `sub_op`)
