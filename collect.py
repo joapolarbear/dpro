@@ -92,7 +92,7 @@ class Collector(object):
         _rst_traces["traceEvents"] = [_trace for _trace in self.time_dict["traceEvents"] if _trace["cat"] != _cat]
         self.time_dict = _rst_traces
 
-    def bpf_collect_for_rank(self, *args):
+    def _collect_rank_traces(self, *args):
         tmp_pm, pid, host_id = args[0]
         SingleLogger().info("Collec traces for {} ...".format(tmp_pm.path))
         self.rst_traces = []
@@ -102,13 +102,13 @@ class Collector(object):
                 self.rst_traces += ret
         self.ref_name = self.ref_time = None
         assert tmp_pm.dir_level == DirLevel.GPU
-        add_trace_safe(self.bpf_collect_comp(tmp_pm, pid, host_id))
-        add_trace_safe(self.bpf_collect_io(tmp_pm, pid, host_id))
-        add_trace_safe(self.bpf_collect_comm_detail(tmp_pm, pid, host_id))
-        add_trace_safe(self.bpf_collect_comm(tmp_pm, pid, host_id))
+        add_trace_safe(self._collect_rank_comp(tmp_pm, pid, host_id))
+        add_trace_safe(self._collect_rank_io(tmp_pm, pid, host_id))
+        add_trace_safe(self._collect_rank_comm_detail(tmp_pm, pid, host_id))
+        add_trace_safe(self._collect_rank_comm(tmp_pm, pid, host_id))
         return self.rst_traces, self.ref_name, self.ref_time, self.raw_name2IDnum
 
-    def bpf_collect_comp(self, tmp_pm=None, pid=None, host_id=None):
+    def _collect_rank_comp(self, tmp_pm=None, pid=None, host_id=None):
         '''Apply dependency info to the mxnet trace results
 
         Parameters
@@ -379,7 +379,7 @@ class Collector(object):
         # debug_utils.DebugRecorder().debug_event_end("collect_" + pid+"_comp", "Collct", "0")
         return rst_traces
 
-    def bpf_collect_io(self, tmp_pm=None, pid=None, host_id=None):
+    def _collect_rank_io(self, tmp_pm=None, pid=None, host_id=None):
         # debug_utils.DebugRecorder().debug_event_start()
         io_path = self.pm.search(FileName.IO) if tmp_pm is None else tmp_pm.search(FileName.IO)
         if io_path is None:
@@ -410,7 +410,7 @@ class Collector(object):
         # debug_utils.DebugRecorder().debug_event_end("collect_" + pid+"_io", "Collct", "0")
         return rst_traces
 
-    def bpf_collect_comm_detail(self, tmp_pm, pid=None, host_id=None):
+    def _collect_rank_comm_detail(self, tmp_pm, pid=None, host_id=None):
         if self.comm_backend != "NCCL":
             return
 
@@ -513,7 +513,7 @@ class Collector(object):
         # debug_utils.DebugRecorder().debug_event_end("collect_" + pid+"_comm_detail", "Collct", "0")
         return rst_traces
 
-    def bpf_collect_comm(self, tmp_pm=None, pid=None, host_id=None):
+    def _collect_rank_comm(self, tmp_pm=None, pid=None, host_id=None):
         # debug_utils.DebugRecorder().debug_event_start()
         comm_path = self.pm.search(FileName.COMM) if tmp_pm is None else tmp_pm.search(FileName.COMM)
         if comm_path is None:   
@@ -639,7 +639,7 @@ class Collector(object):
                 pass
         return ret
 
-    def bpf_collect_nccl_graph(self, tmp_pm=None, pid=None, host_id=None):
+    def _collect_nccl_graph(self, tmp_pm=None, pid=None, host_id=None):
         algo = args_.nccl_algo
         nccl_rank_graph_path = self.pm.search(FileName.NCCL_RANK_GRAPH) if tmp_pm is None else tmp_pm.search(FileName.NCCL_RANK_GRAPH)
         with open(nccl_rank_graph_path, 'r') as f:
@@ -683,7 +683,7 @@ class Collector(object):
         rst_traces = []
         assert self.pm.dir_level == DirLevel.TRIAL
 
-        rank_list = []
+        arg_list = []
         if self.comm_backend == "NCCL":
             self.nccl_graph.map_host_prefix_id(self.pm.dirs)
         for _dir in self.pm.dirs:
@@ -694,16 +694,16 @@ class Collector(object):
                 self.time_dict = {"traceEvents":[]} 
                 gpu_path = os.path.join(worker_root, __dir)
                 tmp_pm, pid, host_id_str = PathManager(gpu_path), str(_dir)+".rank%s"%__dir, _dir
-                rank_list.append([tmp_pm, pid, host_id_str])
+                arg_list.append([tmp_pm, pid, host_id_str])
                 if self.comm_backend == "NCCL":
-                    self.bpf_collect_nccl_graph(tmp_pm, pid, host_id_str)
-        with multiprocessing.Pool(len(rank_list)) as p:
-            rst = p.map(self.bpf_collect_for_rank, rank_list)
+                    self._collect_nccl_graph(tmp_pm, pid, host_id_str)
+        with multiprocessing.Pool(len(arg_list)) as p:
+            rst = p.map(self._collect_rank_traces, arg_list)
         traces_list, ref_name_list, ref_time_list, raw_name2IDnum_list = zip(*rst)
 
         ### align the time
         if self.comm_backend == "NCCL":
-            host_ids = [self.nccl_graph.host_prefix2id[host_id_str] for _, _, host_id_str in rank_list]
+            host_ids = [self.nccl_graph.host_prefix2id[host_id_str] for _, _, host_id_str in arg_list]
             self.nccl_graph.init_host_drift(zip(host_ids, ref_time_list))
             self.nccl_graph.parse_traces(raw_name2IDnum_list[0])
         rst_traces = self.clock_align(traces_list, host_ids)
@@ -714,7 +714,7 @@ class Collector(object):
 
         # ### only read comm.json once
         # self.time_dict = {"traceEvents":[]} 
-        # self.bpf_collect_comm()
+        # self._collect_rank_comm()
         # rst_traces += self.time_dict["traceEvents"]
         if self.comm_backend == "BYTEPS":
             rst_traces += self.byteps_graph.gen_compatible_trace(dump_path=os.path.join(self.pm.path, FileName.BPS_ALIGNED_TRACE.value))
@@ -740,9 +740,16 @@ class Collector(object):
         self.para_dict = ParameterDict(self.metadata["gradient_name_list"])
         self.para_dict.map_tensors_to_update(aggregate_num)
 
+    def _collect_rank_dag(self, gpu_path):
+        SingleLogger().info("- Collect DAG in %s ..." % (gpu_path))
+        dagmanager = DAGManager(gpu_path, self.traceM, self.nccl_graph, self.byteps_graph, platform=self.platform)
+        max_para_degree, _critical_path = dagmanager.gen_gpu_dag(_pretty=args_.pretty, para_dict=self.para_dict)
+        return dagmanager.dag, _critical_path
+
     def collect_trial_dag(self):
         assert self.pm.dir_level == DirLevel.TRIAL
         SingleLogger().info("Collecting DAG ...")
+        ts_ = time.time()
         critical_path = []
         worker_dag_list = []
 
@@ -754,23 +761,20 @@ class Collector(object):
         if self.single:
             worker_path = os.path.join(self.pm.path, self.pm.dirs[0])
             gpu_path = os.path.join(worker_path, first_valid_dir(worker_path))
-            SingleLogger().info("- Collect DAG in %s" % (gpu_path))
-            dagmanager = DAGManager(gpu_path, self.traceM, self.nccl_graph, self.byteps_graph, platform=self.platform, single=True)
-            max_para_degree, _critical_path = dagmanager.gen_gpu_dag(_pretty=args_.pretty, para_dict=self.para_dict)
-            worker_dag_list.append(dagmanager.dag)
+            dag, _critical_path = self._collect_rank_dag(gpu_path)
+            worker_dag_list.append(dag)
             critical_path = [_critical_path]
         else:
+            arg_list = []
             for _dir in self.pm.dirs:
                 worker_path = os.path.join(self.pm.path, _dir)
                 worker_root, worker_dirs, _ = list(os.walk(worker_path))[0]
                 for worker_dir in sorted(worker_dirs):
                     gpu_path = os.path.join(worker_root, worker_dir)
-                    SingleLogger().info("- Collect DAG in %s ..." % (gpu_path))
-                    dagmanager = DAGManager(gpu_path, self.traceM, self.nccl_graph, self.byteps_graph, platform=self.platform)
-                    max_para_degree, _critical_path = dagmanager.gen_gpu_dag(_pretty=args_.pretty, para_dict=self.para_dict)
-                    worker_dag_list.append(dagmanager.dag)
-                    if _critical_path is not None:
-                        critical_path += _critical_path
+                    arg_list.append(gpu_path)
+            with multiprocessing.Pool(len(arg_list)) as p:
+                rst = p.map(self._collect_rank_dag, arg_list)
+            worker_dag_list, critical_path = zip(*rst)
 
         ### Combine all worker_dag_list on one worker, build the dependency
         composed_dag = nx.compose_all(worker_dag_list)
@@ -778,6 +782,7 @@ class Collector(object):
             composed_dag = nx.compose(composed_dag, self.byteps_graph.get_comm_graph())
 
         self.trail_dag = composed_dag
+        SingleLogger().info("Take {} s construct the DAG with {} nodes".format(time.time() - ts_, len(self.trail_dag.nodes)))
 
     def iter_time(self):
         if self.traceM is None:
