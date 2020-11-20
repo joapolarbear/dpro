@@ -95,14 +95,18 @@ class Collector(object):
     def bpf_collect_for_rank(self, *args):
         tmp_pm, pid, host_id = args[0]
         SingleLogger().info("Collec traces for {} ...".format(tmp_pm.path))
-        rst_traces = []
+        self.rst_traces = []
+        self.raw_name2IDnum = {}
+        def add_trace_safe(ret):
+            if ret is not None:
+                self.rst_traces += ret
         self.ref_name = self.ref_time = None
         assert tmp_pm.dir_level == DirLevel.GPU
-        rst_traces += self.bpf_collect_comp(tmp_pm, pid, host_id)
-        rst_traces += self.bpf_collect_io(tmp_pm, pid, host_id)
-        rst_traces += self.bpf_collect_comm_detail(tmp_pm, pid, host_id)
-        rst_traces += self.bpf_collect_comm(tmp_pm, pid, host_id)
-        return rst_traces, self.ref_name, self.ref_time
+        add_trace_safe(self.bpf_collect_comp(tmp_pm, pid, host_id))
+        add_trace_safe(self.bpf_collect_io(tmp_pm, pid, host_id))
+        add_trace_safe(self.bpf_collect_comm_detail(tmp_pm, pid, host_id))
+        add_trace_safe(self.bpf_collect_comm(tmp_pm, pid, host_id))
+        return self.rst_traces, self.ref_name, self.ref_time, self.raw_name2IDnum
 
     def bpf_collect_comp(self, tmp_pm=None, pid=None, host_id=None):
         '''Apply dependency info to the mxnet trace results
@@ -376,7 +380,7 @@ class Collector(object):
         return rst_traces
 
     def bpf_collect_io(self, tmp_pm=None, pid=None, host_id=None):
-        debug_utils.DebugRecorder().debug_event_start()
+        # debug_utils.DebugRecorder().debug_event_start()
         io_path = self.pm.search(FileName.IO) if tmp_pm is None else tmp_pm.search(FileName.IO)
         if io_path is None:
             return
@@ -403,30 +407,28 @@ class Collector(object):
                     trace["tid"] = "I/O"
                 rst_traces.append(trace)
 
-        debug_utils.DebugRecorder().debug_event_end("collect_" + pid+"_io", "Collct", "0")
+        # debug_utils.DebugRecorder().debug_event_end("collect_" + pid+"_io", "Collct", "0")
         return rst_traces
 
     def bpf_collect_comm_detail(self, tmp_pm, pid=None, host_id=None):
         if self.comm_backend != "NCCL":
             return
 
-        debug_utils.DebugRecorder().debug_event_start()
+        # debug_utils.DebugRecorder().debug_event_start()
         comm_d_path = self.pm.search(FileName.COMM_DETAIL) if tmp_pm is None else tmp_pm.search(FileName.COMM_DETAIL)
-
         if comm_d_path is None:
             return
 
         wk_prefix, _ = PathManager("/".join(comm_d_path.split('/')[:-1])).ret_prefix()
-
         rst_traces = []
-        debug_utils.DebugRecorder().debug_event_start()
+        # debug_utils.DebugRecorder().debug_event_start()
         try:
             with open(comm_d_path, 'r') as f:
                 traces = json.load(f)
         except ValueError:
             ### in case some comm_detail trace files are empty
             return
-        debug_utils.DebugRecorder().debug_event_end("collect_" + pid+"_comm_detail.jsonload", "Collct", "0")
+        # debug_utils.DebugRecorder().debug_event_end("collect_" + pid+"_comm_detail.jsonload", "Collct", "0")
 
         if isinstance(traces, dict): 
             ### there may be no NCCL traces for intro-machien GPUs
@@ -483,6 +485,22 @@ class Collector(object):
             if pid is not None:
                 trace["tid"] = trace["pid"]
                 trace["pid"] = pid
+
+            ### parse the trace to get the maximum number of chunks, slices, channels, loops for each raw_name
+            ### Get the rawname withoud RECV/SEND
+            if ".RECV" in trace["name"]:
+                raw_name = trace["name"].split(".RECV")[0]
+            elif ".SEND" in trace["name"]:
+                raw_name = trace["name"].split(".SEND")[0]
+            else:
+                raw_name = trace["name"]
+            if raw_name not in self.raw_name2IDnum:
+                    self.raw_name2IDnum[raw_name] = {"chunkNum": 0, "sliceNum": 0, "channelNum": 0, "loopNum": 0}
+            self.raw_name2IDnum[raw_name]["chunkNum"] = max(int(trace["args"]["chunkId"]) + 1, self.raw_name2IDnum[raw_name]["chunkNum"])
+            self.raw_name2IDnum[raw_name]["sliceNum"] = max(int(trace["args"]["sliceId"]) + 1, self.raw_name2IDnum[raw_name]["sliceNum"])
+            self.raw_name2IDnum[raw_name]["channelNum"] = max(int(trace["args"]["channelId"]) + 1, self.raw_name2IDnum[raw_name]["channelNum"])
+            self.raw_name2IDnum[raw_name]["loopNum"] = max(int(trace["args"]["loopId"]) + 1, self.raw_name2IDnum[raw_name]["loopNum"])
+
             rst_traces.append(trace)
 
         # self.tensor2group = np.array(self.tensor2group)
@@ -492,13 +510,11 @@ class Collector(object):
 
         if len(rst_traces) ==  0:
             SingleLogger().warn("No comm_detail traces for {}".format(comm_d_path))
-
-        self.nccl_graph.parse_traces(rst_traces)
-        debug_utils.DebugRecorder().debug_event_end("collect_" + pid+"_comm_detail", "Collct", "0")
+        # debug_utils.DebugRecorder().debug_event_end("collect_" + pid+"_comm_detail", "Collct", "0")
         return rst_traces
 
     def bpf_collect_comm(self, tmp_pm=None, pid=None, host_id=None):
-        debug_utils.DebugRecorder().debug_event_start()
+        # debug_utils.DebugRecorder().debug_event_start()
         comm_path = self.pm.search(FileName.COMM) if tmp_pm is None else tmp_pm.search(FileName.COMM)
         if comm_path is None:   
             return
@@ -506,7 +522,7 @@ class Collector(object):
             dag_path = self.pm.search(FileName.DAG)
             self.dag = nx.read_gml(dag_path)
         comm_traces = self.parse_comm_traces(comm_path, pid=pid, host_id=host_id)
-        debug_utils.DebugRecorder().debug_event_end("collect_" + pid+"_comm", "Collct", "0")
+        # debug_utils.DebugRecorder().debug_event_end("collect_" + pid+"_comm", "Collct", "0")
         return comm_traces
     
     def parse_comm_traces(self, path, pid=None, host_id=None):
@@ -516,17 +532,17 @@ class Collector(object):
         wk_prefix, _ = PathManager("/".join(path.split('/')[:-1])).ret_prefix()
 
         #! read communication traces offline
-        debug_utils.DebugRecorder().debug_event_start()
+        # debug_utils.DebugRecorder().debug_event_start()
         with open(path, 'r') as f:
             json_str = f.read()
-        debug_utils.DebugRecorder().debug_event_end("collect_" + pid+"_comm.read_traces", "Collct", "0")
+        # debug_utils.DebugRecorder().debug_event_end("collect_" + pid+"_comm.read_traces", "Collct", "0")
 
         ### TODO (huhanpeng) delete
         ''' Fix the json file
             For Horovod, the timeline_ outputs traces as soon as a new trace is appended to the queue
             Making the trace file ends abnormally.
         '''
-        debug_utils.DebugRecorder().debug_event_start()
+        # debug_utils.DebugRecorder().debug_event_start()
         if json_str[-1] != ']':
             json_str_lines = json_str.split("\n")
             if json_str_lines[-1] == '':
@@ -537,7 +553,7 @@ class Collector(object):
         comm_traces = json.loads(json_str)
         if isinstance(comm_traces, dict):
             comm_traces = comm_traces["traceEvents"]
-        debug_utils.DebugRecorder().debug_event_end("collect_" + pid+"_comm.load_string", "Collct", "0")
+        # debug_utils.DebugRecorder().debug_event_end("collect_" + pid+"_comm.load_string", "Collct", "0")
 
         ret = []
         for trace in comm_traces:
@@ -659,7 +675,10 @@ class Collector(object):
             rst += traces_list[idx]
         return rst
 
-    def iter_combine(self):
+    def collect_traces(self):
+        SingleLogger().info("# Collecting Traces")
+        SingleLogger().info("Generating %s" % (FileName.TRACE.value))
+        self.collect_meta_data()
         ts_ = time.time()
         rst_traces = []
         assert self.pm.dir_level == DirLevel.TRIAL
@@ -674,20 +693,20 @@ class Collector(object):
             for __dir in worker_dirs:
                 self.time_dict = {"traceEvents":[]} 
                 gpu_path = os.path.join(worker_root, __dir)
-                tmp_pm = PathManager(gpu_path)
-                pid = str(_dir)+".rank%s"%__dir
-                host_id_str = _dir
+                tmp_pm, pid, host_id_str = PathManager(gpu_path), str(_dir)+".rank%s"%__dir, _dir
                 rank_list.append([tmp_pm, pid, host_id_str])
                 if self.comm_backend == "NCCL":
                     self.bpf_collect_nccl_graph(tmp_pm, pid, host_id_str)
         with multiprocessing.Pool(len(rank_list)) as p:
             rst = p.map(self.bpf_collect_for_rank, rank_list)
+        traces_list, ref_name_list, ref_time_list, raw_name2IDnum_list = zip(*rst)
 
         ### align the time
         if self.comm_backend == "NCCL":
             host_ids = [self.nccl_graph.host_prefix2id[host_id_str] for _, _, host_id_str in rank_list]
-            self.nccl_graph.init_host_drift(zip(host_ids, [ref_time for _, ref_name, ref_time in rst]))
-        rst_traces = self.clock_align([traces for traces, _, _ in rst], host_ids)
+            self.nccl_graph.init_host_drift(zip(host_ids, ref_time_list))
+            self.nccl_graph.parse_traces(raw_name2IDnum_list[0])
+        rst_traces = self.clock_align(traces_list, host_ids)
         self.single = (len(rst) == 1)
 
         if self.comm_backend == "NCCL" and not args_.pretty:
@@ -701,16 +720,7 @@ class Collector(object):
             rst_traces += self.byteps_graph.gen_compatible_trace(dump_path=os.path.join(self.pm.path, FileName.BPS_ALIGNED_TRACE.value))
 
         SingleLogger().info("Take {} s to combine all traces of length {}".format(time.time() - ts_, len(rst_traces)))
-        return rst_traces
-
-    def collect_traces(self, force_=False):
-        SingleLogger().info("# Collecting Traces")
-        SingleLogger().info("Generating %s" % (FileName.TRACE.value))
-        self.collect_meta_data()
-        self.traceM = TraceManager(self.iter_combine(), self.pm.dir_level, check=True)
-
-        self.traceM.dump(self.pm.path)
-        raise
+        self.traceM = TraceManager(rst_traces, self.pm.dir_level, check=True)
 
     def collect_meta_data(self):
         ### collect metadata

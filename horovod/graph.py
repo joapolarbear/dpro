@@ -238,44 +238,19 @@ class ncclGraph:
                         print("\t\t\tSend to %d" % peer_rank)
 
 
-    def parse_traces(self, traces):
+    def parse_traces(self, raw_name2IDnum):
         ''' Parse traces from one GPU, to get NCCL hyper-parameters: chunkNum, sliceNum, channelNum and loopNum
         * We assume each GPU share the same hyper-parameters
         * After NCCL hyper-parameters are parsed, set the flag self.trace_parsed to True to avoid parsing repeatedly
         * `traces` must be sorted according to `ts` 
+        !!! To reduce the time to loop through traces, move the main process to the trace collection
+        * directly asign the result
         '''
-        if (self.trace_parsed and self.algo == NCCL_ALGO.RING) or len(traces) == 0:
+        if (self.trace_parsed and self.algo == NCCL_ALGO.RING):
             return
 
         self.trace_parsed = True
-        if self.algo == NCCL_ALGO.RING or self.algo == NCCL_ALGO.TREE:
-            for trace in traces:
-                ### Just check traces whose pid is comm_detail
-                if "comm_detail" not in trace["tid"] and "comm_detail" not in trace["pid"]:
-                    continue
-
-                ### Ignore instant event
-                if trace["ph"].lower() == "i":
-                    continue
-
-                ### Get the rawname withoud RECV/SEND
-                if ".RECV" in trace["name"]:
-                    raw_name = trace["name"].split(".RECV")[0]
-                elif ".SEND" in trace["name"]:
-                    raw_name = trace["name"].split(".SEND")[0]
-                else:
-                    raw_name = trace["name"]
-
-                if raw_name not in self.raw_name2IDnum:
-                    self.raw_name2IDnum[raw_name] = {"chunkNum": 0, "sliceNum": 0, "channelNum": 0, "loopNum": 0}
-
-                self.raw_name2IDnum[raw_name]["chunkNum"] = max(int(trace["args"]["chunkId"]) + 1, self.raw_name2IDnum[raw_name]["chunkNum"])
-                self.raw_name2IDnum[raw_name]["sliceNum"] = max(int(trace["args"]["sliceId"]) + 1, self.raw_name2IDnum[raw_name]["sliceNum"])
-                self.raw_name2IDnum[raw_name]["channelNum"] = max(int(trace["args"]["channelId"]) + 1, self.raw_name2IDnum[raw_name]["channelNum"])
-                self.raw_name2IDnum[raw_name]["loopNum"] = max(int(trace["args"]["loopId"]) + 1, self.raw_name2IDnum[raw_name]["loopNum"])
-        else:
-            raise ValueError("NCCL_ALGO error: %s" % self.algo.value)
-
+        self.raw_name2IDnum = raw_name2IDnum
 
     def get_IDnum(self, raw_name):
         assert self.trace_parsed is True
@@ -411,7 +386,7 @@ class ncclGraph:
         self.time_drift = [0] * len(self.host_id2prefix)
         host_gpu_cnt = [0] * len(self.host_id2prefix)
         for host_id, ref_time in host_id_time_list:
-            self.time_drift[host_id] = ref_time
+            self.time_drift[host_id] += ref_time
             host_gpu_cnt[host_id] += 1
         base = self.time_drift[self.master_host_id] / host_gpu_cnt[self.master_host_id]
         for idx in range(len(self.time_drift)):
