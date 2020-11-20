@@ -740,18 +740,22 @@ class Collector(object):
         self.para_dict = ParameterDict(self.metadata["gradient_name_list"])
         self.para_dict.map_tensors_to_update(aggregate_num)
 
-    def _collect_rank_dag(self, gpu_path):
+    def _collect_rank_dag(self, gpu_path, worker_dag_list, critical_path, index):
         SingleLogger().info("- Collect DAG in %s ..." % (gpu_path))
         dagmanager = DAGManager(gpu_path, self.traceM, self.nccl_graph, self.byteps_graph, platform=self.platform)
         max_para_degree, _critical_path = dagmanager.gen_gpu_dag(_pretty=args_.pretty, para_dict=self.para_dict)
-        return dagmanager.dag, _critical_path
+        worker_dag_list[index] = dagmanager.dag
+        critical_path[index] = _critical_path
 
     def collect_trial_dag(self):
         assert self.pm.dir_level == DirLevel.TRIAL
         SingleLogger().info("Collecting DAG ...")
         ts_ = time.time()
-        critical_path = []
-        worker_dag_list = []
+        if self.comm_backend == "NCCL":
+            critical_path = [None] * self.nccl_graph.nrank
+            worker_dag_list = [None] * self.nccl_graph.nrank
+        else:
+            raise ValueError("Need to check whether byteps_graph has nrank member")
 
         if self.platform == "MXNET":
             self.collect_update_dict()
@@ -761,20 +765,22 @@ class Collector(object):
         if self.single:
             worker_path = os.path.join(self.pm.path, self.pm.dirs[0])
             gpu_path = os.path.join(worker_path, first_valid_dir(worker_path))
-            dag, _critical_path = self._collect_rank_dag(gpu_path)
-            worker_dag_list.append(dag)
-            critical_path = [_critical_path]
+            dag, _critical_path = self._collect_rank_dag(gpu_path, worker_dag_list, critical_path, 0)
         else:
-            arg_list = []
+            threads = []
             for _dir in self.pm.dirs:
                 worker_path = os.path.join(self.pm.path, _dir)
                 worker_root, worker_dirs, _ = list(os.walk(worker_path))[0]
                 for worker_dir in sorted(worker_dirs):
                     gpu_path = os.path.join(worker_root, worker_dir)
-                    arg_list.append(gpu_path)
-            with multiprocessing.Pool(len(arg_list)) as p:
-                rst = p.map(self._collect_rank_dag, arg_list)
-            worker_dag_list, critical_path = zip(*rst)
+                    t = threading.Thread(target=self._collect_rank_dag, args=(gpu_path, worker_dag_list, critical_path, len(threads)))
+                    t.start()
+                    threads.append(t)
+            for t in threads:
+                t.join()
+            # with multiprocessing.Pool(len(arg_list)) as p:
+            #     rst = p.map(self._collect_rank_dag, arg_list)
+            # worker_dag_list, critical_path = zip(*rst)
 
         ### Combine all worker_dag_list on one worker, build the dependency
         composed_dag = nx.compose_all(worker_dag_list)

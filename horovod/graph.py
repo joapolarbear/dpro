@@ -66,6 +66,7 @@ class ncclGraph:
         self.algo = algo
         self.rank_num = 0
         self.trace_parsed = False
+        self.nrank = 0
 
         self.graph = {}
         self.raw_name2IDnum = {}
@@ -193,6 +194,7 @@ class ncclGraph:
                 self.graph["Ring"][channel_id][recver]["prev"] = sender
 
     def map_rank2prefix(self, rank, prefix):
+        self.nrank = max(rank+1, self.nrank)
         if rank not in self.rank2prefix:
             self.rank2prefix[rank] = prefix
         if prefix not in self.prefix2rank:
@@ -398,7 +400,7 @@ class ncclGraph:
         return self.host_prefix2id[prefix]
 
     def dump(self, path_):
-        str_ = "%d,%d,%d\n"%(self.algo.value, self.rank_num, int(self.trace_parsed))
+        str_ = "%d,%d,%d,%d\n"%(self.algo.value, self.rank_num, int(self.trace_parsed), self.nrank)
         str_ += str(self.graph) + "\n"
         str_ += str(self.raw_name2IDnum) + "\n"
         str_ += str(self.rank2prefix) + "\n"
@@ -414,10 +416,11 @@ class ncclGraph:
         with open(path_, 'r') as fp:
             str_ = fp.read().split("\n")
 
-        algo, rank_num, trace_parsed = str_[0].split(",")
+        algo, rank_num, trace_parsed, nrank = str_[0].split(",")
         self.algo = NCCL_ALGO(int(algo))
         self.rank_num = int(rank_num)
         self.trace_parsed = bool(trace_parsed)
+        self.nrank = int(nrank)
 
         self.graph = eval(str_[1])
         self.raw_name2IDnum = eval(str_[2])
