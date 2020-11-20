@@ -212,8 +212,8 @@ if args.option == "replay":
             step_end_time_ms = [t / 1000 for t in replayer.replayAndDelay(delay_dict, _ouput=False).values()]
             cur_iter_time_ = sum(step_end_time_ms)/len(step_end_time_ms)
             diff_ = cur_iter_time_ - iter_time if cur_iter_time_ > iter_time else iter_time - cur_iter_time_
-            logger.info("Delay %s" % (nodename))
-            logger.info(" ==> %s." % (str(step_end_time_ms)))
+            logger.info("Delay %s ==> %f ms" % (nodename, cur_iter_time_))
+            # logger.info(" ==> %s." % (str(step_end_time_ms)))
             if diff_ > max_diff:
                 max_diff = diff_
                 bottleneckt_ = nodename
