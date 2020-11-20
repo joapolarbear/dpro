@@ -305,12 +305,11 @@ class TraceManager:
         self.dir_level = dir_level
         self.max_step = 0
         self.opt_step = 0   # which step has the cloest performance to the average performance
+        self.iter_time = -1
 
         self.name2sta = None
         self.cat2sta = None
         self.name2idxlist = {}
-
-        self.add_step_cnt()
         self.ret_stat()
 
     def dump(self, dir_):
@@ -321,7 +320,7 @@ class TraceManager:
         rst_traces = sorted(self.traces, key=lambda x: (x["pid"], x["tid"]))
         with open(os.path.join(dir_, FileName.TRACE.value), 'w') as f:
             json.dump(rst_traces, f)
-        str_ = "%d,%d,%d\n"%(self.dir_level.value, self.max_step, self.opt_step)
+        str_ = "%d,%d,%d,%f\n"%(self.dir_level.value, self.max_step, self.opt_step, self.iter_time)
         str_ += str(self.name2sta) + "\n"
         str_ += str(self.cat2sta)
         with open(os.path.join(dir_, FileName.STATISTIC.value), 'w') as fp:
@@ -332,10 +331,11 @@ class TraceManager:
         with open(os.path.join(dir_, FileName.STATISTIC.value), 'r') as fp:
             str_ = fp.read().split("\n")
 
-        dir_level, max_step, opt_step = str_[0].split(",")
+        dir_level, max_step, opt_step, iter_time = str_[0].split(",")
         self.dir_level = DirLevel(int(dir_level))
         self.max_step = int(max_step)
         self.opt_step = int(opt_step)
+        self.iter_time = float(iter_time)
 
         self.name2sta = eval(str_[1])
         self.cat2sta = eval(str_[2])
@@ -367,12 +367,39 @@ class TraceManager:
         return gen_long_name(event["pid"], event["name"], suffix=suffix)
 
     def ret_stat(self, cal_median=False):
-        """ Basic Statistic """
+        """ 1. Basic Statistic;
+            2. add step field
+            3. iteration time
+        """
+
+        ### based on the assumption that FW or IO is the start of a step
+        AS_START_CAT = ["I/O", "operator.FW"]
+
         self.name2sta = {}
         self.cat2sta = {}
+        prefix_dict = {}
         for event in self.traces:
             if self._is_ignore_for_sta(event):
                 continue
+            prefix = event["pid"]
+            if prefix not in prefix_dict:
+                prefix_dict[prefix] = {
+                    "cat_cursor": None, 
+                    "step_cnt": 0,
+                    ### used for calculating iteration time, and fw time
+                    "step_start": None,
+                    "fw_list": [],
+                    "bw_list": [],
+                    "iter_list": [],
+                    "step_start_ts": None,
+                    "cur_iter_time": 0,
+                    "fw_end": None,
+                    "bw_start": None,
+                    "bw_end": None,
+                }
+            cat = parse_cat_fine_grained(event["name"])
+
+            ### statistic info
             unique_name = self.ret_unique_name(event)
             if unique_name in self.name2sta:
                 if MAX_CNT is not None and self.name2sta[unique_name]["cnt"] >= MAX_CNT:
@@ -393,11 +420,81 @@ class TraceManager:
                     "max_t": event["dur"] / 1000.0,
                     # \TODO: add `cat` field for communication traces
                     # "cat": event["cat"] 
-                    "cat": event["cat"],
+                    "cat": cat,
                     "id": len(self.name2sta)
                     }
             event["args"]["cnt"] = self.name2sta[unique_name]["cnt"] - 1
+
+            pid_info = prefix_dict[prefix]
+            ### add step field
+            if pid_info["cat_cursor"] is None:
+                pass
+            elif pid_info["cat_cursor"] not in AS_START_CAT and cat in AS_START_CAT:
+                pid_info["step_cnt"] += 1
+            elif pid_info["cat_cursor"] in AS_START_CAT and cat == "operator.UPDATE":
+                ### handle the overlapping cases between UPDATE and (IO, FW)
+                pid_info["step_cnt"] -= 1
+            event["args"]["step"] = pid_info["step_cnt"]
+            pid_info["cat_cursor"] = cat
             self.max_step = max(event["args"]["step"], self.max_step)
+
+            ### calculate the iteration time
+            if parse_cat_from_name(event["name"]) != CatName.OPERATOR.value:
+                continue    
+            if pid_info["step_start"] is None:
+                ### initialization
+                pid_info["step_start_ts"] = event['ts']
+                pid_info["cur_iter_time"] = event['ts'] + event['dur']
+                pid_info["step_start"] = event["args"]["step"]
+            elif pid_info["step_start"] != event["args"]["step"]:
+                ### a new iteration
+                assert pid_info["step_start_ts"] is not None
+                if pid_info["step_start"] == -1:
+                    continue
+                assert event["args"]["step"] > pid_info["step_start"], (event)
+                pid_info["iter_list"].append((pid_info["cur_iter_time"] - pid_info["step_start_ts"]) / 1000.0)
+                pid_info["fw_list"].append((pid_info["fw_end"] - pid_info["step_start_ts"]) / 1000.0)
+                pid_info["bw_list"].append((pid_info["bw_end"] - pid_info["bw_start"]) / 1000.0)
+                SingleLogger().debug("%s - the %d th iteration: FW: %f, BW: %f, Iteration time: %f" % (prefix, len(pid_info["iter_list"]), pid_info["fw_list"][-1], pid_info["bw_list"][-1], pid_info["iter_list"][-1]))
+                pid_info["step_start_ts"] = event['ts']
+                pid_info["bw_start"] = None
+                pid_info["cur_iter_time"] = event['ts'] + event['dur']
+                pid_info["step_start"] = event["args"]["step"]
+            else:
+                ### during an iteration
+                pid_info["cur_iter_time"] = event['ts'] + event['dur']
+
+                ### TODO (huhanpeng): change after fine-tune update
+                ### here we assume UPDATE is following the last BP op.
+                if "FW" in event["name"]:
+                    pid_info["fw_end"] = pid_info["cur_iter_time"]
+                if "BW" in event["name"]:
+                    if pid_info["bw_start"] is None:
+                        pid_info["bw_start"] = pid_info["cur_iter_time"]
+                    pid_info["bw_end"] = pid_info["cur_iter_time"]
+
+        ### calculate the average iteration time
+        iter_list_all = []
+        for prefix in prefix_dict.keys():
+            ### Necessary for the last step
+            pid_info = prefix_dict[prefix]
+            pid_info["iter_list"].append((pid_info["cur_iter_time"] - pid_info["step_start_ts"]) / 1000.0)
+            pid_info["fw_list"].append((pid_info["fw_end"] - pid_info["step_start_ts"]) / 1000.0)
+            pid_info["bw_list"].append((pid_info["bw_end"] - pid_info["bw_start"]) / 1000.0)
+            SingleLogger().debug("%s - the %d th iteration: FW:%f, BW: %f, Iteration time: %f" % (prefix, len(pid_info["iter_list"]), pid_info["fw_list"][-1], pid_info["bw_list"][-1], pid_info["iter_list"][-1]))
+
+            fw_time = sum(pid_info["fw_list"]) / float(len(pid_info["fw_list"]))
+            bw_time = sum(pid_info["bw_list"]) / float(len(pid_info["bw_list"]))
+            iter_time = sum(pid_info["iter_list"]) / float(len(pid_info["iter_list"]))
+            iter_list_all.append(pid_info["iter_list"])
+            SingleLogger().info("<%s> fw : %f, bw: %f ms -- iteration time: %f ms" % (prefix,
+                    fw_time, bw_time, iter_time))
+
+        ### iter_list_all, shape = (n_GPUs, n_steps) ==> (n_steps)
+        iter_list_all = np.average(np.array(iter_list_all), axis=0)
+        self.iter_time = np.average(iter_list_all)
+        self.opt_step = np.argmin(np.abs(iter_list_all - iter_time))
+        SingleLogger().info("<Overall> step %d is the one closest to average %f - %s" % (self.opt_step, self.iter_time, iter_list_all))
                 
         """calculate the avg """
         for name, statistic in self.name2sta.items():
@@ -534,27 +631,6 @@ class TraceManager:
                 return idx, self.traces[idx]
         return None, None
 
-    def add_step_cnt(self):
-        ### based on the assumption that FW or IO is the start of a step
-        AS_START_CAT = ["I/O", "operator.FW"]
-        operator_traces_list = self.group_op_by_prefix()
-        for prefix in sorted(operator_traces_list.keys()):
-            cat_cursor = None
-            step_cnt = 0
-            operator_traces = operator_traces_list[prefix]
-            # operator_traces = sorted(operator_traces, key=lambda x: x["ts"])
-            for event in operator_traces:
-                cat = parse_cat_fine_grained(event["name"])
-                if cat_cursor is None:
-                    pass
-                elif cat_cursor not in AS_START_CAT and cat in AS_START_CAT:
-                    step_cnt += 1
-                elif cat_cursor in AS_START_CAT and cat == "operator.UPDATE":
-                    ### handle the overlapping cases between UPDATE and (IO, FW)
-                    step_cnt -= 1
-                event["args"]["step"] = step_cnt
-                cat_cursor = cat
-
     def get_iter_time(self):
         ''' print the iteration time and computation time
         *Note* that this function is strongly dependent on how the bps_trace_final.json
@@ -568,77 +644,7 @@ class TraceManager:
             time is the cloest to the average performance, used for
             converting dynamic graph into static graph.
         '''
-        assert isinstance(self.traces, list)
-        ### When calculate the iteration time, ignore IO and Comm, since they are asynchronous
-        operator_traces_list = self.group_op_by_prefix(cat_name=CatName.OPERATOR.value)
-
-        iter_list_all = []
-        for prefix in sorted(operator_traces_list.keys()):
-            operator_traces = operator_traces_list[prefix] 
-            fw_list = []
-            bw_list = []
-            iter_list = []
-            # operator_traces = sorted(operator_traces, key=lambda x: x["ts"])
-
-            step_cnt = None
-            step_start_ts = None
-            cur_iter_time = 0
-            fw_end = None
-            bw_start = None
-            bw_end = None
-            for event in operator_traces:
-                if step_cnt is None:
-                    ### initialization
-                    step_start_ts = event['ts']
-                    cur_iter_time = event['ts'] + event['dur']
-                    step_cnt = event["args"]["step"]
-                elif step_cnt != event["args"]["step"]:
-                    ### a new iteration
-                    assert step_start_ts is not None
-                    if step_cnt == -1:
-                        continue
-                    assert event["args"]["step"] > step_cnt
-                    iter_list.append((cur_iter_time - step_start_ts) / 1000.0)
-                    fw_list.append((fw_end - step_start_ts) / 1000.0)
-                    bw_list.append((bw_end - bw_start) / 1000.0)
-                    # SingleLogger().info("%s - the %d th iteration: FW+BW: %f, Iteration time: %f" % (prefix, len(iter_list), fw_bw_list[-1], iter_list[-1]))
-                    SingleLogger().debug("%s - the %d th iteration: FW: %f, BW: %f, Iteration time: %f" % (prefix, len(iter_list), fw_list[-1], bw_list[-1], iter_list[-1]))
-                    step_start_ts = event['ts']
-                    bw_start = None
-                    cur_iter_time = event['ts'] + event['dur']
-                    step_cnt = event["args"]["step"]
-                else:
-                    ### during an iteration
-                    cur_iter_time = event['ts'] + event['dur']
-
-                    ### TODO (huhanpeng): change after fine-tune update
-                    ### here we assume UPDATE is following the last BP op.
-                    if "FW" in event["name"]:
-                        fw_end = cur_iter_time
-                    if "BW" in event["name"]:
-                        if bw_start is None:
-                            bw_start = cur_iter_time
-                        bw_end = cur_iter_time
-                    
-            ### Needed if there is only one step
-            iter_list.append((cur_iter_time - step_start_ts) / 1000.0)
-            fw_list.append((fw_end - step_start_ts) / 1000.0)
-            bw_list.append((bw_end - bw_start) / 1000.0)
-            SingleLogger().debug("%s - the %d th iteration: FW:%f, BW: %f, Iteration time: %f" % (prefix, len(iter_list), fw_list[-1], bw_list[-1], iter_list[-1]))
-
-            fw_time = sum(fw_list) / float(len(fw_list))
-            bw_time = sum(bw_list) / float(len(bw_list))
-            iter_time = sum(iter_list) / float(len(iter_list))
-            iter_list_all.append(iter_list)
-            SingleLogger().info("<%s> fw : %f, bw: %f ms -- iteration time: %f ms" % (prefix,
-                    fw_time, bw_time, iter_time))
-
-        ### iter_list_all, shape = (n_GPUs, n_steps) ==> (n_steps)
-        iter_list_all = np.average(np.array(iter_list_all), axis=0)
-        iter_time = np.average(iter_list_all)
-        self.opt_step = np.argmin(np.abs(iter_list_all - iter_time))
-        SingleLogger().info("<Overall> step %d is the one closest to average %f - %s" % (self.opt_step, iter_time, iter_list_all))
-        return iter_time, self.opt_step
+        return self.iter_time, self.opt_step
 
     def group_op_by_prefix(self, cat_name=None):
         prefix2traces = {}

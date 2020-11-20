@@ -403,6 +403,20 @@ class ncclGraph:
         self.host_id2prefix = dict(enumerate(dirs))
         self.host_prefix2id = dict([(v, u) for u, v in enumerate(dirs)])
 
+    def init_host_drift(self, host_id_time_list):
+        ''' Initialize the drift to the base host, let host_id=0 as the base host
+        host_id_time_list: a list of (host_id, ref_time),
+        '''
+        self.master_host_id = 0
+        self.time_drift = [0] * len(self.host_id2prefix)
+        host_gpu_cnt = [0] * len(self.host_id2prefix)
+        for host_id, ref_time in host_id_time_list:
+            self.time_drift[host_id] = ref_time
+            host_gpu_cnt[host_id] += 1
+        base = self.time_drift[self.master_host_id] / host_gpu_cnt[self.master_host_id]
+        for idx in range(len(self.time_drift)):
+            self.time_drift[idx] = base - self.time_drift[idx] / host_gpu_cnt[idx]
+
     def ret_hostid(self, prefix):
         if "." in prefix:
             prefix = prefix.split(".")[0]
