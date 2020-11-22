@@ -486,6 +486,8 @@ class DAGManager:
 
         ### For FW and BW nodes, go through one step of traces
         for event in self.traceM.traces:
+            if self.traceM._is_ignore_for_sta(event):
+                continue
             if event["args"]["step"] > (self.traceM.opt_step + 1):
                 ### only go through one step of traces, even if there exists overlapping,
                 # no possible overlapping between three steps

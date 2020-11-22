@@ -435,6 +435,8 @@ class ncclGraph:
         ### go over traces and store all combinations of traces
         self.nccl_fusion["tensor2grpID"] = [None] * grad_num
         for event in traceM.traces:
+            if traceM._is_ignore_for_sta(event):
+                continue
             if event["args"]["step"] > (traceM.opt_step + 1):
                 ### only go through one step of traces, even if there exists overlapping,
                 # no possible overlapping between three steps
