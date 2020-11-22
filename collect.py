@@ -791,7 +791,11 @@ class Collector(object):
 
         ### Combine all worker_dag_list on one worker, build the dependency
         SingleLogger().info("Compose all gpu DAGs together ... ")
-        composed_dag = nx.compose_all(worker_dag_list)
+        all_edges = []
+        for _edges in worker_dag_list:
+            all_edges += _edges
+        composed_dag = nx.DiGraph()
+        composed_dag.add_edges_from(all_edges)
         if self.comm_backend == "BYTEPS":
             composed_dag = nx.compose(composed_dag, self.byteps_graph.get_comm_graph())
 
