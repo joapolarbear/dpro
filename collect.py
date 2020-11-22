@@ -790,6 +790,7 @@ class Collector(object):
             # worker_dag_list, critical_path = zip(*rst)
 
         ### Combine all worker_dag_list on one worker, build the dependency
+        SingleLogger().info("Compose all gpu DAGs together ... ")
         composed_dag = nx.compose_all(worker_dag_list)
         if self.comm_backend == "BYTEPS":
             composed_dag = nx.compose(composed_dag, self.byteps_graph.get_comm_graph())
@@ -800,7 +801,6 @@ class Collector(object):
     def iter_time(self):
         if self.traceM is None:
             self.collect_traces()
-        SingleLogger().info("Original Iteration Time")
         return self.traceM.get_iter_time()
 
     def init(self, force_=False):
@@ -920,9 +920,9 @@ class Collector(object):
         ### Fine tune the traces and dependency graph
         if self.comm_backend == "BYTEPS":
             self.byteps_graph.calc_bw_to_comm_delay(self.traceM.traces, self.trail_dag)
-        self.add_gap_to_nodes()
         ### TODO (huhanpeng): does this adapt to BytePS ???
         self.add_avg_to_nodes()
+        self.add_gap_to_nodes() 
         if self.comm_backend == "NCCL":
             self.clip_recv_events()
 
@@ -1159,10 +1159,10 @@ class Collector(object):
                         self.traceM.cat2sta[cat]["time"] -= recv_dict["less"]
                         self.traceM.cat2sta[cat]["avg"] = self.traceM.cat2sta[cat]["time"] / self.traceM.cat2sta[cat]["cnt"]
                     ### Update DAG information
-                    for next_ in self.trail_dag.successors(name_):
-                        self.trail_dag.edges[name_, next_]["weight"] = avg
+                    self.trail_dag.nodes[name_]["avg"] = avg
 
     def add_avg_to_nodes(self):
+        SingleLogger().info("Add avg to nodes ...")
         for node_ in self.trail_dag.nodes:
             ### Add duration to the node as an attribute
             self.trail_dag.nodes[node_]["avg"] = self.traceM.lookup_stat(None, None, node_)
