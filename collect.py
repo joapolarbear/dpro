@@ -701,11 +701,18 @@ class Collector(object):
             rst = p.map(self._collect_rank_traces, arg_list)
         traces_list, ref_name_list, ref_time_list, raw_name2IDnum_list = zip(*rst)
 
-        ### align the time
         if self.comm_backend == "NCCL":
             host_ids = [self.nccl_graph.host_prefix2id[host_id_str] for _, _, host_id_str in arg_list]
             self.nccl_graph.init_host_drift(zip(host_ids, ref_time_list))
-            self.nccl_graph.parse_traces(raw_name2IDnum_list[0])
+            ### Since some GPU may have no comm detailed traces, select the first non-empty file to parse chunk num...
+            raw_name2IDnum = None
+            for e in raw_name2IDnum_list:
+                if len(e) > 0:
+                    raw_name2IDnum = e
+                    break
+            assert raw_name2IDnum is not None
+            self.nccl_graph.parse_traces(raw_name2IDnum)
+        ### align the time
         rst_traces = self.clock_align(traces_list, host_ids)
         self.single = (len(rst) == 1)
 
