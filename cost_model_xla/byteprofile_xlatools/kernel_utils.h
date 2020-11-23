@@ -27,19 +27,23 @@
 namespace xla {
 namespace tools {
 
-static int32_t kernel_sample_counter = 0;
-
 struct ElementaryOp {
     // Op code
+    std::string op_name;
     xla::HloOpcode op_code;
     // shape
     std::vector<xla::Shape> input_shapes;
+    std::vector<std::string> input_names;
     xla::Shape output_shape;
     uint64_t hash;
     std::string SerializeToString() {
         std::string s;
-        s.append(xla::HloOpcodeString(op_code) + ", " + std::to_string(static_cast<int32_t>(op_code)) + ", " + std::to_string(input_shapes.size()) + ", ");
-        for (auto shape: input_shapes) {
+        s.append(op_name + ", " + xla::HloOpcodeString(op_code) + ", " + 
+                std::to_string(static_cast<int32_t>(op_code)) + ", " + 
+                std::to_string(input_shapes.size()) + ", ");
+        for (int32_t i = 0; i < input_shapes.size(); i++) {
+            auto shape = input_shapes[i];
+            s.append(input_names[i] + ", ");
             int32_t rank = shape.dimensions_size();
             if (rank == 0) {
                 s.append("1");
@@ -145,11 +149,13 @@ std::pair<std::unordered_map<std::string, FusedOp>, std::unordered_map<std::stri
             std::vector<ElementaryOp> elem_ops;
             for (xla::HloInstruction* instr : comp->instructions()) {
                 ElementaryOp elem_op;
+                elem_op.op_name = instr->name();
                 elem_op.op_code = instr->opcode();
                 int64_t operand_count = instr->operand_count();
                 for (int64_t i=0; i< operand_count; i++) {
                     const xla::HloInstruction* operand_instr = instr->operand(i);
                     elem_op.input_shapes.push_back(operand_instr->shape());
+                    elem_op.input_names.push_back(operand_instr->name());
                 }
                 elem_op.output_shape = instr->shape();
                 elem_op.hash = instr->Hash();
@@ -195,7 +201,12 @@ public:
         }
     }
 
-    bool Dump(float clock_rate_ghz, std::string hlo_path, std::string dump_dir_path) {
+    void AppendExecutionTimeMicroSeconds(double et, double outer_et) {
+        execution_times.push_back(et);
+        execution_times_outer.push_back(outer_et);
+    }
+
+    bool Dump(int32_t kernel_sample_counter, float clock_rate_ghz, std::string hlo_path, std::string dump_dir_path) {
         // name2cyclesum and name2occurences contains all instructions' cycle count in entry computation
         // name2subops contains fused op's details in HLO module
         std::unordered_map<std::string, FusedOp> name2subops;
@@ -205,9 +216,19 @@ public:
         std::string elemop_path = dump_dir_path + "/elementary_ops.txt";
         std::string label_path = dump_dir_path + "/labels.txt";
         std::string feature_dir = dump_dir_path + "/features";
+        std::string module_feature_dir = dump_dir_path + "/modules";
+        std::string module_config_path = module_feature_dir + "/" + std::to_string(kernel_sample_counter) + "_config.txt";
+        std::string module_exec_time_path = module_feature_dir + "/" + std::to_string(kernel_sample_counter) + "_exec.txt";
+        std::string module_outer_exec_time_path = module_feature_dir + "/" + std::to_string(kernel_sample_counter) + "_outerexec.txt";
+        std::string module_breakdown_time_path = module_feature_dir + "/" + std::to_string(kernel_sample_counter) + "_breakdown.txt";
         mkdir(feature_dir.c_str(), S_IRWXU | S_IRWXG | S_IRWXO);
+        mkdir(module_feature_dir.c_str(), S_IRWXU | S_IRWXG | S_IRWXO);
+        std::ofstream module_config_file;
+        module_config_file.open(module_config_path);
         std::ofstream elemop_file;
         elemop_file.open(elemop_path, std::ios_base::app);
+        std::ofstream breakdown_file;
+        breakdown_file.open(module_breakdown_time_path);
         // write elementary ops to cache
         for (auto kv: name2elementaries) {
             auto ele_op = kv.second;
@@ -216,11 +237,13 @@ public:
                 auto total_cycles = name2cyclesum.at(name);
                 auto total_occurences = name2occurences.at(name);
                 auto time_in_us = (float)total_cycles / total_occurences / clock_rate_ghz / 1000;
-                elemop_file << ele_op.hash << " : " << time_in_us << std::endl;
+                elemop_file << ele_op.hash << ", " << ele_op.op_code << ", " << time_in_us << std::endl;
+                breakdown_file << ele_op.hash << " : " << time_in_us << std::endl;
             } else {
                 std::cerr << "Cannot find elementary op " << name << " in name2cycle." << std::endl;
                 return false;
             }
+            module_config_file << "0, " << ele_op.hash <<  ", " << ele_op.op_code << std::endl;
         }
         elemop_file.close();
         std::ofstream label_file;
@@ -231,7 +254,6 @@ public:
             auto fused_op = kv.second;
             // features
             std::string feature_path = feature_dir + "/" + std::to_string(kernel_sample_counter) + ".txt";
-            std::cout << "Writing features for " << name << " in " << feature_path << std::endl;
             std::ofstream feature_file;
             feature_file.open(feature_path);
             feature_file << fused_op.SerializeToString();
@@ -243,18 +265,37 @@ public:
                 auto total_occurences = name2occurences.at(name);
                 auto time_in_us = (float)total_cycles / total_occurences / clock_rate_ghz / 1000; 
                 label_file << std::to_string(kernel_sample_counter) << " : " << time_in_us << std::endl;
+                breakdown_file << fused_op.Hash() << " : " << time_in_us << std::endl;
             } else {
                 std::cerr << "Cannot find fused op " << name << " in name2cycle." << std::endl;
                 return false;
             }
             kernel_sample_counter ++;
+            module_config_file << "1, " << fused_op.Hash() << ", " << feature_path << std::endl;
         }
+        module_config_file.close();
+        breakdown_file.close();
+        // write to module_exec_time file
+        std::ofstream module_exec_file;
+        std::ofstream module_outer_exec_file;
+        module_exec_file.open(module_exec_time_path);
+        module_outer_exec_file.open(module_outer_exec_time_path);
+        for (auto et: execution_times) {
+            module_exec_file << et << std::endl;
+        }
+        for (auto et: execution_times_outer) {
+            module_outer_exec_file << et << std::endl;
+        }
+        module_exec_file.close();
+        module_outer_exec_file.close();
         return true;
     }
 
 private:
     std::unordered_map<std::string, int64_t> name2cyclesum;
     std::unordered_map<std::string, int64_t> name2occurences;
+    std::vector<double> execution_times;
+    std::vector<double> execution_times_outer;
 };
 
 

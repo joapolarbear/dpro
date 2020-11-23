@@ -225,7 +225,7 @@ class Collector(object):
         with open(comp_path, 'r') as f:
             raw_traces = json.load(f)
         debug_utils.DebugRecorder().debug_event_end("collect_" + pid+"_comp.jsonload", "Collct", "0")
-        
+
         one_pid = None
         kernel_pid = None
         rst_traces = {"traceEvents": []}
@@ -249,6 +249,8 @@ class Collector(object):
                 index += 1
                 continue
             trace = raw_traces["traceEvents"][index]
+            if trace["cat"] == "Op":
+                trace["cat"] = "operator"
             if trace["ph"] == 'B' or trace["ph"] == 'b':
                 next_trace = raw_traces["traceEvents"][index+1]
                 assert trace["name"] == next_trace["name"]
@@ -464,21 +466,21 @@ class Collector(object):
             else:
                 raise NotImplementedError("Unsupported platform {}.".format(self.platform))
         
-        occurance_counter = {}
+        occurence_counter = {}
         for trace in rst_traces["traceEvents"]:
             if "ph" in trace and trace["ph"] == "X":
                 if trace["name"] in kernel_times:
-                    if trace["name"] not in occurance_counter:
-                        occurance_counter[trace["name"]] = 0
+                    if trace["name"] not in occurence_counter:
+                        occurence_counter[trace["name"]] = 0
                     try:
-                        kernel_ts, kernel_dur = kernel_times[trace["name"]][occurance_counter[trace["name"]]]
+                        kernel_ts, kernel_dur = kernel_times[trace["name"]][occurence_counter[trace["name"]]]
                     except:
-                        SingleLogger.warn("Length mismatch between kernel and op launch traces for op {}".format(trace["name"]))
-                        occurance_counter[trace["name"]] += 1
+                        # SingleLogger.warn("Length mismatch between kernel and op launch traces for op {}".format(trace["name"]))
+                        occurence_counter[trace["name"]] += 1
                         continue
                     trace["ts"] = kernel_ts
                     trace["dur"] = kernel_dur
-                    occurance_counter[trace["name"]] += 1
+                    occurence_counter[trace["name"]] += 1
         self.clock_aligner.append_traces(host_id, rst_traces["traceEvents"])
         debug_utils.DebugRecorder().debug_event_end("collect_" + pid+"_comp", "Collct", "0")
 
@@ -925,12 +927,10 @@ class Collector(object):
                 self.nccl_graph.load(nccl_graph_path)
             self.trail_dag = nx.read_gml(trail_dag_path)
         
-        for (u,v,c) in self.trail_dag.edges.data():
-            if "exec_edges" in c:
-                print(u, v, c)
-                exit(0)
-        print("FINISHEDDDDDDDDDDDDDDDDDDDD.")
-        exit(0)
+        # for (u,v,c) in self.trail_dag.edges.data():
+        #     if "exec_edges" in c:
+        #         print(u, v, c)
+        #         exit(0)
 
         ### TODO (huhanpeng) dump it or not
         if self.platform == "MXNET":
@@ -1219,6 +1219,10 @@ class Collector(object):
         for node_ in self.trail_dag.nodes:
             ### Add duration to the node as an attribute
             self.trail_dag.nodes[node_]["avg"] = self.traceM.lookup_stat(None, None, node_)
+
+            if parse_cat_from_name(node_) == CatName.COMM.value:
+                if "avg" in self.trail_dag.nodes[node_]:
+                    self.trail_dag.nodes[node_]["avg"] /= 10
 
     def add_gaps_clip_events(self):
         ''' According to the traces and DAG, add a 'gap' field for each edge (u, v)

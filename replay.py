@@ -60,6 +60,10 @@ class Device:
 		delay, ratio = self.get_delay_para(name)
 		duration = (1000.0 * max(avg + delay, 0)) * ratio
 
+		### DEBUG: MANUALLY REDUCE COMM TIME
+		# if cat == CatName.COMM.value:
+		# 	duration /= 10
+
 		if self.comm_backend == "BYTEPS" and "UPDATE_CAL" in name:
 			duration = 0
 		

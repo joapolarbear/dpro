@@ -1,2 +1,0 @@
-CUDA_VISIBLE_DEVICES=0 TF_XLA_FLAGS="--tf_xla_auto_jit=2" XLA_FLAGS="--xla_dump_hlo_as_text --xla_dump_to=/root/bert_dataset/xla_dump" \
-python3 gen_dataset_bert.py --result_dir /root/bert_dataset --xla_dir_name xla_dump --debug --max_subgraph_level 12 --num_samples 1 --gen_feature_cmd "/root/tensorflow/bazel-bin/tensorflow/compiler/xla/tools/gen_feature_vector" --gpu_benchmark_cmd "/root/mixbench/build/mixbench-cuda-alt"

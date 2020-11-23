@@ -51,6 +51,7 @@ limitations under the License.
 #include <vector>
 #include <dirent.h>
 #include <cstdio>
+#include <chrono>
 
 #include "absl/types/span.h"
 #include "third_party/eigen3/unsupported/Eigen/CXX11/Tensor"
@@ -111,6 +112,7 @@ struct Options {
   int num_runs = 1;
   int profile_start = 0;
   int profile_end = 1;
+  int sample_id_start = 0;
 
   int intra_op_thread_pool_size;
 
@@ -343,8 +345,15 @@ StatusOr<Literal> ReplayComputation(const HloSnapshot& module,
 
     float clock_rate_ghz;
 
+    auto start = std::chrono::high_resolution_clock::now();
     TF_ASSIGN_OR_RETURN(ScopedShapedBuffer result,
                         executable->Run(argument_ptrs, run_options, &clock_rate_ghz));
+    auto elapsed = std::chrono::high_resolution_clock::now() - start;
+    int64_t nanoseconds = std::chrono::duration_cast<std::chrono::nanoseconds>(elapsed).count();
+
+    // stat_collector.AppendExecutionTimeMicroSeconds(static_cast<double>(profile.compute_time_ns()) / 1e3);
+
+    stat_collector.AppendExecutionTimeMicroSeconds(static_cast<double>(profile.compute_time_ns()) / 1000.0, static_cast<double>(nanoseconds) / 1000.0);
 
     if (i >= opts.profile_start - 1 && i < opts.profile_end -1) {
       // std::cout << "Before stat_collector.Collect(" << profile_path << ")" << std::endl;
@@ -352,7 +361,7 @@ StatusOr<Literal> ReplayComputation(const HloSnapshot& module,
       std::remove(profile_path.c_str());
     }
 
-    if (i == opts.profile_end - 2) {
+    if (i == opts.profile_end - 1) {
       // std::cout << "clock_rate_ghz: " << clock_rate_ghz << std::endl;
       // std::cout << "Before searching for hlo file name" << std::endl;
       // search for the hlo file name
@@ -385,7 +394,7 @@ StatusOr<Literal> ReplayComputation(const HloSnapshot& module,
         std::cerr << "Unable to find optimized hlo in " << opts.temp_dir_path << "." << std::endl;
         exit(-1);
       }
-      bool result = stat_collector.Dump(clock_rate_ghz, hlo_path, opts.dataset_path);
+      bool result = stat_collector.Dump(opts.sample_id_start, clock_rate_ghz, hlo_path, opts.dataset_path);
       if (!result) {
         std::cerr << "Unable to generate and dump sample." << std::endl;
         exit(-1);
@@ -591,6 +600,8 @@ int RealMain(absl::Span<char* const> args, const Options& opts) {
 int main(int argc, char** argv) {
   xla::tools::Options opts;
   const std::vector<tensorflow::Flag> flag_list = {
+      tensorflow::Flag("sample_id_start", &opts.sample_id_start,
+                       "Which sample_id to start with."),
       tensorflow::Flag("dataset_path", &opts.dataset_path,
                        "Path to the destination dataset folder."),
       tensorflow::Flag("temp_dir_path", &opts.temp_dir_path,
