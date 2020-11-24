@@ -88,18 +88,18 @@ class DAGManager:
         Root path for one GPU
     
     e.g. For NCCL ALLREDUCE RING
-    Note: NEGOTIATE used to sync between ranks
+    Note: Sync used to sync between ranks
 
     FW ---> OUTPUT ---> BW ------------------- .................. --------------------> UPDATE_CAL ---> UPDATE_<id> ---> END
                          \\                                                         ^  (barrier)
                           \\                                                       //
-                            -> Comm.<>.NEGOTIATE --------> Comm.<>.SEND.x_x_x_x ...
+                            -> Comm.<>.Sync --------> Comm.<>.SEND~>x_x_x_x ...
                                                   \\   ^
                                                    \\ //
                                                      x
                                                    // \\
                                                   //   V
-                            -> Comm.<>.NEGOTIATE --------> Comm.<>.SEND.x_x_x_x ...
+                            -> Comm.<>.Sync --------> Comm.<>.SEND~>x_x_x_x ...
                           //                                                       \\
                          //                                                         V  (barrier)
     FW ---> OUTPUT ---> BW ------------------- .................. --------------------> UPDATE_CAL ---> UPDATE_<id> ---> END
@@ -181,52 +181,64 @@ class DAGManager:
                             for channelId in range(channelNum):
                                 if self.nccl_graph.is_first_step(chunkId):
                                     ### The first step
-                                    ### Connect BW nodes to NEGOTIATE_ALLREDUCE, if this is a fused tensor, there should be multiple BW nodes
+                                    ### Connect BW nodes to Sync, if this is a fused tensor, there should be multiple BW nodes
                                     next_rawname = gen_long_name(None, "%s.%s"%(u, queue_type_list[0]), suffix=None)
                                     for pre_node in pre_nodes:
                                         self.wrap_add_dag(self.add_prefix(pre_node), self.add_prefix(next_rawname))
+                                    
                                     ### Connect all ranks' NEGOTIATE_ALLREDUCE to the first Send
                                     prev_rawname = next_rawname
                                     prev_nodes_prefix = self.nccl_graph.bw_to_first_send(channelId)
-                                    next_rawname = gen_long_name(None, "%s.SEND"%u, suffix="%d_%d_%d_%d"%(loopId, channelId, chunkId, sliceId))
+                                    next_rawname = gen_long_name(None, "%s.%s"%(u, queue_type_list[1]), suffix=None)
                                     for _prefix in prev_nodes_prefix:
                                         prev_name = self.add_prefix(prev_rawname, _prefix=_prefix)
                                         self.wrap_add_dag(prev_name, self.add_prefix(next_rawname))
-                
-                                    ### Connect from Send to Recv
-                                    next_rank_prefix, next_chunkId = self.nccl_graph.send_to_recv(self.prefix, chunkId, channelId)
-                                    prev_rawname = gen_long_name(None, "%s.SEND"%u, suffix="%d_%d_%d_%d"%(loopId, channelId, chunkId, sliceId))
-                                    next_rawname = gen_long_name(None, "%s.RECV"%u, suffix="%d_%d_%d_%d"%(loopId, channelId, next_chunkId, sliceId))
-                                    self.wrap_add_dag(self.add_prefix(prev_rawname), self.add_prefix(next_rawname, _prefix=next_rank_prefix))
+
+                                    ### Queue --> MEMCPY_IN_FUSION_BUFFER
+                                    prev_rawname = next_rawname 
+                                    comm_in_name = gen_long_name(None, "%s.%s"%(u, queue_type_list[2]), suffix=None)
+                                    self.wrap_add_dag(self.add_prefix(prev_rawname), self.add_prefix(comm_in_name))
+
+                                    ### MEMCPY_IN_FUSION_BUFFER to the first Send
+                                    next_rawname = gen_long_name(None, "%s.SEND"%u, suffix="%d_%d_%d_%d"%(loopId, channelId, chunkId, sliceId))
+                                    self.wrap_add_dag(self.add_prefix(comm_in_name), self.add_prefix(next_rawname))
+                                    ### TODO (huhanpeng) MEMCPY_IN_FUSION_BUFFER to the first RECV
+                                    next_rawname = gen_long_name(None, "%s.RECV"%u, suffix="%d_%d_%d_%d"%(loopId, channelId, chunkId, sliceId))
+                                    self.wrap_add_dag(self.add_prefix(comm_in_name), self.add_prefix(next_rawname))
                                 else:
                                     ### normal steps
-                                    ### Connect from Recv to Send
+                                    ### Connect Memory copy in to Send and Recv
+                                    comm_in_name = gen_long_name(None, "%s.%s"%(u, queue_type_list[2]), suffix=None)                                    
                                     _, last_chunkId = self.nccl_graph.send_to_last_recv(self.prefix, chunkId)
                                     prev_rawname = gen_long_name(None, "%s.RECV"%u, suffix="%d_%d_%d_%d"%(loopId, channelId, last_chunkId, sliceId))
                                     next_rawname = gen_long_name(None, "%s.SEND"%u, suffix="%d_%d_%d_%d"%(loopId, channelId, chunkId, sliceId))
-                                    if self.wrap_in_dag(self.add_prefix(next_rawname)):
-                                        ### has been processed, no edges shoud be added
-                                        return
+                                    self.wrap_add_dag(self.add_prefix(comm_in_name), self.add_prefix(prev_rawname))
+                                    self.wrap_add_dag(self.add_prefix(comm_in_name), self.add_prefix(next_rawname))
+                                    ### Connect from Recv to Send
                                     self.wrap_add_dag(self.add_prefix(prev_rawname), self.add_prefix(next_rawname))
 
-                                    ### Connect from Send to Recv
-                                    next_rank_prefix, next_chunkId = self.nccl_graph.send_to_recv(self.prefix, chunkId, channelId)
-                                    prev_rawname = gen_long_name(None, "%s.SEND"%u, suffix="%d_%d_%d_%d"%(loopId, channelId, chunkId, sliceId))
-                                    next_rawname = gen_long_name(None, "%s.RECV"%u, suffix="%d_%d_%d_%d"%(loopId, channelId, next_chunkId, sliceId))
-                                    self.wrap_add_dag(self.add_prefix(prev_rawname), self.add_prefix(next_rawname, _prefix=next_rank_prefix))
+                                ### Connect from Send to Recv
+                                next_rank_prefix, next_chunkId = self.nccl_graph.send_to_recv(self.prefix, chunkId, channelId)
+                                prev_rawname = gen_long_name(None, "%s.SEND"%u, suffix="%d_%d_%d_%d"%(loopId, channelId, chunkId, sliceId))
+                                next_rawname = gen_long_name(None, "%s.RECV"%u, suffix="%d_%d_%d_%d"%(loopId, channelId, next_chunkId, sliceId))
+                                self.wrap_add_dag(self.add_prefix(prev_rawname), self.add_prefix(next_rawname, _prefix=next_rank_prefix))
 
-                                    if self.nccl_graph.is_last_step(chunkId):
-                                        prev_name = self.add_prefix(next_rawname, _prefix=next_rank_prefix)
-                                        update_name = self.add_prefix("UPDATE_CAL", _prefix=next_rank_prefix)
-                                        self.wrap_add_dag(prev_name, update_name)
-                                        # ### Connect all UPDATE nodes to an END node
-                                        # self.wrap_add_dag(update_name, "END",
-                                        #     weight=self.traceM.lookup_stat(self.wk_prefix, self.rank_prefix, update_name))
+                                if self.nccl_graph.is_last_step(chunkId):
+                                    ### last RECV --> MEMCPY_OUT_FUSION_BUFFER
+                                    prev_name = self.add_prefix(next_rawname, _prefix=next_rank_prefix)
+                                    next_name = gen_long_name(next_rank_prefix, "%s.%s"%(u, queue_type_list[-1]), suffix=None)
+                                    self.wrap_add_dag(prev_name, next_name)
+
+                                    ### MEMCPY_OUT_FUSION_BUFFER --> UPDATE_CAL
+                                    prev_name = next_name
+                                    update_name = self.add_prefix("UPDATE_CAL", _prefix=next_rank_prefix)
+                                    self.wrap_add_dag(prev_name, update_name)
                 ### end for loop         
             elif self.nccl_graph is not None and self.nccl_graph.algo == NCCL_ALGO.TREE:
                 ### Combine chunkId, sliceId and channelId into the graph for Tree algorithm
                 ### TODO(huhanpeng): can we reduce the number of %d in the suffix
                 raise NotImplementedError("Remove following todo first")
+                ### TODO (huhanpeng): What if we consider Sync, Queue, Memcopy operators
                 chunkNum, sliceNum, channelNum, loopNum = self.nccl_graph.get_IDnum(u)
                 for loopId in range(loopNum):
                     for chunkId in range(chunkNum):
@@ -345,11 +357,8 @@ class DAGManager:
             else:
                 ### delete edges from BW to Comm main task.
                 return
-        elif "UPDATE" in u and "FW" in v:
+        elif "UPDATE" in u or "UPDATE" in v:
             ### ignore nodes from UPDATE to FW, avoid cycles
-            return
-        elif "STEP" in u or "STEP" in v:
-            ### ignore "STEP" nodes
             return
         else:
             self.wrap_add_dag(self.add_prefix(u), self.add_prefix(v))
@@ -407,11 +416,7 @@ class DAGManager:
                 ### Consider Tensor fusion, only those ready tensors are fused and are used to build a graph together
                 tensor_name = u.split("Comm.")[1]
                 tensor_id = para_dict.name_to_tensor_id(tensor_name)
-                try:
-                    nccl_grp_name = self.nccl_graph.tensor2group_name(tensor_id)
-                except:
-                    print(tensor_id, tensor_name)
-                    raise
+                nccl_grp_name = self.nccl_graph.tensor2group_name(tensor_id)
                 ### take the fused name as the node name, e.g., Comm.1+2+3
                 u = "Comm." + nccl_grp_name
                 if u in done_comm:
@@ -442,7 +447,6 @@ class DAGManager:
             # TODO (huhanpeng): need further to unify the name rule, for NCCL case
             # 1) What if there is no barrier ??? 
             # 2) connect the UPDATE_CAL to the following update nodes
-            # self.dag.remove_node(self.add_prefix("UPDATE"))
             for update_id in range(para_dict.tensor2update["max"] + 1):
                 update_name = self.add_prefix("UPDATE_%d"%update_id)
                 self.wrap_add_dag(self.add_prefix("UPDATE_CAL"), update_name)

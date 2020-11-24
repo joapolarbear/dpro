@@ -57,6 +57,9 @@ class Device:
 		self.prev_name_dur = None
 		self.queue = []
 
+	def real_start_t(self, _last_end_time):
+		return max(_last_end_time, self.device_time)
+
 	def exct(self, name, _last_end_time, step_idx):
 		''' Execute one op on this device 
 
@@ -71,11 +74,10 @@ class Device:
 		### for debug
 		debug_utils.DebugRecorder().debug_event_start()
 
-
 		if not self.infi_para:
-			start_t = max(_last_end_time, self.device_time)
+			start_t = self.real_start_t(_last_end_time)
 
-		if "Sync" in name or name == "END":
+		if name == "END":
 			#! No event is generated, but has successors
 			self.mark_as_exct(name, start_t, start_t)
 			return
@@ -98,7 +100,7 @@ class Device:
 						"pid": pid,
 						"cat": cat,
 						"ph": "X",
-						"tid": cat,
+						"tid": self.device_name,
 						"args": {
 							"name": name,
 							"cnt": step_idx
@@ -197,6 +199,58 @@ class Device:
 				delay = self.replayer.delay_dict["DELAY_ALL"]["delay"]
 				ratio = self.replayer.delay_dict["DELAY_ALL"]["ratio"]
 		return delay, ratio
+
+class CommKernelDevice(Device):
+	'''For horovod Communication Kernels, can be occupied by a tensor'''
+	def __init__(self, device_name, _replayer, comm_delay = 0, comm_backend = "NCCL", infi_para=False):
+		'''period: cycle time in ms'''
+		super().__init__(device_name, _replayer, infi_para=infi_para, comm_backend = comm_backend)
+		self.lock = None
+		self.blocked = []
+
+	def acquire_lock(self, name):
+		if self.lock is None:
+			### prefix->op_type.op_name.sub_op~>suffix
+			self.lock = parse_rawname_from_name(name).split(".")[1]
+			return True
+		elif self.lock == parse_rawname_from_name(name).split(".")[1]:
+			return True
+		else:
+			return False
+
+	def release_lock(self):
+		self.lock = None
+
+	def exct(self, name, _last_end_time, step_idx):
+		if self.acquire_lock(name):
+			super().exct(name, _last_end_time, step_idx)
+			if QueueType().ret_list()[-1] in name:
+				### release the device if this is the last sub_op of this tensor
+				self.release_lock()
+				if len(self.blocked) > 0:
+					### pop an operator from the blocked queue to execute
+					### since these block operators have high priority (early start time)
+					### they are expected to be execute immediately
+					self.replayer.insert_next_node(*self.blocked.pop(0))
+		else:
+			### This device is occupied by another tensor, blocked
+			self.blocked.append((name, _last_end_time))
+
+class PeriodicDevice(Device):
+	'''For horovod negotiation, simulate cycles in Horovod'''
+	def __init__(self, device_name, _replayer, period=5, comm_delay = 0, comm_backend = "NCCL", infi_para=False):
+		'''period: cycle time in ms'''
+		super().__init__(device_name, _replayer, infi_para=infi_para, comm_backend = comm_backend)
+		self.period = period * 1000
+
+	def real_start_t(self, _last_end_time):
+		while self.device_time < _last_end_time:
+			self.device_time += self.period
+		return self.device_time
+
+	def _update_device_time(self, name, _end_time):
+		while self.device_time < _end_time:
+			self.device_time += self.period
 
 class PSCommDevice(Device):
 	def __init__(self, device_name, _replayer, op_counter, comm_delay = 0, comm_backend = "NCCL", infi_para=False):
@@ -401,12 +455,20 @@ class Replayer:
 			device_id = gen_long_name(pid, cat, "SEND")
 		elif "RECV" in n:
 			device_id = gen_long_name(pid, cat, "RECV")
+		elif "Sync" in n:
+			device_id = gen_long_name(pid, cat, "Sync")
+		elif "Comm" in n:
+			device_id = gen_long_name(pid, cat, "Kernel")
 		else:
 			device_id = gen_long_name(pid, cat)
 
 		if device_id not in self.device_dict:
 			if cat == CatName.COMM.value and self.comm_backend == "BYTEPS":
 				self.device_dict[device_id] = self.create_ps_comm_device(device_id)
+			elif "Sync" in device_id:
+				self.device_dict[device_id] = self.create_periodic_device(device_id)
+			elif cat == CatName.COMM.value and "Kernel" in device_id:
+				self.device_dict[device_id] = self.create_comm_kernel_device(device_id)
 			else:
 				self.device_dict[device_id] = self.create_device(device_id)
 
@@ -414,6 +476,14 @@ class Replayer:
 		
 	def create_device(self, device_name, infi_para=False):
 		d = Device(device_name, self, comm_backend = self.comm_backend, infi_para=infi_para)
+		return d
+
+	def create_comm_kernel_device(self, device_name, infi_para=False):
+		d = CommKernelDevice(device_name, self, comm_backend = self.comm_backend, infi_para=infi_para)
+		return d
+
+	def create_periodic_device(self, device_name, infi_para=False):
+		d = PeriodicDevice(device_name, self, period=5, comm_backend = self.comm_backend, infi_para=infi_para)
 		return d
 
 	def create_ps_comm_device(self, device_name, infi_para=False):

@@ -14,9 +14,11 @@ from logger_utils import Singleton, SingleLogger
 QUEUETYPE = {
     "NCCL": {
         "fine": [
-            "NEGOTIATE_ALLREDUCE_none",
+            "Sync",
             "QUEUE",
-            "NCCL_ALLREDUCE"
+            "MEMCPY_IN_FUSION_BUFFER",
+            "NCCL_ALLREDUCE",
+            "MEMCPY_OUT_FUSION_BUFFER"
             ],
         "coarse": [
             "NEGOTIATE_ALLREDUCE",
@@ -180,9 +182,10 @@ def parse_allinfo_from_name(name):
         raw_name = name
         pid = "none"
     else:
-        ns = name.split(DEL)
-        pid = ns[0]
-        raw_name = ns[1]
+        pid, raw_name = name.split(DEL)
+
+    if DDEL in raw_name:
+        raw_name, suffix = raw_name.split(DDEL)
 
     if "I/O" in raw_name:
         return pid, raw_name, CatName.IO.value
