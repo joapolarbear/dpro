@@ -253,7 +253,7 @@ class Collector(object):
             elif self.platform == "TENSORFLOW":
                 raw_name = trace["args"]["name"]
 
-            name = standard_name(raw_name, platform=self.platform)       
+            name = standard_name(raw_name, platform=self.platform)
 
             ### deduplication
             ### TODO (huhanpeng): should be careful, only choose one prosess here
@@ -763,7 +763,6 @@ class Collector(object):
 
         if self.comm_backend == "NCCL" and not args_.pretty:
             self.nccl_graph.print_graph()
-        
         if self.comm_backend == "BYTEPS":
             rst_traces += self.byteps_graph.gen_compatible_trace(dump_path=os.path.join(self.pm.path, FileName.BPS_ALIGNED_TRACE.value))
 
@@ -934,11 +933,6 @@ class Collector(object):
             if self.comm_backend == "NCCL":
                 self.nccl_graph.load(nccl_graph_path)
             self.trail_dag = nx.read_gml(trail_dag_path)
-        
-        # for (u,v,c) in self.trail_dag.edges.data():
-        #     if "exec_edges" in c:
-        #         print(u, v, c)
-        #         exit(0)
 
         return iter_time
         
@@ -1231,10 +1225,6 @@ class Collector(object):
                 self.trail_dag.nodes[node_]["avg"] = sum(avgs) / len(avgs)
             else:
                 self.trail_dag.nodes[node_]["avg"] = self.traceM.lookup_stat(None, None, node_)
-
-            if parse_cat_from_name(node_) == CatName.COMM.value:
-                if "avg" in self.trail_dag.nodes[node_]:
-                    self.trail_dag.nodes[node_]["avg"] /= 10
 
     def add_gaps_clip_events(self):
         ''' According to the traces and DAG, add a 'gap' field for each edge (u, v)

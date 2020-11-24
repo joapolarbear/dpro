@@ -38,7 +38,8 @@ setup(name='byteprofile analysis',
           'seaborn',
           'matplotlib',
           'pymc3',
-          'tensorflow'
+          'tensorflow',
+          'tqdm'
       ],
       # zip_safe=False
       )

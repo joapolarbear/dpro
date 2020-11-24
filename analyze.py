@@ -16,12 +16,14 @@ from progress_utils import progressBar
 import arg_utils
 import debug_utils
 import optimizer
-### TODO (huhanpeng): 
-from cost_model_xla import XlaDataset, FusionCostModel
-from cost_model_xla.xla_module_cost_model import XLAModuleCostModel
-
 
 args = arg_utils.SingleArg().args
+if args.option == "optimize":
+    from cost_model_xla import XlaDataset, FusionCostModel
+    from cost_model_xla.xla_module_cost_model import XLAModuleCostModel
+
+
+
 logger = logger_utils.SingleLogger(args.path.split(',')[0], 
     args.option, args.logging_level, 
     is_clean=args.clean, 
