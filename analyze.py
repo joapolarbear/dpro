@@ -16,7 +16,10 @@ from progress_utils import progressBar
 import arg_utils
 import debug_utils
 import optimizer
-# from cost_model_xla import XlaDataset, FusionCostModel
+### TODO (huhanpeng): 
+from cost_model_xla import XlaDataset, FusionCostModel
+from cost_model_xla.xla_module_cost_model import XLAModuleCostModel
+
 
 args = arg_utils.SingleArg().args
 logger = logger_utils.SingleLogger(args.path.split(',')[0], 
@@ -268,24 +271,24 @@ if __name__ == '__main__':
         amp_pred.gen_train_data(clct.trail_dag)
         amp_pred.train(test=True)
         '''
-        if len(path_list) < 2:
-            raise RuntimeError("optimize requires positional path arguments: profile data path & cost model path.")
+        if len(path_list) < 3:
+            raise RuntimeError("optimize requires positional path arguments: profile data path, cost model path & shape dict path.")
         clct = Collector(path_list[0], comm_backend=args_.comm_backend)
         models_dir = path_list[1]
+        shape_dict_path = path_list[2]
         clct.init(args.force)
         cost_models = {}
         logger.info("Searching for model dumps in {}".format(models_dir))
-        for model_dump in os.listdir(models_dir):
-            model_path = os.path.join(models_dir, model_dump)
+        for model_dump_dir in os.listdir(models_dir):
+            model_path = os.path.join(models_dir, model_dump_dir)
             p = Path(model_path)
-            if p.is_file():
-                node_name = p.stem
-                cm = FusionCostModel(os.path.join(args.cost_model_tmp_dir, node_name))
-                cm.load(model_path)
+            if p.is_dir():
+                node_name = p.name
+                cm = XLAModuleCostModel(model_path, tmp_dir=os.path.join(args.cost_model_tmp_dir, node_name), shape_dict_path=shape_dict_path)
                 cost_models[node_name] = cm
                 logger.info("Added cost model for {}".format(node_name))
             else:
-                logger.warn("{} not a file.".format(model_path))
+                logger.warn("{} not a directory.".format(model_path))
         if args.optimizer == "MCTS":
             opt = optimizer.MCTSOptimizer(clct, cost_models=cost_models, ucb_type=args.ucb_type, no_mutation=args.no_mutation)
         elif args.optimizer == "MCMC":

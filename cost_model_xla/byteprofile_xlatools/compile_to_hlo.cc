@@ -54,37 +54,37 @@ Status CompileGraphToOptimizedHLO(GraphDef graph_def, const tf2xla::Config& conf
     xla::XlaComputation computation;
     se::Platform* cuda_platform =
       se::MultiPlatformManager::PlatformWithName("CUDA").ValueOrDie();
-    // std::cout << "Created CUDA platform with name " << cuda_platform->Name() << std::endl;
+    std::cout << "Created CUDA platform with name " << cuda_platform->Name() << std::endl;
     xla::LocalClient* client =
       xla::ClientLibrary::GetOrCreateLocalClient(cuda_platform)
           .ValueOrDie();
-    // std::cout << "Created local client." << std::endl;
+    std::cout << "Created local client." << std::endl;
     TF_RETURN_IF_ERROR(ConvertGraphDefToXla(std::move(graph_def), config, 
                         client, &computation));
-    // std::cout << "Converted graph to HLO (before optimization)." << std::endl;
+    std::cout << "Converted graph to HLO (before optimization)." << std::endl;
     const xla::HloModuleProto& module_proto = computation.proto();
     xla::HloModuleConfig module_config = xla::HloModule::CreateModuleConfigFromProto(module_proto, xla::DefaultDebugOptionsIgnoringFlags()).ValueOrDie();
     std::unique_ptr<xla::HloModule> module = xla::HloModule::CreateFromProto(module_proto, module_config).ValueOrDie();
-    // std::cout << "Created HLO module." << std::endl;
+    std::cout << "Created HLO module." << std::endl;
     std::string hlo_unopt_str = module->ToString();
     std::ofstream out_file_unopt(dump_path_before_opts);
     out_file_unopt << hlo_unopt_str;
     out_file_unopt.close();
-    // std::cout << "Dumped unoptimized HLO module to " << dump_path_before_opts << std::endl;
+    std::cout << "Dumped unoptimized HLO module to " << dump_path_before_opts << std::endl;
     // Create gpu compiler
     xla::gpu::NVPTXCompiler nvptx_compiler;
-    // std::cout << "Created NVPTX compiler." << std::endl;
+    std::cout << "Created NVPTX compiler." << std::endl;
     se::StreamExecutor* executor = cuda_platform->ExecutorForDevice(0).ValueOrDie();
-    // std::cout << "Created stream executor." << std::endl;
+    std::cout << "Created stream executor." << std::endl;
     se::StreamExecutorMemoryAllocator memory_allocator(executor);
-    // std::cout << "Created memory allocator." << std::endl;
+    std::cout << "Created memory allocator." << std::endl;
     std::unique_ptr<xla::HloModule> optimized_module = nvptx_compiler.RunHloPasses(std::move(module), executor, &memory_allocator).ValueOrDie();
-    // std::cout << "Finished running HLO passes." << std::endl;
+    std::cout << "Finished running HLO passes." << std::endl;
     std::string hlo_str = optimized_module->ToString();
     std::ofstream out_file(dump_path_after_opts);
     out_file << hlo_str;
     out_file.close();
-    // std::cout << "Dumped optimized HLO module to " << dump_path_after_opts << std::endl;
+    std::cout << "Dumped optimized HLO module to " << dump_path_after_opts << std::endl;
     return Status::OK();
 }
 
@@ -131,5 +131,8 @@ int main(int argc, char** argv) {
 
 //   tensorflow::port::InitMain(usage.c_str(), &argc, &argv);
   tensorflow::Status status = byteprofile::xlatools::CompileToHlo(graph_path, config_path, dump_path_unopt, dump_path_opt);
+  if (!status.ok()) {
+    std::cerr << status << std::endl;
+  }
   return 0;
 }

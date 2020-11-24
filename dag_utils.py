@@ -454,6 +454,8 @@ class DAGManager:
                 self.wrap_add_dag(update_name, "END")
 
         # visualize_gml(self.dag, layout="circular")
+
+        ### TODO (huhanpeng): since we do not explicitly construct the graph, do not check cycles here
         ### check whether there exits cycle in the graph
         # edges = list(nx.simple_cycles(self.dag))
         # if len(edges) > 0:
@@ -575,7 +577,8 @@ class DAGManager:
         # if not _pretty:
         #     critical_path = dag_longest_path(self.dag, self.pm, weight="weight", default_weight=0)
 
-        return max_para_degree, critical_path
+        # return max_para_degree, critical_path
+        return 1, critical_path
 
     def all_topo_sorts(self):
         ''' generate all possible topological sorts '''

@@ -126,12 +126,8 @@ class Collector(object):
         comp_path = tmp_pm.search(FileName.COMP)
         if comp_path is None:
             return
-        # debug_utils.DebugRecorder().debug_event_start()
-        ''' Output trace resutls '''
         with open(comp_path, 'r') as f:
             raw_traces = json.load(f)
-        # debug_utils.DebugRecorder().debug_event_end("collect_" + pid+"_comp.jsonload", "Collct", "0")
-
         ### Consider mulptiprocessing, each GPU will read its own dag
         if self.dag is None:
             dag_path = self.pm.search(FileName.DAG) if tmp_pm is None else tmp_pm.search(FileName.DAG)
@@ -149,6 +145,9 @@ class Collector(object):
             self.run_span[wk_prefix] = RunningSpan()
 
         one_pid = None
+        # if self.platform == "TENSORFLOW":
+        kernel_pid = None
+        kernel_times = {}
 
         ### collect traces of FW + BP OPs and UPDATE OPs
         tid_hub = []
@@ -170,11 +169,15 @@ class Collector(object):
                         if "args" in trace and "name" in trace["args"]:
                             if "device:GPU" in trace["args"]["name"] and "Compute" in trace["args"]["name"] and "replica" in trace["args"]["name"]:
                                 one_pid = trace["pid"]
+                            elif "device:GPU" in trace["args"]["name"] and "stream:all Compute" in trace["args"]["name"]:
+                                kernel_pid = trace["pid"]
 
             if "ts" not in raw_traces["traceEvents"][index]:
                 index += 1
                 continue
             trace = raw_traces["traceEvents"][index]
+            if trace["cat"] == "Op":
+                trace["cat"] = "operator"
             if trace["ph"] == 'B' or trace["ph"] == 'b':
                 next_trace = raw_traces["traceEvents"][index+1]
                 assert trace["name"] == next_trace["name"]
@@ -249,7 +252,21 @@ class Collector(object):
                 raw_name = trace["name"]
             elif self.platform == "TENSORFLOW":
                 raw_name = trace["args"]["name"]
-            name = standard_name(raw_name, platform=self.platform)
+
+            name = standard_name(raw_name, platform=self.platform)       
+
+            ### deduplication
+            ### TODO (huhanpeng): should be careful, only choose one prosess here
+            if one_pid is None:
+                one_pid = trace["pid"]
+            elif kernel_pid and kernel_pid == trace["pid"]:
+                if name not in kernel_times:
+                    kernel_times[name] = []
+                kernel_times[name].append((trace['ts'], trace['dur']))
+                continue
+            elif one_pid != trace["pid"]:
+                continue
+
             if name not in dag_node_names_std:
                 ### Only collect nodes in the dag
                 ### TODO (huhanpeng): some trvial nodes may also be useful
@@ -260,13 +277,6 @@ class Collector(object):
                         trace["pid"] = pid
                     rst_traces.append(trace)
                 # print(trace)
-                continue
-            ### deduplication
-            ### TODO (huhanpeng): should be careful, only choose one prosess here
-            if one_pid is None:
-                one_pid = trace["pid"]
-            elif one_pid != trace["pid"]:
-                # print(trace, one_pid)
                 continue
             innodes = [_n for _n, _ in self.dag.in_edges(name)]
             _args = {"name": name}
@@ -375,8 +385,24 @@ class Collector(object):
                     self.run_span[wk_prefix].init_end(_trace["ts"])
             else:
                 raise NotImplementedError("Unsupported platform {}.".format(self.platform))
+
+        if self.platform == "TENSORFLOW":
+            occurence_counter = {}
+            for trace in rst_traces:
+                if "ph" in trace and trace["ph"] == "X":
+                    if trace["name"] in kernel_times:
+                        if trace["name"] not in occurence_counter:
+                            occurence_counter[trace["name"]] = 0
+                        try:
+                            kernel_ts, kernel_dur = kernel_times[trace["name"]][occurence_counter[trace["name"]]]
+                        except:
+                            # SingleLogger.warn("Length mismatch between kernel and op launch traces for op {}".format(trace["name"]))
+                            occurence_counter[trace["name"]] += 1
+                            continue
+                        trace["ts"] = kernel_ts
+                        trace["dur"] = kernel_dur
+                        occurence_counter[trace["name"]] += 1
         SingleLogger().debug("Comp traces length: {}.".format(len(rst_traces)))
-        # debug_utils.DebugRecorder().debug_event_end("collect_" + pid+"_comp", "Collct", "0")
         return rst_traces
 
     def _collect_rank_io(self, tmp_pm=None, pid=None, host_id=None):
@@ -908,6 +934,11 @@ class Collector(object):
             if self.comm_backend == "NCCL":
                 self.nccl_graph.load(nccl_graph_path)
             self.trail_dag = nx.read_gml(trail_dag_path)
+        
+        # for (u,v,c) in self.trail_dag.edges.data():
+        #     if "exec_edges" in c:
+        #         print(u, v, c)
+        #         exit(0)
 
         return iter_time
         
@@ -1200,6 +1231,10 @@ class Collector(object):
                 self.trail_dag.nodes[node_]["avg"] = sum(avgs) / len(avgs)
             else:
                 self.trail_dag.nodes[node_]["avg"] = self.traceM.lookup_stat(None, None, node_)
+
+            if parse_cat_from_name(node_) == CatName.COMM.value:
+                if "avg" in self.trail_dag.nodes[node_]:
+                    self.trail_dag.nodes[node_]["avg"] /= 10
 
     def add_gaps_clip_events(self):
         ''' According to the traces and DAG, add a 'gap' field for each edge (u, v)

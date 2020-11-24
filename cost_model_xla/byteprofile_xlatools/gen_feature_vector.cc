@@ -7,6 +7,7 @@
 #include "tensorflow/compiler/xla/service/hlo_module.h"
 #include "tensorflow/compiler/xla/service/hlo_computation.h"
 #include "tensorflow/compiler/xla/service/hlo_instruction.h"
+#include "tensorflow/compiler/xla/service/hlo_instructions.h"
 #include "tensorflow/compiler/xla/service/hlo_cost_analysis.h"
 #include "tensorflow/compiler/xla/service/hlo_opcode.h"
 #include "tensorflow/compiler/xla/tools/hlo_module_loader.h"
@@ -124,20 +125,19 @@ int GenFeatureVector(std::string& hlo_module_path, std::string& output_path,
         stats_map.insert({op_code, HloOpStats(op_code)});
     }
     // iterate through hlo module
-    for (xla::HloComputation* comp : hlo_module->computations()) {
-        for (xla::HloInstruction* instr : comp->instructions()) {
-            int64_t flops_count = analysis.flop_count(*instr);
-            int64_t transcendental_count = analysis.transcendental_count(*instr);
-            int64_t bytes_accessed = analysis.bytes_accessed(*instr);
-            float optimal_seconds = analysis.optimal_seconds(*instr);
-            float instruction_count = 0;
-            if (instr->opcode() == xla::HloOpcode::kFusion) {
-                instruction_count = instr->fused_instruction_count();
-            }
-            if (stats_map.find(instr->opcode()) != stats_map.end()) {
-                stats_map.at(instr->opcode()).add_record(flops_count, transcendental_count, 
-                                        bytes_accessed, optimal_seconds, instruction_count);
-            }
+    auto comp = hlo_module->entry_computation();
+    for (xla::HloInstruction* instr : comp->instructions()) {
+        int64_t flops_count = analysis.flop_count(*instr);
+        int64_t transcendental_count = analysis.transcendental_count(*instr);
+        int64_t bytes_accessed = analysis.bytes_accessed(*instr);
+        float optimal_seconds = analysis.optimal_seconds(*instr);
+        float instruction_count = 0;
+        if (instr->opcode() == xla::HloOpcode::kFusion) {
+            instruction_count = instr->fused_instruction_count();
+        }
+        if (stats_map.find(instr->opcode()) != stats_map.end()) {
+            stats_map.at(instr->opcode()).add_record(flops_count, transcendental_count, 
+                                    bytes_accessed, optimal_seconds, instruction_count);
         }
     }
     // generate vector
@@ -154,9 +154,13 @@ int GenFeatureVector(std::string& hlo_module_path, std::string& output_path,
         float optimal_seconds = stats_map.at(op_code).get_optimal_seconds();
         feature_vector.push_back(num_ops);
         feature_vector.push_back(std::isnan(flops_count) ? 0 : flops_count);
+        feature_vector.push_back(std::isnan(flops_count) ? 0 : flops_count * num_ops);
         feature_vector.push_back(std::isnan(transcendental_count) ? 0 : transcendental_count);
+        feature_vector.push_back(std::isnan(transcendental_count) ? 0 : transcendental_count * num_ops);
         feature_vector.push_back(std::isnan(bytes_accessed) ? 0 : bytes_accessed);
-        feature_vector.push_back(std::isnan(bytes_accessed) ? 0 : optimal_seconds);
+        feature_vector.push_back(std::isnan(bytes_accessed) ? 0 : bytes_accessed * num_ops);
+        feature_vector.push_back(std::isnan(optimal_seconds) ? 0 : optimal_seconds);
+        feature_vector.push_back(std::isnan(optimal_seconds) ? 0 : optimal_seconds * num_ops);
         if (op_code == xla::HloOpcode::kFusion) {
             float instr_count = stats_map.at(op_code).get_instr_count();
             feature_vector.push_back(std::isnan(instr_count) ? 0 : instr_count);

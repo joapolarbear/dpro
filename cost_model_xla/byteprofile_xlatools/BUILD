@@ -26,7 +26,7 @@ cc_library(
     name = "gen_feature_vector_lib",
     srcs = ["gen_feature_vector.cc", "gen_feature_vector.h"],
     deps = [
-        "//tensorflow/core:lib", 
+        "//tensorflow/core:lib",
         "//tensorflow/compiler/xla/tools:hlo_module_loader",
         "//tensorflow/compiler/xla:statusor",
         "//tensorflow/compiler/xla:shape_util",
@@ -45,6 +45,34 @@ tf_cc_binary(
         "//tensorflow/compiler/xla:shape_util",
         "//tensorflow/compiler/xla/service:hlo",
         "//tensorflow/compiler/xla/service:hlo_cost_analysis",
+        "//tensorflow/core/platform:errors",
+    ],
+)
+
+tf_cc_binary(
+    name = "analyse_hlo",
+    srcs = ["analyse_hlo.cc"],
+    deps = [
+        "//tensorflow/compiler/xla/service/gpu:backend_configs_cc",
+        "//tensorflow/compiler/xla/tools:hlo_module_loader",
+        "//tensorflow/compiler/xla:statusor",
+        "//tensorflow/compiler/xla:shape_util",
+        "//tensorflow/compiler/xla/service:hlo",
+        "//tensorflow/compiler/xla/service:hlo_cost_analysis",
+        "//tensorflow/core/platform:errors",
+    ],
+)
+
+tf_cc_binary(
+    name = "extract_cycles",
+    srcs = ["extract_cycles.cc"],
+    deps = [
+        "//tensorflow/compiler/xla/service/gpu:backend_configs_cc",
+        "//tensorflow/compiler/xla/tools:hlo_module_loader",
+        "//tensorflow/compiler/xla:statusor",
+        "//tensorflow/compiler/xla:shape_util",
+        "//tensorflow/compiler/xla/service:hlo",
+        "//tensorflow/compiler/xla/service:hlo_execution_profile",
         "//tensorflow/core/platform:errors",
     ],
 )
