@@ -737,11 +737,7 @@ class Collector(object):
 
         if self.comm_backend == "NCCL" and not args_.pretty:
             self.nccl_graph.print_graph()
-
-        # ### only read comm.json once
-        # self.time_dict = {"traceEvents":[]} 
-        # self._collect_rank_comm()
-        # rst_traces += self.time_dict["traceEvents"]
+        
         if self.comm_backend == "BYTEPS":
             rst_traces += self.byteps_graph.gen_compatible_trace(dump_path=os.path.join(self.pm.path, FileName.BPS_ALIGNED_TRACE.value))
 
