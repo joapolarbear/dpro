@@ -49,6 +49,7 @@ parser.add_argument("--ucb_gamma", type=float, default=0.1, help="Hyper Paramete
 parser.add_argument("--ucb_visual", action="store_true", help="If this arg is set, visualize the MCTS search process")
 parser.add_argument("--mcmc_beta", type=float, default=100, help="Hyper Parameter used in MCMC/SA to control the exploration rate")
 parser.add_argument("--cost_model_tmp_dir", type=str, default="./", help="Tmp directory for cost model to store intermediate files.")
+parser.add_argument("--heat_window_size", type=int, default=5, help="Window size for the heat based search heuristic.")
 
 args = parser.parse_args()
 

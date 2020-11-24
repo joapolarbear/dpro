@@ -1,23 +1,69 @@
+from collections import deque
+import enum
 import networkx as nx
 import random
 import math
 import time
+from collections import deque
+from networkx.algorithms.coloring.greedy_coloring import strategy_connected_sequential
+from scipy.stats.mstats import gmean
+import numpy as np
+import code
+import traceback
+
+from tqdm import tqdm, trange
 
 from replay import Replayer
 from trace_utils import *
 from dag_utils import *
+from pk_graph import PKGraph, PKGraphCycleError, contract_nodes_nx, \
+                    defuse_nodes_inplace_nx, postorder_contract_nx, subgraph_partition_connected_nx
 
 class GraphExpand(Enum):
     NOT=0
     PARTIAL=1
     FULLY=2
 
-args = arg_utils.SingleArg().args
+args_ = arg_utils.SingleArg().args
 MAX_TREE_DEPTH = 1000
 MAX_LOOP = 1000
-UCB_GAMMA = args.ucb_gamma
-MCMC_BETA = args.mcmc_beta
+UCB_GAMMA = args_.ucb_gamma
+MCMC_BETA = args_.mcmc_beta
 
+class OptApplyStrategyError(Exception):
+    pass
+
+class OptNoValidStrategyError(Exception):
+    pass
+
+class OptQueryCostModelError(Exception):
+    pass
+
+class AttrCache():
+    def __init__(self):
+        self._cache = {}
+    
+    def _parse_key(self, node_name):
+        if "+" in node_name:
+            key = tuple(sorted(node_name.split("+")))
+        else:
+            key = node_name
+        return key
+    
+    def __contains__(self, node_name):
+        key = self._parse_key(node_name)
+        return key in self._cache
+    
+    def __getitem__(self, node_name):
+        key = self._parse_key(node_name)
+        return self._cache[key]
+    
+    def __setitem__(self, node_name, value):
+        key = self._parse_key(node_name)
+        self._cache[key] = value
+
+    def __len__(self):
+        return len(self._cache)
 
 class GraphState:
     def __init__(self, depth):
@@ -52,14 +98,25 @@ class Optimizer:
         self.comm_backend = self.clct.comm_backend
         self.index2name = {}
         self.index2pid = {}
+        self.name2index = {}
+        self.index2newname = {}
+        self.step = 0
         ### Get the dependency graph
         self.dag = self.relabel_dag_node(self.clct.trail_dag)
+        with open("/root/index2name.txt", "w") as f:
+            for index, name in self.index2name.items():
+                f.write(str(index))
+                f.write(" : ")
+                f.write(str(name))
+                f.write("\n")
+        
+        self.forbidden_list = []
 
         self.base_cost, _ = self.evaluate(self.dag)
         SingleLogger().info("Start to search, the original iteration time is %f" % self.base_cost)
 
         ### Used to cache the node attribtue
-        self.node_attr_cache = {}
+        self.node_attr_cache = AttrCache()
 
         ### Budget
         self.memory_budget = memory_budget
@@ -67,33 +124,51 @@ class Optimizer:
         ### Some hyper-parameter
         self.enable_defusion = False
 
-    def relabel_dag_node(self, _dag):
+        ### DEBUG ONLY
+        self.cost_model_error = []
+
+    def relabel_dag_node(self, _dag) -> nx.DiGraph:
         if self.platform == "TENSORFLOW":
             def relabel_func(old_label):
-                if "BW" in old_label or "FW" in old_label or "Comm" in old_label:
+                if ("BW" in old_label or "FW" in old_label or "Comm" in old_label) and "^" not in old_label:
                     layer_name = parse_layer_name(old_label)
                     layer_pid = parse_pid_from_name(old_label)
+                    # if layer_pid not in self.cost_models or layer_name not in self.cost_models[layer_pid].graph_def_util.operation_names:
+                    #     return "DEL~"+old_label
                     layer_index = len(self.index2name)
                     new_name = ("[%d]"%layer_index).join(old_label.split(layer_name))
                     self.index2name[layer_index] = layer_name
                     self.index2pid[layer_index] = layer_pid
+                    if layer_name not in self.name2index:
+                        self.name2index[layer_name] = {}
+                    self.name2index[layer_name][layer_pid] = layer_index
                     new_label = ("[%d]"%layer_index).join(old_label.split(layer_name))
+                    self.index2newname[layer_index] = new_label
                     return ("[%d]"%layer_index).join(old_label.split(layer_name))
                 else:
                     return old_label
         elif self.platform == "MXNET":
             def relabel_func(old_label):
-                if "BW" in old_label or "FW" in old_label or "Comm" in old_label:
+                if ("BW" in old_label or "FW" in old_label or "Comm" in old_label) and "^" not in old_label:
                     layer_name = parse_layer_name(old_label)
                     layer_pid = parse_pid_from_name(old_label)
+                    # if layer_pid not in self.cost_models or layer_name not in self.cost_models[layer_pid]:
+                    #     return "DEL~"+old_label
                     layer_index = self.clct.para_dict.parse_layer_index(layer_name)
                     self.index2name[layer_index] = layer_name
                     self.index2pid[layer_index] = layer_pid
                     return ("[%d]"%layer_index).join(old_label.split(layer_name))
-                else:
-                    return old_label
+                # else:
+                #     return old_label
         else:
             raise NotImplementedError("Unsupported platform {}".format(self.platform))
+        # new_dag = nx.relabel_nodes(_dag, relabel_func)
+        # nodes_to_remove = []
+        # for node, attrs in new_dag.nodes.items():
+        #     if "DEL~" in node:
+        #         nodes_to_remove.append(node)
+        # for node in nodes_to_remove:
+        #     new_dag.remove_node(node)
         return nx.relabel_nodes(_dag, relabel_func)
 
     def concat_name(self, u_, v_):
@@ -101,6 +176,21 @@ class Optimizer:
     
     def _parse_index_from_name(self, name_):
         return int(name_.split("[")[1].split("]")[0])
+    
+    def _debug_convert_to_the_other_machine(self, name_):
+        if not "+" in name_:
+            name, pid = self._get_original_name_pid_from_index(name_)
+            if pid == "traces_0.rank0":
+                other_pid = "traces_1.rank0"
+            else:
+                other_pid = "traces_0.rank0"
+            other_index = self.name2index[name][other_pid]
+            return self.index2newname[other_index]
+        else:
+            new_names = []
+            for sub_name in name_.split("+"):
+                new_names.append(self._debug_convert_to_the_other_machine(sub_name))
+            return "+".join(new_names)
 
     def _get_original_name_pid_from_index(self, name_):
         index = self._parse_index_from_name(name_)
@@ -123,10 +213,25 @@ class Optimizer:
         # query cost model for exec time of a fused node u
         nodes_in_u, u_pid = self._get_original_name_pid_from_fused_node(fused_u_)
         nodes_to_fuse = set(nodes_in_u)
-        exec_time = self.cost_models[u_pid].predict(nodes_to_fuse)
-        if exec_time < 0:
-            raise RuntimeError("Failed to query cost model.")
-        return exec_time
+        if len(nodes_to_fuse) < 10:
+            SingleLogger().info("[COST MODEL QUERY] {} Nodes to fuse: {}".format(len(nodes_to_fuse), nodes_to_fuse))
+        else:
+            SingleLogger().info("[COST MODEL QUERY] {} Nodes to fuse ...".format(len(nodes_to_fuse)))
+        predicted_time, _ = self.cost_models[u_pid].predict(nodes_to_fuse)
+        # executed_time, _ = self.cost_models[u_pid].execute(nodes_to_fuse)
+        predicted_time /= 1000
+        # executed_time /= 1000
+        SingleLogger().info("[COST MODEL QUERY] Exec time predicted: {}".format(predicted_time))
+        # SingleLogger().info("[COST MODEL QUERY] Actuall exec time: {}".format(executed_time))
+        if predicted_time < 0:
+            raise OptQueryCostModelError("Failed to query cost model.")
+        else:
+            # self.cost_model_error.append(np.abs(predicted_time - executed_time) / executed_time)
+            # SingleLogger().info("[COST MODEL QUERY] Average prediction accuracy: {}".format(np.average(self.cost_model_error)))
+            # if len(self.cost_model_error) > 20:
+                # self.cost_model_error = []
+            pass
+        return predicted_time
 
     def combine_avg(self, u, v):
         # call cost model to obtain the combined time
@@ -137,8 +242,8 @@ class Optimizer:
         ### TODO (huhanpeng): key component
         ### Use max to avoid one input is zero, 
         ### some how for the new gap x, ug < x < ug + vg, vg < x < ug + vg
-        return max(max((ug + vg) / 0.8, ug), vg)
-        return 0
+        # return max(max((ug + vg) / 0.8, ug), vg)
+        return max(ug, vg)
 
     def get_node_attr(self, n, attr_):
         if attr_ in self.node_attr_cache[n]:
@@ -149,24 +254,38 @@ class Optimizer:
     def cache_node_attr(self, n, attrs):
         ### TODO (huhanpeng): need .copy() ???
         self.node_attr_cache[n] = attrs
+        try:
+            n0 = self._debug_convert_to_the_other_machine(n)
+            self.node_attr_cache[n0] = attrs
+        except:
+            pass
         # print("cache attributes for %s" % n)
 
-    def op_fusion(self, _dag, u_, v_):
-        ### u_ and v_ are both FW nodes
-        self._fuse_pair(_dag, u_, v_)
-        # self._fuse_pair(_dag, self.convert_fw2bw(v_), self.convert_fw2bw(u_))
-        
+    def op_fusion(self, _dag, _pkg: PKGraph, u_, v_):
+        # test if two nodes can be fused
+        if _pkg.can_contract_edge(u_, v_):
+            ### u_ and v_ are both FW nodes
+            _pkg.contract_edge(u_, v_)
+            self._fuse_pair(_dag, u_, v_)
+            u0_ = self._debug_convert_to_the_other_machine(u_)
+            v0_ = self._debug_convert_to_the_other_machine(v_)
+            _pkg.contract_edge(u0_, v0_)
+            self._fuse_pair(_dag, u0_, v0_)
+            # self._fuse_pair(_dag, self.convert_fw2bw(v_), self.convert_fw2bw(u_))
+            return True, set([u_+"+"+v_, u0_+"+"+v0_]), set([u_, v_, u0_, v0_])
+        else:
+            return False, None, None
 
     def _fuse_pair(self, _dag, u_, v_):
         # print("fuse {} {}".format(u_, v_))
         ### Cache the node attributes in case they will be used when de-fuse
+        # SingleLogger().info("\033[94m Fusing pair: {}, {}\033[0m".format(u_, v_))
         if u_ not in self.node_attr_cache:
             self.cache_node_attr(u_, _dag.nodes[u_])
         if v_ not in self.node_attr_cache:
             self.cache_node_attr(v_, _dag.nodes[v_])
 
         new_name = self.concat_name(u_, v_)
-
         ### Add new nodes and get the attibute
         if new_name in self.node_attr_cache:
             _dag.add_node(new_name, **self.node_attr_cache[new_name])
@@ -235,7 +354,7 @@ class Optimizer:
             for idx in range(1, len(ns)):
                 self.combine_attr_except_avg(attrs, attrs, self.node_attr_cache[ns[idx]])
             # combine attr avg
-            target["avg"] = self._query_cost_model(new_name)
+            attrs["avg"] = self._query_cost_model(new_name)
             ### set and cache the attribute
             nx.set_node_attributes(_dag, {new_name:attrs})
             self.cache_node_attr(new_name, _dag.nodes[new_name])
@@ -250,69 +369,32 @@ class Optimizer:
         else:
             return _name
 
-    def op_defusion(self, _dag, target, pos):
-        self._defuse_pair(_dag, target, pos)
-        target = "BW".join(target.split("FW"))
-        ns = target.split("+")
-        ns.reverse()
-        pos = len(ns) - pos - 2
-        target = "+".join(ns)
-        assert target in _dag.nodes
-        self._defuse_pair(_dag, target, pos)
+    def op_defusion(self, _dag, _pkg: PKGraph, target, components):
+        _pkg.split_node(target, components)
+        _, new_node_names = self._defuse_node(_dag, _pkg, target, components)
+        target0 = self._debug_convert_to_the_other_machine(target)
+        components0 = tuple([tuple([self._debug_convert_to_the_other_machine(node) for node in comp]) for comp in components])
+        _pkg.split_node(target0, components0)
+        _, new_node_names0 = self._defuse_node(_dag, _pkg, target0, components0)
+        # target = "BW".join(target.split("FW"))
+        # ns = target.split("+")
+        # ns.reverse()
+        # pos = len(ns) - pos - 2
+        # target = "+".join(ns)
+        # assert target in _dag.nodes
+        # self._defuse_pair(_dag, target, pos)
+        return True, set(new_node_names + new_node_names0), set([target])
     
     def _get_defused_node_names(self, fused_node_):
         return fused_node_.split("+")
 
-    def _defuse_pair(self, _dag, target, pos):
-        ns = target.split("+")
-        pos += 1
-        left = "+".join(ns[:pos])
-        right = "+".join(ns[pos:])
-
-        ### For the edges related to target, re-connect them to left or right
-        ### NOTE, Assumption: for an edge a->b, a is fused with others become ...+...+a, b is fused with others b+...+...
-        left_most = ns[0]
-        right_most = ns[-1]
-
-        ### Handle in_edges
-        for in_node, _ in _dag.in_edges(target):
-            if "+" in in_node:
-                ### In_node is fused with others
-                in_node_last = in_node.split("+")[-1]
-            else:
-                ### in_node is a node in original dag
-                in_node_last = in_node
-
-            if (in_node_last, left_most) in self.dag:
-                _dag.add_edge(in_node, left)
-            else:
-                _dag.add_edge(in_node, right)
-        ### Handle the edges between left and right
-        _dag.add_edge(left, right)
-        ### Handle out_edges
-        for out_node in _dag.successors(target):
-            if "+" in out_node:
-                out_node_first = out_node.split("+")[0]
-            else:
-                out_node_first = out_node
-
-            if (right_most, out_node_first) in self.dag:
-                _dag.add_edge(right, out_node)
-            else:
-                _dag.add_edge(left, out_node)
-
-        self.parse_node_attr(_dag, left)
-        self.parse_node_attr(_dag, right)
-        _dag.remove_node(target)
-
-        assert left in _dag.nodes
-        assert "avg" in _dag.nodes[left]
-        assert right in _dag.nodes
-        assert "avg" in _dag.nodes[right]
+    def _defuse_node(self, _dag, _pkg, target, components):
+        component_names = defuse_nodes_inplace_nx(_dag, _pkg, target, components)
+        for new_node_name in component_names:
+            self.parse_node_attr(_dag, new_node_name)
+        return True, component_names
         
-
     def evaluate(self, _dag, _filename=None):
-
         # t = time.time()
 
         ### input _dag is a dependency graph, using the replayer to get the simulated traces and execution graph
@@ -355,10 +437,17 @@ class Optimizer:
         
         filtered_critical_path = []
         for (node, length) in critical_path:
-            if "BW" in node or "FW" in node:
-                filtered_critical_path.append((node, length))        
+            if "+" in node:
+                # fused node
+                filtered_critical_path.append((node, length))
+            elif "[" in node and "]" in node:
+                orig_name, pid = self._get_original_name_pid_from_index(node)
+                if orig_name in self.cost_models[pid].graph_def_util.operation_names:
+                    filtered_critical_path.append((node, length))
 
         if topk is None:
+            # print(sorted(filtered_critical_path_orig_name, key=lambda x: x[1], reverse=True)[:20])
+            # input()
             return filtered_critical_path, new_dag
         else:
             critical_path = sorted(filtered_critical_path, key=lambda x: x[1], reverse=True)
@@ -366,36 +455,79 @@ class Optimizer:
 
     def wrap_critical_path(self, _dag, verbose=False):
         # t = time.time()
-
         cal_edge_cost(_dag)
         ret = dag_longest_path(_dag, None, weight="cost", default_weight=0, _debug_level=(1 if verbose else 0))
-
         # print("critical path time {}".format(time.time() - t))
-
         return ret
+    
+    def _combine_weight(self, l: float, heat: float) -> float:
+        # return l * (0.05 + heat)
+        return heat + 0.01
 
-    def init_search_space(self, candidates, _dag):
+    def _get_heat_from_history(self, node):
+        heat = 0
+        for (h, t) in self.heat_history[node]:
+            if h is not None:
+                heat += h * np.exp(-0.5*(self.step - t - 1))
+        return heat
+
+    def init_search_space(self, candidates, _dag: nx.DiGraph, _pkg: PKGraph):
         ### Based on the candidates, init the search space for the new dependency graph `_dag`
         ### TODO (huhanpeng): currently only consider fusion
         ### 			Need to add quantization
         search_space = []
         weights = []
         prun_cnt = 0
+        # time_spanning_trees = []
+        # time_st = []
         for n, l in candidates:
+            # node heat
+            heat = self._get_heat_from_history(n)
+
+            # DEBUG_COMPARE:
+            # heat = 1
+
             if self.enable_defusion and "+" in n:
                 ### This a fused node
                 ns = n.split("+")
                 cat = parse_cat_fine_grained(ns[0])
                 pid = parse_pid_from_name(ns[0])
-                if cat == "operator.FW":
-                    ### defusion process
-                    pos = 0
-                    while True:
-                        search_space.append(("-", n, pos))
-                        weights.append(l)
-                        if pos >= (len(ns) - 2):
-                            break
-                        pos += 1
+                ns = set(ns)
+                subgraph: nx.DiGraph = self.dag.subgraph(ns)
+
+                # st = time.time()
+                # randomly split edges using spanning tree
+                valid_split_plans = subgraph_partition_connected_nx(subgraph)
+                split_weights = []
+                for splits in valid_split_plans:
+                    split_weights.append(gmean([len(nodes) for nodes in splits]))
+                split_weights = np.exp(5e-4*(len(ns) - 80)) * (np.array(split_weights) / np.sum(split_weights))
+                for split_index, splits in enumerate(valid_split_plans):
+                    search_space.append(("-", n, splits))
+                    weights.append( self._combine_weight(l, heat) * split_weights[split_index] )
+                # ed = time.time()
+                # time_spanning_trees.append(ed - st)
+
+                # split out source or sink nodes
+                # st = time.time()
+                # splittable_nodes = []
+                # for node_name, degree in subgraph.out_degree():
+                #     if degree == 0:
+                #         splittable_nodes.append(node_name)
+                # for node_name, degree in subgraph.in_degree():
+                #     if degree == 0:
+                #         splittable_nodes.append(node_name)
+                # for node_to_split_out in splittable_nodes:
+                #     rest_of_nodes = list(ns - set([node_to_split_out]))
+                #     rest_subgraph = subgraph.subgraph(rest_of_nodes)
+                #     ccs = nx.connected_components(rest_subgraph.to_undirected())
+                #     components = [(node_to_split_out, )]
+                #     for cc in ccs:
+                #         components.append(tuple(cc))
+                #     search_space.append(("-", n, tuple(components)))
+                #     weights.append(l)
+                # ed = time.time()
+                # time_st.append(ed - st)
             else:
                 ### Nodes that have never been fused
                 cat = parse_cat_fine_grained(n)
@@ -404,8 +536,33 @@ class Optimizer:
             # if cat != "operator.FW":
             # 	### TODO (huhanpeng): only pick FW, then fuse corresponding BW
             # 	continue
+            try:
+                n_orig_name, n_pid = self._get_original_name_pid_from_index(n)
+            except (IndexError, KeyError):
+                continue
+            if n_orig_name not in self.cost_models[n_pid].graph_def_util.operation_names:
+                continue
 
             for succ_ in _dag.successors(n):
+                # some filters
+                if not _pkg.can_contract_edge(n, succ_):
+                    continue
+                if "+" not in succ_:
+                    try:
+                        succ_orig_name, succ_pid = self._get_original_name_pid_from_index(succ_)
+                    except (IndexError, KeyError):
+                        continue
+                    if succ_orig_name not in self.cost_models[succ_pid].graph_def_util.operation_names:
+                        continue
+
+                edge_data = _dag.get_edge_data(n, succ_)
+                if edge_data and "exec_edges" in edge_data and edge_data["exec_edges"]:
+                    print("IGNORED EXECUTION EDGE!!!!!!!!")
+                    continue
+                # else:
+                #     print(n, succ_)
+                #     print(edge_data)
+                #     print("==================")
                 _pid = parse_pid_from_name(succ_)
                 _cat = parse_cat_fine_grained(succ_)
                 if pid != _pid or cat != _cat:
@@ -414,8 +571,8 @@ class Optimizer:
                 ### Assumption 1: for edge a->b, only if the indegree of b is 1, the node can be fused
                 # bw_v = self.convert_fw2bw(n)
                 # if len(_dag.in_edges(succ_)) > 1 or len(_dag.in_edges(bw_v)) > 1:
-                if len(_dag.in_edges(succ_)) > 1:
-                    continue
+                # if len(_dag.in_edges(succ_)) > 1:
+                #     continue
 
                 # bw_u = self.convert_fw2bw(succ_)
                 # assert bw_u in _dag.nodes and bw_v in _dag.nodes
@@ -447,48 +604,88 @@ class Optimizer:
                     prun_cnt += 1
                     # G_star = self.apply_strategies(self.dag, ("+", n, succ_))
                     # iter_time, _ = self.evaluate(G_star)
-                    # SingleLogger().info("Prune fusing %s and %s, performace %f %%"%(n, succ_, 100*(self.base_cost - iter_time)/self.base_cost))
+                    SingleLogger().info("Prune fusing {} and {} with comm time {}".format(n, succ_, comm_t))
                     continue
 
+                # calculate heat using max(heat(n), heat(succ_))
+                heat_succ = self._get_heat_from_history(succ_)
+
+                heat_combined = (heat + heat_succ) / 2
+
+                # if n == "traces_0.rank0->BW.[2654]":
+                #     print("Heat for (traces_0.rank0->BW.[2654], {}):".format(succ_))
+                #     print(heat_combined)
+                #     input()
+                
+                # if heat_combined > 0:
+                #     print("Heat for ({}, {}): {}".format(n, succ_, heat_combined))
+                #     input()
+
+                # DEBUG_COMPARE
+                # heat_combined = 1
+
                 search_space.append(("+", n, succ_))
-                weights.append(l)
+                weights.append(self._combine_weight(l, heat_combined))
         # SingleLogger().info("Init search space len={} from {} candidates, prune {}".format(len(search_space), len(candidates), prun_cnt))
+        # SingleLogger().info("Time spent for spanning tree: {}".format(sum(time_spanning_trees)/ len(time_spanning_trees)))
+        # SingleLogger().info("Time spent for source/sink: {}".format(sum(time_st)/ len(time_st)))
         return search_space, weights
 
-    def apply_strategies(self, _dag, strategy):
+    def apply_strategies(self, _dag, _pkg: PKGraph, strategy):
         # print(strategy)
 
         ### TODO (huhanpeng): is shallow copy is enough ???
         __dag = _dag.copy()
+        __pkg = _pkg.copy()
+
         def __apply(s):
             op, target, next_ = s
             ### TODO (huhanpeng): need further add other optimization techiniques
             if op == "+":
                 ### Fuse two nodes
-                self.op_fusion(__dag, target, next_)
+                return self.op_fusion(__dag, __pkg, target, next_)
             elif op == "-":
-                self.op_defusion(__dag, target, next_)
+                return self.op_defusion(__dag, __pkg, target, next_)
 
         if isinstance(strategy, list):
+            nodes_introduced = set()
+            nodes_removed = set()
             for s in strategy:
-                __apply(s)
+                success, n_introduced, n_removed = __apply(s)
+                if not success:
+                    raise OptApplyStrategyError
+                nodes_introduced.update(n_introduced)
+                nodes_removed.update(n_removed)
         else:
-            __apply(strategy)
-        return __dag
+            success, nodes_introduced, nodes_removed = __apply(strategy)
+            if not success:
+                raise OptApplyStrategyError
+        return __dag, __pkg, nodes_introduced, nodes_removed
 
     def pick_strategy(self, search_space, weights=None, invalid_strategies = None):
         ### TODO (huhanpeng): need some priority/heuristic
-        valid_search_space = search_space.copy()
-        if invalid_strategies is not None:
-            for inv_st in invalid_strategies:
-                if inv_st in valid_search_space:
-                    valid_search_space.remove(inv_st)
+        valid_search_space = []
+        valid_weights = []
+        if invalid_strategies:
+            for st_idx, st in enumerate(search_space):
+                if st not in invalid_strategies:
+                    valid_search_space.append(st)
+                    if weights is not None:
+                        valid_weights.append(weights[st_idx])
+        else:
+            valid_search_space = search_space.copy()
+            if weights is not None:
+                valid_weights = weights.copy()
         if not valid_search_space:
-            raise RuntimeError("No valid strategy available.")
-        if weights is None:
+            raise OptNoValidStrategyError
+        valid_weights = np.array(valid_weights)
+        valid_weights = valid_weights - np.min(valid_weights)
+        valid_weights = valid_weights / np.sum(valid_weights)
+        if valid_weights is None:
             return random.choice(valid_search_space)
         else:
-            return self.weighted_choice(valid_search_space, weights)
+            # return self.weighted_choice(valid_search_space, weights)
+            return random.choices(valid_search_space, weights=valid_weights, k=1)[0]
 
     def search(self):
         raise NotImplementedError()
@@ -508,51 +705,217 @@ class MCMCOptimizer(Optimizer):
     def __init__(self, *args, **kwargs):
         super(MCMCOptimizer, self).__init__(*args, **kwargs)
         self.enable_defusion = True
+        self.forbidden_list = set()
+        self.heat_history = {}
+        if args_.heat_window_size:
+            self.heat_window_size = args_.heat_window_size
+        else:
+            self.heat_window_size = 5
+        
+        # limit the range of nodes during search
+        for node in self.dag.nodes:
+            if "BW" in node:
+                self.forbidden_list.add(node)
+            else:
+                try:
+                    orig_name, pid = self._get_original_name_pid_from_index(node)
+                except:
+                    # not standard nodes, ignore
+                    self.forbidden_list.add(node)
+                    continue
+                if orig_name not in self.cost_models[pid].graph_def_util.operation_names or "Assign" in orig_name:
+                    self.forbidden_list.add(node)
 
-    def search(self):
+    def search(self, init_edges_to_contract = 0.3, graph_cache="/root/graph_cache.pickle", step_size=1):
         ### TODO (huhanpeng): is shallow copy is enough ???
-        G = self.dag.copy()
-        cost = self.base_cost
+        if graph_cache is not None and os.path.isfile(graph_cache):
+            with open(graph_cache, "rb") as f:
+                G, PKG, node_attr_cache, initial_partitions_formed = pickle.load(f)
+                self.node_attr_cache = node_attr_cache
+            SingleLogger().info("Reading init graph from cache.")
+        else:
+            G: nx.DiGraph = self.dag.copy()
+            PKG = PKGraph(G)
+            # # randomly contract edges if possible
+            # k = int(len(G.edges()) * init_edges_to_contract)
+            initial_partitions_formed = 0
+            for node in G.nodes():
+                if node not in self.node_attr_cache:
+                    self.cache_node_attr(node, G.nodes[node])
+            nodes_on_1 = [node for node in G.nodes if node.startswith("traces_1")]
+            partition_G = G.copy()
+
+            nodes_on_1 = [node for node in partition_G.nodes if node.startswith("traces_1")]
+            partition_G = partition_G.subgraph(nodes_on_1)
+            partition_PKG = PKGraph(partition_G)
+            # code.interact(local=locals())
+            # exit(0)
+            source_nodes = [node for node in partition_G.nodes if len(partition_G.in_edges(node)) == 0]
+            # SingleLogger().info("Randomly initialize partitions by contracting edges...")
+            # for i in trange(k):
+            #     while True:
+            #         while True:
+            #             (u, v) = random.choice(list(partition_G.edges()))
+            #             if u.startswith("traces_1") and v.startswith("traces_1"):
+            #                 break
+            #         if partition_PKG.can_contract_edge(u, v):
+            #             partition_PKG.contract_edge(u, v)
+            #             partition_G, new_node_name = contract_nodes_nx(partition_G, [u, v])
+            #             u0 = self._debug_convert_to_the_other_machine(u)
+            #             v0 = self._debug_convert_to_the_other_machine(v)
+            #             partition_PKG.contract_edge(u0, v0)
+            #             partition_G, new_node_name = contract_nodes_nx(partition_G, [u0, v0])
+            #             break
+            # 
+
+            # Run post order traversal on partition_G
+            for source in tqdm(source_nodes, total=len(source_nodes)):
+                _, _, partition_G = postorder_contract_nx(partition_G, partition_PKG, source, forbidden_list=self.forbidden_list, size_limit=800)
+            for node_name in tqdm(partition_G.nodes()):
+                if "+" in node_name:
+                    # fused node, test if compilable
+                    try:
+                        self.parse_node_attr(partition_G, node_name)
+                        compilable=True
+                    except OptQueryCostModelError:
+                        # traceback.print_exc()
+                        compilable=False
+                    if compilable:
+                        ns = node_name.split("+")
+                        G, new_node_name = contract_nodes_nx(G, ns)
+                        PKG.contract_nodes_unsafe(ns)
+                        self.parse_node_attr(G, new_node_name)
+                        ns0 = [self._debug_convert_to_the_other_machine(node) for node in ns]
+                        G, new_node_name0 = contract_nodes_nx(G, ns0)
+                        PKG.contract_nodes_unsafe(ns0)
+                        self.parse_node_attr(G, new_node_name0)
+                        initial_partitions_formed += 1
+            if graph_cache:
+                with open(graph_cache, "wb") as f:
+                    pickle.dump([G, PKG, self.node_attr_cache, initial_partitions_formed], f)
+                SingleLogger().info("Graph cache dumped to {}.".format(graph_cache))
+        # initialize heat history
+        for node in G.nodes:
+            self.heat_history[node] = [(0, 0)] * self.heat_window_size
+        SingleLogger().info("="*20 + " Search Starts " + "="*20)
+        SingleLogger().info("Successfully initialized {} partitions.".format(initial_partitions_formed))
+        cost, exct_dag = self.evaluate(G)
         trajectory = []
-        candidates, _ = self.candidate_selection(G, topk=None)
-        search_space, weights = self.init_search_space(candidates, G)
+        candidates, _ = self.candidate_selection(G, topk=None, critical_path=self.wrap_critical_path(exct_dag))
+        search_space, weights = self.init_search_space(candidates, G, PKG)
         SingleLogger().info("\033[94m # of candidates: {}\033[0m".format(len(candidates)))
         best_cost = cost
         best_strategy = trajectory.copy()
-
+        self.step = 0
         while True:
             invalid_strategies = set()
             while True and len(search_space) > 0:
-                try:
-                    strategy = self.pick_strategy(search_space, weights=weights, invalid_strategies=invalid_strategies)
-                except:
-                    # no valid strategies available, refresh search space
-                    candidates, _ = self.candidate_selection(G, topk=None)
-                    search_space, weights = self.init_search_space(candidates, G)
-                    break
-                try:
-                    G_star = self.apply_strategies(G, strategy)
-                except:
-                    # strategy invalid
-                    invalid_strategies.add(strategy)
-                    continue
-                SingleLogger().info("\033[94m" + "Strategy ({}, {}, {}) successfully applied.".format(*strategy) + "'\033[0m'")
+                G_star = G.copy()
+                PKG_star = PKG.copy()
+                successful_strategies = 0
+                strategy_history_in_step = []
+                strategy_introduced_nodes = set()
+                strategy_removed_nodes = set()
+                while successful_strategies < step_size:
+                    try:
+                        strategy = self.pick_strategy(search_space, weights=weights, invalid_strategies=invalid_strategies)
+                        msg = "\033[94m" + "Picked strategy ({}, {}, {}).".format(*strategy)
+                        if len(msg) > 200:
+                            msg = msg[:200] + "..."
+                        SingleLogger().info(msg + "\033[0m")
+                    except OptNoValidStrategyError:
+                        # no valid strategies available, refresh search space
+                        SingleLogger().info("\033[94m Search space exhausted. \033[0m")
+                        candidates, _ = self.candidate_selection(G_star, topk=None)
+                        search_space, weights = self.init_search_space(candidates, G_star, PKG_star)
+                        invalid_strategies = set()
+                        continue
+                    try:
+                        G_star, PKG_star, nodes_introduced, nodes_removed = self.apply_strategies(G_star, PKG_star, strategy)
+                    except OptApplyStrategyError:
+                        # strategy invalid
+                        # traceback.print_exc()
+                        SingleLogger().warn("Strategy invalid (will cause a cycle in the DAG).")
+                        invalid_strategies.add(strategy)
+                        continue
+                    except OptQueryCostModelError:
+                        SingleLogger().warn("Strategy invalid (failed to query cost model).")
+                        invalid_strategies.add(strategy)
+                        continue
+                    successful_strategies += 1
+                    strategy_history_in_step.append(strategy)
+                    strategy_introduced_nodes.update(nodes_introduced)
+                    strategy_removed_nodes.update(nodes_removed)
+                    if successful_strategies < step_size:
+                        candidates, _ = self.candidate_selection(G_star, topk=None)
+                        search_space, weights = self.init_search_space(candidates, G_star, PKG_star)
+                    invalid_strategies = set()
+                    msg = "\033[94m" + "Strategy ({}, {}, {}) successfully applied.".format(*strategy)
+                    if len(msg) > 200:
+                        msg = msg[:200] + "... successfully applied."
+                    SingleLogger().info(msg + "\033[0m")
                 ### Start to replay
-                cost_star, exct_dag = self.evaluate(G_star)
+                if self.step % 20 == 0:
+                    cost_star, exct_dag = self.evaluate(G_star, _filename="/root/searched_graph/{}.json".format(self.step))
+                else:
+                    cost_star, exct_dag = self.evaluate(G_star)
+                # if step < 200:
+                #     MCMC_BETA = 1
+                # else:
+                #     MCMC_BETA = args.mcmc_beta
+                SingleLogger().info("\033[94m Step: {}, Orig cost: {}, New cost: {} \033[0m".format(self.step, cost, cost_star))
+                self.step += 1
+
+                ### Update heat history
+                combined_history_list = [None] * self.heat_window_size
+                for node in strategy_removed_nodes:
+                    if node in self.heat_history:
+                        node_history = self.heat_history[node]
+                        for idx, (h, _) in enumerate(node_history):
+                            if combined_history_list[idx] is None:
+                                combined_history_list[idx] = [h]
+                            elif h is None:
+                                continue
+                            else:
+                                combined_history_list[idx].append(h)
+                        node_history.insert(0, (cost - cost_star, self.step))
+                        node_history.pop()
+                        # print("node: {}".format(node))
+                        # print("node_history: {}".format(node_history))
+                        # input()
+                combined_history = []
+                for h_list in combined_history_list:
+                    if h_list is not None:
+                        h_avg = np.average(h_list)
+                        combined_history.append((h_avg, self.step))
+                    else:
+                        combined_history.append((None, None))
 
                 if self.accept_or_not(cost, cost_star):
                     invalid_strategies = set()
-                    op, target, next_ = strategy
-                    if op == "+":
-                        SingleLogger().info("Fuse %s and %s" % (target, next_))
-                    elif op == "-":
-                        SingleLogger().info("De-fuse %s at %dth op" % (target, next_))
-                    else:
-                        raise ValueError("Invalid graph transformation operation: {}".format(op))
+                    # op, target, next_ = strategy
+                    # if op == "+":
+                    #     SingleLogger().info("Fuse %s and %s" % (target, next_))
+                    # elif op == "-":
+                    #     SingleLogger().info("De-fuse %s" % (target))
+                    # else:
+                    #     raise ValueError("Invalid graph transformation operation: {}".format(op))
+
+                    ### generate history for new nodes
+                    combined_history.insert(0, (cost - cost_star, self.step))
+                    combined_history.pop()
+                    for node in strategy_introduced_nodes:
+                        self.heat_history[node] = combined_history.copy()
 
                     G = G_star
+                    PKG = PKG_star
                     cost = cost_star
-                    trajectory.append(strategy)
+                    trajectory += strategy_history_in_step
+
+                    ### clean up heat history for removed nodes
+                    for node in strategy_removed_nodes:
+                        if node in self.heat_history:
+                            self.heat_history.pop(node)
 
                     ### Cache the best strategy
                     if cost < best_cost:
@@ -560,22 +923,27 @@ class MCMCOptimizer(Optimizer):
                         best_strategy = trajectory.copy()
                     ### Init new search space
                     candidates, _ = self.candidate_selection(G, topk=None, critical_path=self.wrap_critical_path(exct_dag))
-                    search_space, weights = self.init_search_space(candidates, G)
+                    search_space, weights = self.init_search_space(candidates, G, PKG)
                     break
             SingleLogger().info("\033[94m" + "Speedup to the origin: %6.4f %%"%(100 * (self.base_cost - cost) / self.base_cost) + "'\033[0m'")
             SingleLogger().info("\033[94m" + "Best speedup: %d th acception, speed up to the origin: %6.4f %%"%(len(best_strategy), 100 * (self.base_cost - best_cost) / self.base_cost) + "'\033[0m'")
+            with open("/root/search_trajectory.txt", "a") as f:
+                f.write(str(time.time()) + ": {}".format(100 * (self.base_cost - best_cost) / self.base_cost) + "\n")
 
+ 
     def accept_or_not(self, cost, new_cost):
         # prob = min(1, (math.exp(beta * (cost - new_cost))))
         if cost > new_cost:
+            SingleLogger().info("\033[92m" + "Accept a better action, orig cost: {}, new cost: {}".format(cost, new_cost) + "\033[0m")
             return True
         else:
             prob = math.exp(MCMC_BETA * (cost - new_cost))
-            r = random.random() 
+            r = random.random()
             if r < prob:
-                SingleLogger().info("Accept a worse action with {} < {} ".format(r, prob))
+                SingleLogger().info("\033[92m" + "Accept a worse action with {} < {} ".format(r, prob) + "\033[0m")
                 return True
             else:
+                SingleLogger().info("\033[93m" + "Rejected a worse action with {} >= {} ".format(r, prob) + "\033[0m")
                 return False
 
 class MCTSOptimizer(Optimizer):
@@ -600,7 +968,7 @@ class MCTSOptimizer(Optimizer):
             reward = self.default_policy(GS)
             SingleLogger().info("Speedup to the origin %6.4f %%"%(100 * reward))
             self.backpropagation(GS, reward)
-            if args.ucb_visual:
+            if args_.ucb_visual:
                 self.visualize_tree()
             self.show_opt_strategies()
         return 

@@ -505,7 +505,7 @@ class DAGManager:
             self.logger.debug(e)
         # visualize_gml(self.dag, layout="circular")
         try:
-            edges = networkx.algorithms.cycles.find_cycle()
+            edges = nx.algorithms.cycles.find_cycle()
             SingleLogger().error("Found cycle {} in DAG. Abort.".format(edges))
             exit(0)
         except:
@@ -553,7 +553,8 @@ class DAGManager:
                     else:
                         fw_bw_arrive.add(node)
         self.logger.info("Total number of operators: %d" % len(fw_bw_arrive))
-        self.logger.info("Total number of Comm OPs: %d" % comm_cnt)
+        if self.platform == "MXNET":
+            self.logger.info("Total number of Comm OPs: %d" % comm_cnt)
 
         ### For FW and BW nodes, go through one step of traces
         for event in self.traceM.traces:
@@ -598,27 +599,27 @@ class DAGManager:
                     self.gpu_dag.add_edge(
                         self.add_prefix(prev_event["name"]), 
                         self.add_prefix(event["name"]), 
-                        weight=0)
+                        weight=0, exec_edges=True)
                 else:
                     ### if prev event has not ended, current node should share 
                     ### the parent ops of the prev event
-                    parent_list_of_prev = [(u, self.gpu_dag.edges[(u, v)]["weight"]) for u, v in self.gpu_dag.in_edges(self.add_prefix(prev_event["name"]))]
-                    for u, w in parent_list_of_prev:
-                        ### TODO (huhanpeng) do not follow the dependency graph, ignore now
-                        if "BW.bertencoder0_embedding0" in u or "BW.bertencoder0_embedding0" in self.add_prefix(prev_event["name"]):
-                            continue
-                        self.gpu_dag.add_edge(u, self.add_prefix(event["name"]), weight=0)
+                    # parent_list_of_prev = [(u, self.gpu_dag.edges[(u, v)]["weight"]) for u, v in self.gpu_dag.in_edges(self.add_prefix(prev_event["name"]))]
+                    # for u, w in parent_list_of_prev:
+                    #     ### TODO (huhanpeng) do not follow the dependency graph, ignore now
+                    #     if "BW.bertencoder0_embedding0" in u or "BW.bertencoder0_embedding0" in self.add_prefix(prev_event["name"]):
+                    #         continue
+                    #     self.gpu_dag.add_edge(u, self.add_prefix(event["name"]), weight=0, exec_edges=True)
                     i += 1
 
             if len(in_process_events) + 1 > max_para_degree:
                 max_para_degree = len(in_process_events) + 1
 
-            if not _pretty and len(in_process_events) > 0:
-                self.logger.info("%s (%-13.4f): D=%d => %-60s%s" %
-                    (event["ts"], relative_time(event["ts"]),
-                        len(in_process_events)+1,
-                        event["name"], 
-                        in_process_events2str()))
+            # if not _pretty and len(in_process_events) > 0:
+            #     self.logger.info("%s (%-13.4f): D=%d => %-60s%s" %
+            #         (event["ts"], relative_time(event["ts"]),
+            #             len(in_process_events)+1,
+            #             event["name"], 
+            #             in_process_events2str()))
             in_process_events.append(event)
 
         self.logger.info("Maximum parallelism degree: %d, remain %d FW+BW node(s)" % (max_para_degree, len(fw_bw_arrive)))
@@ -639,13 +640,14 @@ class DAGManager:
         self.gpu_dag = self.dag
 
         critical_path = None
-        max_para_degree = self._add_new_edges_via_order(_pretty)
+        # max_para_degree = self._add_new_edges_via_order(_pretty)
 
         #！til now, all the edges for one GPU have been added.
         if not _pretty:
             critical_path = dag_longest_path(self.gpu_dag, self.pm, weight="weight", default_weight=0)
 
-        return max_para_degree, critical_path
+        # return max_para_degree, critical_path
+        return 1, critical_path
 
     def all_topo_sorts(self):
         ''' generate all possible topological sorts '''

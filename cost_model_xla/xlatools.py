@@ -1,6 +1,7 @@
 import ctypes
 from pathlib import Path
 import subprocess
+import os
 import re
 
 def _check_file_available_for_writing(path):
@@ -27,20 +28,46 @@ def compile_to_hlo(graph_path, config_path, dump_path_unopt, dump_path_opt):
     _check_file_exist_for_reading(config_path)
     _check_file_available_for_writing(dump_path_unopt)
     _check_file_available_for_writing(dump_path_opt)
-    subprocess.run(["python3", "/root/byteprofile-analysis/cost_model_xla/compile_to_hlo.py", "--graph_path", graph_path, "--config_path", config_path, "--unopt", dump_path_unopt, "--opt", dump_path_opt])
+    # subprocess.run(["python3", "/root/byteprofile-analysis/cost_model_xla/compile_to_hlo.py", "--graph_path", graph_path, "--config_path", config_path, "--unopt", dump_path_unopt, "--opt", dump_path_opt], check=True)
+    subprocess.run("CUDA_VISIBLE_DEVICES=0 python3 /root/byteprofile-analysis/cost_model_xla/compile_to_hlo.py --graph_path {} --config_path {} --unopt {} --opt {}".format(graph_path, config_path, dump_path_unopt, dump_path_opt), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True, shell=True)
 
 def gen_feature_vector(hlo_module_path, output_path, gflops_per_second, gbytes_per_second):
     _check_arg_types([hlo_module_path, output_path, gflops_per_second, gbytes_per_second], [str, str, float, float])
     _check_file_exist_for_reading(hlo_module_path)
     _check_file_available_for_writing(output_path)
-    subprocess.run(["python3", "/root/byteprofile-analysis/cost_model_xla/gen_feature_vector.py", "--hlo_module_path", hlo_module_path, "--output_path", output_path, "--gflops", str(gflops_per_second), "--gbps", str(gbytes_per_second)])
+    subprocess.run(["python3", "/root/byteprofile-analysis/cost_model_xla/gen_feature_vector.py", "--hlo_module_path", hlo_module_path, "--output_path", output_path, "--gflops", str(gflops_per_second), "--gbps", str(gbytes_per_second)], check=True)
 
 def replay_hlo(hlo_path, replay_exec=None):
     if replay_exec is None:
         replay_exec = "/root/tensorflow/bazel-bin/tensorflow/compiler/xla/tools/replay_computation_gpu"
-    opt_1 = "--num_runs=30"
-    opt_2 = "--use_fake_data"
-    process = subprocess.run([replay_exec, opt_1, opt_2, hlo_path], capture_output=True)
+    opt_1 = "--num_runs=800"
+    opt_2 = "--use_fake_data=true"
+    opt_3 = "--print_result=false"
+    process = subprocess.run([replay_exec, opt_1, opt_2, opt_3, hlo_path], capture_output=True)
     output = process.stderr.decode("ascii")
     times = [float(line.split()[3][:-2]) for line in re.findall("Done executing in .*s:", output)]
+    times = times[-20:]
     return sum(times) / len(times)
+
+def replay_and_generate_kernel_sample(sample_id_start, hlo_path, tmp_dir, dataset_path, replay_exec=None):
+    if replay_exec is None:
+        replay_exec = "/root/tensorflow/bazel-bin/tensorflow/compiler/xla/tools/replay_computation_gpu"
+    my_env = os.environ.copy()
+    my_env["CUDA_VISIBLE_DEVICES"] = "0"
+    opt_1 = "--num_runs=50"
+    opt_2 = "--use_fake_data=true"
+    opt_3 = "--print_result=false"
+    opt_4 = "--dataset_path={}".format(dataset_path)
+    opt_5 = "--temp_dir_path={}".format(tmp_dir)
+    opt_6 = "--profile_start=30"
+    opt_7 = "--profile_end=50"
+    opt_8 = "--sample_id_start={}".format(sample_id_start)
+    # subprocess.run(["CUDA_VISIBLE_DEVICES=0", replay_exec, opt_1, opt_2, opt_3, opt_4, opt_5, opt_6, opt_7, opt_8, hlo_path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True, env=my_env, shell=True)
+    process = subprocess.run("CUDA_VISIBLE_DEVICES=0 {} {} {} {} {} {} {} {} {} {}".format(replay_exec, opt_1, opt_2, opt_3, opt_4, opt_5, opt_6, opt_7, opt_8, hlo_path), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=my_env, shell=True, check=True)
+
+def extract_kernel_features_from_hlo(hlo_path, tmp_dir, extract_exec=None):
+    if extract_exec is None:
+        extract_exec = "/root/tensorflow/bazel-bin/tensorflow/compiler/xla/tools/extract_features_from_hlo"
+    opt_1 = "--hlo_path={}".format(hlo_path)
+    opt_2 = "--temp_dir_path={}".format(tmp_dir)
+    subprocess.run([extract_exec, opt_1, opt_2], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)

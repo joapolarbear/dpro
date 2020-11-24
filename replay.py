@@ -60,6 +60,10 @@ class Device:
 		delay, ratio = self.get_delay_para(name)
 		duration = (1000.0 * max(avg + delay, 0)) * ratio
 
+		### DEBUG: MANUALLY REDUCE COMM TIME
+		# if cat == CatName.COMM.value:
+		# 	duration /= 10
+
 		if self.comm_backend == "BYTEPS" and "UPDATE_CAL" in name:
 			duration = 0
 		
@@ -91,7 +95,7 @@ class Device:
 		if self.prev_idx is not None:
 			prev_event = self.replayer.rst_traces[self.prev_idx]
 			if (prev_event["args"]["name"], name) not in self.replayer.exct_dag.edges:
-				self.replayer.exct_dag.add_edge(prev_event["args"]["name"], name, weight=(prev_event["dur"] / 1000.0))
+				self.replayer.exct_dag.add_edge(prev_event["args"]["name"], name, weight=(prev_event["dur"] / 1000.0), exec_edges=True)
 		self.prev_idx = len(self.replayer.rst_traces)
 
 		# ### 2. Update edge weight
@@ -412,9 +416,12 @@ class Replayer:
 	def output_traces(self, _filename=None):
 		#! Output the synthetic traces.
 		rst = {
-			"traceEvents": self.rst_traces,
+			"traceEvents": [],
 			"displayTimeUnit": "ms"
 		}
+		for trace in self.rst_traces:
+			if "^" not in trace["name"]:
+				rst["traceEvents"].append(trace)
 		TraceManager(self.rst_traces, DirLevel.TRIAL).get_iter_time()
 		filename = "synthetic.json" if _filename is None else _filename
 		with open(os.path.join(self.dump_path, filename), 'w') as f:

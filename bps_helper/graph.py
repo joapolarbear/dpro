@@ -869,7 +869,7 @@ class bytepsGraph:
                         for tensor_name in matched_tensor_names:
                             tensor_durations = push_req_ops["worker_"+node_rank][tensor_name]
                             if len(evs) != len(tensor_durations):
-                                SingleLogger().warn("Length mismatch between PUSH REQ {} and BW node {}".format(long_name, tensor_name))
+                                # SingleLogger().warn("Length mismatch between PUSH REQ {} and BW node {}".format(long_name, tensor_name))
                                 continue
                             bw_st, bw_ed = evs[index]
                             pu_st, pu_ed = tensor_durations[index]

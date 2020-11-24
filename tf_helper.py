@@ -1,6 +1,7 @@
 from google.protobuf.json_format import MessageToJson
 from google.protobuf.json_format import Parse as parse_protobuf_json
 import tensorflow as tf
+import os
 import itertools
 # Try to support both tf2 and tf1
 try:
@@ -11,6 +12,8 @@ except:
 from tensorflow.python.client import timeline
 import json
 import networkx as nx
+import byteps as bps
+
 class TimelineSession:
     def __init__(self, sess, tensor_shape_ops=None):
         self.sess = sess
@@ -38,6 +41,7 @@ class TimelineSession:
         self.run_options = tf.RunOptions(trace_level=tf.RunOptions.FULL_TRACE)
         self.run_metadata = tf.RunMetadata()
         self.traces = {"traceEvents":[]}
+        self.trace_meta = {}
 
         self.dag = None
 
@@ -52,14 +56,29 @@ class TimelineSession:
             # Create the Timeline object, and write it to a json
             tl = timeline.Timeline(self.run_metadata.step_stats)
             ctf = json.loads(tl.generate_chrome_trace_format())
-            self.traces["traceEvents"] += ctf["traceEvents"]
+            filtered_trace_events = []
+            pid_mapping_in_this_step = {}
+            for event in ctf["traceEvents"]:
+                if "ph" in event and event["ph"] == "M":
+                    if "name" in event and event["name"] == "process_name":
+                        if "args" in event:
+                            pid_mapping_in_this_step[event["pid"]] = event["args"]["name"]
+                            if event["args"]["name"] not in self.trace_meta:
+                                self.trace_meta[event["args"]["name"]] = event["pid"]
+            for event in ctf["traceEvents"]:
+                if "ph" in event and event["ph"] != "M":
+                    if "pid" in event:
+                        event["pid"] = self.trace_meta[pid_mapping_in_this_step[event["pid"]]]
+                    filtered_trace_events.append(event)
+
+            self.traces["traceEvents"] += filtered_trace_events
             print("Add the {}th step of traces".format(self.step_cnt))
             self.step_cnt += 1
 
             ### Create the DAG
             if self.dag is None:
                 self.dag = nx.DiGraph()
-                for trace in ctf["traceEvents"]:
+                for trace in filtered_trace_events:
                     if trace["ph"] == "M" or "args" not in trace:
                         continue
                     op = trace["args"]["op"]
@@ -107,6 +126,8 @@ class TimelineSession:
                                                     "dtype": dtype_as_str}
                 self._end_trace = True
                 self.output_traces()
+        else:
+            ret = self.sess.run(*args_, **kwargs_)
 
         ### Return all fetches
         return ret
