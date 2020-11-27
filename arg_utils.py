@@ -44,7 +44,7 @@ parser.add_argument("--full_trace", action="store_true", help="If this arg is se
 parser.add_argument("--show_queue", action="store_true", help="If this arg is set, record the queue status of each device during replaying.")
 
 ### Optimize
-parser.add_argument("--optimizer", type=str, default="MCTS", choices=["MCTS", "MCMC"], help="The algorithm used to search the optimal optimzation strategy")
+parser.add_argument("--optimizer", type=str, default="MCMC", choices=["MCTS", "MCMC"], help="The algorithm used to search the optimal optimzation strategy")
 parser.add_argument("--ucb_type", type=str, default="AVG", choices=["MAX", "AVG"], help="The type of quanlity value used in the UCB euqation")
 parser.add_argument("--no_mutation", action="store_true", help="If this arg is set, the default policy of MCTS will not rollout")
 parser.add_argument("--ucb_gamma", type=float, default=0.1, help="Hyper Parameter used in UCB to control the exploration rate.")
@@ -52,6 +52,7 @@ parser.add_argument("--ucb_visual", action="store_true", help="If this arg is se
 parser.add_argument("--mcmc_beta", type=float, default=100, help="Hyper Parameter used in MCMC/SA to control the exploration rate")
 parser.add_argument("--cost_model_tmp_dir", type=str, default="./", help="Tmp directory for cost model to store intermediate files.")
 parser.add_argument("--heat_window_size", type=int, default=5, help="Window size for the heat based search heuristic.")
+parser.add_argument("--simulate", action="store_true", help="If this arg is set, simulate the cost model, not use the real cost model.")
 
 args = parser.parse_args()
 

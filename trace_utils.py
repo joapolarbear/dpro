@@ -479,6 +479,8 @@ class TraceManager:
         for prefix in prefix_dict.keys():
             ### Necessary for the last step
             pid_info = prefix_dict[prefix]
+            if pid_info["fw_end"] is None or pid_info["bw_end"] is None or pid_info["bw_start"] is None:
+                continue
             pid_info["iter_list"].append((pid_info["cur_iter_time"] - pid_info["step_start_ts"]) / 1000.0)
             pid_info["fw_list"].append((pid_info["fw_end"] - pid_info["step_start_ts"]) / 1000.0)
             pid_info["bw_list"].append((pid_info["bw_end"] - pid_info["bw_start"]) / 1000.0)

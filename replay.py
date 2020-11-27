@@ -84,7 +84,10 @@ class Device:
 
 		### Really start to execute
 		avg = self.replayer.dag.nodes[name]["avg"]
-		pid, raw_name, cat = parse_allinfo_from_name(name)
+		if "+" in name and "Comm" not in name:
+			pid, raw_name, cat = parse_allinfo_from_name(name.split("+")[0])
+		else:
+			pid, raw_name, cat = parse_allinfo_from_name(name)
 		delay, ratio = self.get_delay_para(name)
 		duration = (1000.0 * max(avg + delay, 0)) * ratio
 		if self.comm_backend == "BYTEPS" and "UPDATE_CAL" in name:
@@ -500,6 +503,20 @@ class Replayer:
 		### Ininitalize the execution graph as the depdency graph
 		self.exct_dag = self.dag.copy()
 
+	def dump_critical_path(self, file, critical_path):
+		rst = {
+			"traceEvents": [],
+			"displayTimeUnit": "ms"
+		}
+		for trace in self.rst_traces:
+			if trace["args"]["name"] in critical_path:
+				trace["name"] = "Y"
+			else:
+				trace["name"] = "N"
+			rst["traceEvents"].append(trace)
+		with open(os.path.join(self.dump_path, file), 'w') as f:
+			json.dump(rst, f)
+
 	def output_traces(self, _filename=None):
 		#! Output the synthetic traces.
 		rst = {
@@ -516,4 +533,3 @@ class Replayer:
 		if self.show_queue:
 			with open(os.path.join(self.dump_path, 'queue_status.json'), 'w') as f:
 				json.dump(self.queue_status, f, indent=4)
-

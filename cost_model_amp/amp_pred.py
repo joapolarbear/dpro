@@ -55,11 +55,12 @@ def func_pred_time(xs, a1, a2, a3, a4, a5, a6, a7, a8, b1, b2, b3):
     return intensity * (a1 * S_mul + b1) / (a2 * gflops + b2) + (wei_S_all / gflops + b3 + gflops * wei_S_all2) / intensity
 
 class AMPPredictor:
-    def __init__(self, meta_path, cost_model_path):
+    def __init__(self, meta_path, cost_model_path=None):
         self.meta_info = MetaInfo(meta_path)
+        if cost_model_path is None:
+            return
         with open(cost_model_path, 'r') as fp:
             self.cost_model = json.load(cost_model_path)
-
 
     def pred_amp_avg(self, op_name, _avg=None):
         op_type, S_mul, S_add, S_in, S_out, S_wei = self.meta_info.ret_tf_metadata(op_name)
@@ -101,10 +102,10 @@ class AMPPredictor:
                 dag.remove_edge(*prevs[0])
             else:
                 ### the boundary of mixed precision, add a cast op
-                dag.add_edge(u, "%s.AMPCastToFp16"%op_name)
-                dag.add_edge("%s.AMPCastToFp16"%op_name, op_name)
+                dag.add_edge(u, "%s~>AMPCastToFp16"%op_name)
+                dag.add_edge("%s~>AMPCastToFp16"%op_name, op_name)
                 # TODO (huhanpeng): need verify
-                dag.nodes["%s.AMPCastToFp16"%op_name]["avg"] = wei_cast if "weight" in u.lower else in_cast
+                dag.nodes["%s~>AMPCastToFp16"%op_name]["avg"] = wei_cast if "weight" in u.lower else in_cast
 
         ### handle successors
         for succ in dag.successors(op_name):
@@ -114,10 +115,10 @@ class AMPPredictor:
                 dag.add_edge(op_name, nnexts[0])
                 self.remove_edge(succ, nnexts[0])
             else:
-                dag.add_edge(op_name, "%s.AMPCastToFp32"%op_name)
-                dag.add_edge("%s.AMPCastToFp32"%op_name, succ)
+                dag.add_edge(op_name, "%s~>AMPCastToFp32"%op_name)
+                dag.add_edge("%s~>AMPCastToFp32"%op_name, succ)
                 # TODO (huhanpeng): need verify
-                dag.nodes["%s.AMPCastToFp32"%op_name]["avg"] = out_cast
+                dag.nodes["%s~>AMPCastToFp32"%op_name]["avg"] = out_cast
 
         ### update the meta info of current node
         dag.nodes[op_name]["avg"] = self.pred_amp_avg(op_name, _avg=dag.nodes[op_name]["avg"])
@@ -154,6 +155,8 @@ class AMPPredictor:
         if dag.nodes[op_name].get("dtype", "fp32") != "fp32":
             return False
 
+        # TODO (huhanpeng): not implemented
+        return False
         ### TODO (huhanpeng) do not consider gradients/ nodes for mixed precision trainign
         if "gradients/" in op_name:
             return False
