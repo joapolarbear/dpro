@@ -72,7 +72,7 @@ class bytepsGraph:
             self.PROFILE_ITER_START = args_.profile_start_step
             SingleLogger().info("[BYTEPS] Using profile_start_step = {}.".format(self.PROFILE_ITER_START))
         if args_.profile_duration is None:
-            self.PROFILE_ITER_DURATION = 11
+            self.PROFILE_ITER_DURATION = 10
             SingleLogger().warn("[BYTEPS] profile_duration UNSET. USING DEFAULT VALUE {}.".format(self.PROFILE_ITER_DURATION))
         else:
             self.PROFILE_ITER_DURATION = args_.profile_duration
@@ -109,7 +109,6 @@ class bytepsGraph:
                 server_trace = json.load(f)
         except:
             SingleLogger().error("Cannot open trace files.")
-            exit(1)
             return
         self.comm_trace_ = comm_trace
         self.server_trace_ = server_trace
@@ -304,17 +303,17 @@ class bytepsGraph:
             if op == COMM_OPS.PUSH_REQ or op == COMM_OPS.PUSH_RES:
                 if len(durations) != mode_len + 1:
                     self._ignored_tensors.add(key)
-                chopped_durations = durations[self.PROFILE_ITER_START:self.PROFILE_ITER_START+self.PROFILE_ITER_DURATION]
+                chopped_durations = durations[self.PROFILE_ITER_START + 1:self.PROFILE_ITER_START+ 1 + self.PROFILE_ITER_DURATION]
             else:
                 if len(durations) != mode_len:
                     self._ignored_tensors.add(key)
-                chopped_durations = durations[self.PROFILE_ITER_START-1:self.PROFILE_ITER_START-1+self.PROFILE_ITER_DURATION]
+                chopped_durations = durations[self.PROFILE_ITER_START:self.PROFILE_ITER_START+self.PROFILE_ITER_DURATION]
             self.comm_durations[key] = chopped_durations
-        
+
         for key, durations in self.comp_durations.items():
             if len(durations) != mode_len:
                 self._ignored_tensors.add(key)
-            chopped_durations = durations[self.PROFILE_ITER_START-1:self.PROFILE_ITER_START-1+self.PROFILE_ITER_DURATION]
+            chopped_durations = durations[self.PROFILE_ITER_START:self.PROFILE_ITER_START+self.PROFILE_ITER_DURATION]
             self.comp_durations[key] = chopped_durations
 
     def _calc_stats(self):
@@ -418,7 +417,8 @@ class bytepsGraph:
             if key not in intervals:
                 intervals[key] = IntervalTree()
             for st, ed in durations:
-                intervals[key][st:ed] = True
+                if st != ed:
+                    intervals[key][st:ed] = True
             durations_dict[source_rank][key] = durations
 
         for key, durations in self.comp_durations.items():
@@ -528,7 +528,8 @@ class bytepsGraph:
             source_ranks.add(source_rank)
             for st, ed in durations:
                 min_start_time = min(min_start_time, st)
-                intervals[source][st:ed] = (tensor_name, op)
+                if st != ed:
+                    intervals[source][st:ed] = (tensor_name, op)
             if op == COMM_OPS.PUSH_REQ:
                 if (source, target) not in push_req_ops:
                     push_req_ops[(source, target)] = {}
@@ -870,10 +871,20 @@ class bytepsGraph:
                             tensor_durations = push_req_ops["worker_"+node_rank][tensor_name]
                             if len(evs) != len(tensor_durations):
                                 # SingleLogger().warn("Length mismatch between PUSH REQ {} and BW node {}".format(long_name, tensor_name))
+                                # print("Len BW: {}, Len comm: {}".format(len(evs), len(tensor_durations)))
+                                # input()
                                 continue
                             bw_st, bw_ed = evs[index]
                             pu_st, pu_ed = tensor_durations[index]
-                            if not interval["worker_"+node_rank].overlap(bw_ed - 1000, bw_ed + 1000):
+                            # print("BW ST: {}, BW ED: {}".format(bw_st, bw_ed))
+                            # print("PU ST: {}, PU ED: {}".format(pu_st, pu_ed))
+                            # input()
+                            if not interval["worker_"+node_rank].overlap(bw_ed - 1000, bw_ed + 1000) and not interval["worker_"+node_rank].overlap(pu_st - 200, pu_st - 5):
+                                # if pu_st - bw_ed > 10000:
+                                #     print("BW ST: {}, BW ED: {}".format(bw_st, bw_ed))
+                                #     print("PU ST: {}, PU ED: {}".format(pu_st, pu_ed))
+                                #     print(layer_name, tensor_name, index, pu_st - bw_ed)
+                                #     input()
                                 local_min_delay = min(local_min_delay, pu_st - bw_ed)
                                 # print(layer_name, tensor_name, index, pu_st - bw_ed)
                         if node_rank not in bw_delay_dict:
@@ -884,7 +895,7 @@ class bytepsGraph:
                             bw_delay_dict[node_rank][local_rank].append(local_min_delay)
                 else:
                     SingleLogger().warn("BYTEPS BW Delay: {} not in dag.".format(long_name))
-        
+
         node_delay_dict = {}
         for node_rank, local_dict in bw_delay_dict.items():
             min_avg = float("inf")
@@ -892,7 +903,7 @@ class bytepsGraph:
                 avg = np.average(delays)
                 if avg < min_avg:
                     min_avg = avg
-            if np.isnan(min_avg) or min_avg == float("inf"):
+            if np.isnan(min_avg) or min_avg == float("inf") or min_avg < 0:
                 SingleLogger().warn("Cannot determine the BW delay of {}.".format("worker_"+node_rank))
                 node_delay_dict["worker_"+node_rank] = 0
             else:

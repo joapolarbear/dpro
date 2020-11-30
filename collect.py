@@ -1,3 +1,4 @@
+from bps_helper.preprocess import preprocess_comm_timestamp
 import warnings
 import os
 
@@ -19,7 +20,8 @@ from bps_helper.graph import *
 
 args_ = arg_utils.SingleArg().args
 
-GAP_THRESHOLD = 20
+GAP_THRESHOLD_COMP = 1000
+GAP_THRESHOLD_COMM = 50000
 
 class RunningSpan:
     def __init__(self):
@@ -346,7 +348,7 @@ class Collector(object):
                 continue
             elif one_pid != trace["pid"]:
                 continue
-            
+
             if name not in dag_node_names_std:
                 ### Only collect nodes in the dag
                 ### TODO (huhanpeng): some trvial nodes may also be useful
@@ -370,6 +372,7 @@ class Collector(object):
             if pid is not None:
                 trace["pid"] = pid
             trace["tid"] = _ret_operator_tid(trace["tid"])
+
             rst_traces["traceEvents"].append(trace)
 
             ### Handle OUTPUT
@@ -861,12 +864,6 @@ class Collector(object):
                 byteps_comm_detail_path = self.pm.search(FileName.BPS_COMM_DETAIL)
                 if byteps_comm_detail_path is None or force_:
                     # need to run preprocessing
-                    if args_.pcap_file_path is None:
-                        SingleLogger().error("Cannot find BytePS comm trace or pcap files.")
-                        exit(1)
-                    pcap_fns = [fn for fn in os.listdir(args_.pcap_file_path) if (os.path.isfile(os.path.join(args_.pcap_file_path,fn)) and fn.endswith(".pcap"))]
-                    pcap_paths = [os.path.join(args_.pcap_file_path, fn) for fn in pcap_fns]
-                    process_names = [fn.split(".pcap")[0] for fn in pcap_fns]
                     ip_to_rank_path = self.pm.search(FileName.IP_TO_RANK)
                     ip_to_rank_dict = {}
                     try:
@@ -879,13 +876,28 @@ class Collector(object):
                     except:
                         SingleLogger().error("Failed to read ip to rank mapping.")
                         exit(1)
+                    
                     if self.platform == "MXNET":
                         gradient_name_list_path = self.pm.search(FileName.TENSOR_NAME)
                     else:
                         gradient_name_list_path = None
+
                     key_dict_path = self.pm.search(FileName.KEY_DICT)
-                    SingleLogger().info("Preprocessing pcap files: {}.".format(pcap_paths))
-                    byteps_comm_detail_path = preprocess_pcap(pcap_paths, process_names, ip_to_rank_dict, key_dict_path, gradient_name_list_path=gradient_name_list_path, platform=self.platform)
+
+                    if args_.pcap_file_path is not None:
+                        pcap_fns = [fn for fn in os.listdir(args_.pcap_file_path) if (os.path.isfile(os.path.join(args_.pcap_file_path,fn)) and fn.endswith(".pcap"))]
+                        pcap_paths = [os.path.join(args_.pcap_file_path, fn) for fn in pcap_fns]
+                        process_names = [fn.split(".pcap")[0] for fn in pcap_fns]
+                        SingleLogger().info("Preprocessing pcap files: {}.".format(pcap_paths))
+                        byteps_comm_detail_path = preprocess_pcap(pcap_paths, process_names, ip_to_rank_dict, key_dict_path, gradient_name_list_path=gradient_name_list_path, platform=self.platform)
+                    elif args_.zmq_log_path is not None:
+                        zmq_log_fns = [fn for fn in os.listdir(args_.zmq_log_path) if (os.path.isfile(os.path.join(args_.zmq_log_path,fn)) and fn.endswith(".log"))]
+                        zmq_log_paths = [os.path.join(args_.zmq_log_path, fn) for fn in zmq_log_fns]
+                        SingleLogger().info("Preprocessing ZMQ log files: {}.".format(zmq_log_paths))
+                        byteps_comm_detail_path = preprocess_comm_timestamp(zmq_log_paths, ip_to_rank_dict, key_dict_path, gradient_name_list_path=gradient_name_list_path, platform=self.platform)
+                    else:
+                        SingleLogger().error("Cannot find BytePS comm trace or pcap files.")
+                        exit(1)
                 else:
                     SingleLogger().info("Found BytePS comm trace file in {}.".format(byteps_comm_detail_path))
                 # read or generate BPS server trace
@@ -1100,10 +1112,14 @@ class Collector(object):
                     and "UPDATE_" in event["name"]) and not ("UPDATE_" in prev_e["name"] and "FW_" in event["name"]) \
                     and "local_num_masks" not in prev_e["name"]:
                     gap = event["ts"] - (prev_e["ts"] + prev_e["dur"])
+                    gap_threshold = GAP_THRESHOLD_COMP if gap_string == GAP_STR_OP2OP else GAP_THRESHOLD_COMM
+                    # if gap_string == GAP_STR_COMM2COMM:
+                    #     print("GAP: {}, prev: {}, cur: {}".format(gap, prev_e["name"], event["name"]))
+                    #     input()
                     ### TODO (huhanpeng): test whether to use this threshold
                     if gap < 0:
                         continue
-                    if gap < GAP_THRESHOLD or self.comm_backend == "NCCL":
+                    if gap < gap_threshold or self.comm_backend == "NCCL":
                         prev_name = self.traceM.ret_unique_name(prev_e)
                         if prev_name not in self.trail_dag.nodes:
                             continue
@@ -1220,9 +1236,9 @@ class Collector(object):
             ### Add duration to the node as an attribute
             self.trail_dag.nodes[node_]["avg"] = self.traceM.lookup_stat(None, None, node_)
 
-            if parse_cat_from_name(node_) == CatName.COMM.value:
-                if "avg" in self.trail_dag.nodes[node_]:
-                    self.trail_dag.nodes[node_]["avg"] /= 10
+            # if parse_cat_from_name(node_) == CatName.COMM.value:
+            #     if "avg" in self.trail_dag.nodes[node_]:
+            #         self.trail_dag.nodes[node_]["avg"] /= 10
 
     def add_gaps_clip_events(self):
         ''' According to the traces and DAG, add a 'gap' field for each edge (u, v)

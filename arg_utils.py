@@ -27,6 +27,7 @@ parser.add_argument("--debug_traces", action="store_true", help="If set, output 
 ### collect
 parser.add_argument("--comm_backend", type=str, default="NCCL", choices=["NCCL", "BYTEPS"], help="Communication backend")
 parser.add_argument("--pcap_file_path", type=str, default=None, help="Path to the directory containing BytePS communication pcap files.")
+parser.add_argument("--zmq_log_path", type=str, default=None, help="Path to the directory containing BytePS communication zmq log files.")
 parser.add_argument("--server_log_path", type=str, default=None, help="Path to the directory containing BytePS server log files.")
 parser.add_argument("--profile_start_step", type=int, default=None, help="The start step of computation profiling. Used for truncating BytePS comm trace.")
 parser.add_argument("--profile_duration", type=int, default=None, help="The duration (in steps) of computation profiling. Used for truncating BytePS comm trace.")

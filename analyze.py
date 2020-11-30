@@ -138,10 +138,10 @@ if args.option == "replay":
 		replayer.replay()
 		cal_edge_cost(replayer.exct_dag)
 		critical_path = dag_longest_path(replayer.exct_dag, clct.pm, weight="cost", default_weight=0, _debug_level=1)
-		with open("/root/critical_path.txt", "w") as f:
-			for (n, t) in critical_path:
-				f.write(n)
-				f.write("\n")
+		# with open("/root/critical_path.txt", "w") as f:
+		# 	for (n, t) in critical_path:
+		# 		f.write(n)
+		# 		f.write("\n")
 	elif args.sub_option == "smlt_delay_cmp":
 		''' Replay with computation delays'''
 		delay_dict = {"DELAY_ALL_CMP": {"delay": 0, "ratio": args.delay_ratio}}

@@ -321,7 +321,8 @@ class TraceManager:
         if traces is None:
             return
         self.traces = traces
-        self.traces = sorted(self.traces, key=lambda x: (x["ts"], x["name"]), reverse=False)
+        # self.traces = sorted(self.traces, key=lambda x: (x["ts"], x["name"]), reverse=False)
+        self._deduplicate_trace()
 
         self.name2sta = None
         self.cat2sta = None
@@ -329,6 +330,28 @@ class TraceManager:
 
         self.max_cnt = 0
         self.ret_stat()
+    
+    def _deduplicate_trace(self):
+        operator_traces_list = self.group_op_by_prefix_and_cat()
+        deduplicated_trace = []
+        for _, traces in operator_traces_list.items():
+            traces = sorted(traces, key=lambda x: (x["ts"], x["name"]))
+            index = 0
+            while index < len(traces):
+                this_event = traces[index]
+                this_name = self.ret_unique_name(this_event)
+                index += 1
+                while index < len(traces):
+                    next_event = traces[index]
+                    next_name = self.ret_unique_name(next_event)
+                    if next_name == this_name:
+                        this_event["dur"] = next_event["ts"] + next_event["dur"] - this_event["ts"]
+                        index += 1
+                    else:
+                        break
+                deduplicated_trace.append(this_event)
+        self.traces = sorted(deduplicated_trace, key=lambda x: (x["ts"], x["name"]))
+                
         
     def _is_comm_trace(self, event):
         return event["cat"] == "Comm"
@@ -503,7 +526,7 @@ class TraceManager:
                     if iter_cnt == -1:
                         continue
                     if event["args"]["cnt"] < iter_cnt:
-                        SingleLogger().warn("Illegal cnt field for this event %s %s %d" % (event["pid"], event["name"], event["args"]["cnt"]))
+                        # SingleLogger().warn("Illegal cnt field for this event %s %s %d" % (event["pid"], event["name"], event["args"]["cnt"]))
                         continue
                     iter_list.append((cur_iter_time - step_start_ts) / 1000.0)
                     fw_bw_list.append((fw_bw_end - step_start_ts) / 1000.0)
@@ -520,7 +543,7 @@ class TraceManager:
                     ### here we assume UPDATE is following the last BP op.
                     if "FW" in event["name"] or "BW" in event["name"]:
                         fw_bw_end = cur_iter_time
-                    
+
             ### Needed if there is only one step
             iter_list.append((cur_iter_time - step_start_ts) / 1000.0)
             fw_bw_list.append((fw_bw_end - step_start_ts) / 1000.0)
@@ -543,6 +566,18 @@ class TraceManager:
         for event in self.traces:
             if event["cat"] == "operator" and not self._is_ignore_for_sta(event):
                 prefix2traces[_get_prefix(event)].append(event)
+        return prefix2traces
+    
+    def group_op_by_prefix_and_cat(self):
+        prefix2traces = {}
+        def _get_prefix_and_cat(e):
+            prefix = e["pid"]
+            e_cat = parse_cat_from_name(e["name"])
+            if (prefix, e_cat) not in prefix2traces:
+                prefix2traces[(prefix, e_cat)] = []
+            return (prefix, e_cat)
+        for event in self.traces:
+            prefix2traces[_get_prefix_and_cat(event)].append(event)
         return prefix2traces
 
     def dump(self, dir_):
