@@ -442,6 +442,8 @@ class TraceManager:
             unique_name = gen_long_name(rank_prefix, name)
         elif self.dir_level == DirLevel.TRIAL:
             unique_name = gen_long_name("%s.%s"%(wk_prefix, rank_prefix), name)
+        else:
+            raise RuntimeError("Unsupported DirLevel.")
 
         if unique_name not in self.name2sta:
             # SingleLogger().warn("Fail to find the trace of %s" % unique_name)
