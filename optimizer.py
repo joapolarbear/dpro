@@ -97,6 +97,8 @@ class _BaseCostModel:
         self.opt = opt
         self.dag = self.opt.dag
         self.node_attr_cache = self.opt.node_attr_cache
+        ### token is the indendifier of each optimization technique
+        self.token = None
 
     def init_search_space(self, candidates, _dag: nx.DiGraph, _pkg: PKGraph):
         raise NotImplementedError()
@@ -113,6 +115,7 @@ class _XLACostModel(_BaseCostModel):
         self.cost_models = xla_cost_model
         self.forbidden_list = set()
         self.init_forbidden_list()
+        self.token = ["+", "-"]
 
     def init_forbidden_list(self):
         # limit the range of nodes during search
@@ -319,10 +322,6 @@ class _XLACostModel(_BaseCostModel):
 
                 # bw_u = self.convert_fw2bw(succ_)
                 # assert bw_u in _dag.nodes and bw_v in _dag.nodes
-                
-                # TODO (huhanpeng): this process is only for NCCL now
-                # if args.comm_backend != "NCCL":
-                #   raise NotImplementedError()
 
                 ### Assumption 2: for edge bw_u->bw_v, if comm_bw_u > bw_v, it can not bring any speedup if fusing u and v.
                 def ret_comm_time(_node):
@@ -545,6 +544,7 @@ class _AMPCostModel(_BaseCostModel):
         super().__init__(opt)
         ### AMP predictor
         self.amp_predictor = AMPPredictor(meta_path=self.clct.pm.search(FileName.METADATA))
+        self.token = [">", "<"]
 
     def init_search_space(self, candidates, _dag: nx.DiGraph, _pkg: PKGraph):
         search_space = []
@@ -569,6 +569,26 @@ class _AMPCostModel(_BaseCostModel):
     def apply(self, s, __dag, __pkg):
         op, target, _ = s
         self.amp_predictor.quantize(self, __dag, target)
+
+class _TensorFusionCM(_BaseCostModel):
+    ''' This is a cost model for HOROVOD tensor fusion
+    '''
+    def __init__(self, opt):
+        super().__init__(opt)
+        self.fusion_threshold_mb = 64 * 1024 * 1024
+        self.cycle_time_ms = 3.5
+        self.token = ["o"]
+    
+    def init_search_space(self, candidates, _dag: nx.DiGraph, _pkg: PKGraph):
+        search_space = []
+        weights = []
+        
+        return search_space, weights
+    
+    def apply(self, s, __dag, __pkg):
+        _, _fusion_threshold_mb, _cycle_time_ms = s
+        
+
 
 class CostModelManager:
     def __init__(self, opt, cost_models):
