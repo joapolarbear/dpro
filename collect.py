@@ -136,11 +136,7 @@ class Collector(object):
             self.dag, self.update_nodes_in_dag = wrap_read_gml(dag_path, platform=self.platform)
             # debug_utils.DebugRecorder().debug_event_end("collect_" + pid+"_comp.read_dag", "Collct", "0")
 
-        if self.platform == "MXNET":
-            dag_node_names_std = list(self.dag.nodes)
-        else:
-            dag_node_names_std = set([standard_name(n, platform=self.platform, update_nodes_in_dag=self.update_nodes_in_dag) for n in self.dag.nodes])
-
+        dag_node_names_std = list(self.dag.nodes)
         wk_prefix, _ = PathManager("/".join(comp_path.split('/')[:-1])).ret_prefix()
         if wk_prefix not in self.run_span:
             self.run_span[wk_prefix] = RunningSpan()
