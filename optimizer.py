@@ -725,8 +725,18 @@ class MCMCOptimizer(Optimizer):
                     continue
                 if orig_name not in self.cost_models[pid].graph_def_util.operation_names or "Assign" in orig_name:
                     self.forbidden_list.add(node)
+    
+    def __dump_cluster_mapping(self, dag, output_path):
+        cluster_index = 0
+        with open(output_path, "w") as f:
+            for node in dag.nodes():
+                if "+" in node:
+                    orig_names, _ = self._get_original_name_pid_from_fused_node(node)
+                    for orig_node_name in orig_names:
+                        f.write("{} {}\n".format(orig_node_name, cluster_index))
+                    cluster_index += 1
 
-    def search(self, init_edges_to_contract = 0.3, graph_cache="/root/graph_cache.pickle", step_size=1):
+    def search(self, graph_cache="/root/graph_cache.pickle", step_size=1):
         ### TODO (huhanpeng): is shallow copy is enough ???
         if graph_cache is not None and os.path.isfile(graph_cache):
             with open(graph_cache, "rb") as f:
@@ -748,25 +758,8 @@ class MCMCOptimizer(Optimizer):
             nodes_on_1 = [node for node in partition_G.nodes if node.startswith("traces_1")]
             partition_G = partition_G.subgraph(nodes_on_1)
             partition_PKG = PKGraph(partition_G)
-            # code.interact(local=locals())
-            # exit(0)
+
             source_nodes = [node for node in partition_G.nodes if len(partition_G.in_edges(node)) == 0]
-            # SingleLogger().info("Randomly initialize partitions by contracting edges...")
-            # for i in trange(k):
-            #     while True:
-            #         while True:
-            #             (u, v) = random.choice(list(partition_G.edges()))
-            #             if u.startswith("traces_1") and v.startswith("traces_1"):
-            #                 break
-            #         if partition_PKG.can_contract_edge(u, v):
-            #             partition_PKG.contract_edge(u, v)
-            #             partition_G, new_node_name = contract_nodes_nx(partition_G, [u, v])
-            #             u0 = self._debug_convert_to_the_other_machine(u)
-            #             v0 = self._debug_convert_to_the_other_machine(v)
-            #             partition_PKG.contract_edge(u0, v0)
-            #             partition_G, new_node_name = contract_nodes_nx(partition_G, [u0, v0])
-            #             break
-            # 
 
             # Run post order traversal on partition_G
             for source in tqdm(source_nodes, total=len(source_nodes)):
@@ -790,6 +783,8 @@ class MCMCOptimizer(Optimizer):
                         PKG.contract_nodes_unsafe(ns0)
                         self.parse_node_attr(G, new_node_name0)
                         initial_partitions_formed += 1
+            if "BPF_DUMP_INIT_CLUSTER_TO" in os.environ:
+                self.__dump_cluster_mapping(G, os.environ["BPF_DUMP_INIT_CLUSTER_TO"])
             if graph_cache:
                 with open(graph_cache, "wb") as f:
                     pickle.dump([G, PKG, self.node_attr_cache, initial_partitions_formed], f)
