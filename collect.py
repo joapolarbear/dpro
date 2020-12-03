@@ -387,23 +387,6 @@ class Collector(object):
                         self.run_span[wk_prefix].init_end(_trace["ts"])
             else:
                 raise NotImplementedError("Unsupported platform {}.".format(self.platform))
-
-        # if self.platform == "TENSORFLOW":
-        #     occurence_counter = {}
-        #     for trace in rst_traces:
-        #         if "ph" in trace and trace["ph"] == "X":
-        #             if trace["name"] in kernel_times:
-        #                 if trace["name"] not in occurence_counter:
-        #                     occurence_counter[trace["name"]] = 0
-        #                 try:
-        #                     kernel_ts, kernel_dur = kernel_times[trace["name"]][occurence_counter[trace["name"]]]
-        #                 except:
-        #                     # SingleLogger.warn("Length mismatch between kernel and op launch traces for op {}".format(trace["name"]))
-        #                     occurence_counter[trace["name"]] += 1
-        #                     continue
-        #                 trace["ts"] = kernel_ts
-        #                 trace["dur"] = kernel_dur
-        #                 occurence_counter[trace["name"]] += 1
         SingleLogger().debug("Comp traces length: {}.".format(len(rst_traces)))
         return rst_traces
 
@@ -776,10 +759,7 @@ class Collector(object):
         SingleLogger().info("Take {} s to combine all traces of length {}".format(time.time() - ts_, len(rst_traces)))
         self.traceM = TraceManager(rst_traces, self.pm.dir_level, check=True)
 
-        ### TODO delete
-        self.traceM.dump(self.pm.path)
-
-    def collect_update_dict(self):
+    def collect_para_dict(self):
         ### collect metadata
         meta_path = self.pm.search(FileName.METADATA)
         if meta_path is None:
@@ -927,7 +907,7 @@ class Collector(object):
                 self.byteps_graph.init(byteps_comm_detail_path, byteps_server_trace_path)
 
         ### TODO (huhanpeng) dump it or not
-        self.collect_update_dict()
+        self.collect_para_dict()
 
         trail_dag_path = self.pm.search(FileName.TRAIL_DAG)
         if force_ or trace_path is None or (self.comm_backend == "NCCL" and nccl_graph_path is None) or trail_dag_path is None:

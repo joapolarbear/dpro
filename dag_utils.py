@@ -62,6 +62,8 @@ def tf_relabel_func(_name, update_nodes_in_dag):
     for prefix in ["COMM.", "COMP.", "BW.", "FW."]:
         if _name.startswith(prefix):
             return _name
+    if _name.startswith("^"):
+        _name = _name[1:]
     if "BytePSPushPull" in _name and "tensor" not in _name:
         _name = "COMM." + _name
     if "allreduce" in _name.lower():
@@ -69,9 +71,9 @@ def tf_relabel_func(_name, update_nodes_in_dag):
             _, tensor_name = _name.split(".")
             if "_" in tensor_name:
                 tensor_name = tensor_name.split("_")[0]
+            _name = "Comm." + tensor_name
         else:
-            tensor_name = _name
-        _name = "Comm." + tensor_name
+            _name = "UPDATE_." + _name
     else:
         if update_nodes_in_dag is not None and _name in update_nodes_in_dag:
             _name = "UPDATE_." + _name
@@ -179,7 +181,7 @@ class DAGManager:
         else:
             return gen_long_name(_prefix, name)
 
-    def _process_edge_mxnet(self, graph, queue_type_list, u, v, para_dict=None, pre_nodes=[], update_ids=[]):
+    def _process_edge_nccl(self, graph, queue_type_list, u, v, para_dict=None, pre_nodes=[], post_nodes=[]):
         ''' Handel one edge in the original depedency graph
         Parameters
         ----------
@@ -206,8 +208,11 @@ class DAGManager:
                     if args_.update_barrier:
                         self.wrap_add_dag(pull_res_node, self.add_prefix("UPDATE_CAL"))
                     else:
-                        for update_id in update_ids:
-                            self.wrap_add_dag(pull_res_node, self.add_prefix("UPDATE_%d"%update_id))
+                        if self.platform == "MXNET":
+                            for update_id in post_nodes:
+                                self.wrap_add_dag(pull_res_node, self.add_prefix("UPDATE_%d"%update_id))
+                        else:
+                            raise NotImplementedError()
             elif self.nccl_graph is not None and self.nccl_graph.algo == NCCL_ALGO.RING:
                 ### Combine chunkId, sliceId and channelId into the graph for RING algorithm
                 chunkNum, sliceNum, channelNum, loopNum = self.nccl_graph.get_IDnum(u)
@@ -267,8 +272,15 @@ class DAGManager:
 
                                     ### MEMCPY_OUT_FUSION_BUFFER --> UPDATE_CAL
                                     prev_name = next_name
-                                    update_name = self.add_prefix("UPDATE_CAL", _prefix=next_rank_prefix)
-                                    self.wrap_add_dag(prev_name, update_name)
+                                    if self.platform == "MXNET":
+                                        update_name = self.add_prefix("UPDATE_CAL", _prefix=next_rank_prefix)
+                                        self.wrap_add_dag(prev_name, update_name)
+                                    elif self.platform == "TENSORFLOW":
+                                        for post_node in post_nodes:
+                                            update_name = self.add_prefix(post_node, _prefix=next_rank_prefix)
+                                            self.wrap_add_dag(prev_name, update_name)
+                                    else:
+                                        raise NotImplementedError()
                 ### end for loop         
             elif self.nccl_graph is not None and self.nccl_graph.algo == NCCL_ALGO.TREE:
                 ### Combine chunkId, sliceId and channelId into the graph for Tree algorithm
@@ -334,8 +346,15 @@ class DAGManager:
                                     
                                     ### -1): Add Recv to Step nodes, for Down process
                                     prev_rawname = gen_long_name(None, "%s.AGGR"%u, suffix="%d_%d_%d_%d_%d_%d"%(loopId, channelId, chunkId, sliceId, rank, 1))
-                                    update_name = self.add_prefix("UPDATE_CAL")
-                                    self.wrap_add_dag(self.add_prefix(prev_rawname), update_name)
+                                    if self.platform == "MXNET":
+                                        update_name = self.add_prefix("UPDATE_CAL")
+                                        self.wrap_add_dag(self.add_prefix(prev_rawname), update_name)
+                                    elif self.platform == "TENSORFLOW":
+                                        for post_node in post_nodes:
+                                            update_name = self.add_prefix(post_node)
+                                            self.wrap_add_dag(self.add_prefix(prev_rawname), update_name)
+                                    else:
+                                        raise NotImplementedError()
                                     # ### Connect all UPDATE nodes to an END node
                                     # self.wrap_add_dag(update_name, "END")
                                     for cld_rank in childs:
@@ -384,8 +403,11 @@ class DAGManager:
                     for pre_node in pre_nodes_:
                         self.wrap_add_dag(self.add_prefix(pre_node), self.add_prefix(cur_node))
                     pre_nodes_ = [cur_node]
-                for update_id in update_ids:
-                    self.wrap_add_dag(self.add_prefix(pre_nodes_[0]), self.add_prefix("UPDATE_%d"%update_id))
+                if self.platform == "MXNET":
+                    for update_id in post_nodes:
+                        self.wrap_add_dag(self.add_prefix(pre_nodes_[0]), self.add_prefix("UPDATE_%d"%update_id))
+                else:
+                    raise NotImplementedError()
         elif "BW" in u and "Comm" in v:
             if self.single:
                 self.wrap_add_dag(
@@ -399,9 +421,9 @@ class DAGManager:
         else:
             self.wrap_add_dag(self.add_prefix(u), self.add_prefix(v))
 
-    def _process_edge_tensorflow(self, graph, queue_type_list, u, v):
-        raise NotImplemented("Implement for single machine, remove comm ops")
+    def _process_edge_byteps(self, graph, queue_type_list, u, v):
         if "BytePSPushPull" in u and "tensor" not in u:
+            ### BytePS traces
             gra_name = u
             if self.byteps_graph is not None:
                 wk_rank = int(self.wk_prefix.split("_")[-1])
@@ -442,35 +464,45 @@ class DAGManager:
             * partition Comm nodes into sub-task nodes if needed.
         '''
         ### Read the original dag for this gpu first
-        mygraph = wrap_read_gml(self.pm.search(FileName.DAG), platform=self.platform)
+        mygraph, _ = wrap_read_gml(self.pm.search(FileName.DAG), platform=self.platform)
         queue_type_list = QueueType().ret_list()
 
         done_comm = []
         for u, v in mygraph.edges:
-            pre_nodes, update_ids = [], []
+            pre_nodes, post_nodes = [], []
             if "Comm." in u:
                 ### Consider Tensor fusion, only those ready tensors are fused and are used to build a graph together
                 tensor_name = u.split("Comm.")[1]
-                tensor_id = para_dict.name_to_tensor_id(tensor_name)
+                if self.platform == "MXNET":
+                    tensor_id = para_dict.name_to_tensor_id(tensor_name)
+                elif self.platform == "TENSORFLOW":
+                    tensor_id = int(tensor_name)
                 nccl_grp_name = self.nccl_graph.tensor2group_name(tensor_id)
                 ### take the fused name as the node name, e.g., Comm.1+2+3
                 u = "Comm." + nccl_grp_name
                 if u in done_comm:
                     continue
                 for _id in nccl_grp_name.split("+"):
-                    co_comm_op = "Comm." + para_dict.tensor_id_to_name(int(_id))   # e.g., Comm.bertmodel0_word_embed_embedding0_weight
+                    if self.platform == "MXNET":
+                        co_comm_op = "Comm." + para_dict.tensor_id_to_name(int(_id))   # e.g., Comm.bertmodel0_word_embed_embedding0_weight
+                    elif self.platform == "TENSORFLOW":
+                        co_comm_op = "Comm.{}".format(_id)
                     prev_bw_nodes = [_u for _u, _ in mygraph.in_edges(co_comm_op)]
-                    assert len(prev_bw_nodes) == 1
+                    # assert len(prev_bw_nodes) == 1, (co_comm_op, prev_bw_nodes)
                     prev_rawname = prev_bw_nodes[0]         # no prefix, start with BW.
                     pre_nodes.append(prev_rawname)
-                    update_id = para_dict.tensor2update[int(_id)]       # e.g., from tensor 256 to update 140
-                    update_ids.append(update_id)
+                    if self.platform == "MXNET":
+                        update_id = para_dict.tensor2update[int(_id)]       # e.g., from tensor 256 to update 140
+                        post_nodes.append(update_id)
+                    elif self.platform == "TENSORFLOW":
+                        post_update_nodes = list(mygraph.successors(co_comm_op))
+                        post_nodes += post_update_nodes
                 done_comm.append(u)
 
-            if self.platform == "TENSORFLOW":
-                self._process_edge_tensorflow(mygraph, queue_type_list, u, v, pre_nodes=pre_nodes)
-            elif self.platform == "MXNET":
-                self._process_edge_mxnet(mygraph, queue_type_list, u, v, para_dict=para_dict, pre_nodes=pre_nodes, update_ids=update_ids)
+            if self.byteps_graph is not None:
+                self._process_edge_byteps(mygraph, queue_type_list, u, v, pre_nodes=pre_nodes)
+            elif self.nccl_graph is not None:
+                self._process_edge_nccl(mygraph, queue_type_list, u, v, para_dict=para_dict, pre_nodes=pre_nodes, post_nodes=post_nodes)
 
         if self.byteps_graph is not None and self.platform == "MXNET":
             for update_id in range(para_dict.tensor2update["max"] + 1):
