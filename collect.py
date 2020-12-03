@@ -133,15 +133,7 @@ class Collector(object):
         if self.dag is None:
             dag_path = self.pm.search(FileName.DAG) if tmp_pm is None else tmp_pm.search(FileName.DAG)
             # debug_utils.DebugRecorder().debug_event_start()
-            self.dag = nx.read_gml(dag_path)
-            if self.platform == "TENSORFLOW":
-                self.update_nodes_in_dag = set()
-                for node in self.dag.nodes:
-                    if "allreduce" in node.lower():
-                        for succ_ in self.dag.successors(node):
-                            self.update_nodes_in_dag.add(succ_)
-                    if "apply" in node.lower() or ("gradientdescent" in node.lower() and "learning_rate" not in node.lower()):
-                        self.update_nodes_in_dag.add(node)
+            self.dag, self.update_nodes_in_dag = wrap_read_gml(dag_path, platform=self.platform)
             # debug_utils.DebugRecorder().debug_event_end("collect_" + pid+"_comp.read_dag", "Collct", "0")
 
         if self.platform == "MXNET":
@@ -666,10 +658,15 @@ class Collector(object):
                     tensor_id_str = op_name.split(".")[1]
                 else:
                     tensor_id_str = process_name.split(".")[1]
+                if self.platform == "TENSORFLOW" and "_" in tensor_id_str:
+                    tensor_id_str = tensor_id_str.split("_")[0]
 
                 input0 = None
                 if args_.trace_level == "debug" and tensor_id_str.isdigit():
-                    tensor_name = self.para_dict.tensor_id_to_name(int(tensor_id_str))
+                    if self.platform == "MXNET":
+                        tensor_name = self.para_dict.tensor_id_to_name(int(tensor_id_str))
+                    elif self.platform == "TENSORFLOW":
+                        raise NotImplementedError()
                     input_nodes = [u for u, _ in self.dag.in_edges(tensor_name)]
                     if len(input_nodes) == 1:
                         input0 = list(input_nodes)[0]
@@ -795,13 +792,23 @@ class Collector(object):
             with open(meta_path, 'r') as fp:
                 self.metadata = json.load(fp)
 
-        ### Map tensor name to its update index
-        if "opt_aggregate_num" in self.metadata:
-            aggregate_num = self.metadata["opt_aggregate_num"]
-        else:
-            aggregate_num = 0
-        self.para_dict = ParameterDict(self.metadata["gradient_name_list"])
-        self.para_dict.map_tensors_to_update(aggregate_num)
+        if self.platform == "MXNET":
+            self.para_dict = ParameterDict(self.metadata["gradient_name_list"])
+            ### Map tensor name to its update index
+            if "opt_aggregate_num" in self.metadata:
+                aggregate_num = self.metadata["opt_aggregate_num"]
+            else:
+                aggregate_num = 0
+            self.para_dict.map_tensors_to_update(aggregate_num)
+        elif self.platform == "TENSORFLOW":
+            tensor_path = self.pm.search(FileName.TENSOR_NAME)
+            if tensor_path is None:
+                SingleLogger().error(
+                    "{} not found. Fail to map_tensors_to_update".format(FileName.TENSOR_NAME.value))
+            else:
+                with open(tensor_path, 'r') as fp:
+                    gradient_name_list = json.load(fp)["gradient_name_list"]
+            self.para_dict = ParameterDict(gradient_name_list)
 
     def _collect_rank_dag(self, gpu_path, worker_dag_list, critical_path, index):
         SingleLogger().info("- Collect DAG in %s ..." % (gpu_path))
@@ -924,15 +931,14 @@ class Collector(object):
                 self.byteps_graph.init(byteps_comm_detail_path, byteps_server_trace_path)
 
         ### TODO (huhanpeng) dump it or not
-        if self.platform == "MXNET":
-            self.collect_update_dict()
+        self.collect_update_dict()
 
         trail_dag_path = self.pm.search(FileName.TRAIL_DAG)
         if force_ or trace_path is None or (self.comm_backend == "NCCL" and nccl_graph_path is None) or trail_dag_path is None:
             self.collect_traces()
             iter_time, _ = self.iter_time()
             if self.comm_backend == "NCCL":
-                self.nccl_graph.init_nccl_fusion(self.traceM, len(self.para_dict.gradient_name_list))
+                self.nccl_graph.init_nccl_fusion(self.traceM, len(self.para_dict.gradient_name_list), show=False)
             self.collect_trial_dag()
             self.fine_tune_trace_dag()
             ### Asynchonously cache these info

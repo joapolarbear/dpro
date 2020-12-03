@@ -58,8 +58,53 @@ def dag_longest_path(G, pathM=None, weight='weight', default_weight=0, _debug_le
 
     return list(zip(critical_path, len_list))
 
+def tf_relabel_func(_name, update_nodes_in_dag):
+    for prefix in ["COMM.", "COMP.", "BW.", "FW."]:
+        if _name.startswith(prefix):
+            return _name
+    if "BytePSPushPull" in _name and "tensor" not in _name:
+        _name = "COMM." + _name
+    if "allreduce" in _name.lower():
+        if "." in _name:
+            _, tensor_name = _name.split(".")
+            if "_" in tensor_name:
+                tensor_name = tensor_name.split("_")[0]
+        else:
+            tensor_name = _name
+        _name = "Comm." + tensor_name
+    else:
+        if update_nodes_in_dag is not None and _name in update_nodes_in_dag:
+            _name = "UPDATE_." + _name
+        elif _name.startswith("gradients"):
+            _name = "BW." + _name
+        else:
+            _name = "FW." + _name
+    return _name
+
+def wrap_read_gml(gml_path, platform="MXNET"):
+    ''' The node name in Tensorflow is not standard, transfer it to standard form first
+        Tranverse the dag nodes twice
+    '''
+    mygraph = nx.read_gml(gml_path)
+    if platform == "TENSORFLOW":
+        update_nodes_in_dag = set()
+        for node in mygraph.nodes:
+            if "allreduce" in node.lower():
+                for succ_ in mygraph.successors(node):
+                    update_nodes_in_dag.add(succ_)
+            if "apply" in node.lower() or ("gradientdescent" in node.lower() and "learning_rate" not in node.lower()):
+                update_nodes_in_dag.add(node)
+        new_graph = nx.DiGraph()
+        for u, v in mygraph.edges:
+            new_graph.add_edge(tf_relabel_func(u, update_nodes_in_dag), tf_relabel_func(v, update_nodes_in_dag))
+        mygraph = new_graph
+    else:
+        update_nodes_in_dag = None
+    return mygraph, update_nodes_in_dag
+
 def standard_name(_name, platform="TENSORFLOW", update_nodes_in_dag=None):
     '''Fetch and handle the trace name'''
+    ### TODO combine this function with wrap_read_gml, test MXNET
     if platform == "MXNET":
         #! add for mxnet-gluon case
         if "name=" in _name:
@@ -68,26 +113,7 @@ def standard_name(_name, platform="TENSORFLOW", update_nodes_in_dag=None):
         _name = "BW." + _name.split("_backward")[0] if "_backward" in _name else "FW." + _name
         _name = _name.split("_fwd")[0] if "_fwd" in _name else _name
     elif platform == "TENSORFLOW":
-        for prefix in ["COMM.", "COMP.", "BW.", "FW."]:
-            if _name.startswith(prefix):
-                return _name   
-        if "BytePSPushPull" in _name and "tensor" not in _name:
-            _name = "COMM." + _name
-        if "allreduce" in _name.lower():
-            if "." in _name:
-                _, tensor_name = _name.split(".")
-                if "_" in tensor_name:
-                    tensor_name = tensor_name.split("_")[0]
-            else:
-                tensor_name = _name
-            _name = "Comm." + tensor_name
-        else:
-            if update_nodes_in_dag is not None and _name in update_nodes_in_dag:
-                _name = "UPDATE_." + _name
-            elif _name.startswith("gradients"):
-                _name = "BW." + _name
-            else:
-                _name = "FW." + _name
+        _name = tf_relabel_func(_name, update_nodes_in_dag)
     return _name
 
 class DAGManager:
@@ -416,7 +442,7 @@ class DAGManager:
             * partition Comm nodes into sub-task nodes if needed.
         '''
         ### Read the original dag for this gpu first
-        mygraph = nx.read_gml(self.pm.search(FileName.DAG))
+        mygraph = wrap_read_gml(self.pm.search(FileName.DAG), platform=self.platform)
         queue_type_list = QueueType().ret_list()
 
         done_comm = []
