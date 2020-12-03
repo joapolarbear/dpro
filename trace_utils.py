@@ -53,7 +53,7 @@ class FileName(Enum):
     TRACE="bps_trace_final.json"
     COMP="temp.json"
     SYMBOL="symbol_debug_str.txt"
-    TENSOR_NAME="gradient_name_list.txt"
+    TENSOR_NAME="gradient_name_list.json"
     COMM_DETAIL="comm_detail.json"
     INFO="info.json"
     NCCL_GRAPH="nccl_graph.txt"
@@ -388,7 +388,7 @@ class TraceManager:
                     "cat_cursor": None, 
                     "step_cnt": 0,
                     ### used for calculating iteration time, and fw time
-                    "step_start": None,
+                    "cur_step": None,
                     "fw_list": [],
                     "bw_list": [],
                     "iter_list": [],
@@ -432,35 +432,40 @@ class TraceManager:
                 pass
             elif pid_info["cat_cursor"] not in AS_START_CAT and cat in AS_START_CAT:
                 pid_info["step_cnt"] += 1
-            elif pid_info["cat_cursor"] in AS_START_CAT and cat == "operator.UPDATE":
+            elif (pid_info["cat_cursor"] in AS_START_CAT) and cat == "operator.UPDATE":
                 ### handle the overlapping cases between UPDATE and (IO, FW)
                 pid_info["step_cnt"] -= 1
             event["args"]["step"] = pid_info["step_cnt"]
-            pid_info["cat_cursor"] = cat
+            if parse_cat_from_name(event["name"]) == CatName.OPERATOR.value:
+                pid_info["cat_cursor"] = cat
             self.max_step = max(event["args"]["step"], self.max_step)
 
             ### calculate the iteration time
             if parse_cat_from_name(event["name"]) != CatName.OPERATOR.value:
                 continue    
-            if pid_info["step_start"] is None:
+            if pid_info["cur_step"] is None:
                 ### initialization
                 pid_info["step_start_ts"] = event['ts']
                 pid_info["cur_iter_time"] = event['ts'] + event['dur']
-                pid_info["step_start"] = event["args"]["step"]
-            elif pid_info["step_start"] != event["args"]["step"]:
+                pid_info["cur_step"] = event["args"]["step"]
+            elif pid_info["cur_step"] != event["args"]["step"]:
                 ### a new iteration
                 assert pid_info["step_start_ts"] is not None
-                if pid_info["step_start"] == -1:
+                if pid_info["cur_step"] == -1:
                     continue
-                assert event["args"]["step"] > pid_info["step_start"], (event)
+                assert event["args"]["step"] > pid_info["cur_step"], (event)
                 pid_info["iter_list"].append((pid_info["cur_iter_time"] - pid_info["step_start_ts"]) / 1000.0)
-                pid_info["fw_list"].append((pid_info["fw_end"] - pid_info["step_start_ts"]) / 1000.0)
-                pid_info["bw_list"].append((pid_info["bw_end"] - pid_info["bw_start"]) / 1000.0)
+                try:
+                    pid_info["fw_list"].append((pid_info["fw_end"] - pid_info["step_start_ts"]) / 1000.0)
+                    pid_info["bw_list"].append((pid_info["bw_end"] - pid_info["bw_start"]) / 1000.0)
+                except:
+                    print(event, pid_info)
+                    raise
                 SingleLogger().debug("%s - the %d th iteration: FW: %f, BW: %f, Iteration time: %f" % (prefix, len(pid_info["iter_list"]), pid_info["fw_list"][-1], pid_info["bw_list"][-1], pid_info["iter_list"][-1]))
                 pid_info["step_start_ts"] = event['ts']
                 pid_info["bw_start"] = None
                 pid_info["cur_iter_time"] = event['ts'] + event['dur']
-                pid_info["step_start"] = event["args"]["step"]
+                pid_info["cur_step"] = event["args"]["step"]
             else:
                 ### during an iteration
                 pid_info["cur_iter_time"] = event['ts'] + event['dur']
@@ -496,7 +501,7 @@ class TraceManager:
         ### iter_list_all, shape = (n_GPUs, n_steps) ==> (n_steps)
         iter_list_all = np.average(np.array(iter_list_all), axis=0)
         self.iter_time = np.average(iter_list_all)
-        self.opt_step = np.argmin(np.abs(iter_list_all - iter_time))
+        self.opt_step = np.argmin(np.abs(iter_list_all - self.iter_time))
         SingleLogger().info("<Overall> step %d is the one closest to average %f - %s" % (self.opt_step, self.iter_time, iter_list_all))
                 
         """calculate the avg """

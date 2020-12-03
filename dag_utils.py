@@ -58,7 +58,7 @@ def dag_longest_path(G, pathM=None, weight='weight', default_weight=0, _debug_le
 
     return list(zip(critical_path, len_list))
 
-def standard_name(_name, platform="TENSORFLOW"):
+def standard_name(_name, platform="TENSORFLOW", update_nodes_in_dag=None):
     '''Fetch and handle the trace name'''
     if platform == "MXNET":
         #! add for mxnet-gluon case
@@ -73,8 +73,18 @@ def standard_name(_name, platform="TENSORFLOW"):
                 return _name   
         if "BytePSPushPull" in _name and "tensor" not in _name:
             _name = "COMM." + _name
+        if "allreduce" in _name.lower():
+            if "." in _name:
+                _, tensor_name = _name.split(".")
+                if "_" in tensor_name:
+                    tensor_name = tensor_name.split("_")[0]
+            else:
+                tensor_name = _name
+            _name = "Comm." + tensor_name
         else:
-            if _name.startswith("gradients"):
+            if update_nodes_in_dag is not None and _name in update_nodes_in_dag:
+                _name = "UPDATE_." + _name
+            elif _name.startswith("gradients"):
                 _name = "BW." + _name
             else:
                 _name = "FW." + _name
