@@ -783,12 +783,12 @@ class MCMCOptimizer(Optimizer):
                         PKG.contract_nodes_unsafe(ns0)
                         self.parse_node_attr(G, new_node_name0)
                         initial_partitions_formed += 1
-            if "BPF_DUMP_INIT_CLUSTER_TO" in os.environ:
-                self.__dump_cluster_mapping(G, os.environ["BPF_DUMP_INIT_CLUSTER_TO"])
             if graph_cache:
                 with open(graph_cache, "wb") as f:
                     pickle.dump([G, PKG, self.node_attr_cache, initial_partitions_formed], f)
                 SingleLogger().info("Graph cache dumped to {}.".format(graph_cache))
+        if "BPF_DUMP_INIT_CLUSTER_TO" in os.environ:
+            self.__dump_cluster_mapping(G, os.environ["BPF_DUMP_INIT_CLUSTER_TO"])
         # initialize heat history
         for node in G.nodes:
             self.heat_history[node] = [(0, 0)] * self.heat_window_size
