@@ -814,6 +814,7 @@ class Collector(object):
                 worker_root, worker_dirs, _ = list(os.walk(worker_path))[0]
                 for worker_dir in sorted(worker_dirs):
                     gpu_path = os.path.join(worker_root, worker_dir)
+                    # self._collect_rank_dag(gpu_path, worker_dag_list, critical_path, len(threads))
                     t = threading.Thread(target=self._collect_rank_dag, args=(gpu_path, worker_dag_list, critical_path, len(threads)))
                     t.start()
                     threads.append(t)

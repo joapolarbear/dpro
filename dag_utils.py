@@ -482,6 +482,7 @@ class DAGManager:
                 u = "Comm." + nccl_grp_name
                 if u in done_comm:
                     continue
+                _first = True
                 for _id in nccl_grp_name.split("+"):
                     if self.platform == "MXNET":
                         co_comm_op = "Comm." + para_dict.tensor_id_to_name(int(_id))   # e.g., Comm.bertmodel0_word_embed_embedding0_weight
@@ -495,8 +496,10 @@ class DAGManager:
                         update_id = para_dict.tensor2update[int(_id)]       # e.g., from tensor 256 to update 140
                         post_nodes.append(update_id)
                     elif self.platform == "TENSORFLOW":
-                        post_update_nodes = list(mygraph.successors(co_comm_op))
-                        post_nodes += post_update_nodes
+                        if _first:
+                            post_update_nodes = list(mygraph.successors(co_comm_op))
+                            post_nodes += post_update_nodes
+                            _first = False
                 done_comm.append(u)
 
             if self.byteps_graph is not None:
@@ -588,13 +591,11 @@ class DAGManager:
                     ### prev event has ended, should be deleted from in_process_events
                     del in_process_events[i]
 
-                    ### TODO (huhanpeng) do not follow the dependency graph, ignore now
-                    if "BW.bertencoder0_embedding0" in prev_event["name"] or "BW.bertencoder0_embedding0" in event["name"]:
-                        continue
                     #! TODO: only add once, to verify
-                    self.wrap_add_dag(
-                        self.add_prefix(prev_event["name"]), 
-                        self.add_prefix(event["name"]))
+                    if prev_event["name"] != event["name"]:
+                        self.wrap_add_dag(
+                            self.add_prefix(prev_event["name"]), 
+                            self.add_prefix(event["name"]))
                 else:
                     ### if prev event has not ended, current node should share 
                     ### the parent ops of the prev event
@@ -642,8 +643,12 @@ class DAGManager:
         max_para_degree = self._add_new_edges_via_order()
 
         #！til now, all the edges for one GPU have been added.
-        # if not _pretty:
-        #     critical_path = dag_longest_path(self.dag, self.pm, weight="weight", default_weight=0)
+        if not _pretty:
+            composed_dag = nx.DiGraph()
+            composed_dag.add_edges_from(self.dag)
+            print(list(nx.find_cycle(composed_dag, orientation="original")))
+            visualize_gml(composed_dag)
+            critical_path = dag_longest_path(composed_dag, self.pm, weight="weight", default_weight=0)
 
         # return max_para_degree, critical_path
         return 1, critical_path
