@@ -1,5 +1,7 @@
 from networkx.utils.rcm import reverse_cuthill_mckee_ordering
 from scapy.all import *
+from scapy.layers.inet import TCP
+from scapy.layers.inet import IP
 from arg_utils import SingleArg
 import json
 import os
@@ -521,7 +523,7 @@ def parse_server_logs(server_log_paths, node_rank_list, key_dict_path,
                 try:
                     name, keys = line.split(":")
                 except:
-                    pass
+                    continue
                 if "BytePSPushPull" in name or "grad" in name:
                     tensor_name = name.strip()
                     key_list = keys.split()

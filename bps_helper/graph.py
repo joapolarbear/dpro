@@ -67,7 +67,7 @@ def optimize_time_shift(shift_constraints: dict):
     # denotes contraint: S_node_id_0 >= S_node_id_1 + value
     # base node is chosen as the node with smallest node_id
     node_ids = set()
-    for 
+    pass
 
 
 

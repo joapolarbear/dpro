@@ -15,10 +15,12 @@ import scipy
 from wwl import PairwiseWWL, PairwiseOverlap
 import igraph
 from scipy.special import softmax
-from tqdm import trange
+from tqdm import trange, tqdm
 from multiprocessing import Pool
 
 from .p_dispersion import p_dispersion_local_search, p_dispersion_lp, parallel_p_dispersion_local_search
+from .pk_graph import PKGraph, PKGraphCycleError, contract_nodes_nx, \
+                        defuse_nodes_inplace_nx, postorder_contract_nx, subgraph_partition_connected_nx
 
 def format_feed(node_name, shape):
     feed_str = "feed {{\n\tid {{ node_name: \"{}\" }}\n\tshape {{\n".format(node_name)
@@ -57,13 +59,22 @@ def worker_func_overlap(subgraphs, node_features, k, wid):
     selected_indices = p_dispersion_local_search(pw_ovlp, k, sample_ratio=0.05, patience=10, tqdm_position=wid)
     return selected_indices
 
-class GDUNonFixedShapeError(Exception):
+class GSInternalErrors(Exception):
     pass
 
-class GDUNotInGraphError(Exception):
+class GSNonFixedShapeError(GSInternalErrors):
     pass
 
-class GDUSubgraphTooSmallError(Exception):
+class GSNotInGraphError(GSInternalErrors):
+    pass
+
+class GSSubgraphTooSmallError(GSInternalErrors):
+    pass
+
+class GSFailedToCompileSampleError(GSInternalErrors):
+    pass
+
+class GSDuplicateSubgraphError(GSInternalErrors):
     pass
 
 class GraphDefUtil(object):
@@ -115,7 +126,7 @@ class GraphDefUtil(object):
         # check ops are in the graph
         for node_name in node_names:
             if node_name not in self.operation_names:
-                raise GDUNotInGraphError("[Cost Model] {} not in graph ops.".format(node_name))
+                raise GSNotInGraphError("[Cost Model] {} not in graph ops.".format(node_name))
         subgraph_nodes = set()
         for name in node_names:
             potential_op = self.original_graph.get_operation_by_name(name)
@@ -129,12 +140,12 @@ class GraphDefUtil(object):
             if potential_op.type not in forbidden_op_types:
                 subgraph_nodes.add(potential_op)
         if len(subgraph_nodes) < 2:
-            raise GDUSubgraphTooSmallError("Subgraph too small (# effective ops < 2).")
+            raise GSSubgraphTooSmallError("Subgraph too small (# effective ops < 2).")
         for node in subgraph_nodes:
             # check fixed shape
             if not self.is_fixed_shape(node.outputs[0].shape):
                 # print("[Cost Model] {} has non-fixed shape at compile time.".format(node.name))
-                raise GDUNonFixedShapeError("{} has non-fixed shape at compile time.".format(node.name))
+                raise GSNonFixedShapeError("{} has non-fixed shape at compile time.".format(node.name))
         subgraph_frontline_nodes = set()
         internal_subgraph_nodes = set()
         subgraph_input_nodes = set()
@@ -177,7 +188,7 @@ class GraphDefUtil(object):
                     # check if shape fixed
                     if not self.is_fixed_shape(op_input_source.outputs[0].shape):
                         # print("[Cost Model] {} has non-fixed shape at compile time.".format(op_input_source.name))
-                        raise GDUNonFixedShapeError("{} has non-fixed shape at compile time.".format(op_input_source.name))
+                        raise GSNonFixedShapeError("{} has non-fixed shape at compile time.".format(op_input_source.name))
                     if "BroadcastGradientArgs" in op_input_source.name:
                         node_def = op_input_source.node_def
                         if not op_input_source in subgraph_input_nodes and not op_input_source in internal_subgraph_nodes and not op_input_source in subgraph_frontline_nodes:
@@ -256,7 +267,7 @@ class GraphDefUtil(object):
                 shape_as_list = [int(value) for value in list(node.outputs[0].shape)]
             except:
                 print("[GraphDefUtil] Node {} has non-fixed shapes.".format(node.name))
-                raise GDUNonFixedShapeError("[GraphDefUtil] Node {} has non-fixed shapes.".format(node.name))
+                raise GSNonFixedShapeError("[GraphDefUtil] Node {} has non-fixed shapes.".format(node.name))
             feed_shapes.append(shape_as_list)
         fetch_names = []
         for node in output_nodes:
@@ -388,6 +399,23 @@ class SampleGenerator():
             subgraph_nodes.add(next_node)
             current_node = next_node
         return list(subgraph_nodes)
+    
+    def _max_cluster_sampler(self, forbidden_list):
+        G: nx.DiGraph = self.nx_graph.copy()
+        PKG = PKGraph(G)
+
+        source_nodes = [node for node in G.nodes if len(G.in_edges(node)) == 0]
+
+        # Run post order traversal on G
+        for source in tqdm(source_nodes, total=len(source_nodes)):
+            _, _, G = postorder_contract_nx(G, PKG, source, forbidden_list=forbidden_list, size_limit=800)
+        
+        clusters_formed = []
+        for node_name in tqdm(G.nodes()):
+            if "+" in node_name:
+                cluster_nodes = node_name.split("+")
+                clusters_formed.append(cluster_nodes)
+        return clusters_formed
 
     def get_original_graph_def(self):
         return self.graph_def_util.original_graph.as_graph_def(), get_input_def_from_graph_(self.graph_def_util.original_graph)
@@ -402,6 +430,39 @@ class SampleGenerator():
         chosen_node = random.choices(op_names, weights=op_weights, k=1)[0]
         self.node_sample_weights[self.nx_graph.nodes[chosen_node]["hash_value"]] += 1
         return chosen_node
+    
+    # this method returns a generator of functions
+    def gen_max_cluster(self, forbidden_nodes=None, random_sample=False, min_cluster_size=4, forbidden_ratio=0.2):
+        if forbidden_nodes is None or random_sample:
+            forbidden_nodes = random.sample(self.nx_graph.nodes, k=int(len(self.nx_graph.nodes) * forbidden_ratio))
+        clusters = self._max_cluster_sampler(forbidden_list=forbidden_nodes)
+        def ret_gen():
+            for cluster_nodes in clusters:
+                def try_generate_cluster_config(output_dir, sample_id, 
+                                                _min_cluster_size = min_cluster_size, 
+                                                _cluster_nodes = cluster_nodes):
+                    return self.gen_subgraph_def_config(_cluster_nodes, output_dir, sample_id, _min_cluster_size)
+                yield try_generate_cluster_config
+        return ret_gen(), len(clusters)
+
+    def gen_subgraph_def_config(self, cluster_nodes, output_dir, sample_id, min_cluster_size):
+        # filter the selected nodes
+        filtered_selected_node_names = []
+        for node_name in cluster_nodes:
+            if not "Assign" in node_name and not "Initializer" in node_name:
+                filtered_selected_node_names.append(node_name)
+        if len(filtered_selected_node_names) < min_cluster_size:
+            raise GSSubgraphTooSmallError
+
+        graph_def_path, graph_def_config_path = self.graph_def_util.get_subgraph_def_config_from_nodes(filtered_selected_node_names, output_dir, sample_id)
+
+        sub_g = self.nx_graph.subgraph(filtered_selected_node_names)
+        g_hash = nx.algorithms.weisfeiler_lehman_graph_hash(sub_g, node_attr="hash_value")
+        if g_hash in self.generated_graph_hashes:
+            raise GSDuplicateSubgraphError
+        else:
+            self.generated_graph_hashes.add(g_hash)
+            return graph_def_path, graph_def_config_path, sub_g
     
     def gen_random_subgraph(self, output_dir, sample_id, choose_root_from_ops=None, min_levels=1, max_levels=10, forest_fire_p=0.5):
         # op selection logic
@@ -435,33 +496,14 @@ class SampleGenerator():
                 selected_node_names = self._random_walk_sampler(root_op, num_levels)
             else:
                 raise RuntimeError("This should not happen")
-            # filter the selected nodes
-            filtered_selected_node_names = []
-            for node_name in selected_node_names:
-                if not "Assign" in node_name and not "Initializer" in node_name:
-                    filtered_selected_node_names.append(node_name)
-            if len(filtered_selected_node_names) < min_levels+ 1:
-                continue
             try:
-                graph_def_path, graph_def_config_path = self.graph_def_util.get_subgraph_def_config_from_nodes(filtered_selected_node_names, output_dir, sample_id)
-            except KeyboardInterrupt as e:
-                raise RuntimeError()
-            except Exception as e:
-                # this graph is not valid because it contains non-fixed shapes
-                # traceback.print_exc()
-                # exit(0)
-                continue
-            sub_g = self.nx_graph.subgraph(selected_node_names)
-            g_hash = nx.algorithms.weisfeiler_lehman_graph_hash(sub_g, node_attr="name")
-            if g_hash in self.generated_graph_hashes:
+                graph_def_path, graph_def_config_path, sub_g = self.gen_subgraph_def_config(selected_node_names, output_dir, sample_id, min_levels+1)
+            except GSInternalErrors as e:
                 duplicated_graph_count += 1
-                print("\033[91m Graph hash duplicated. \033[0m")
-                if duplicated_graph_count > 50:
-                    raise RuntimeError("Cannot generate new samples.")
-            else:
-                # print("\033[94m Adding graph hash {}. \033[0m".format(g_hash))
-                self.generated_graph_hashes.add(g_hash)
-                break
+                if duplicated_graph_count > 200:
+                    raise RuntimeError("Cannot generate new subgraphs.")
+                continue
+            break
         return graph_def_path, graph_def_config_path, sub_g
 
 class SubgraphSelector():

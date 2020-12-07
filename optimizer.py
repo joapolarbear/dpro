@@ -16,7 +16,7 @@ from tqdm import tqdm, trange
 from replay import Replayer
 from trace_utils import *
 from dag_utils import *
-from pk_graph import PKGraph, PKGraphCycleError, contract_nodes_nx, \
+from cost_model_xla.pk_graph import PKGraph, PKGraphCycleError, contract_nodes_nx, \
                     defuse_nodes_inplace_nx, postorder_contract_nx, subgraph_partition_connected_nx
 
 class GraphExpand(Enum):

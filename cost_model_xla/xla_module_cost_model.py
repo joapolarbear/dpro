@@ -1,4 +1,4 @@
-from cost_model_xla.gen_samples import GDUNotInGraphError
+from cost_model_xla.gen_samples import GSNotInGraphError
 import tensorflow as tf
 import numpy as np
 import math
@@ -21,7 +21,7 @@ except:
 from cost_model_xla.xlatools import compile_to_hlo, extract_kernel_features_from_hlo, replay_and_generate_kernel_sample
 from google.protobuf.json_format import Parse
 from cost_model_xla.gen_dataset_utils import XlaKernelDataset, XlaModuleTestSet
-from cost_model_xla.gen_samples import GDUNotInGraphError, GDUNonFixedShapeError, GDUSubgraphTooSmallError, GraphDefUtil
+from cost_model_xla.gen_samples import GSNotInGraphError, GSNonFixedShapeError, GSSubgraphTooSmallError, GraphDefUtil
 from tqdm import tqdm, trange
 from collections import defaultdict
 import traceback
@@ -660,7 +660,7 @@ class XLAModuleCostModel():
     def predict(self, node_names):
         try:
             graph_def_path, config_path = self.graph_def_util.get_subgraph_def_config_from_nodes(node_names, self._tmp_dir, 0)
-        except (GDUNotInGraphError, GDUSubgraphTooSmallError, GDUNonFixedShapeError) as e:
+        except (GSNotInGraphError, GSSubgraphTooSmallError, GSNonFixedShapeError) as e:
             print("[Cost Model] Failed to generate legal graph def for input nodes: {}".format(e))
             return -1, {}
         except RuntimeError:
