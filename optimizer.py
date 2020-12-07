@@ -1047,6 +1047,8 @@ class MCTSOptimizer(Optimizer):
                 c = GS_c.quality + UCB_GAMMA * math.sqrt((2 * math.log(GS.visit_cnt)) / GS_c.visit_cnt)
             elif self.ucb_type == "AVG":
                 c = GS_c.quality / GS_c.visit_cnt + UCB_GAMMA * math.sqrt((2 * math.log(GS.visit_cnt)) / GS_c.visit_cnt)
+            else:
+                raise RuntimeError("Invalid UCB_type")
             if GS_opt is None or c > c_opt:
                 c_opt = c
                 GS_opt = GS_c
