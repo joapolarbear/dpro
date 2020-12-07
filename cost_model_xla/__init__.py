@@ -1,1 +1,2 @@
-from .cost_model import XlaDataset, FusionCostModel
+from .gen_dataset_utils import XlaDataset
+from .xla_module_cost_model import FusionCostModel

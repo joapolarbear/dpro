@@ -39,14 +39,6 @@ def compile_to_hlo(graph_path, config_path, dump_path_unopt, dump_path_opt):
         print(status)
         raise RuntimeError("Failed to compile to HLO.")
 
-def gen_feature_vector(hlo_module_path, output_path, gflops_per_second, gbytes_per_second):
-    _check_arg_types([hlo_module_path, output_path, gflops_per_second, gbytes_per_second], [str, str, float, float])
-    _check_file_exist_for_reading(hlo_module_path)
-    _check_file_available_for_writing(output_path)
-    status = _XLATOOLS_CLIB.C_API_GenFeatureVector(hlo_module_path.encode(), output_path.encode(), gflops_per_second, gbytes_per_second)
-    if status != 0:
-        raise RuntimeError("Failed to generate feature vector.")
-
 def replay_hlo(hlo_path, replay_exec=None):
     if replay_exec is None:
         replay_exec = "/root/tensorflow/bazel-bin/tensorflow/compiler/xla/tools/replay_computation_gpu"

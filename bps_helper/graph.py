@@ -61,6 +61,17 @@ class ServerOpCounter(object):
 			res_name = None
 		return res_name
 
+def optimize_time_shift(shift_constraints: dict):
+    # shift_constraints contains node-level time shift constaints
+    # mapping: (node_id_0: int, node_id_1: int) -> value: float
+    # denotes contraint: S_node_id_0 >= S_node_id_1 + value
+    # base node is chosen as the node with smallest node_id
+    node_ids = set()
+    for 
+
+
+
+
 class bytepsGraph:
     """ Helper class for processing the detailed communication trace of BytePS
     """
@@ -301,11 +312,13 @@ class bytepsGraph:
         for key, durations in self.comm_durations.items():
             _, _, _, op = key
             if op == COMM_OPS.PUSH_REQ or op == COMM_OPS.PUSH_RES:
-                if len(durations) != mode_len + 1:
+                # if len(durations) != mode_len + 1:
+                if abs(len(durations) - mode_len) > 2:
                     self._ignored_tensors.add(key)
                 chopped_durations = durations[self.PROFILE_ITER_START + 1:self.PROFILE_ITER_START+ 1 + self.PROFILE_ITER_DURATION]
             else:
-                if len(durations) != mode_len:
+                # if len(durations) != mode_len:
+                if abs(len(durations) - mode_len) > 1:
                     self._ignored_tensors.add(key)
                 chopped_durations = durations[self.PROFILE_ITER_START:self.PROFILE_ITER_START+self.PROFILE_ITER_DURATION]
             self.comm_durations[key] = chopped_durations
@@ -409,9 +422,9 @@ class bytepsGraph:
             unique_tensors.add(tensor_name)
             source_rank = self._get_node_from_dev_name(source)
             source_ranks.add(source_rank)
-            if "server" in source:
-                if source_rank > master_node:
-                    master_node = source_rank
+            # if "server" in source:
+            #     if source_rank > master_node:
+            #         master_node = source_rank
             if source_rank not in durations_dict:
                 durations_dict[source_rank] = {}
             if key not in intervals:
@@ -435,60 +448,114 @@ class bytepsGraph:
                 intervals[server][st:ed] = True
             copy_first_ops[server][tensor_name] = durations
         
+        master_node = sorted(list(source_ranks))[0]
+        
         if master_node == -1:
             SingleLogger().error("Cannot find server node traces.")
             return
         
         send_delays = {}
-        for source_rank in durations_dict.keys():
-            if source_rank != master_node:
-                send_delays[source_rank] = float('inf')
+        send_delay_keys = {}
+        # for source_rank in durations_dict.keys():
+        #     if source_rank != master_node:
+        #         send_delays[source_rank] = float('inf')
+        for r0 in source_ranks:
+            for r1 in source_ranks:
+                if r0 != r1:
+                    send_delays[(r0, r1)] = float('inf')
 
         self.master_host_id = master_node
 
         def _before_align_is_first_push(key, index):
             source, target, tensor_name, op = key
             my_rank = self._get_node_from_dev_name(source)
-            my_st, my_ed = durations_dict[master_node][("server_" + str(master_node), source, tensor_name, "PUSH_RES")][index]
+            tg_rank = self._get_node_from_dev_name(target)
+            my_st, my_ed = durations_dict[my_rank][key][index]
             for source_rank in source_ranks:
-                st, ed = durations_dict[master_node][("server_" + str(master_node), "worker_"+str(source_rank), tensor_name, "PUSH_RES")][index]
+                st, ed = durations_dict[source_rank][("worker_"+str(source_rank), "server_" + str(tg_rank), tensor_name, op)][index]
                 if st < my_st:
                     return False
             return True
 
+        trace_shifts = {}
         for source_rank, key_dict in durations_dict.items():
-            if source_rank == master_node:
-                continue
+            # if source_rank == master_node:
+            #     continue
             for key, durations in key_dict.items():
                 source, target, tensor_name, op = key
-                if key in self._ignored_tensors:
-                    SingleLogger().warn(
-                            "[BPS ALIGN]: Length mismatch between master server ({}) and node {} on tensor {}".format(
-                                "server_" + str(master_node), source, tensor_name))
-                    continue
-                if target == "server_" + str(master_node) and op == "PUSH_REQ":
+                if target.startswith("server") and op == "PUSH_REQ":
                     # an op that can be used to align traces
+                    if key in self._ignored_tensors:
+                        SingleLogger().warn(
+                                "[BPS ALIGN]: Length mismatch between master server ({}) and node {} on tensor {}".format(
+                                    "server_" + str(master_node), source, tensor_name))
+                        continue
+                    target_node_id = self._get_node_from_dev_name(target)
+                    if source_rank == target_node_id:
+                        continue
                     for index in range(len(durations)):
                         if not _before_align_is_first_push(key, index):
-                            ms_key = ("server_" + str(master_node), source, tensor_name, "PUSH_RES")
-                            ms_st, ms_ed = durations_dict[master_node][ms_key][index]
-                            if not intervals[ms_key].overlap(ms_st-500, ms_st):
-                                send_delays[source_rank] = min(send_delays[source_rank] ,ms_st - durations[index][1])
+                            tg_key = ("server_" + str(target_node_id), source, tensor_name, "PUSH_RES")
+                            tg_st, tg_ed = durations_dict[target_node_id][tg_key][index]
+                            if not intervals[tg_key].overlap(tg_st-500, tg_st):
+                                if tg_st - durations[index][1] < send_delays[(source_rank, target_node_id)]:
+                                # send_delays[(source_rank, target_node_id)] = min(send_delays[(source_rank, target_node_id)] ,tg_st - durations[index][1])
+                                    send_delay_keys[(source_rank, target_node_id)] = (key, index, "RES")
+                                    send_delays[(source_rank, target_node_id)] = tg_st - durations[index][1]
                         else:
                             # need to consult first_copy
-                            fc_st, fc_ed = copy_first_ops["server_"+str(master_node)][tensor_name][index]
-                            if not intervals["server_"+str(master_node)].overlap(fc_st-500, fc_st):
-                                send_delays[source_rank] = min(send_delays[source_rank], fc_st - durations[index][1])
+                            fc_st, fc_ed = copy_first_ops["server_"+str(target_node_id)][tensor_name][index]
+                            if not intervals["server_"+str(target_node_id)].overlap(fc_st-500, fc_st):
+                                if fc_st - durations[index][1] < send_delays[(source_rank, target_node_id)]:
+                                # send_delays[(source_rank, target_node_id)] = min(send_delays[(source_rank, target_node_id)], fc_st - durations[index][1])
+                                    send_delay_keys[(source_rank, target_node_id)] = (key, index, "COPY_FIRST")
+                                    send_delays[(source_rank, target_node_id)] = fc_st - durations[index][1]
+
+        for rank in sorted(list(source_ranks))[1:]:
+            # ms2rk = send_delays[(master_node, rank)]
+            # rk2ms = send_delays[(rank, master_node)]
+            rk2ms = send_delays[(master_node, rank)]
+            ms2rk = send_delays[(rank, master_node)]
+            # >= -ms2rk, <= rk2ms
+            # print(-ms2rk, rk2ms, master_node, rank)
+            # print(send_delay_keys)
+            # input()
+            # if -ms2rk > rk2ms:
+            #     # exit(0)
+
+            # # else:
+            trace_shifts[rank] = ms2rk 
+
+                # if target == "server_" + str(master_node) and op == "PUSH_REQ":
+                #     # an op that can be used to align traces
+                #     if key in self._ignored_tensors:
+                #         SingleLogger().warn(
+                #                 "[BPS ALIGN]: Length mismatch between master server ({}) and node {} on tensor {}".format(
+                #                     "server_" + str(master_node), source, tensor_name))
+                #         continue
+
+                #     for index in range(len(durations)):
+                #         if not _before_align_is_first_push(key, index):
+                #             ms_key = ("server_" + str(master_node), source, tensor_name, "PUSH_RES")
+                #             ms_st, ms_ed = durations_dict[master_node][ms_key][index]
+                #             if not intervals[ms_key].overlap(ms_st-500, ms_st):
+                #                 send_delays[source_rank] = min(send_delays[source_rank] ,ms_st - durations[index][1])
+                #         else:
+                #             # need to consult first_copy
+                #             fc_st, fc_ed = copy_first_ops["server_"+str(master_node)][tensor_name][index]
+                #             if not intervals["server_"+str(master_node)].overlap(fc_st-500, fc_st):
+                #                 send_delays[source_rank] = min(send_delays[source_rank], fc_st - durations[index][1])
 
         SingleLogger().info("# Aligning BPS traces")
         SingleLogger().info("Aligning time based on node {}".format(master_node))
-        for key, item in send_delays.items():
+        # for key, item in send_delays.items():
+        for key, item in trace_shifts.items():
             SingleLogger().info("Shifting traces of node {} {} by {} us.".format(key, "forward" if item >= 0 else "backward", np.abs(item)))
         
         for key, durations in self.comm_durations.items():
             source, target, tensor_name, op = key
-            if self._get_node_from_dev_name(source) in send_delays:
-                delay = send_delays[self._get_node_from_dev_name(source)]
+            if self._get_node_from_dev_name(source) in trace_shifts:
+                delay = trace_shifts[self._get_node_from_dev_name(source)]
                 new_durations = []
                 for st, ed in durations:
                     new_durations.append((st+delay, ed+delay))
@@ -496,14 +563,14 @@ class bytepsGraph:
         
         for key, durations in self.comp_durations.items():
             server, tensor_name, op, tid = key
-            if self._get_node_from_dev_name(server) in send_delays:
-                delay = send_delays[self._get_node_from_dev_name(server)]
+            if self._get_node_from_dev_name(server) in trace_shifts:
+                delay = trace_shifts[self._get_node_from_dev_name(server)]
                 new_durations = []
                 for st, ed in durations:
                     new_durations.append((st+delay, ed+delay))
                 self.comp_durations[key] = new_durations
         
-        self.time_drift = send_delays
+        self.time_drift = trace_shifts
 
     def _calc_comm_delays(self):
         intervals = {}
@@ -592,8 +659,11 @@ class bytepsGraph:
                         # get copy_first
                         cp_st, cp_ed = copy_first_op_durations[index]
                         # if not queued
-                        if not intervals[target].overlap(st - 500, st + 500) and not intervals[target].overlap(cp_st - 500, cp_st):
+                        if not intervals[target].overlap(st - 500, st + 500) and not intervals[target].overlap(cp_st - 500, cp_st - 5):
                             latency = cp_st - ed
+                            if latency < 0:
+                                print(source, target, key)
+                                input()
                             if (source, target) not in network_delays:
                                 network_delays[(source, target)] = []
                             network_delays[(source, target)].append(latency)
@@ -601,12 +671,15 @@ class bytepsGraph:
                         # get push_response
                         rs_st, rs_ed = push_res_op_durations[index]
                         # if not queued
-                        if not intervals[target].overlap(st - 500, st + 500) and not intervals[target].overlap(rs_st-500, rs_st):
+                        if not intervals[target].overlap(st - 500, st + 500) and not intervals[target].overlap(rs_st-500, rs_st - 5):
                             latency = rs_st - ed
                             # if latency > 10000 and source == "worker_0" and target == "server_0":
                             #     print("push_res, index:", index, key, st - min_start_time, rs_st-min_start_time)
                             #     print(intervals[target].overlap(st - 500, st+500))
                             #     exit(0)
+                            if latency < 0:
+                                print(key, index)
+                                input()
                             if (source, target) not in network_delays:
                                 network_delays[(source, target)] = []
                             network_delays[(source, target)].append(latency)
@@ -623,10 +696,6 @@ class bytepsGraph:
                     # if not queued
                     if not intervals[target].overlap(st - 500, st + 500) and not intervals[target].overlap(rq_st - 500, rq_st):
                         latency = rq_st - ed
-                        # if latency > 40000 and source == "server_0" and target == "worker_1":
-                        #     print("pull_req, index:", index, key, st - min_start_time, rq_st-min_start_time)
-                        #     print(intervals[target].overlap(st - 100, st+100))
-                        #     exit(0)
                         if (source, target) not in network_delays:
                             network_delays[(source, target)] = []
                         network_delays[(source, target)].append(latency)

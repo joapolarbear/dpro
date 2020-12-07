@@ -1,5 +1,5 @@
 import argparse
-from xlatools_impl import compile_to_hlo
+from .xlatools_impl import compile_to_hlo
 
 def parse_arguments():
     parser = argparse.ArgumentParser(description='Compile to HLO.')

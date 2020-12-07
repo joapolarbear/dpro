@@ -320,6 +320,9 @@ def __parse_timestamp_logs(log_lines, key_to_tensor_name):
             if (sender, recver) not in logs:
                 logs[(sender, recver)] = []
             logs[(sender, recver)].append((ts, is_start, is_push, is_req, tid))
+        # else:
+        #     print("Sender: {}, Recver: {}, ts: {}, is_start: {}, is_push: {}, is_req: {}, tid: {}".format(sender, recver, ts, is_start, is_push, is_req, tid))
+        #     input()
     return logs, node_metas
 
 def __generate_comm_events_timestamp(logs, pid, key_to_tensor_name):
