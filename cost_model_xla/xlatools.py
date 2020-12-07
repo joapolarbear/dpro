@@ -22,14 +22,15 @@ def _check_arg_types(args, types):
         if not isinstance(arg, arg_type):
             raise TypeError("Inappropriate argument type for argument {}. Expected {} but got {}".format(index, arg_type, type(arg)))
 
-def compile_to_hlo(graph_path, config_path, dump_path_unopt, dump_path_opt):
+def compile_to_hlo(graph_path, config_path, dump_path_unopt, dump_path_opt, replay_exec=None):
+    if replay_exec is None:
+        replay_exec = "/root/tensorflow/bazel-bin/tensorflow/compiler/byteprofile_xlatools/tfcompile_hlo"
     _check_arg_types([graph_path, config_path, dump_path_unopt, dump_path_opt], [str] * 4)
     _check_file_exist_for_reading(graph_path)
     _check_file_exist_for_reading(config_path)
     _check_file_available_for_writing(dump_path_unopt)
     _check_file_available_for_writing(dump_path_opt)
-    # subprocess.run(["python3", "/root/byteprofile-analysis/cost_model_xla/compile_to_hlo.py", "--graph_path", graph_path, "--config_path", config_path, "--unopt", dump_path_unopt, "--opt", dump_path_opt], check=True)
-    subprocess.run("CUDA_VISIBLE_DEVICES=0 python3 /root/byteprofile-analysis/cost_model_xla/compile_to_hlo.py --graph_path {} --config_path {} --unopt {} --opt {}".format(graph_path, config_path, dump_path_unopt, dump_path_opt), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True, shell=True)
+    subprocess.run("CUDA_VISIBLE_DEVICES=0 {} --graph_path {} --config_path {} --unopt {} --opt {}".format(replay_exec, graph_path, config_path, dump_path_unopt, dump_path_opt), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True, shell=True)
 
 def replay_hlo(hlo_path, replay_exec=None):
     if replay_exec is None:
