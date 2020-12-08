@@ -358,19 +358,19 @@ class XlaKernelDataset(object):
             pickle.dump(op_times_dict, f)     
         gen_kernel_dataset(trace_dir, op_times_dict, result_dir, num_samples, min_subgraph_level=min_subgraph_level, max_subgraph_level=max_subgraph_level)
     
-    @classmethod
-    def construct_diverse_kernel_dataset(cls, trace_dir, result_dir, num_samples=10000, 
-                          num_profiles=2000, min_subgraph_level = None, max_subgraph_level = None, 
-                          op_times_dict = None, dispersion_algorithm="partitioned"):
-        op_times_dict = get_execution_time_from_temp_trace(os.path.join(trace_dir, "temp.json"))
-        op_times_dict_dump_path = os.path.join(result_dir, "op_running_times.pickle")
-        if not os.path.isdir(result_dir):
-            os.makedirs(result_dir)
-        with open(op_times_dict_dump_path, "wb") as f:
-            pickle.dump(op_times_dict, f)
-        gen_diverse_kernel_dataset(trace_dir, op_times_dict, result_dir, num_samples, num_profiles,
-                        min_subgraph_level=min_subgraph_level, max_subgraph_level=max_subgraph_level,
-                        dispersion_algorithm=dispersion_algorithm)
+    # @classmethod
+    # def construct_diverse_kernel_dataset(cls, trace_dir, result_dir, num_samples=10000, 
+    #                       num_profiles=2000, min_subgraph_level = None, max_subgraph_level = None, 
+    #                       op_times_dict = None, dispersion_algorithm="partitioned"):
+    #     op_times_dict = get_execution_time_from_temp_trace(os.path.join(trace_dir, "temp.json"))
+    #     op_times_dict_dump_path = os.path.join(result_dir, "op_running_times.pickle")
+    #     if not os.path.isdir(result_dir):
+    #         os.makedirs(result_dir)
+    #     with open(op_times_dict_dump_path, "wb") as f:
+    #         pickle.dump(op_times_dict, f)
+    #     gen_diverse_kernel_dataset(trace_dir, op_times_dict, result_dir, num_samples, num_profiles,
+    #                     min_subgraph_level=min_subgraph_level, max_subgraph_level=max_subgraph_level,
+    #                     dispersion_algorithm=dispersion_algorithm)
 
 class XlaModuleTestSet():
     def __init__(self, test_dataset_path, training_dataset):
@@ -589,71 +589,71 @@ def gen_kernel_sample_once_using_replay(sample_generator, op_time_dict, dataset_
                 fused_op_hashes.append(hash_v)
     return True, False, fused_op_hashes
 
-def gen_diverse_kernel_samples_using_replay(graph_def, N, k, op_time_dict, dataset_dir, dataset_hlo_dir, 
-                    profile_dir, min_levels=1, max_levels=8, debug_dir = None, dispersion_algorithm="partitioned", shape_dict_path=None):
-    # generate one sample
-    raw_subgraph_dir = os.path.join(dataset_dir, "generated_subgraph")
-    if not os.path.isdir(raw_subgraph_dir):
-        os.mkdir(raw_subgraph_dir)
-    feature_dir = os.path.join(dataset_dir, "features")
+# def gen_diverse_kernel_samples_using_replay(graph_def, N, k, op_time_dict, dataset_dir, dataset_hlo_dir, 
+#                     profile_dir, min_levels=1, max_levels=8, debug_dir = None, dispersion_algorithm="partitioned", shape_dict_path=None):
+#     # generate one sample
+#     raw_subgraph_dir = os.path.join(dataset_dir, "generated_subgraph")
+#     if not os.path.isdir(raw_subgraph_dir):
+#         os.mkdir(raw_subgraph_dir)
+#     feature_dir = os.path.join(dataset_dir, "features")
 
-    subgraph_selector = SubgraphSelector(graph_def, op_time_dict, N, raw_subgraph_dir, 
-                        min_levels=min_levels, max_levels=max_levels, 
-                        dispersion_algorithm=dispersion_algorithm, shape_dict_path=shape_dict_path)
-    subgraph_selector.gen_samples()
-    selected_sample_ids = subgraph_selector.get_subset_indices(k)
-    fused_op_hashes = []
-    status = []
-    for subgraph_sample_id in tqdm(selected_sample_ids, leave=False):
-        if not os.path.isdir(feature_dir):
-            kernel_sample_id = 0
-        else:
-            kernel_sample_id = max([-1] + [int(fname.split(".txt")[0]) for fname in os.listdir(feature_dir)]) + 1
-        # compile hlo
-        def_path = os.path.join(raw_subgraph_dir, "{}.pbtxt".format(subgraph_sample_id))
-        config_path = os.path.join(raw_subgraph_dir, "{}_config.pbtxt".format(subgraph_sample_id))
-        unopt_path = os.path.join(dataset_hlo_dir, "{}_unopt_hlo.txt".format(kernel_sample_id))
-        opt_path = os.path.join(dataset_hlo_dir, "{}_opt_hlo.txt".format(kernel_sample_id))
-        try:
-            compile_to_hlo(def_path, config_path, unopt_path, opt_path)
-        except:
-            print("[WARNING] Failed to compile to HLO code.")
-            clean_up_dir(profile_dir)
-            fused_op_hashes.append([])
-            status.append(False)
-            continue
-        # copy the graph def and config for debugging purpose
-        if debug_dir:
-            if not os.path.isdir(debug_dir):
-                os.makedirs(debug_dir)
-            def_name = Path(def_path).name
-            shutil.copyfile(def_path, os.path.join(debug_dir, def_name))
-            config_name = Path(config_path).name
-            shutil.copyfile(config_path, os.path.join(debug_dir, config_name))
-        # replay HLO code
-        try:
-            replay_and_generate_kernel_sample(kernel_sample_id, unopt_path, profile_dir, dataset_dir)
-        except:
-            print("[WARNING] Failed to replay HLO code and generate samples.")
-            clean_up_dir(profile_dir)
-            fused_op_hashes.append([])
-            status.append(False)
-            continue
-        # copy and rename hlo file
-        clean_up_dir(profile_dir)
-        # DEBUG: also return hashes of the fused kernels
-        fused_op_hashes_for_current_sample = []
-        module_dir = os.path.join(dataset_dir, "modules")
-        sample_config_p = os.path.join(module_dir, "{}_config.txt".format(kernel_sample_id))
-        with open(sample_config_p, "r") as f:
-            for line in f:
-                splitted = line.split(",")
-                if int(splitted[0].strip()) == 1:
-                    hash_v = int(splitted[1].strip())
-                    fused_op_hashes_for_current_sample.append(hash_v)
-        fused_op_hashes.append(fused_op_hashes_for_current_sample)
-        status.append(True)
-    return fused_op_hashes, status
+#     subgraph_selector = SubgraphSelector(graph_def, op_time_dict, N, raw_subgraph_dir, 
+#                         min_levels=min_levels, max_levels=max_levels, 
+#                         dispersion_algorithm=dispersion_algorithm, shape_dict_path=shape_dict_path)
+#     subgraph_selector.gen_samples()
+#     selected_sample_ids = subgraph_selector.get_subset_indices(k)
+#     fused_op_hashes = []
+#     status = []
+#     for subgraph_sample_id in tqdm(selected_sample_ids, leave=False):
+#         if not os.path.isdir(feature_dir):
+#             kernel_sample_id = 0
+#         else:
+#             kernel_sample_id = max([-1] + [int(fname.split(".txt")[0]) for fname in os.listdir(feature_dir)]) + 1
+#         # compile hlo
+#         def_path = os.path.join(raw_subgraph_dir, "{}.pbtxt".format(subgraph_sample_id))
+#         config_path = os.path.join(raw_subgraph_dir, "{}_config.pbtxt".format(subgraph_sample_id))
+#         unopt_path = os.path.join(dataset_hlo_dir, "{}_unopt_hlo.txt".format(kernel_sample_id))
+#         opt_path = os.path.join(dataset_hlo_dir, "{}_opt_hlo.txt".format(kernel_sample_id))
+#         try:
+#             compile_to_hlo(def_path, config_path, unopt_path, opt_path)
+#         except:
+#             print("[WARNING] Failed to compile to HLO code.")
+#             clean_up_dir(profile_dir)
+#             fused_op_hashes.append([])
+#             status.append(False)
+#             continue
+#         # copy the graph def and config for debugging purpose
+#         if debug_dir:
+#             if not os.path.isdir(debug_dir):
+#                 os.makedirs(debug_dir)
+#             def_name = Path(def_path).name
+#             shutil.copyfile(def_path, os.path.join(debug_dir, def_name))
+#             config_name = Path(config_path).name
+#             shutil.copyfile(config_path, os.path.join(debug_dir, config_name))
+#         # replay HLO code
+#         try:
+#             replay_and_generate_kernel_sample(kernel_sample_id, unopt_path, profile_dir, dataset_dir)
+#         except:
+#             print("[WARNING] Failed to replay HLO code and generate samples.")
+#             clean_up_dir(profile_dir)
+#             fused_op_hashes.append([])
+#             status.append(False)
+#             continue
+#         # copy and rename hlo file
+#         clean_up_dir(profile_dir)
+#         # DEBUG: also return hashes of the fused kernels
+#         fused_op_hashes_for_current_sample = []
+#         module_dir = os.path.join(dataset_dir, "modules")
+#         sample_config_p = os.path.join(module_dir, "{}_config.txt".format(kernel_sample_id))
+#         with open(sample_config_p, "r") as f:
+#             for line in f:
+#                 splitted = line.split(",")
+#                 if int(splitted[0].strip()) == 1:
+#                     hash_v = int(splitted[1].strip())
+#                     fused_op_hashes_for_current_sample.append(hash_v)
+#         fused_op_hashes.append(fused_op_hashes_for_current_sample)
+#         status.append(True)
+#     return fused_op_hashes, status
 
 def gen_np_tensor(shape, dtype):
     res = np.random.rand(*shape)
@@ -709,10 +709,13 @@ def gen_kernel_dataset(trace_dir, op_time_dict, result_dir, num_samples=2000, nu
     with open(os.path.join(trace_dir, "final_graph.json"), "r") as f:
         graph_def_as_json = json.load(f)
         # clean up communication nodes
-        removed_node = set()
+        ignored_node = set()
+        pruned_node = set()
         for node in graph_def_as_json["node"]:
-            if node["op"] == "BytepsPushPull" or node["name"].lower().startswith("save") or node["name"]+":0" not in shape_dict:
-                removed_node.add(node["name"])
+            if node["op"] == "BytepsPushPull":
+                ignored_node.add(node["name"])
+            elif node["name"].lower().startswith("save") or node["name"]+":0" not in shape_dict:
+                pruned_node.add(node["name"])
         # while True:
         #     removed_sth = False
         #     for node in graph_def_as_json["node"]:
@@ -726,12 +729,12 @@ def gen_kernel_dataset(trace_dir, op_time_dict, result_dir, num_samples=2000, nu
         #     if not removed_sth:
         #         break
         
-        # graph_nodes = graph_def_as_json["node"].copy()
-        # graph_def_as_json["node"] = []
+        graph_nodes = graph_def_as_json["node"].copy()
+        graph_def_as_json["node"] = []
 
-        # for node in graph_nodes:
-        #     if node["name"] not in removed_node:
-        #         graph_def_as_json["node"].append(node)
+        for node in graph_nodes:
+            if node["name"] not in pruned_node:
+                graph_def_as_json["node"].append(node)
 
         for node in graph_def_as_json["node"]:
             if "input" in node:
@@ -760,7 +763,7 @@ def gen_kernel_dataset(trace_dir, op_time_dict, result_dir, num_samples=2000, nu
             json.dump(graph_def_as_json, f_cleaned, indent=4)
         graph_def = Parse(cleaned_graph_def_str, GraphDef())
     # sample_generator = SampleGenerator(graph_def=graph_def, shape_dict=shape_dict)
-    sample_generator = SampleGenerator(graph_def=graph_def, shape_dict_path=os.path.join(trace_dir, "tensor_shapes.json"), ignored_nodes=removed_node)
+    sample_generator = SampleGenerator(graph_def=graph_def, shape_dict_path=os.path.join(trace_dir, "tensor_shapes.json"), ignored_nodes=ignored_node)
     print("Start generation.")
     completed_samples = 0
     op_hash_set = set()
@@ -817,87 +820,87 @@ def gen_kernel_dataset(trace_dir, op_time_dict, result_dir, num_samples=2000, nu
             f.write("\n")
     print("Dataset generation complete.")
 
-def gen_diverse_kernel_dataset(trace_dir, op_time_dict, result_dir, num_samples=10000, 
-                num_profiles=2000, min_subgraph_level=2, max_subgraph_level=100, dispersion_algorithm="partitioned"):
-    if not os.path.isdir(result_dir):
-        os.makedirs(result_dir)
-        print("Result dir not exist. Created result dir at {}.".format(result_dir))
-    dataset_dir = os.path.join(result_dir, "dataset")
-    debug_dir = os.path.join(result_dir, "debug")
-    dataset_hlo_dir = os.path.join(dataset_dir, "hlos")
-    if not os.path.isdir(dataset_hlo_dir):
-        os.makedirs(dataset_hlo_dir)
-    profile_dir = os.path.join(result_dir, "xla_profile")
-    if not os.path.isdir(profile_dir):
-        os.makedirs(profile_dir)
-    ## load graphdef
-    # load shape dict
-    with open(os.path.join(trace_dir, "tensor_shapes.json"), "r") as f:
-        shape_dict = json.load(f)
-    if os.path.isfile(os.path.join(trace_dir, "cleaned_graph.json")):
-        with open(os.path.join(trace_dir, "cleaned_graph.json"), "r") as f_cleaned:
-            cleaned_graph_def_str = f_cleaned.read()
-        graph_def = Parse(cleaned_graph_def_str, GraphDef())
-    else:
-        with open(os.path.join(trace_dir, "final_graph.json"), "r") as f:
-            graph_def_as_json = json.load(f)
-            # clean up communication nodes
-            removed_node = set()
-            for node in graph_def_as_json["node"]:
-                if node["op"] == "BytepsPushPull" or node["name"].lower().startswith("save") or node["name"]+":0" not in shape_dict:
-                    removed_node.add(node["name"])
-            # while True:
-            #     removed_sth = False
-            #     for node in graph_def_as_json["node"]:
-            #         if node["name"] in removed_node:
-            #             continue
-            #         if "input" in node:
-            #             for input_node in node["input"]:
-            #                 if input_node in removed_node and node["name"] not in removed_node:
-            #                     removed_sth = True
-            #                     removed_node.add(node["name"])
-            #     if not removed_sth:
-            #         break
+# def gen_diverse_kernel_dataset(trace_dir, op_time_dict, result_dir, num_samples=10000, 
+#                 num_profiles=2000, min_subgraph_level=2, max_subgraph_level=100, dispersion_algorithm="partitioned"):
+#     if not os.path.isdir(result_dir):
+#         os.makedirs(result_dir)
+#         print("Result dir not exist. Created result dir at {}.".format(result_dir))
+#     dataset_dir = os.path.join(result_dir, "dataset")
+#     debug_dir = os.path.join(result_dir, "debug")
+#     dataset_hlo_dir = os.path.join(dataset_dir, "hlos")
+#     if not os.path.isdir(dataset_hlo_dir):
+#         os.makedirs(dataset_hlo_dir)
+#     profile_dir = os.path.join(result_dir, "xla_profile")
+#     if not os.path.isdir(profile_dir):
+#         os.makedirs(profile_dir)
+#     ## load graphdef
+#     # load shape dict
+#     with open(os.path.join(trace_dir, "tensor_shapes.json"), "r") as f:
+#         shape_dict = json.load(f)
+#     if os.path.isfile(os.path.join(trace_dir, "cleaned_graph.json")):
+#         with open(os.path.join(trace_dir, "cleaned_graph.json"), "r") as f_cleaned:
+#             cleaned_graph_def_str = f_cleaned.read()
+#         graph_def = Parse(cleaned_graph_def_str, GraphDef())
+#     else:
+#         with open(os.path.join(trace_dir, "final_graph.json"), "r") as f:
+#             graph_def_as_json = json.load(f)
+#             # clean up communication nodes
+#             removed_node = set()
+#             for node in graph_def_as_json["node"]:
+#                 if node["op"] == "BytepsPushPull" or node["name"].lower().startswith("save") or node["name"]+":0" not in shape_dict:
+#                     removed_node.add(node["name"])
+#             # while True:
+#             #     removed_sth = False
+#             #     for node in graph_def_as_json["node"]:
+#             #         if node["name"] in removed_node:
+#             #             continue
+#             #         if "input" in node:
+#             #             for input_node in node["input"]:
+#             #                 if input_node in removed_node and node["name"] not in removed_node:
+#             #                     removed_sth = True
+#             #                     removed_node.add(node["name"])
+#             #     if not removed_sth:
+#             #         break
             
-            graph_nodes = graph_def_as_json["node"].copy()
-            graph_def_as_json["node"] = []
+#             graph_nodes = graph_def_as_json["node"].copy()
+#             graph_def_as_json["node"] = []
 
-            for node in graph_nodes:
-                if node["name"] not in removed_node:
-                    graph_def_as_json["node"].append(node)
+#             for node in graph_nodes:
+#                 if node["name"] not in removed_node:
+#                     graph_def_as_json["node"].append(node)
 
-            for node in graph_def_as_json["node"]:
-                if "input" in node:
-                    cleaned_inputs = []
-                    for input_tensor in node["input"]:
-                        if not input_tensor.startswith("^"):
-                            cleaned_inputs.append(input_tensor)
-                    if cleaned_inputs:
-                        node["input"] = cleaned_inputs
-                    else:
-                        del node["input"]
-                if "attr" in node:
-                    if "_class" in node["attr"]:
-                        del node["attr"]["_class"]
-                    if "container" in node["attr"]:
-                        del node["attr"]["container"]
-                    if "shared_name" in node["attr"]:
-                        del node["attr"]["shared_name"]
-                    if "dtype" in node["attr"]:
-                        # TODO: remove _ref dtypes
-                        pass
-                    if "shape" in node["attr"]:
-                        node["attr"]["shape"] = shape_as_list_to_pb_json(shape_dict[node["name"]+":0"])
-            cleaned_graph_def_str = json.dumps(graph_def_as_json)
-            with open(os.path.join(trace_dir, "cleaned_graph.json"), "w") as f_cleaned:
-                json.dump(graph_def_as_json, f_cleaned, indent=4)
-            graph_def = Parse(cleaned_graph_def_str, GraphDef())
-    print("Start generation.")
-    gen_diverse_kernel_samples_using_replay(graph_def, num_samples, num_profiles, 
-                                    op_time_dict, dataset_dir, dataset_hlo_dir, 
-                                    profile_dir, min_levels=min_subgraph_level, 
-                                    max_levels = max_subgraph_level, debug_dir=debug_dir,
-                                    dispersion_algorithm=dispersion_algorithm, shape_dict_path=os.path.join(trace_dir, "tensor_shapes.json"))
-    if os.path.isdir(profile_dir):
-        os.rmdir(profile_dir)
-    print("Dataset generation complete.")
+#             for node in graph_def_as_json["node"]:
+#                 if "input" in node:
+#                     cleaned_inputs = []
+#                     for input_tensor in node["input"]:
+#                         if not input_tensor.startswith("^"):
+#                             cleaned_inputs.append(input_tensor)
+#                     if cleaned_inputs:
+#                         node["input"] = cleaned_inputs
+#                     else:
+#                         del node["input"]
+#                 if "attr" in node:
+#                     if "_class" in node["attr"]:
+#                         del node["attr"]["_class"]
+#                     if "container" in node["attr"]:
+#                         del node["attr"]["container"]
+#                     if "shared_name" in node["attr"]:
+#                         del node["attr"]["shared_name"]
+#                     if "dtype" in node["attr"]:
+#                         # TODO: remove _ref dtypes
+#                         pass
+#                     if "shape" in node["attr"]:
+#                         node["attr"]["shape"] = shape_as_list_to_pb_json(shape_dict[node["name"]+":0"])
+#             cleaned_graph_def_str = json.dumps(graph_def_as_json)
+#             with open(os.path.join(trace_dir, "cleaned_graph.json"), "w") as f_cleaned:
+#                 json.dump(graph_def_as_json, f_cleaned, indent=4)
+#             graph_def = Parse(cleaned_graph_def_str, GraphDef())
+#     print("Start generation.")
+#     gen_diverse_kernel_samples_using_replay(graph_def, num_samples, num_profiles, 
+#                                     op_time_dict, dataset_dir, dataset_hlo_dir, 
+#                                     profile_dir, min_levels=min_subgraph_level, 
+#                                     max_levels = max_subgraph_level, debug_dir=debug_dir,
+#                                     dispersion_algorithm=dispersion_algorithm, shape_dict_path=os.path.join(trace_dir, "tensor_shapes.json"))
+#     if os.path.isdir(profile_dir):
+#         os.rmdir(profile_dir)
+#     print("Dataset generation complete.")
