@@ -713,6 +713,8 @@ def gen_kernel_dataset(trace_dir, op_time_dict, result_dir, num_samples=2000, nu
         pruned_node = set()
         for node in graph_def_as_json["node"]:
             if node["op"] == "BytepsPushPull":
+                # register TF Ops
+                import byteps.tensorflow as bps
                 ignored_node.add(node["name"])
             elif node["name"].lower().startswith("save") or node["name"]+":0" not in shape_dict:
                 pruned_node.add(node["name"])
