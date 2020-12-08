@@ -277,20 +277,26 @@ class GraphDefUtil(object):
         return os.path.join(output_dir, "{}.pbtxt".format(sample_index)), tf2xla_config_path
 
 class SampleGenerator():
-    def __init__(self, graph_def, shape_dict_path=None):
+    def __init__(self, graph_def, shape_dict_path=None, ignored_nodes=None):
         self.graph_def_util = GraphDefUtil(graph_def, shape_dict_path=shape_dict_path)
         self.nx_graph = nx.DiGraph()
         self.node_sample_weights = {}
         self.edge_sample_weights = {}
         self.edge_max_weight = 1
-        self._preprocess_nx_graph()
+        self._preprocess_nx_graph(ignored_nodes)
         self.generated_graph_hashes = set()
 
-    def _preprocess_nx_graph(self):
+    def _preprocess_nx_graph(self, ignored_nodes=None):
+        if ignored_nodes is not None:
+            ignored_nodes = set(ignored_nodes)
+        else:
+            ignored_nodes = set()
         original_graph = self.graph_def_util.original_graph
         op_info_dict = {}
         unique_op_types = set()
         for op_name in self.graph_def_util.operation_names:
+            if op_name in ignored_nodes:
+                continue
             if op_name not in op_info_dict:
                 op_info_dict[op_name] = {}
             op = original_graph.get_operation_by_name(op_name)
@@ -319,6 +325,8 @@ class SampleGenerator():
             self.nx_graph.add_node(op_name, name=op_name, hash_value=op_hash)
             self.node_sample_weights[op_hash] = 0
             for input_tensor in op.inputs:
+                if input_tensor.op.name in ignored_nodes:
+                    continue
                 self.nx_graph.add_edge(input_tensor.op.name, op_name)
         # generate feature vector for each node
         len_type_one_hot = len(unique_op_types)

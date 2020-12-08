@@ -726,12 +726,12 @@ def gen_kernel_dataset(trace_dir, op_time_dict, result_dir, num_samples=2000, nu
         #     if not removed_sth:
         #         break
         
-        graph_nodes = graph_def_as_json["node"].copy()
-        graph_def_as_json["node"] = []
+        # graph_nodes = graph_def_as_json["node"].copy()
+        # graph_def_as_json["node"] = []
 
-        for node in graph_nodes:
-            if node["name"] not in removed_node:
-                graph_def_as_json["node"].append(node)
+        # for node in graph_nodes:
+        #     if node["name"] not in removed_node:
+        #         graph_def_as_json["node"].append(node)
 
         for node in graph_def_as_json["node"]:
             if "input" in node:
@@ -760,7 +760,7 @@ def gen_kernel_dataset(trace_dir, op_time_dict, result_dir, num_samples=2000, nu
             json.dump(graph_def_as_json, f_cleaned, indent=4)
         graph_def = Parse(cleaned_graph_def_str, GraphDef())
     # sample_generator = SampleGenerator(graph_def=graph_def, shape_dict=shape_dict)
-    sample_generator = SampleGenerator(graph_def=graph_def, shape_dict_path=os.path.join(trace_dir, "tensor_shapes.json"))
+    sample_generator = SampleGenerator(graph_def=graph_def, shape_dict_path=os.path.join(trace_dir, "tensor_shapes.json"), ignored_nodes=removed_node)
     print("Start generation.")
     completed_samples = 0
     op_hash_set = set()
