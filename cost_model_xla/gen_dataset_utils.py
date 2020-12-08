@@ -356,11 +356,11 @@ class XlaKernelDataset(object):
             os.makedirs(result_dir)
         with open(op_times_dict_dump_path, "wb") as f:
             pickle.dump(op_times_dict, f)     
-        gen_kernel_dataset(trace_dir, op_times_dict, result_dir, num_samples, 
+        gen_kernel_dataset(trace_dir, op_times_dict, result_dir, 
+                            num_samples=num_samples, 
+                            num_max_cluster_samples=num_max_cluster_samples,
                             min_subgraph_level=min_subgraph_level, 
-                            max_subgraph_level=max_subgraph_level,
-                            num_samples=num_samples,
-                            num_max_cluster_samples=num_max_cluster_samples)
+                            max_subgraph_level=max_subgraph_level)
     
     # @classmethod
     # def construct_diverse_kernel_dataset(cls, trace_dir, result_dir, num_samples=10000, 
