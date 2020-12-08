@@ -12,7 +12,7 @@ import os
 import hashlib
 import json
 import scipy
-from wwl import PairwiseWWL, PairwiseOverlap
+# from wwl import PairwiseWWL, PairwiseOverlap
 import igraph
 from scipy.special import softmax
 from tqdm import trange, tqdm
@@ -49,15 +49,15 @@ def get_input_def_from_graph_(graph):
             input_op_defs.append(op.node_def)
     return input_op_defs
 
-def worker_func(subgraphs, node_features, k, wid):
-    pw_wwl = PairwiseWWL(subgraphs, node_features)
-    selected_indices = p_dispersion_local_search(pw_wwl, k, sample_ratio=0.05, patience=10, tqdm_position=wid)
-    return selected_indices
+# def worker_func(subgraphs, node_features, k, wid):
+#     pw_wwl = PairwiseWWL(subgraphs, node_features)
+#     selected_indices = p_dispersion_local_search(pw_wwl, k, sample_ratio=0.05, patience=10, tqdm_position=wid)
+#     return selected_indices
 
-def worker_func_overlap(subgraphs, node_features, k, wid):
-    pw_ovlp = PairwiseOverlap(subgraphs, node_features)
-    selected_indices = p_dispersion_local_search(pw_ovlp, k, sample_ratio=0.05, patience=10, tqdm_position=wid)
-    return selected_indices
+# def worker_func_overlap(subgraphs, node_features, k, wid):
+#     pw_ovlp = PairwiseOverlap(subgraphs, node_features)
+#     selected_indices = p_dispersion_local_search(pw_ovlp, k, sample_ratio=0.05, patience=10, tqdm_position=wid)
+#     return selected_indices
 
 class GSInternalErrors(Exception):
     pass
@@ -506,128 +506,128 @@ class SampleGenerator():
             break
         return graph_def_path, graph_def_config_path, sub_g
 
-class SubgraphSelector():
-    def __init__(self, graph_def, op_time_dict, num_samples, subgraph_dir, min_levels=2, max_levels=100, dispersion_algorithm="partitioned", shape_dict_path=None):
-        self.sample_generator = SampleGenerator(graph_def, shape_dict_path=shape_dict_path)
-        if not os.path.isdir(subgraph_dir):
-            os.mkdir(subgraph_dir)
-        self.num_samples = num_samples
-        self.subgraph_dir = subgraph_dir
-        self.op_time_dict = op_time_dict
-        self.min_levels = min_levels
-        self.max_levels = max_levels
-        self.dispersion_algorithm = dispersion_algorithm
+# class SubgraphSelector():
+#     def __init__(self, graph_def, op_time_dict, num_samples, subgraph_dir, min_levels=2, max_levels=100, dispersion_algorithm="partitioned", shape_dict_path=None):
+#         self.sample_generator = SampleGenerator(graph_def, shape_dict_path=shape_dict_path)
+#         if not os.path.isdir(subgraph_dir):
+#             os.mkdir(subgraph_dir)
+#         self.num_samples = num_samples
+#         self.subgraph_dir = subgraph_dir
+#         self.op_time_dict = op_time_dict
+#         self.min_levels = min_levels
+#         self.max_levels = max_levels
+#         self.dispersion_algorithm = dispersion_algorithm
 
-    def _gen_subgraph_samples(self):
-        sampled_subgraphs = []
-        # generate subgraph samples
-        for i in trange(self.num_samples):
-            while True:
-                try:
-                    graph_def_path, graph_def_config_path, nx_subgraph = self.sample_generator.gen_random_subgraph(self.subgraph_dir, i, choose_root_from_ops=list(self.op_time_dict.keys()), min_levels=self.min_levels, max_levels=self.max_levels)
-                    sampled_subgraphs.append(nx_subgraph)
-                    break
-                except KeyboardInterrupt as e:
-                    raise RuntimeError()
-                except NameError as e:
-                    raise e
-                except AttributeError as e:
-                    raise e
-                except Exception as e:
-                    continue
-        self.sampled_subgraphs = sampled_subgraphs
+#     def _gen_subgraph_samples(self):
+#         sampled_subgraphs = []
+#         # generate subgraph samples
+#         for i in trange(self.num_samples):
+#             while True:
+#                 try:
+#                     graph_def_path, graph_def_config_path, nx_subgraph = self.sample_generator.gen_random_subgraph(self.subgraph_dir, i, choose_root_from_ops=list(self.op_time_dict.keys()), min_levels=self.min_levels, max_levels=self.max_levels)
+#                     sampled_subgraphs.append(nx_subgraph)
+#                     break
+#                 except KeyboardInterrupt as e:
+#                     raise RuntimeError()
+#                 except NameError as e:
+#                     raise e
+#                 except AttributeError as e:
+#                     raise e
+#                 except Exception as e:
+#                     continue
+#         self.sampled_subgraphs = sampled_subgraphs
     
-    def _compute_node_features(self):
-        # convert all subgraphs into igraph format
-        igraph_subgraphs = []
-        node_features = []
-        for subgraph in self.sampled_subgraphs:
-            g = igraph.Graph.from_networkx(nx.DiGraph.to_undirected(subgraph))
-            original_node_names = g.vs["_nx_name"]
-            features = []
-            for node_name in original_node_names:
-                feature_vec = subgraph.nodes[node_name]["feature_vec"]
-                features.append(feature_vec)
-            igraph_subgraphs.append(g)
-            node_features.append(np.array(features))
-        # compute pair wise wwl distence
-        self.igraph_subgraphs = igraph_subgraphs
-        self.node_features = node_features
+#     def _compute_node_features(self):
+#         # convert all subgraphs into igraph format
+#         igraph_subgraphs = []
+#         node_features = []
+#         for subgraph in self.sampled_subgraphs:
+#             g = igraph.Graph.from_networkx(nx.DiGraph.to_undirected(subgraph))
+#             original_node_names = g.vs["_nx_name"]
+#             features = []
+#             for node_name in original_node_names:
+#                 feature_vec = subgraph.nodes[node_name]["feature_vec"]
+#                 features.append(feature_vec)
+#             igraph_subgraphs.append(g)
+#             node_features.append(np.array(features))
+#         # compute pair wise wwl distence
+#         self.igraph_subgraphs = igraph_subgraphs
+#         self.node_features = node_features
     
-    def gen_samples(self):
-        self._gen_subgraph_samples()
-        self._compute_node_features()
+#     def gen_samples(self):
+#         self._gen_subgraph_samples()
+#         self._compute_node_features()
     
-    def _select_partition(self, l, i, p_size):
-        return l[i*p_size:(i+1)*p_size]
+#     def _select_partition(self, l, i, p_size):
+#         return l[i*p_size:(i+1)*p_size]
     
-    def get_subset_indices_partitioned(self, k, k_in_each_partition=200):
-        num_partitions = int(np.ceil(k / k_in_each_partition))
-        data_partition_size = int(np.ceil(len(self.igraph_subgraphs) / num_partitions))
+#     def get_subset_indices_partitioned(self, k, k_in_each_partition=200):
+#         num_partitions = int(np.ceil(k / k_in_each_partition))
+#         data_partition_size = int(np.ceil(len(self.igraph_subgraphs) / num_partitions))
 
-        total_selected_indices = []
+#         total_selected_indices = []
         
-        map_iterable = []
-        for i in range(num_partitions):
-            k_in_this_partition = min(k - i*k_in_each_partition, k_in_each_partition)
-            map_iterable.append( (
-                self._select_partition(self.igraph_subgraphs, i, data_partition_size), 
-                self._select_partition(self.node_features, i, data_partition_size),
-                k_in_this_partition,
-                i
-                ) )
-        with Pool(min(os.cpu_count(), num_partitions)) as p:
-            selected_indices = p.starmap(worker_func, map_iterable)
+#         map_iterable = []
+#         for i in range(num_partitions):
+#             k_in_this_partition = min(k - i*k_in_each_partition, k_in_each_partition)
+#             map_iterable.append( (
+#                 self._select_partition(self.igraph_subgraphs, i, data_partition_size), 
+#                 self._select_partition(self.node_features, i, data_partition_size),
+#                 k_in_this_partition,
+#                 i
+#                 ) )
+#         with Pool(min(os.cpu_count(), num_partitions)) as p:
+#             selected_indices = p.starmap(worker_func, map_iterable)
         
-        # flatten total selected_indices
-        flattened_selected_indices = [idx for result in selected_indices for idx in result]
+#         # flatten total selected_indices
+#         flattened_selected_indices = [idx for result in selected_indices for idx in result]
 
-        # for i in range(num_partitions):
-        #     k_in_this_partition = min(k - i*k_in_each_partition, k_in_each_partition)
-        #     pw_wwl = PairwiseWWL(
-        #         self._select_partition(self.igraph_subgraphs, i, data_partition_size),
-        #         self._select_partition(self.node_features, i, data_partition_size),
-        #         sinkhorn=True)
-        #     selected_indices = calc_p_dispersion(pw_wwl, k_in_this_partition, )
-        #     total_selected_indices += selected_indices
-        return flattened_selected_indices
+#         # for i in range(num_partitions):
+#         #     k_in_this_partition = min(k - i*k_in_each_partition, k_in_each_partition)
+#         #     pw_wwl = PairwiseWWL(
+#         #         self._select_partition(self.igraph_subgraphs, i, data_partition_size),
+#         #         self._select_partition(self.node_features, i, data_partition_size),
+#         #         sinkhorn=True)
+#         #     selected_indices = calc_p_dispersion(pw_wwl, k_in_this_partition, )
+#         #     total_selected_indices += selected_indices
+#         return flattened_selected_indices
 
-    def get_subset_indices_parallel(self, k):
-        pw_wwl = PairwiseWWL(self.igraph_subgraphs, self.node_features)
-        selected_indices = parallel_p_dispersion_local_search(pw_wwl, k, sample_ratio=0.05, patience=10)
-        return selected_indices
+#     def get_subset_indices_parallel(self, k):
+#         pw_wwl = PairwiseWWL(self.igraph_subgraphs, self.node_features)
+#         selected_indices = parallel_p_dispersion_local_search(pw_wwl, k, sample_ratio=0.05, patience=10)
+#         return selected_indices
     
-    def get_subset_indices_overlap(self, k, k_in_each_partition=1000):
-        num_partitions = int(np.ceil(k / k_in_each_partition))
-        data_partition_size = int(np.ceil(len(self.igraph_subgraphs) / num_partitions))
+#     def get_subset_indices_overlap(self, k, k_in_each_partition=1000):
+#         num_partitions = int(np.ceil(k / k_in_each_partition))
+#         data_partition_size = int(np.ceil(len(self.igraph_subgraphs) / num_partitions))
 
-        total_selected_indices = []
+#         total_selected_indices = []
         
-        map_iterable = []
-        for i in range(num_partitions):
-            k_in_this_partition = min(k - i*k_in_each_partition, k_in_each_partition)
-            map_iterable.append( (
-                self._select_partition(self.igraph_subgraphs, i, data_partition_size), 
-                self._select_partition(self.node_features, i, data_partition_size),
-                k_in_this_partition,
-                i
-                ) )
-        with Pool(min(os.cpu_count(), num_partitions)) as p:
-            selected_indices = p.starmap(worker_func_overlap, map_iterable)
+#         map_iterable = []
+#         for i in range(num_partitions):
+#             k_in_this_partition = min(k - i*k_in_each_partition, k_in_each_partition)
+#             map_iterable.append( (
+#                 self._select_partition(self.igraph_subgraphs, i, data_partition_size), 
+#                 self._select_partition(self.node_features, i, data_partition_size),
+#                 k_in_this_partition,
+#                 i
+#                 ) )
+#         with Pool(min(os.cpu_count(), num_partitions)) as p:
+#             selected_indices = p.starmap(worker_func_overlap, map_iterable)
         
-        # flatten total selected_indices
-        flattened_selected_indices = [idx for result in selected_indices for idx in result]
-        return flattened_selected_indices
+#         # flatten total selected_indices
+#         flattened_selected_indices = [idx for result in selected_indices for idx in result]
+#         return flattened_selected_indices
     
-    def get_subset_indices(self, k):
-        if self.dispersion_algorithm == "partitioned":
-            return self.get_subset_indices_partitioned(k)
-        elif self.dispersion_algorithm == "parallel":
-            return self.get_subset_indices_parallel(k)
-        elif self.dispersion_algorithm == "overlap":
-            return self.get_subset_indices_overlap(k)
-        else:
-            raise NotImplementedError
+#     def get_subset_indices(self, k):
+#         if self.dispersion_algorithm == "partitioned":
+#             return self.get_subset_indices_partitioned(k)
+#         elif self.dispersion_algorithm == "parallel":
+#             return self.get_subset_indices_parallel(k)
+#         elif self.dispersion_algorithm == "overlap":
+#             return self.get_subset_indices_overlap(k)
+#         else:
+#             raise NotImplementedError
 
 
 # def gen_diverse_subgraphs(graph_def, op_time_dict, num_samples, num_profiles, subgraph_dir, min_levels=2, max_levels=100, p_dispersion_alg = "local_search"):
