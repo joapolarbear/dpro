@@ -415,6 +415,7 @@ class SampleGenerator():
         source_nodes = [node for node in G.nodes if len(G.in_edges(node)) == 0]
 
         # Run post order traversal on G
+        print("Finding maximal clusters in the graph... This may take a while...")
         for source in tqdm(source_nodes, total=len(source_nodes)):
             _, _, G = postorder_contract_nx(G, PKG, source, forbidden_list=forbidden_list, size_limit=800)
         

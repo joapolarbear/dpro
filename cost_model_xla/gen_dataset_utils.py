@@ -348,7 +348,7 @@ class XlaKernelDataset(object):
 
     @classmethod
     def construct_kernel_dataset(cls, trace_dir, result_dir, num_samples=2000,
-                                num_max_cluster_sample = 500, 
+                                num_max_cluster_samples = 500, 
                                 min_subgraph_level = None, max_subgraph_level = None):
         op_times_dict = get_execution_time_from_temp_trace(os.path.join(trace_dir, "temp.json"))
         op_times_dict_dump_path = os.path.join(result_dir, "op_running_times.pickle")
@@ -356,7 +356,11 @@ class XlaKernelDataset(object):
             os.makedirs(result_dir)
         with open(op_times_dict_dump_path, "wb") as f:
             pickle.dump(op_times_dict, f)     
-        gen_kernel_dataset(trace_dir, op_times_dict, result_dir, num_samples, min_subgraph_level=min_subgraph_level, max_subgraph_level=max_subgraph_level)
+        gen_kernel_dataset(trace_dir, op_times_dict, result_dir, num_samples, 
+                            min_subgraph_level=min_subgraph_level, 
+                            max_subgraph_level=max_subgraph_level,
+                            num_samples=num_samples,
+                            num_max_cluster_samples=num_max_cluster_samples)
     
     # @classmethod
     # def construct_diverse_kernel_dataset(cls, trace_dir, result_dir, num_samples=10000, 
@@ -481,9 +485,10 @@ def gen_max_cluster_kernel_samples_using_replay(sample_generator, op_time_dict, 
         forbidden_nodes = [node for node in sample_generator.nx_graph.nodes if node.startswith("gradients") or "Assign" in node]
         func_gen, num_clusters = sample_generator.gen_max_cluster(forbidden_nodes=forbidden_nodes, min_cluster_size=min_cluster_size)
     else:
-        func_gen, num_clusters = sample_generator.gen_mxa_cluster(random_sample=True)
+        func_gen, num_clusters = sample_generator.gen_max_cluster(random_sample=True)
     total_fused_hashes = []
     sample_id = get_next_sample_id(feature_dir)
+    print("Trying to compile and profile clusters...")
     for gen_config_fun in tqdm(func_gen, total=num_clusters):
         try:
             graph_def_path, graph_def_config_path, _ = gen_config_fun(raw_subgraph_dir, sample_id)

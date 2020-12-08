@@ -41,6 +41,6 @@ while True:
 
 XlaKernelDataset.construct_kernel_dataset(args.trace_dir , args.output_dir, 
                                             num_samples=args.num_samples, 
-                                            num_max_cluster_sample=args.max_cluster_samples, 
+                                            num_max_cluster_samples=args.max_cluster_samples, 
                                             min_subgraph_level=args.min_cluster_size, 
                                             max_subgraph_level=args.max_cluster_size)
