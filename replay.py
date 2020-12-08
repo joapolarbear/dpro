@@ -175,9 +175,10 @@ class Device:
 						if self.replayer.dag.nodes[name][GAP_STR_OP2COMM] > 10000:
 							SingleLogger().debug("Large OP2COMM gap detected, {} -> {},  gap: {}".format(name, _succ, self.replayer.dag.nodes[name][GAP_STR_OP2COMM]))
 					_status["ready"] = (_end_time + gap) if _status["ready"] is None else max(_end_time + gap, _status["ready"])
-					
+
 				### Whether the dependency has met
 				_status["in_degree"] -= 1
+
 				if _status["in_degree"] == 0:
 					if _status["ready"] is None:
 						raise RuntimeError("{}\'s ready time is not decided".format(_succ))
@@ -188,13 +189,14 @@ class Device:
 		delay = 0
 		ratio = 1.0
 		if self.replayer.delay_dict is not None:
+			cat = parse_cat_fine_grained(name_)
 			if name_ in self.replayer.delay_dict:
 				delay = self.replayer.delay_dict[name_]["delay"]
 				ratio = self.replayer.delay_dict[name_]["ratio"]
-			elif "DELAY_ALL_CMP" in self.replayer.delay_dict and parse_cat_from_name(name_) == "operator":
+			elif "DELAY_ALL_CMP" in self.replayer.delay_dict and cat in COMP_CAT:
 				delay = self.replayer.delay_dict["DELAY_ALL_CMP"]["delay"]
 				ratio = self.replayer.delay_dict["DELAY_ALL_CMP"]["ratio"]
-			elif "DELAY_ALL_COMM" in self.replayer.delay_dict and parse_cat_from_name(name_) == CatName.COMM.value:
+			elif "DELAY_ALL_COMM" in self.replayer.delay_dict and cat in COMM_CAT:
 				delay = self.replayer.delay_dict["DELAY_ALL_COMM"]["delay"]
 				ratio = self.replayer.delay_dict["DELAY_ALL_COMM"]["ratio"]
 			elif "DELAY_ALL" in self.replayer.delay_dict:
@@ -363,7 +365,7 @@ class Replayer:
 				_last_end = self.step_end_time[pid] if _status["ready"] is None else _status["ready"]
 				self.insert_next_node(n, _last_end)
 	
-	def replay_one_iter(self, step_idx):	
+	def replay_one_iter(self, step_idx):
 		self.pre_prepare()
 		while True:
 			if self.pop_one_node_exec(step_idx) == 1:

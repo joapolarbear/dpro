@@ -88,14 +88,22 @@ def wrap_read_gml(gml_path, platform="MXNET"):
         Tranverse the dag nodes twice
     '''
     mygraph = nx.read_gml(gml_path)
+    if not args_.pretty:
+        try:
+            SingleLogger().info(list(nx.find_cycle(composed_dag, orientation="original")))
+        except:
+            SingleLogger().info("No cycles found")
     if platform == "TENSORFLOW":
         update_nodes_in_dag = set()
+        def recursive_add_succs(_node):
+            for succ_ in mygraph.successors(_node):
+                update_nodes_in_dag.add(succ_)
+                recursive_add_succs(succ_)
         for node in mygraph.nodes:
             if "allreduce" in node.lower():
-                for succ_ in mygraph.successors(node):
-                    update_nodes_in_dag.add(succ_)
-            if "apply" in node.lower() or ("gradientdescent" in node.lower() and "learning_rate" not in node.lower()):
-                update_nodes_in_dag.add(node)
+                recursive_add_succs(node)
+            # if "apply" in node.lower() or ("gradientdescent" in node.lower() and "learning_rate" not in node.lower()):
+            #     update_nodes_in_dag.add(node)
         new_graph = nx.DiGraph()
         for u, v in mygraph.edges:
             new_graph.add_edge(tf_relabel_func(u, update_nodes_in_dag), tf_relabel_func(v, update_nodes_in_dag))
@@ -174,12 +182,21 @@ class DAGManager:
 
     def wrap_in_dag(self, node):
         return node in self.nodes
-
+    
     def add_prefix(self, name, _prefix=None):
         if _prefix is None:
             return gen_long_name(self.prefix, name)
         else:
             return gen_long_name(_prefix, name)
+
+    def add_update_downstream(self, graph, update_node, _prefix=None):
+        ''' Add UPDATE operators and its downstream operators to the final graph
+        '''
+        u = self.add_prefix(update_node, _prefix=_prefix)
+        for succ_ in graph.successors(update_node):
+            v = self.add_prefix(succ_, _prefix=_prefix)
+            self.wrap_add_dag(u, v)
+            self.add_update_downstream(graph, succ_, _prefix)
 
     def _process_edge_nccl(self, graph, queue_type_list, u, v, para_dict=None, pre_nodes=[], post_nodes=[]):
         ''' Handel one edge in the original depedency graph
@@ -279,6 +296,7 @@ class DAGManager:
                                         for post_node in post_nodes:
                                             update_name = self.add_prefix(post_node, _prefix=next_rank_prefix)
                                             self.wrap_add_dag(prev_name, update_name)
+                                            self.add_update_downstream(graph, post_node, _prefix=next_rank_prefix)
                                     else:
                                         raise NotImplementedError()
                 ### end for loop         
@@ -353,6 +371,7 @@ class DAGManager:
                                         for post_node in post_nodes:
                                             update_name = self.add_prefix(post_node)
                                             self.wrap_add_dag(self.add_prefix(prev_rawname), update_name)
+                                            self.add_update_downstream(graph, post_node)
                                     else:
                                         raise NotImplementedError()
                                     # ### Connect all UPDATE nodes to an END node
@@ -526,12 +545,6 @@ class DAGManager:
 
         # visualize_gml(self.dag, layout="circular")
 
-        ### TODO (huhanpeng): since we do not explicitly construct the graph, do not check cycles here
-        ### check whether there exits cycle in the graph
-        # edges = list(nx.simple_cycles(self.dag))
-        # if len(edges) > 0:
-        #     raise ValueError("The depedency graph at {} has cycles".format(self.pm.path))
-
     def _add_new_edges_via_order(self):
         ''' Add new edges between FW+BW ops, according to their processing order
             such that we can keep the order when replaying.
@@ -556,13 +569,14 @@ class DAGManager:
 
         def in_process_events2str():
             s = ''
-            for _event in in_process_events:
+            for _idx in in_process_events:
+                _event = self.traceM.traces[_idx]
                 _n, _ts, _te = _event["name"], _event["ts"], _event["ts"] + _event["dur"]
                 s += "\n\t\t\t\t%-60s: %s~%s (%-13.4f ~ %-13.4f)" % (_n, str(_ts), str(_te), relative_time(_ts), relative_time(_te))
             return s
 
         ### For FW and BW nodes, go through one step of traces
-        for event in self.traceM.traces:
+        for idx, event in enumerate(self.traceM.traces):
             if self.traceM._is_ignore_for_sta(event):
                 continue
             if event["args"]["step"] > (self.traceM.opt_step + 1):
@@ -584,18 +598,27 @@ class DAGManager:
 
             i = 0
             while i < len(in_process_events):
-                prev_event = in_process_events[i]
+                prev_event = self.traceM.traces[in_process_events[i]]
                 assert event["ts"] >= prev_event["ts"]
                 assert event["args"]["step"] == prev_event["args"]["step"]
                 if event["ts"] >= prev_event["ts"] + prev_event["dur"]:
                     ### prev event has ended, should be deleted from in_process_events
                     del in_process_events[i]
 
+                    ### TODO (huhanpeng) do not follow the dependency graph, may introduce cycle to the dependency graph
+                    if "BW.bertencoder0_embedding0" in prev_event["name"] or "BW.bertencoder0_embedding0" in event["name"]:
+                        continue
+
                     #! TODO: only add once, to verify
                     if prev_event["name"] != event["name"]:
-                        self.wrap_add_dag(
-                            self.add_prefix(prev_event["name"]), 
-                            self.add_prefix(event["name"]))
+                        u = self.add_prefix(prev_event["name"])
+                        v = self.add_prefix(event["name"])
+                        # TODO (huhanpeng): if not check this, may introduce cycle for tensorflow bert traces
+                        # if not self.wrap_in_dag_edges((v, u)):
+                        self.wrap_add_dag(u, v)
+                        if "FW.bert/encoder/layer_0/attention/self/Softmax" in u and "FW.add_2" in v:
+                            print(prev_event, event)
+                            raise
                 else:
                     ### if prev event has not ended, current node should share 
                     ### the parent ops of the prev event
@@ -618,7 +641,7 @@ class DAGManager:
                         len(in_process_events)+1,
                         event["name"], 
                         in_process_events2str()))
-            in_process_events.append(event)
+            in_process_events.append(idx)
 
         SingleLogger().info("Maximum parallelism degree: %d" % (max_para_degree))
         return max_para_degree
@@ -640,14 +663,18 @@ class DAGManager:
         critical_path = None
         ### generate execution graph according to the execution order,
         # to make sure replayer acts in the same order
-        max_para_degree = self._add_new_edges_via_order()
+        # max_para_degree = self._add_new_edges_via_order()
 
         #！til now, all the edges for one GPU have been added.
         if not _pretty:
+            SingleLogger().info("Calculate critical path and check cycles. This process is time comsuming, set --pretty to disable")
             composed_dag = nx.DiGraph()
             composed_dag.add_edges_from(self.dag)
-            print(list(nx.find_cycle(composed_dag, orientation="original")))
-            visualize_gml(composed_dag)
+            try:
+                SingleLogger().info(list(nx.find_cycle(composed_dag, orientation="original")))
+            except:
+                SingleLogger().info("No cycle is found")
+            # visualize_gml(composed_dag)
             critical_path = dag_longest_path(composed_dag, self.pm, weight="weight", default_weight=0)
 
         # return max_para_degree, critical_path

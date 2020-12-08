@@ -602,7 +602,7 @@ class Collector(object):
                         raw_name = ".".join(_split_name[1:])
                         prefix = _split_name[0]
                         ### For Horovod
-                        if "horovod_" not in prefix:
+                        if "horovod" not in prefix.lower():
                             raise ValueError("comm.json format error, "
                                 "trace args name should start with "
                                 "horovod_broadcast or horovod_allreduce: %s" % trace["args"]["name"])
@@ -665,12 +665,13 @@ class Collector(object):
                     _append_trace(ret, "%s.%s"%(process_name, op_name), ts, dur, "Comm", "Comm", input0)
                     continue
                 elif op_name in QueueType().ret_list():
+                    if self.platform == "TENSORFLOW":
+                        process_name = "Comm." + tensor_id_str
                     _append_trace(ret, "%s.%s"%(process_name, op_name), ts, dur, "Comm", "Comm", input0)
                     continue
 
-                if args_.trace_level != "debug":
-                    continue
-                _append_trace(ret, "%s.%s"%(process_name, op_name), ts, dur, process_name, "debug", input0)
+                if args_.trace_level == "debug":
+                    _append_trace(ret, "%s.%s"%(process_name, op_name), ts, dur, process_name, "debug", input0)
             else:
                 pass
         return ret
@@ -757,6 +758,10 @@ class Collector(object):
             rst_traces += self.byteps_graph.gen_compatible_trace(dump_path=os.path.join(self.pm.path, FileName.BPS_ALIGNED_TRACE.value))
 
         SingleLogger().info("Take {} s to combine all traces of length {}".format(time.time() - ts_, len(rst_traces)))
+        # rst_traces = sorted(rst_traces, key=lambda x: (x["pid"], x["tid"]))
+        # with open(os.path.join(self.pm.path, FileName.TRACE.value), 'w') as f:
+        #     json.dump(rst_traces, f)
+        # raise
         self.traceM = TraceManager(rst_traces, self.pm.dir_level, check=True)
 
     def collect_para_dict(self):

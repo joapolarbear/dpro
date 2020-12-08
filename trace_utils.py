@@ -241,6 +241,13 @@ def parse_cat_from_name(name):
     else:
         raise ValueError("Can not decide the cat of %s" % name)
 
+### CATs that will be affected if we change the GPU/CPU rate
+COMP_CAT = ["operator.FW", "operator.BW", "operator.UPDATE",
+    "operator.OUTPUT", "operator.SERVERCOMP"]
+### CATs that will be affected if we change the bandwidth
+### TODO (huhanpeng): check whether it is correct for BytePS
+COMM_CAT = ["Comm.SEND", "Comm.RECV", "Comm.PUSH_REQ",
+            "Comm.PUSH_RES", "Comm.PULL_REQ", "Comm.PULL_RES"]
 def parse_cat_fine_grained(name_):
     if "Comm" in name_:
         if "SEND" in name_:
@@ -426,17 +433,27 @@ class TraceManager:
                     }
             event["args"]["cnt"] = self.name2sta[unique_name]["cnt"] - 1
 
+            # if prefix == "host0.rank1":
+            #     print(event["name"])
+
             pid_info = prefix_dict[prefix]
             ### add step field
             if pid_info["cat_cursor"] is None:
                 pass
-            elif pid_info["cat_cursor"] not in AS_START_CAT and cat in AS_START_CAT:
+            elif pid_info["cat_cursor"] == "operator.UPDATE" and cat in AS_START_CAT:
+            # elif cat not in AS_START_CAT and cat in AS_START_CAT:
                 pid_info["step_cnt"] += 1
+                # if prefix == "host0.rank1":
+                #     print("Add step to {} for {}, before: {}".format(
+                #         pid_info["step_cnt"], event, pid_info["cat_cursor"]))
             elif (pid_info["cat_cursor"] in AS_START_CAT) and cat == "operator.UPDATE":
                 ### handle the overlapping cases between UPDATE and (IO, FW)
                 pid_info["step_cnt"] -= 1
+                # if prefix == "host0.rank1":
+                #     print("Minus step to {} for {}, before: {}".format(
+                #         pid_info["step_cnt"], event, pid_info["cat_cursor"]))
             event["args"]["step"] = pid_info["step_cnt"]
-            if parse_cat_from_name(event["name"]) == CatName.OPERATOR.value:
+            if parse_cat_from_name(event["name"]) in [CatName.OPERATOR.value, CatName.IO.value]:
                 pid_info["cat_cursor"] = cat
             self.max_step = max(event["args"]["step"], self.max_step)
 
@@ -453,7 +470,7 @@ class TraceManager:
                 assert pid_info["step_start_ts"] is not None
                 if pid_info["cur_step"] == -1:
                     continue
-                assert event["args"]["step"] > pid_info["cur_step"], (event)
+                assert event["args"]["step"] > pid_info["cur_step"], (event, pid_info)
                 pid_info["iter_list"].append((pid_info["cur_iter_time"] - pid_info["step_start_ts"]) / 1000.0)
                 try:
                     pid_info["fw_list"].append((pid_info["fw_end"] - pid_info["step_start_ts"]) / 1000.0)
