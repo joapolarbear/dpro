@@ -408,19 +408,20 @@ class SampleGenerator():
             current_node = next_node
         return list(subgraph_nodes)
     
-    def _max_cluster_sampler(self, forbidden_list):
+    def _max_cluster_sampler(self, forbidden_list, size_limit=800):
         G: nx.DiGraph = self.nx_graph.copy()
         PKG = PKGraph(G)
 
-        source_nodes = [node for node in G.nodes if len(G.in_edges(node)) == 0]
+        source_nodes = [node for node in G.nodes if len(G.in_edges(node)) == 0 and node not in forbidden_list]
 
         # Run post order traversal on G
         print("Finding maximal clusters in the graph... This may take a while...")
         for source in tqdm(source_nodes, total=len(source_nodes)):
-            _, _, G = postorder_contract_nx(G, PKG, source, forbidden_list=forbidden_list, size_limit=800)
+            if source in G.nodes:
+                _, _, G = postorder_contract_nx(G, PKG, source, forbidden_list=forbidden_list, size_limit=size_limit)
         
         clusters_formed = []
-        for node_name in tqdm(G.nodes()):
+        for node_name in G.nodes():
             if "+" in node_name:
                 cluster_nodes = node_name.split("+")
                 clusters_formed.append(cluster_nodes)
@@ -441,10 +442,10 @@ class SampleGenerator():
         return chosen_node
     
     # this method returns a generator of functions
-    def gen_max_cluster(self, forbidden_nodes=None, random_sample=False, min_cluster_size=4, forbidden_ratio=0.2):
+    def gen_max_cluster(self, forbidden_nodes=None, random_sample=False, min_cluster_size=4, max_cluster_size=800, forbidden_ratio=0.2):
         if forbidden_nodes is None or random_sample:
             forbidden_nodes = random.sample(self.nx_graph.nodes, k=int(len(self.nx_graph.nodes) * forbidden_ratio))
-        clusters = self._max_cluster_sampler(forbidden_list=forbidden_nodes)
+        clusters = self._max_cluster_sampler(forbidden_list=forbidden_nodes, size_limit=max_cluster_size)
         def ret_gen():
             for cluster_nodes in clusters:
                 def try_generate_cluster_config(output_dir, sample_id, 
