@@ -30,7 +30,7 @@ def compile_to_hlo(graph_path, config_path, dump_path_unopt, dump_path_opt, repl
     _check_file_exist_for_reading(config_path)
     _check_file_available_for_writing(dump_path_unopt)
     _check_file_available_for_writing(dump_path_opt)
-    subprocess.run("CUDA_VISIBLE_DEVICES=0 {} --graph_path {} --config_path {} --unopt {} --opt {}".format(replay_exec, graph_path, config_path, dump_path_unopt, dump_path_opt), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True, shell=True)
+    subprocess.run("CUDA_VISIBLE_DEVICES=0 {} {} {} {} {}".format(replay_exec, graph_path, config_path, dump_path_unopt, dump_path_opt), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True, shell=True)
 
 def replay_hlo(hlo_path, replay_exec=None):
     if replay_exec is None:
