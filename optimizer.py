@@ -762,8 +762,9 @@ class MCMCOptimizer(Optimizer):
             source_nodes = [node for node in partition_G.nodes if len(partition_G.in_edges(node)) == 0]
 
             # Run post order traversal on partition_G
+            visited_nodes = set()
             for source in tqdm(source_nodes, total=len(source_nodes)):
-                _, _, partition_G = postorder_contract_nx(partition_G, partition_PKG, source, forbidden_list=self.forbidden_list, size_limit=800)
+                _, _, partition_G = postorder_contract_nx(partition_G, partition_PKG, source, visited_nodes, forbidden_list=self.forbidden_list, size_limit=800)
             for node_name in tqdm(partition_G.nodes()):
                 if "+" in node_name:
                     # fused node, test if compilable
