@@ -105,8 +105,9 @@ class Collector(object):
         assert tmp_pm.dir_level == DirLevel.GPU
         add_trace_safe(self._collect_rank_comp(tmp_pm, pid, host_id))
         add_trace_safe(self._collect_rank_io(tmp_pm, pid, host_id))
-        add_trace_safe(self._collect_rank_comm_detail(tmp_pm, pid, host_id))
-        add_trace_safe(self._collect_rank_comm(tmp_pm, pid, host_id))
+        if not self.single:
+            add_trace_safe(self._collect_rank_comm_detail(tmp_pm, pid, host_id))
+            add_trace_safe(self._collect_rank_comm(tmp_pm, pid, host_id))
         return self.rst_traces, self.ref_name, self.ref_time, self.raw_name2IDnum
 
     def _collect_rank_comp(self, tmp_pm=None, pid=None, host_id=None):
@@ -691,6 +692,9 @@ class Collector(object):
 
     def clock_align(self, traces_list, host_ids):
         SingleLogger().info("Combine and align traces ...")
+        if self.single:
+            assert len(traces_list) == 1
+            return traces_list[0]
         if self.byteps_graph is not None:
             raise NotImplementedError("to check")
             base_host_id = self.byteps_graph.master_host_id
@@ -720,24 +724,30 @@ class Collector(object):
         assert self.pm.dir_level == DirLevel.TRIAL
 
         arg_list = []
+        self.single = False
         if self.comm_backend == "NCCL":
             self.nccl_graph.map_host_prefix_id(self.pm.dirs)
         for _dir in self.pm.dirs:
             worker_path = os.path.join(self.pm.path, _dir)
             worker_root, worker_dirs, _ = list(os.walk(worker_path))[0]
             worker_dirs = sorted(worker_dirs)
+
+            if len(self.pm.dirs) * len(worker_dirs) == 1:
+                self.single = True
+
             for __dir in worker_dirs:
                 self.time_dict = {"traceEvents":[]} 
                 gpu_path = os.path.join(worker_root, __dir)
                 tmp_pm, pid, host_id_str = PathManager(gpu_path), str(_dir)+".rank%s"%__dir, _dir
                 arg_list.append([tmp_pm, pid, host_id_str])
-                if self.comm_backend == "NCCL":
+                if not self.single and self.comm_backend == "NCCL":
                     self._collect_nccl_graph(tmp_pm, pid, host_id_str)
         with multiprocessing.Pool(len(arg_list)) as p:
             rst = p.map(self._collect_rank_traces, arg_list)
         traces_list, ref_name_list, ref_time_list, raw_name2IDnum_list = zip(*rst)
 
-        if self.comm_backend == "NCCL":
+        host_ids = None
+        if not self.single and self.comm_backend == "NCCL":
             host_ids = [self.nccl_graph.host_prefix2id[host_id_str] for _, _, host_id_str in arg_list]
             self.nccl_graph.init_host_drift(zip(host_ids, ref_time_list))
             ### Since some GPU may have no comm detailed traces, select the first non-empty file to parse chunk num...
@@ -750,7 +760,7 @@ class Collector(object):
             self.nccl_graph.parse_traces(raw_name2IDnum)
         ### align the time
         rst_traces = self.clock_align(traces_list, host_ids)
-        self.single = (len(rst) == 1)
+        # self.single = (len(rst) == 1)
 
         if self.comm_backend == "NCCL" and not args_.pretty:
             self.nccl_graph.print_graph()
@@ -811,7 +821,9 @@ class Collector(object):
         if self.single:
             worker_path = os.path.join(self.pm.path, self.pm.dirs[0])
             gpu_path = os.path.join(worker_path, first_valid_dir(worker_path))
-            dag, _critical_path = self._collect_rank_dag(gpu_path, worker_dag_list, critical_path, 0)
+            worker_dag_list = [None]
+            critical_path = [None]
+            self._collect_rank_dag(gpu_path, worker_dag_list, critical_path, 0)
         else:
             threads = []
             for _dir in self.pm.dirs:

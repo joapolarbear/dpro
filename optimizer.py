@@ -264,7 +264,7 @@ class _XLACostModel(_BaseCostModel):
                 cat = parse_cat_fine_grained(ns[0])
                 pid = parse_pid_from_name(ns[0])
                 ns = set(ns)
-                subgraph: nx.DiGraph = self.dag.subgraph(ns)
+                subgraph = self.dag.subgraph(ns)
 
                 # st = time.time()
                 # randomly split edges using spanning tree
@@ -924,7 +924,7 @@ class MCMCOptimizer(Optimizer):
                 self.node_attr_cache = node_attr_cache
             SingleLogger().info("Reading init graph from cache.")
         else:
-            G: nx.DiGraph = self.dag.copy()
+            G = self.dag.copy()
             PKG = PKGraph(G)
             # # randomly contract edges if possible
             # k = int(len(G.edges()) * init_edges_to_contract)

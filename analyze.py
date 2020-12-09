@@ -264,6 +264,12 @@ if __name__ == '__main__':
                     print("Average time: %f ms" % (avg))
         elif args.sub_option == "gap":
             clct.list_max_gap(args.head)
+        elif args.sub_option.startswith("amp_data_clct"):
+            from cost_model_amp import data_clct
+            ### E.g. args.sub_option = amp_data_clct,save_names=fp32,model=resnet,platform=tf
+            kvs = dict([tuple(kv.split("="))for kv in args.sub_option.split(",")[1:]])
+            trace_filter = data_clct.TraceFilter(**kvs)
+            trace_filter.dump_for_cost_model(clct.traceM.name2sta, clct.pm.path)
 
     if args.option == "optimize":
         '''
