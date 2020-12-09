@@ -1,3 +1,4 @@
+from collections import deque
 import tensorflow as tf
 from tensorflow.core.framework import types_pb2
 from google.protobuf import text_format
@@ -124,20 +125,53 @@ class GraphDefUtil(object):
 
     def get_subgraph_def_config_from_nodes(self, node_names, output_dir, sample_index):
         # check ops are in the graph
+        all_node_names = set()
         for node_name in node_names:
             if node_name not in self.operation_names:
                 raise GSNotInGraphError("[Cost Model] {} not in graph ops.".format(node_name))
+            all_node_names.add(node_name)
+        # constant analysis
+        output_map = {}
+        input_map = {}
+        constant_nodes = set()
+        for name in node_names:
+            op = self.original_graph.get_operation_by_name(name)
+            if op.type == "Const":
+                constant_nodes.add(name)
+            if name not in input_map:
+                input_map[name] = []
+            for input_tensor in op.inputs:
+                input_op_name = input_tensor.op.name
+                if input_op_name not in output_map:
+                    output_map[input_op_name] = []
+                output_map[input_op_name].append(name)
+                if input_op_name in all_node_names:
+                    input_map[name].append(input_op_name)
+        constant_queue = deque(list(constant_nodes))
+        while len(constant_queue) != 0:
+            c_node = constant_queue.pop()
+            c_outputs = output_map[c_node]
+            for node in c_outputs:
+                all_constant = True
+                for node_input in input_map[node]:
+                    if node_input not in constant_nodes:
+                        all_constant = False
+                        break
+                if all_constant:
+                    constant_nodes.add(node)
+                    constant_queue.appendleft(node)
+
         subgraph_nodes = set()
         for name in node_names:
             potential_op = self.original_graph.get_operation_by_name(name)
-            forbidden_op_types = ["Transpose", "VariableV2", "Tile", "Sum", 
+            require_const_op_types = ["Transpose", "VariableV2", "Tile", "Sum", 
             "UnsortedSegmentSum", "Pad", "DynamicStitch", "Concat", "DynamicSlice", 
             "BatchToSpaceND", "BroadcastArgs","BroadcastGradientArgs", 
             "Concat", "ConcatV2", "ConcatOffset", "Empty", "FFT", "FFT2D", "FFT3D",
             "Fill", "Gather", "Scatter", "ResizeNearestNeighbor", "ResizeBilinear",
             "ResizeBilinearGrad", "ListDiff", "Slice", "InvertPermutation", 
             "Reshape", "Transpose", "ConjugateTranspose", "Range"]
-            if potential_op.type not in forbidden_op_types:
+            if potential_op.type not in require_const_op_types or potential_op.name in constant_nodes:
                 subgraph_nodes.add(potential_op)
         if len(subgraph_nodes) < 2:
             raise GSSubgraphTooSmallError("Subgraph too small (# effective ops < 2).")
@@ -158,8 +192,6 @@ class GraphDefUtil(object):
                     subgraph_frontline_nodes.add(node)
                     node_is_internal = False
                     break
-                elif input_op.type == "VariableV2":
-                    pass
             if node_is_internal:
                 if node.type == 'Placeholder':
                     subgraph_input_nodes.add(node)
@@ -189,10 +221,10 @@ class GraphDefUtil(object):
                     if not self.is_fixed_shape(op_input_source.outputs[0].shape):
                         # print("[Cost Model] {} has non-fixed shape at compile time.".format(op_input_source.name))
                         raise GSNonFixedShapeError("{} has non-fixed shape at compile time.".format(op_input_source.name))
-                    if "BroadcastGradientArgs" in op_input_source.name:
-                        node_def = op_input_source.node_def
-                        if not op_input_source in subgraph_input_nodes and not op_input_source in internal_subgraph_nodes and not op_input_source in subgraph_frontline_nodes:
-                            subgraph_frontline_nodes.append(op_input_source)
+                    # if "BroadcastGradientArgs" in op_input_source.name:
+                    #     node_def = op_input_source.node_def
+                    #     if not op_input_source in subgraph_input_nodes and not op_input_source in internal_subgraph_nodes and not op_input_source in subgraph_frontline_nodes:
+                    #         subgraph_frontline_nodes.append(op_input_source)
                     if op_input_source in subgraph_input_nodes or op_input_source in internal_subgraph_nodes:
                         node_def = op_input_source.node_def
                     elif op_input_source.type == 'Const':
@@ -248,16 +280,12 @@ class GraphDefUtil(object):
         for node_def in out_input_defs:
             node = out_graph.get_operation_by_name(node_def.name)
             input_nodes.append(node)
+
         output_nodes = []
-        all_ops_used_as_input = set()
-        for node_def in [op.node_def for op in subgraph_nodes]:
-            node = out_graph.get_operation_by_name(node_def.name)
-            for input_tensor in node.inputs:
-                all_ops_used_as_input.add(input_tensor.op.name)
-        for node_def in [op.node_def for op in subgraph_nodes]:
-            if node_def.name not in all_ops_used_as_input and node_def.op != "Const":
-                node = out_graph.get_operation_by_name(node_def.name)
-                output_nodes.append(node)
+        for op in subgraph_nodes:
+            if op.name not in output_map and op.name not in constant_nodes:
+                output_nodes.append(op)
+
         tf2xla_config_path = os.path.join(output_dir, "{}_config.pbtxt".format(sample_index))
         feed_names = []
         feed_shapes = []
