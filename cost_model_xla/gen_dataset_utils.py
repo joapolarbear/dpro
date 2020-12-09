@@ -503,6 +503,12 @@ def gen_max_cluster_kernel_samples_using_replay(sample_generator, op_time_dict, 
         try:
             compile_to_hlo(def_path, config_path, unopt_path, opt_path)
         except:
+            print("[WARNING] Failed to compile to HLO code.")
+            clean_up_dir(profile_dir)
+            clean_up_dir(raw_subgraph_dir)
+            continue
+        if not os.path.exists(unopt_path):
+            print("[WARNING] Failed to compile to HLO code.")
             clean_up_dir(profile_dir)
             clean_up_dir(raw_subgraph_dir)
             continue
@@ -518,6 +524,7 @@ def gen_max_cluster_kernel_samples_using_replay(sample_generator, op_time_dict, 
         try:
             replay_and_generate_kernel_sample(sample_id, unopt_path, profile_dir, dataset_dir)
         except:
+            print("[WARNING] Failed to replay HLO code and generate samples.")
             clean_up_dir(profile_dir)
             clean_up_dir(raw_subgraph_dir)
             continue
@@ -719,7 +726,7 @@ def gen_kernel_dataset(trace_dir, op_time_dict, result_dir, num_samples=2000, nu
         for node in graph_def_as_json["node"]:
             if node["op"] == "BytepsPushPull":
                 # register TF Ops
-                import byteps.tensorflow as bps
+                import byteps.tensorflow as bps # type: ignore
                 ignored_node.add(node["name"])
             elif node["name"].lower().startswith("save") or node["name"]+":0" not in shape_dict:
                 pruned_node.add(node["name"])
