@@ -285,6 +285,7 @@ class SampleGenerator():
         self.edge_max_weight = 1
         self._preprocess_nx_graph(ignored_nodes)
         self.generated_graph_hashes = set()
+        self.ignored_nodes = ignored_nodes
 
     def _preprocess_nx_graph(self, ignored_nodes=None):
         if ignored_nodes is not None:
@@ -477,7 +478,7 @@ class SampleGenerator():
     def gen_random_subgraph(self, output_dir, sample_id, choose_root_from_ops=None, min_levels=1, max_levels=10, forest_fire_p=0.5):
         # op selection logic
         if choose_root_from_ops is None:
-            filtered_op = [op for op in self.graph_def_util.original_graph.get_operations() if op.type != "Placeholder" and op.type != "Const" and op.type != "Identity"]
+            filtered_op = [op for op in self.graph_def_util.original_graph.get_operations() if op.type != "Placeholder" and op.type != "Const" and op.type != "Identity" and op.name not in self.ignored_nodes]
         else:
             filtered_op = []
             for op_name in choose_root_from_ops:
@@ -485,7 +486,7 @@ class SampleGenerator():
                     op = self.graph_def_util.original_graph.get_operation_by_name(op_name)
                 except Exception as e:
                     continue
-                if op.type != "Placeholder" and op.type != "Const" and op.type != "Identity" and op.type != "VariableV2":
+                if op.type != "Placeholder" and op.type != "Const" and op.type != "Identity" and op.type != "VariableV2" and op.name not in self.ignored_nodes:
                     filtered_op.append(op)
         if not filtered_op:
             # print(choose_root_from_ops)
