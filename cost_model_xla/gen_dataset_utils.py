@@ -773,7 +773,7 @@ def gen_kernel_dataset(trace_dir, op_time_dict, result_dir, num_samples=2000, nu
                 if "shape" in node["attr"]:
                     node["attr"]["shape"] = shape_as_list_to_pb_json(shape_dict[node["name"]+":0"])
         cleaned_graph_def_str = json.dumps(graph_def_as_json)
-        with open(os.path.join(trace_dir, "cleaned_graph.json"), "w") as f_cleaned:
+        with open(os.path.join(result_dir, "cleaned_graph.json"), "w") as f_cleaned:
             json.dump(graph_def_as_json, f_cleaned, indent=4)
         graph_def = Parse(cleaned_graph_def_str, GraphDef())
     # sample_generator = SampleGenerator(graph_def=graph_def, shape_dict=shape_dict)

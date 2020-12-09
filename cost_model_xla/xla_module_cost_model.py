@@ -18,7 +18,7 @@ try:
     GraphDef = tf.GraphDef
 except:
     GraphDef = tf.compat.v1.GraphDef
-from cost_model_xla.xlatools import compile_to_hlo, extract_kernel_features_from_hlo, replay_and_generate_kernel_sample
+from cost_model_xla.xlatools import compile_to_hlo, extract_kernel_features_from_hlo, replay_and_generate_kernel_sample, BPF_PROFILE_GPU
 from google.protobuf.json_format import Parse
 from cost_model_xla.gen_dataset_utils import XlaKernelDataset, XlaModuleTestSet
 from cost_model_xla.gen_samples import GSNotInGraphError, GSNonFixedShapeError, GSSubgraphTooSmallError, GraphDefUtil
@@ -28,12 +28,14 @@ import traceback
 
 gpus = tf.config.experimental.list_physical_devices('GPU')
 if gpus:
-  # Restrict TensorFlow to only use the first GPU
-  try:
-    tf.config.experimental.set_visible_devices(gpus[1], 'GPU')
-  except RuntimeError as e:
-    # Visible devices must be set at program startup
-    print(e)
+  # Restrict TensorFlow to use other GPUS
+  avoided_gpu_id = BPF_PROFILE_GPU
+  for dev in gpus:
+      dev_id = int(dev.name.split("GPU:")[-1])
+      if dev_id != avoided_gpu_id:
+        tf.config.experimental.set_visible_devices(dev, 'GPU')
+        print("Set cost model to use GPU {}".format(dev_id))
+        break
 
 class ElementaryOpCache():
     def __init__(self, dataset_path=None, load_from=None):
@@ -648,12 +650,12 @@ class XLAModuleCostModel():
             os.makedirs(self._tmp_dir)
 
     @classmethod
-    def train_on_dataset(cls, dataset_path, graph_def, save_dir):
+    def train_on_dataset(cls, dataset_path, save_dir):
         train_kernel_model(dataset_path, save_dir)
-        if isinstance(graph_def, str):
-            with open(graph_def, "r") as f:
-                cleaned_graph_def_str = f.read()
-            graph_def = Parse(cleaned_graph_def_str, GraphDef())
+        graph_def_path = os.path.join(dataset_path, "cleaned_graph.json")
+        with open(graph_def_path, "r") as f:
+            cleaned_graph_def_str = f.read()
+        graph_def = Parse(cleaned_graph_def_str, GraphDef())
         with open(os.path.join(save_dir, "graph_def.pickle"), "wb") as f:
             pickle.dump(graph_def, f)
 
