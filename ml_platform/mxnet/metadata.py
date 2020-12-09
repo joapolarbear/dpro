@@ -66,7 +66,7 @@ class MetaInfo:
             else:
                 self.name2shape[std_name] = all_shape[idx]
 
-        # self.get_hyper_para()
+        self.get_hyper_para()
 
     def is_ignore(self, node):
         if "Comm" in node:

@@ -1,3 +1,7 @@
+''' This module is used to filter operators that we focus on for AMP
+    And write them in avg.txt file
+    write corresponding names in name.txt
+'''
 import sys, os
 
 class TraceFilter:

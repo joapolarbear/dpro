@@ -21,8 +21,7 @@ args = arg_utils.SingleArg().args
 if args.option == "optimize" and not args.simulate:
     from cost_model_xla import XlaDataset, FusionCostModel
     from cost_model_xla.xla_module_cost_model import XLAModuleCostModel
-
-
+    pass
 
 logger = logger_utils.SingleLogger(args.path.split(',')[0], 
     args.option, args.logging_level, 
@@ -35,6 +34,14 @@ debug_utils.DebugRecorder(is_enable=args.debug_traces)
 sys.setrecursionlimit(1000000)
 
 path_list = args.path.split(',')
+
+# ### TODO delete
+# from cost_model_amp import dataloader
+# dataloader.DataLoader(data_dir="/Users/bytedance/0/data/20201209/20201209_03_tf_resnet_b=4~256", 
+#                         metadata_path="/Users/bytedance/0/data/20201209/20201209_03_tf_resnet_b=4~256", model="resnet")
+# raise
+
+
 
 if __name__ == '__main__':
     ### map from operators to CUDA kernels, path[0] should be operator level traces and path[1] should be kernel level traces

@@ -1,18 +1,32 @@
 import os
 import numpy as np
-from ml_platform.mxnet.metadata import MetaInfo, FULL_HEADERS, OP_HYPER_PARAMETERS, BASE_HEADER_LEN
 import matplotlib.pyplot as plt
 import seaborn as sns
 import math
+
+from logger_utils import Singleton, SingleLogger
+import arg_utils
+args_ = arg_utils.SingleArg().args
+
+if args_.platform == "MXNET":
+    from ml_platform.mxnet.metadata import MetaInfo, FULL_HEADERS, OP_HYPER_PARAMETERS, BASE_HEADER_LEN
+    SingleLogger().info("Use MXNET metadata")
+elif args_.platform == "TENSORFLOW":
+    from ml_platform.tensorflow.metadata import MetaInfo, FULL_HEADERS, OP_HYPER_PARAMETERS, BASE_HEADER_LEN
+    SingleLogger().info("Use TENSORFLOW metadata")
+else:
+    raise NotImplementedError()
 
 BATCHSIZE_THESHOLD = 4
 BATCHSIZE_UPPER = 1e6
 STDDEV_THREHOLD = 0.2
 AVG_THREHOLD = 0
-
 TRAIN_PERCENT = 0.9
 FP32_OR_FP16 = (True, True)
-METANAME = ["S_mul", "S_add", "S_in", "S_out", "S_wei"]
+
+## the first two dim are avg, G.
+FULL_HEADERS["base"][2:]
+# METANAME = ["S_mul", "S_add", "S_in", "S_out", "S_wei"]
 
 ### TODO (urgent), replace this
 GFLOPS_FP32 = 1
@@ -122,6 +136,16 @@ class DataLoader(BasicLoader):
     ''' Load all data, including execution time and metadata of each operator
     '''
     def __init__(self, data_dir, metadata_path, model):
+        ''' Load operator execution time and operator metadata
+        Parameters
+        ----------
+        data_dir: str
+            The path where operator execution time is stored
+        metadata_path: str
+            The path where operator metadata is stored
+        model: str
+            Models
+        '''
         self.NAMELIST_32 = None
         self.NAMELIST_16 = None
 
@@ -154,8 +178,8 @@ class DataLoader(BasicLoader):
             lines = fp.read().split("\n")
             idx = 0
             while idx < len(lines):
-                if "huhanpeng" in lines[idx]:
-                    if idx+1 < len(lines) and ("huhanpeng" in lines[idx+1] or lines[idx+1]==""):
+                if "byteprofiler" in lines[idx]:
+                    if idx+1 < len(lines) and ("byteprofiler" in lines[idx+1] or lines[idx+1]==""):
                         ### avoid add addition batch size to self.BATCH_LIST_VALUE
                         idx += 1
                         continue
@@ -175,12 +199,12 @@ class DataLoader(BasicLoader):
                     else:
                         raise
                     idx += 1
-                    if idx >= len(lines) or "huhanpeng" not in lines[idx]:
+                    if idx >= len(lines) or "byteprofiler" not in lines[idx]:
                         _DATA["B=%d"%batchsize] = str2list(lines[idx], dtype=float)
                     else:
                         continue
                     idx += 1
-                    if idx >= len(lines) or "huhanpeng" not in lines[idx]:
+                    if idx >= len(lines) or "byteprofiler" not in lines[idx]:
                         _VAR["B=%d"%batchsize] = str2list(lines[idx], dtype=float)
                     else:
                         continue

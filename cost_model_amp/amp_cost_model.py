@@ -98,7 +98,6 @@ class DNNPredictor:
 
         return input_fn
 
-
 class BayesPredictor:
     def __init__(self, train_x, train_y, test_x, test_y, headers):
         self.headers = headers
@@ -126,12 +125,10 @@ class BayesPredictor:
             # Perform Markov Chain Monte Carlo sampling letting PyMC3 choose the algorithm
             normal_trace = pm.sample(2000, cores=1)
 
-
 from scipy.optimize import curve_fit
 wei1, wei2 = 1, 1
 ADD_ADDITIONAL = True
 LINEARITY = 'linear' # \in ['linear', log', 'exp', sigmoid', 'piecewise', 'max_linear', 'max_exp'] or None
-
 
 # def cost_func(xs, a1, a2, a3, a4, a5, a6, a7, a8, a9, b1, b2, b3):
 #     '''
