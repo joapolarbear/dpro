@@ -27,11 +27,11 @@ def format_feed(node_name, shape):
     for dim in shape:
         dim_str = "\t\tdim {{ size: {} }}\n".format(int(dim))
         feed_str += dim_str
-    feed_str += "\t\n}\n}\n"
+    feed_str += "\t}\n}\n"
     return feed_str
 
 def format_fetch(node_name):
-    fetch_str = "fetch {{\n\tid {{ node_name: \"{}\" }}\n}}".format(node_name)
+    fetch_str = "fetch {{\n\tid {{ node_name: \"{}\" }}\n}}\n".format(node_name)
     return fetch_str
 
 def serialize_feed_fetch_to_tf2xla_config(feed_names, feed_shapes, fetch_names, config_path):
@@ -255,7 +255,7 @@ class GraphDefUtil(object):
             for input_tensor in node.inputs:
                 all_ops_used_as_input.add(input_tensor.op.name)
         for node_def in [op.node_def for op in subgraph_nodes]:
-            if node_def.name not in all_ops_used_as_input:
+            if node_def.name not in all_ops_used_as_input and node_def.op != "Const":
                 node = out_graph.get_operation_by_name(node_def.name)
                 output_nodes.append(node)
         tf2xla_config_path = os.path.join(output_dir, "{}_config.pbtxt".format(sample_index))
