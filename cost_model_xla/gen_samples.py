@@ -142,24 +142,27 @@ class GraphDefUtil(object):
                 input_map[name] = []
             for input_tensor in op.inputs:
                 input_op_name = input_tensor.op.name
+                if input_tensor.op.type == "Const":
+                    constant_nodes.add(input_op_name)
                 if input_op_name not in output_map:
                     output_map[input_op_name] = []
                 output_map[input_op_name].append(name)
-                if input_op_name in all_node_names:
-                    input_map[name].append(input_op_name)
+                input_map[name].append(input_op_name)
+
         constant_queue = deque(list(constant_nodes))
         while len(constant_queue) != 0:
             c_node = constant_queue.pop()
-            c_outputs = output_map[c_node]
-            for node in c_outputs:
-                all_constant = True
-                for node_input in input_map[node]:
-                    if node_input not in constant_nodes:
-                        all_constant = False
-                        break
-                if all_constant:
-                    constant_nodes.add(node)
-                    constant_queue.appendleft(node)
+            if c_node in output_map:
+                c_outputs = output_map[c_node]
+                for successor_node in c_outputs:
+                    all_constant = True
+                    for node_input in input_map[successor_node]:
+                        if node_input not in constant_nodes:
+                            all_constant = False
+                            break
+                    if all_constant:
+                        constant_nodes.add(successor_node)
+                        constant_queue.appendleft(successor_node)
 
         subgraph_nodes = set()
         for name in node_names:
@@ -280,11 +283,16 @@ class GraphDefUtil(object):
         for node_def in out_input_defs:
             node = out_graph.get_operation_by_name(node_def.name)
             input_nodes.append(node)
-
         output_nodes = []
-        for op in subgraph_nodes:
-            if op.name not in output_map and op.name not in constant_nodes:
-                output_nodes.append(op)
+        all_ops_used_as_input = set()
+        for node_def in [op.node_def for op in subgraph_nodes]:
+            node = out_graph.get_operation_by_name(node_def.name)
+            for input_tensor in node.inputs:
+                all_ops_used_as_input.add(input_tensor.op.name)
+        for node_def in [op.node_def for op in subgraph_nodes]:
+            if node_def.name not in all_ops_used_as_input and node_def.op != "Const" and node_def.name not in constant_nodes:
+                node = out_graph.get_operation_by_name(node_def.name)
+                output_nodes.append(node)
 
         tf2xla_config_path = os.path.join(output_dir, "{}_config.pbtxt".format(sample_index))
         feed_names = []
