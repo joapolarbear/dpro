@@ -443,10 +443,26 @@ class SampleGenerator():
         return chosen_node
     
     # this method returns a generator of functions
-    def gen_max_cluster(self, forbidden_nodes=None, random_sample=False, min_cluster_size=4, max_cluster_size=800, forbidden_ratio=0.2):
-        if forbidden_nodes is None or random_sample:
-            forbidden_nodes = random.sample(self.nx_graph.nodes, k=int(len(self.nx_graph.nodes) * forbidden_ratio))
-        clusters = self._max_cluster_sampler(forbidden_list=forbidden_nodes, size_limit=max_cluster_size)
+    def gen_max_cluster(self, forbidden_nodes=None, random_sample=False, min_cluster_size=4, max_cluster_size=800, cache_dir=None, forbidden_ratio=0.2):
+        clusters = []
+        if cache_dir is not None:
+            # check if cluster cache exists
+            cache_path = os.path.join(cache_dir, "max_cluster.pickle")
+            if os.path.exists(cache_path):
+                with open(cache_path, "rb") as f:
+                    clusters = pickle.load(f)
+                compute_cluster = False
+            else:
+                compute_cluster = True
+        else:
+            compute_cluster = True
+        if compute_cluster:
+            if forbidden_nodes is None or random_sample:
+                forbidden_nodes = random.sample(self.nx_graph.nodes, k=int(len(self.nx_graph.nodes) * forbidden_ratio))
+            clusters = self._max_cluster_sampler(forbidden_list=forbidden_nodes, size_limit=max_cluster_size)
+            if cache_dir is not None:
+                with open(os.path.join(cache_dir, "max_cluster.pickle"), "wb") as f:
+                    pickle.dump(clusters, f)
         def ret_gen():
             for cluster_nodes in clusters:
                 def try_generate_cluster_config(output_dir, sample_id, 

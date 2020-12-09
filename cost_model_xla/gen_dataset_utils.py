@@ -483,7 +483,7 @@ def gen_max_cluster_kernel_samples_using_replay(sample_generator, op_time_dict, 
     
     if fuse_all_fw:
         forbidden_nodes = [node for node in sample_generator.nx_graph.nodes if node.startswith("gradients") or "Assign" in node]
-        func_gen, num_clusters = sample_generator.gen_max_cluster(forbidden_nodes=forbidden_nodes, min_cluster_size=min_cluster_size)
+        func_gen, num_clusters = sample_generator.gen_max_cluster(forbidden_nodes=forbidden_nodes, min_cluster_size=min_cluster_size, cache_dir=dataset_dir)
     else:
         func_gen, num_clusters = sample_generator.gen_max_cluster(random_sample=True)
     total_fused_hashes = []
