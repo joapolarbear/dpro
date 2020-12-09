@@ -775,29 +775,29 @@ def gen_kernel_dataset(trace_dir, op_time_dict, result_dir, num_samples=2000, nu
     completed_samples = 0
     op_hash_set = set()
     unique_op_history = []
-    print("Entering max cluster sample iterations...")
-    pbar = tqdm(total=num_max_cluster_samples + 1)
-    # generate fuse all FW samples
-    fused_op_hashes = gen_max_cluster_kernel_samples_using_replay(sample_generator, op_time_dict, dataset_dir, dataset_hlo_dir, profile_dir, debug_dir=debug_dir, fuse_all_fw=True)
-    unique_ops_in_this_step = 0
-    for hash_v in fused_op_hashes:
-        if hash_v not in op_hash_set:
-            op_hash_set.add(hash_v)
-            unique_ops_in_this_step += 1
-    unique_op_history.append(unique_ops_in_this_step)
-    pbar.update(1)
+    # print("Entering max cluster sample iterations...")
+    # pbar = tqdm(total=num_max_cluster_samples + 1)
+    # # generate fuse all FW samples
+    # fused_op_hashes = gen_max_cluster_kernel_samples_using_replay(sample_generator, op_time_dict, dataset_dir, dataset_hlo_dir, profile_dir, debug_dir=debug_dir, fuse_all_fw=True)
+    # unique_ops_in_this_step = 0
+    # for hash_v in fused_op_hashes:
+    #     if hash_v not in op_hash_set:
+    #         op_hash_set.add(hash_v)
+    #         unique_ops_in_this_step += 1
+    # unique_op_history.append(unique_ops_in_this_step)
+    # pbar.update(1)
     # generate max cluster samples
-    while completed_samples < num_max_cluster_samples:
-        fused_op_hashes = gen_max_cluster_kernel_samples_using_replay(sample_generator, op_time_dict, dataset_dir, dataset_hlo_dir, profile_dir, debug_dir=debug_dir, fuse_all_fw=False)
-        completed_samples += 1
-        pbar.update(1)
-        unique_ops_in_this_step = 0
-        for hash_v in fused_op_hashes:
-            if hash_v not in op_hash_set:
-                op_hash_set.add(hash_v)
-                unique_ops_in_this_step += 1
-        unique_op_history.append(unique_ops_in_this_step)
-    pbar.close()
+    # while completed_samples < num_max_cluster_samples:
+    #     fused_op_hashes = gen_max_cluster_kernel_samples_using_replay(sample_generator, op_time_dict, dataset_dir, dataset_hlo_dir, profile_dir, debug_dir=debug_dir, fuse_all_fw=False)
+    #     completed_samples += 1
+    #     pbar.update(1)
+    #     unique_ops_in_this_step = 0
+    #     for hash_v in fused_op_hashes:
+    #         if hash_v not in op_hash_set:
+    #             op_hash_set.add(hash_v)
+    #             unique_ops_in_this_step += 1
+    #     unique_op_history.append(unique_ops_in_this_step)
+    # pbar.close()
     print("Entering random sample iterations...")
     pbar = tqdm(total=num_samples)
     early_stop_counter = 0
