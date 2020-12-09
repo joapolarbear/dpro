@@ -449,13 +449,13 @@ class SampleGenerator():
         G: nx.DiGraph = self.nx_graph.copy()
         PKG = PKGraph(G)
 
-        source_nodes = [node for node in G.nodes if len(G.in_edges(node)) == 0 and node not in forbidden_list]
+        source_nodes = sorted(list(G.nodes), key=lambda x: G.in_degree(x))
 
         # Run post order traversal on G
         print("Finding maximal clusters in the graph... This may take a while...")
         visited_nodes = set()
         for source in tqdm(source_nodes, total=len(source_nodes)):
-            if source in G.nodes:
+            if source not in visited_nodes and source in G.nodes:
                 _, _, G = postorder_contract_nx(G, PKG, source, visited_nodes, forbidden_list=forbidden_list, size_limit=size_limit)
         
         clusters_formed = []
