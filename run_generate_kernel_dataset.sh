@@ -1,13 +1,13 @@
 # where the modified tensorflow locates
 export BPF_TF_PATH="/root/tensorflow"
 # the GPU id to run profiling on (specify one GPU only)
-export BPF_PROFILE_GPU="0"
+export BPF_COST_MODEL_PROFILE_GPU="0"
 
 # modify these
 TRACE_DIR="/PATH/TO/GPU/LEVEL/TRACE/DIR"
 OUTPUT_DIR="/PATH/TO/OUTPUT/DATASET"
-NUM_RANDOM_SAMPLES=4000
-MAX_CLUSTER_SAMPLES=3
+NUM_RANDOM_SAMPLES=5000
+MAX_CLUSTER_SAMPLES=5
 MIN_CLUSTER_SIZE=4
 MAX_CLUSTER_SIZE=800
 

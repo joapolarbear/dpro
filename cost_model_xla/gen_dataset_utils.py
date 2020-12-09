@@ -531,9 +531,13 @@ def gen_max_cluster_kernel_samples_using_replay(sample_generator, op_time_dict, 
         # copy and rename hlo file
         clean_up_dir(profile_dir)
         clean_up_dir(raw_subgraph_dir)
+        
         # DEBUG: also return hashes of the fused kernels
         module_dir = os.path.join(dataset_dir, "modules")
         sample_config_p = os.path.join(module_dir, "{}_config.txt".format(sample_id))
+        if not os.path.exists(sample_config_p):
+            print("[WARNING] Failed to replay HLO code and generate samples.")
+            continue
         with open(sample_config_p, "r") as f:
             for line in f:
                 splitted = line.split(",")
@@ -570,6 +574,11 @@ def gen_kernel_sample_once_using_replay(sample_generator, op_time_dict, dataset_
         clean_up_dir(profile_dir)
         clean_up_dir(raw_subgraph_dir)
         return False, False, []
+    if not os.path.exists(unopt_path):
+        print("[WARNING] Failed to compile to HLO code.")
+        clean_up_dir(profile_dir)
+        clean_up_dir(raw_subgraph_dir)
+        return False, False, []
     # copy the graph def and config for debugging purpose
     if debug_dir:
         if not os.path.isdir(debug_dir):
@@ -593,6 +602,9 @@ def gen_kernel_sample_once_using_replay(sample_generator, op_time_dict, dataset_
     fused_op_hashes = []
     module_dir = os.path.join(dataset_dir, "modules")
     sample_config_p = os.path.join(module_dir, "{}_config.txt".format(sample_id))
+    if not os.path.exists(sample_config_p):
+        print("[WARNING] Failed to replay HLO code and generate samples.")
+        return False, False, []
     with open(sample_config_p, "r") as f:
         for line in f:
             splitted = line.split(",")
