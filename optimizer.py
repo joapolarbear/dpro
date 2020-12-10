@@ -716,7 +716,7 @@ class MCMCOptimizer(Optimizer):
         
         # limit the range of nodes during search
         for node in self.dag.nodes:
-            if "BW" in node or not node.startswith("traces_0"):
+            if "BW" in node or (not node.startswith("traces_0") and not node.startswith("traces_1")):
                 self.initial_forbidden_list.add(node)
 
             try:
