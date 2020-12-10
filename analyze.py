@@ -291,11 +291,10 @@ if args.option == "collect":
 
 if args.option == "optimize":
 	from cost_model_xla.xla_module_cost_model import XLAModuleCostModel
-	if len(path_list) < 3:
-		raise RuntimeError("optimize requires positional path arguments: profile data path, cost model path & shape dict path.")
+	if len(path_list) < 2:
+		raise RuntimeError("optimize requires positional path arguments: profile data path & cost model path.")
 	clct = Collector(path_list[0], comm_backend=args_.comm_backend)
 	models_dir = path_list[1]
-	shape_dict_path = path_list[2]
 	clct.init(args.force)
 	cost_models = {}
 	logger.info("Searching for model dumps in {}".format(models_dir))
@@ -304,7 +303,7 @@ if args.option == "optimize":
 		p = Path(model_path)
 		if p.is_dir():
 			node_name = p.name
-			cm = XLAModuleCostModel(model_path, tmp_dir=os.path.join(args.cost_model_tmp_dir, node_name), shape_dict_path=shape_dict_path)
+			cm = XLAModuleCostModel(model_path, tmp_dir=os.path.join(args.cost_model_tmp_dir, node_name))
 			cost_models[node_name] = cm
 			logger.info("Added cost model for {}".format(node_name))
 		else:
