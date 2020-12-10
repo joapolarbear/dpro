@@ -474,7 +474,7 @@ class DAGManager:
                 self.add_prefix(standard_name(u, platform=self.platform)), 
                 self.add_prefix(standard_name(v, platform=self.platform)))
 
-    def gen_dag_with_prefix_weight(self, para_dict=None):
+    def gen_dag_with_prefix_weight(self, old_graph, para_dict=None):
         ''' Gen a dag from the original graph with weighted edges.
         Return: A dag, which
             * is **weighted**;
@@ -483,7 +483,7 @@ class DAGManager:
             * partition Comm nodes into sub-task nodes if needed.
         '''
         ### Read the original dag for this gpu first
-        mygraph, _ = wrap_read_gml(self.pm.search(FileName.DAG), platform=self.platform)
+        mygraph = old_graph
         queue_type_list = QueueType().ret_list()
 
         done_comm = []
@@ -650,7 +650,7 @@ class DAGManager:
     def is_fw_bw_node(self, name):
         return parse_cat_fine_grained(name) in ["operator.FW", "operator.BW"]
     
-    def gen_gpu_dag(self, _pretty=False, para_dict=None):
+    def gen_gpu_dag(self, old_graph, _pretty=False, para_dict=None):
         ''' Add edges according to the processing order of FW+BW ops 
             and construct a new graph running on GPU, which we call self.dag.
         Parameter
@@ -659,7 +659,7 @@ class DAGManager:
             A dict which contains the meta info of gradients/parameters
             and maps from each gradients to its UPDATE operation id
         '''
-        self.gen_dag_with_prefix_weight(para_dict)
+        self.gen_dag_with_prefix_weight(old_graph, para_dict)
 
         critical_path = None
         ### generate execution graph according to the execution order,

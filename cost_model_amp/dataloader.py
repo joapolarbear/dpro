@@ -5,14 +5,17 @@ import seaborn as sns
 import math
 
 from logger_utils import Singleton, SingleLogger
+from trace_utils import parse_rawname_from_name
 import arg_utils
 args_ = arg_utils.SingleArg().args
 
 if args_.platform == "MXNET":
     from ml_platform.mxnet.metadata import MetaInfo, FULL_HEADERS, OP_HYPER_PARAMETERS, BASE_HEADER_LEN
+    from ml_platform.mxnet.metadata import GFLOPS_FP32, GFLOPS_FP16
     SingleLogger().info("Use MXNET metadata")
 elif args_.platform == "TENSORFLOW":
     from ml_platform.tensorflow.metadata import MetaInfo, FULL_HEADERS, OP_HYPER_PARAMETERS, BASE_HEADER_LEN
+    from ml_platform.tensorflow.metadata import GFLOPS_FP32, GFLOPS_FP16
     SingleLogger().info("Use TENSORFLOW metadata")
 else:
     raise NotImplementedError()
@@ -25,12 +28,9 @@ TRAIN_PERCENT = 0.9
 FP32_OR_FP16 = (True, True)
 
 ## the first two dim are avg, G.
-FULL_HEADERS["base"][2:]
+METANAME = FULL_HEADERS["base"][2:]
 # METANAME = ["S_mul", "S_add", "S_in", "S_out", "S_wei"]
 
-### TODO (urgent), replace this
-GFLOPS_FP32 = 1
-GFLOPS_FP16 = 2
 
 def str2list(_list, dtype=str):
     assert dtype in [int, float, str]
@@ -82,7 +82,7 @@ class BasicLoader:
         fp16_data = np.split(fp16_data, [1], axis=1)
         self.fp16_x, self.fp16_y = fp16_data[1], fp16_data[0]
         if verbose:
-            print("Collect fp32 data - X:{}, Y:{}, fp16 data - X:{}, Y:{}".format(
+            SingleLogger().info("Collect fp32 data - X:{}, Y:{}, fp16 data - X:{}, Y:{}".format(
                 self.fp32_x.shape, self.fp32_y.shape, self.fp16_x.shape, self.fp16_y.shape))
 
         # print_array_values(all_data, 10)
@@ -103,8 +103,8 @@ class BasicLoader:
                 all_data[:, i] = all_data[:, i] / max(all_data[:, i])
         self.max_of_each_dim = np.array(self.max_of_each_dim)
         if verbose:
-            print("Headers for {}: {}".format(target_optype_, FULL_HEADERS[target_optype_]))
-            print("Maximum value for each dimension: {}".format(self.max_of_each_dim))
+            SingleLogger().info("Headers for {}: {}".format(target_optype_, FULL_HEADERS[target_optype_]))
+            SingleLogger().info("Maximum value for each dimension: {}".format(self.max_of_each_dim))
 
         # print_array_values(all_data, 10)
 
@@ -124,7 +124,7 @@ class BasicLoader:
         self.train_x, self.train_y = train_data[1], train_data[0]
         self.test_x, self.test_y = test_data[1], test_data[0]
         if verbose:
-            print("Collect training data - X:{}, Y:{}, test data - X:{}, Y:{}".format(
+            SingleLogger().info("Collect training data - X:{}, Y:{}, test data - X:{}, Y:{}".format(
                     self.train_x.shape, self.train_y.shape, self.test_x.shape, self.test_y.shape))
         
         # from dim_reduce import DimReducer
@@ -135,7 +135,7 @@ class BasicLoader:
 class DataLoader(BasicLoader):
     ''' Load all data, including execution time and metadata of each operator
     '''
-    def __init__(self, data_dir, metadata_path, model):
+    def __init__(self, data_dir, metadata_path):
         ''' Load operator execution time and operator metadata
         Parameters
         ----------
@@ -143,8 +143,6 @@ class DataLoader(BasicLoader):
             The path where operator execution time is stored
         metadata_path: str
             The path where operator metadata is stored
-        model: str
-            Models
         '''
         self.NAMELIST_32 = None
         self.NAMELIST_16 = None
@@ -158,7 +156,6 @@ class DataLoader(BasicLoader):
 
         self.data_dir = data_dir
         self.meta_info = MetaInfo(metadata_path)
-        self.model = model
 
         ### record all names
         with open(os.path.join(self.data_dir, "name.txt"), 'r') as fp:
@@ -168,8 +165,10 @@ class DataLoader(BasicLoader):
             for line in lines:
                 if "fp32" in line:
                     self.NAMELIST_32 = str2list(line.split(":")[1])
+                    self.NAMELIST_32 = [parse_rawname_from_name(n).split(".")[1] for n in self.NAMELIST_32]
                 elif "fp16" in line:
                     self.NAMELIST_16 = str2list(line.split(":")[1])
+                    self.NAMELIST_16 = [parse_rawname_from_name(n).split(".")[1] for n in self.NAMELIST_16]
                 else:
                     raise
 
@@ -183,12 +182,7 @@ class DataLoader(BasicLoader):
                         ### avoid add addition batch size to self.BATCH_LIST_VALUE
                         idx += 1
                         continue
-                    if self.model == 'bert':
-                        batchsize = int(lines[idx].split("--total_batch_size")[1].split("--")[0])
-                    elif self.model == 'resnet' or self.model == 'dense':
-                        batchsize = int(lines[idx].split("--batch-size")[1].split("--")[0])
-                    else:
-                        raise
+                    batchsize = int(lines[idx].split("--batch-size")[1].split("--")[0])
                     if "fp32" in lines[idx]:
                         self.BATCH_LIST_VALUE.append(batchsize)
                         _DATA = self.DATA_32
@@ -214,17 +208,34 @@ class DataLoader(BasicLoader):
         self.BATCH_LIST_VALUE = sorted(self.BATCH_LIST_VALUE)
         self.BATCH_LIST_STR = ["B=%d"%e for e in self.BATCH_LIST_VALUE]
 
-    def pick_some_ops(self, op_names):
+    def pick_opnames_by_op_type(self, op_type):
+        if op_type == "CastToFp16" or op_type == "CastToFp32":
+            ret = []
+            for n in self.NAMELIST_16:
+                if op_type not in n or self.meta_info.ret_metadata(n) is None:
+                    continue
+                ret.append(n)
+            return ret
+
+        return self.meta_info.pick_opnames_by_op_type(op_type)
+
+    def pick_some_ops(self, target_optype):
         ''' generate metadata for some specific operators
         --------
-        op_names: list of str
-            a list of operator names we focus on 
+        target_optype: str
+            operator type we want to build a cost model for
         '''
-        ### model_size[node_name][S_mul, S_add, ...][len= # of batch value]
+        ### a list of operator names we focus on
+        op_names = self.pick_opnames_by_op_type(target_optype)
+        if len(op_names) == 0:
+            SingleLogger().warn("No ops found for {}".format(target_optype))
+            return op_names
         ### shape = (n_nodes, len(METANAME), n_batchsize_values)
-        self.model_size = np.array([list(zip(*[self.meta_info.ret_mx_metadata(op_name, batch_size=b) for b in self.BATCH_LIST_VALUE])) for op_name in op_names])
-        self.model_raw_info = np.array([list(zip(*[self.meta_info.ret_mx_rawmeta(op_name, batch_size=b) for b in self.BATCH_LIST_VALUE])) for op_name in op_names])
+        self.model_size = np.array([list(zip(*[self.meta_info.ret_metadata(op_name, batch_size=b) for b in self.BATCH_LIST_VALUE])) for op_name in op_names])
+        self.model_raw_info = np.array([list(zip(*[self.meta_info.ret_rawmeta(op_name, batch_size=b) for b in self.BATCH_LIST_VALUE])) for op_name in op_names])
         self.intensity = self.model_size[:, 0, :] / (self.model_size[:, 2, :] + self.model_size[:, 3, :] + self.model_size[:, 4, :])
+        SingleLogger().info("Source metadata set, shape = (n_ops, n_dim, n_batch): {}".format(self.model_size.shape))
+        return op_names
 
     def batchsize2avg(self, index, fp16=False):
         avg = []
@@ -241,7 +252,7 @@ class DataLoader(BasicLoader):
         return np.sqrt(np.array(vars_))
 
     def collect_all_data(self, op_names_, multi_data_dict=None):
-        ''' Collect all data from the source data and perform some filtering
+        ''' Collect all data into one array from the source data dict and perform some filtering
         -----
         Return:
             self.all_data_dict: shape = (n_features, n_samples)
@@ -273,7 +284,7 @@ class DataLoader(BasicLoader):
             ### Dynamically add hyperparametes to the dataset
             if addition is not None and isinstance(addition, list):
                 ### update the value of batch size
-                batch_size_idx = OP_HYPER_PARAMETERS[op_type].index('B')
+                batch_size_idx = OP_HYPER_PARAMETERS[op_type].index('B') if "B" in OP_HYPER_PARAMETERS[op_type] else -1
                 for idx, e in enumerate(addition):
                     value = addition[idx] if idx != batch_size_idx else batch_size
                     if idx+BASE_HEADER_LEN >= len(_all_data_dict[op_type]):
@@ -289,17 +300,18 @@ class DataLoader(BasicLoader):
 
                 ### collect data
                 op_type = self.meta_info.parse_op_type(op_names_[i])
-                metadata = self.meta_info.ret_mx_metadata(op_names_[i], batch_size=b)
+                metadata = self.meta_info.ret_metadata(op_names_[i], batch_size=b)
 
                 intensity = metadata[0] / (metadata[2] + metadata[3] + metadata[4])
 
-                if FP32_OR_FP16[0]:
+                if FP32_OR_FP16[0] and not "CastTo" in op_names_[i]:
+                    ### CastTo operators only exist in FP16 trace files
                     idx_in_32 = self.NAMELIST_32.index(op_names_[i])
                     var_ = self.VAR_32["B=%d"%b][idx_in_32] if "B=%d"%b in self.VAR_32 else 0
                     avg_ = self.DATA_32["B=%d"%b][idx_in_32]
                     if avg_ >= AVG_THREHOLD and (np.sqrt(var_) / avg_) <= STDDEV_THREHOLD:
                         ### [H, W, C, R, S, P, Q, K, batch_size]
-                        raw_meta = self.meta_info.ret_mx_rawmeta(op_names_[i], batch_size=b)
+                        raw_meta = self.meta_info.ret_rawmeta(op_names_[i], batch_size=b)
                         __record_xdata(metadata, GFLOPS_FP32, avg_, op_type, addition=raw_meta, batch_size=b)
 
                 if FP32_OR_FP16[1]:
@@ -307,7 +319,7 @@ class DataLoader(BasicLoader):
                     var_ = self.VAR_16["B=%d"%b][idx_in_16] if "B=%d"%b in self.VAR_16 else 0
                     avg_ = self.DATA_16["B=%d"%b][idx_in_16]
                     if avg_ >= AVG_THREHOLD and (np.sqrt(var_) / avg_) <= STDDEV_THREHOLD:
-                        raw_meta = self.meta_info.ret_mx_rawmeta(op_names_[i], batch_size=b)
+                        raw_meta = self.meta_info.ret_rawmeta(op_names_[i], batch_size=b)
                         __record_xdata(metadata, GFLOPS_FP16, avg_, op_type, addition=raw_meta, batch_size=b)
 
             # _raw_meta =[0]*len(raw_meta)

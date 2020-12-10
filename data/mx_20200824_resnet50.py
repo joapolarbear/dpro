@@ -941,7 +941,7 @@ op_names_ = OP_NAMES
 train_x, train_y, test_x, test_y = data_ld.collect_data(op_names_, TARGET_OPTYPE, verbose=True)
 
 from grouper import Grouper, Delimiter
-grp = Grouper()
+
 
 #############################################
 ### define delimieter
@@ -956,6 +956,7 @@ dels = [
     Delimiter("R", td_len=0.1, fd_len=0., unit_len=0.1),
     Delimiter("G", td_len=0.1, fd_len=0., unit_len=0.1)
 ]
+grp = Grouper(dels)
 
 ### divided by C_in
 # dels = [

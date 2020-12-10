@@ -1,6 +1,6 @@
-import pymc3 as pm
 import numpy as np
 import tensorflow as tf
+from logger_utils import Singleton, SingleLogger
 
 def predict_error(_list, _list_pred):
     _list_pred = np.array(_list_pred)
@@ -113,6 +113,7 @@ class BayesPredictor:
         return _dict
 
     def train(self):
+        import pymc3 as pm
         # Context for the model
         with pm.Model() as normal_model:
             
@@ -172,17 +173,23 @@ LINEARITY = 'linear' # \in ['linear', log', 'exp', sigmoid', 'piecewise', 'max_l
 FIT_FUNC = None
 
 class CurveFiter:
-    def __init__(self, train_x, train_y, test_x, test_y, headers, op_type="conv", E1_=None, E2_=None):
+    def __init__(self, headers, op_type="conv", E1_=None, E2_=None):
         self.headers = headers
-        self.train_x = train_x
-        self.train_y = train_y
-        self.test_x = test_x
-        self.test_y = test_y
+        self.popt = self.perr = None
+        self.op_type = op_type
+        self.Es = [E1_, E2_]
+        self.load_fit_func()
 
-        E1 = 1 if E1_ is None else E1_
-        E2 = 2 if E2_ is None else E2_
+    def load_fit_func(self):
+        E1 = 1 if self.Es[0] is None else self.Es[0]
+        E2 = 2 if self.Es[1] is None else self.Es[1]
         E1 = E2 = 0
         
+        def cost_func_cast(xs, a1, b1):
+            _, _, _, S_in, _, _ = xs[0:6]
+            return a1 * S_in + b1
+        lower_bounds_cast = tuple([0]*1 + [-np.inf]*1)
+
         if LINEARITY == 'linear':
             def cost_func_conv2d(xs, a1, a2, a3, a4, a5, b1):
                 G, S_mul, S_add, S_in, S_out, S_wei = xs[0:6]
@@ -279,6 +286,7 @@ class CurveFiter:
                 return wei1 * ((S_mul + a2 * (addtional_term)) / (flops_)) + wei2 * (wei_S_all) / bandwidth + b1
 
             lower_bounds_conv = lower_bounds_dense = tuple([0]*9 + [-np.inf]*1)
+        
         elif LINEARITY == 'piecewise':
             def cost_func_conv2d(xs, a1, a2, a3, a4, a5, a6, a7, a8, b1):
                 G, S_mul, S_add, S_in, S_out, S_wei = xs[0:6]
@@ -409,20 +417,22 @@ class CurveFiter:
             raise
 
         global FIT_FUNC
-        if op_type == "conv":
+        if self.op_type == "conv" or self.op_type == "Conv2D":
             FIT_FUNC = cost_func_conv2d
             self.lower_bounds = lower_bounds_conv
-        elif op_type == "dense":
+        elif self.op_type == "dense" or self.op_type == "MatMul":
             FIT_FUNC = cost_func_dense
             self.lower_bounds = lower_bounds_dense
+        elif self.op_type == "CastToFp16" or self.op_type == "CastToFp32":
+            FIT_FUNC = cost_func_cast
+            self.lower_bounds = lower_bounds_cast
         else:
-            raise ValueError(op_type)
+            raise ValueError(self.op_type)
         self.up_bounds = tuple(len(self.lower_bounds) * [np.inf])
         self.p0 = [1]*len(self.lower_bounds)
 
         # if LINEARITY == 'max':
         #     self.p0[21] = 0.0001
-
 
     def no_linear_label(self, data_):
         if LINEARITY == 'linear':
@@ -437,35 +447,33 @@ class CurveFiter:
         else:
             raise ValueError("LINEARITY should be log:{}".format(LINEARITY))
 
-    def train(self):
-        if len(self.train_x) == 0:
-            print("[Warning]: the size of training dataset is 0, skip...")
+    def train(self, train_x, train_y):
+        if len(train_x) == 0:
+            SingleLogger().warin("The size of training dataset is 0, skip...")
             self.popt = self.perr = None
         else:
-            _train_x = np.transpose(self.train_x)
-            _train_y = self.no_linear_label(np.transpose(self.train_y).flatten())
+            _train_x = np.transpose(train_x)
+            _train_y = self.no_linear_label(np.transpose(train_y).flatten())
             # FIT_FUNC(_train_x, *self.p0)
             self.popt, pcov = curve_fit(FIT_FUNC, _train_x, _train_y, 
                 bounds=(self.lower_bounds, self.up_bounds), p0=self.p0, maxfev=100000)
             self.perr = np.sqrt(np.diag(pcov))
         return self.popt, self.perr
 
-    def test(self, verbose=True, popt=None):
-        if len(self.test_x) == 0:
-            print("[Warning]: the size of test dataset is 0, skip...")
+    def test(self, test_x, test_y, verbose=True):
+        if len(test_x) == 0:
+            SingleLogger().warn("The size of test dataset is 0, skip...")
             return None
-        _test_x = np.transpose(self.test_x)
-        _test_y = self.no_linear_label(np.transpose(self.test_y).flatten())
-        if popt is not None:
-            avgs_pred = FIT_FUNC(_test_x, *popt)
-        elif self.popt is not None:
-            avgs_pred = FIT_FUNC(_test_x, *self.popt)
-        else:
-            return None
+        _test_x = np.transpose(test_x)
+        _test_y = self.no_linear_label(np.transpose(test_y).flatten())
+
+        if self.popt is None:
+            SingleLogger().error("Curvefitter is not trained")
+        avgs_pred = FIT_FUNC(_test_x, *self.popt)
         diff, ratio = predict_error(_test_y, avgs_pred)
         error = float(ratio.split("%")[0])
         if verbose:
-            print("average error: %f %%"%(error))
+            SingleLogger().info("average error: %f %%"%(error))
         return error
 
     def predict(self, xdata):

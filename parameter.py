@@ -42,12 +42,11 @@ class ParameterDict:
         return self.metainfo.gradient_name_list[tensor_id]
 
     def tensor_id2size(self, tensor_id):
-        tensor_name = self.metainfo.gradient_name_list[tensor_id]
-        if args_.platform == "MXNET":
-            tensor_size = self.metainfo.tensor_size(tensor_name)
-        elif args_.platform == "TENSORFLOW":
-            tensor_name = tensor_name.split(":")[0]
-            _, _, _, tensor_size, _ = self.metainfo.ret_tf_metadata(tensor_name)
-        else:
-            raise NotImplementedError()
+        tensor_size = self.metainfo.ret_tensor_size(tensor_id)
         return tensor_size
+    
+    def ret_metadata(self, *args, **kwargs):
+        return self.metainfo.ret_metadata(*args, **kwargs)
+
+    def ret_rawmeta(self, *args, **kwargs):
+        return self.metainfo.ret_rawmeta(*args, **kwargs)

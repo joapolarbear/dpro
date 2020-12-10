@@ -131,11 +131,8 @@ class Collector(object):
             raw_traces = json.load(f)
         ### Consider mulptiprocessing, each GPU will read its own dag
         if self.dag is None:
-            dag_path = self.pm.search(FileName.DAG) if tmp_pm is None else tmp_pm.search(FileName.DAG)
-            # debug_utils.DebugRecorder().debug_event_start()
+            dag_path = self.pm.search(FileName.DAG)
             self.dag, self.update_nodes_in_dag = wrap_read_gml(dag_path, platform=self.platform)
-            # debug_utils.DebugRecorder().debug_event_end("collect_" + pid+"_comp.read_dag", "Collct", "0")
-
         dag_node_names_std = list(self.dag.nodes)
         wk_prefix, _ = PathManager("/".join(comp_path.split('/')[:-1])).ret_prefix()
         if wk_prefix not in self.run_span:
@@ -779,7 +776,7 @@ class Collector(object):
     def _collect_rank_dag(self, gpu_path, worker_dag_list, critical_path, index):
         SingleLogger().info("- Collect DAG in %s ..." % (gpu_path))
         dagmanager = DAGManager(gpu_path, self.traceM, self.nccl_graph, self.byteps_graph, platform=self.platform)
-        max_para_degree, _critical_path = dagmanager.gen_gpu_dag(_pretty=args_.pretty, para_dict=self.para_dict)
+        max_para_degree, _critical_path = dagmanager.gen_gpu_dag(self.dag, _pretty=args_.pretty, para_dict=self.para_dict)
         worker_dag_list[index] = dagmanager.dag
         critical_path[index] = _critical_path
 
@@ -792,7 +789,11 @@ class Collector(object):
             worker_dag_list = [None] * self.nccl_graph.nrank
         else:
             raise ValueError("Need to check whether byteps_graph has nrank member")
-
+        
+        if self.dag is None:
+            dag_path = self.pm.search(FileName.DAG)
+            self.dag, self.update_nodes_in_dag = wrap_read_gml(dag_path, platform=self.platform)
+            
         if self.single:
             worker_path = os.path.join(self.pm.path, self.pm.dirs[0])
             gpu_path = os.path.join(worker_path, first_valid_dir(worker_path))

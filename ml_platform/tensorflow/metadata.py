@@ -8,11 +8,18 @@ from trace_utils import FileName
 OP_HYPER_PARAMETERS = {
     "Conv2D": ["H", "W", "C", "R", "S", "P", "Q", "K", "B", "use_bias"],
     "MatMul": ["C_in", "C_out", "B"],
+    "CastToFp16": [],
+    "CastToFp32": []
 }
 FULL_HEADERS = {"base": ["avg", "G", "S_mul", "S_add", "S_in", "S_out", "S_wei"]}
 BASE_HEADER_LEN = len(FULL_HEADERS['base'])
 for key in OP_HYPER_PARAMETERS:
     FULL_HEADERS[key] = FULL_HEADERS["base"] + OP_HYPER_PARAMETERS[key]
+
+
+### TODO (urgent), replace this
+GFLOPS_FP32 = 1
+GFLOPS_FP16 = 2
 
 class MetaInfo:
     def __init__(self, meta_dir):
@@ -27,20 +34,35 @@ class MetaInfo:
 
         self.tensor2update = {}
 
+    def pick_opnames_by_op_type(self, op_type):
+        return [_name for _name in self.cache_hyper_para.keys() if self.parse_op_type(_name) == op_type]
+
     def parse_op_type(self, op_name):
+        ### Special cases
+        if "CastToFp16" in op_name:
+            return "CastToFp16"
+        elif "CastToFp32" in op_name:
+            return "CastToFp32"
+
         if op_name not in self.tf_meta:
             raise KeyError("{} not in the metadata".format(op_name))
         if "op" not in self.tf_meta[op_name]:
             raise KeyError("op {} has not been given a type".format(op_name))
-
-        ### Special cases
-        if "Cast" == self.tf_meta[op_name]["op"] and len(self.tf_meta[op_name]["input"][0]["shape"]) == 0:
-            return "vCast"
         if "control_dependency" in op_name:
             return "Gradient"
         return self.tf_meta[op_name]["op"]
 
-    def ret_tf_metadata(self, op_name, batch_size=None):
+    def ret_tensor_size(self, tensor_id):
+        tensor_name = self.gradient_name_list[tensor_id]
+        tensor_name = tensor_name.split(":")[0]
+        return self.ret_output_size_inB(tensor_name)
+    
+    def ret_output_size_inB(self, op_name):
+        outputs = self.tf_meta[op_name]["output"]
+        dtype_size = self.dtype2size(outputs[0]["dtype"])
+        return np.prod(outputs[0]["shape"]) * dtype_size
+
+    def ret_metadata(self, op_name, batch_size=None):
         '''
         Return:
             S_mul, S_add, S_in, S_out, S_weight
@@ -55,22 +77,15 @@ class MetaInfo:
         elif op_type == "BW_MatMul":
             C_in, C_out, old_B = self.cache_hyper_para[op_name]
             return batch_size*C_in*C_out, (batch_size-1)*C_in*C_out, batch_size*C_in, C_in*C_out, batch_size*C_out
-        elif op_type == "Cast":
-            if batch_size is not None:
-                inputs[0]["shape"][0] = batch_size
-                outputs[0]["shape"][0] = batch_size
+        elif op_type == "CastToFp16" or op_type == "CastToFp32":
+            pre_node = op_name.split("-")[0]
+            assert pre_node in self.tf_meta
+            return 1, 1, self.ret_output_size_inB(pre_node), 1, 1
 
-            input_size, output_size, dtype_in_size, dtype_out_size, old_B = self.cache_hyper_para[
-                op_name]
-            return 0, 0, batch_size * input_size / old_B, \
-                batch_size * output_size / old_B, 0
-        ### above is operator, below is activation, weight and tensors
-        elif op_type == "Gradient":
-            input_size, output_size, dtype_in_size, dtype_out_size = self.cache_hyper_para[
-                op_name]
-            return 0, 0, input_size * dtype_in_size, output_size * dtype_out_size, 0
-
-    def ret_tf_rawmeta(self, op_name, batch_size):
+    def ret_rawmeta(self, op_name, batch_size):
+        op_type = self.parse_op_type(op_name)
+        if op_type == "CastToFp16" or op_type == "CastToFp32":
+            return []
         assert op_name in self.tf_meta, "shape info for {} is not in the meta data".format(
             op_name)
         return self.cache_hyper_para[op_name]
@@ -85,6 +100,8 @@ class MetaInfo:
                 shape_ = outputs[0]["shape"]
                 assert len(shape_) == 4, (outputs[0]["shape"], self.tf_meta[op_name])
                 N = shape_[0]
+                if N is None:
+                    continue
                 # P = shape_[1]
                 ### TODO (huhanpeng), assume the width=height
                 P = Q = shape_[2]
@@ -136,14 +153,13 @@ class MetaInfo:
                     C_out = inputs[1]["shape"][1]
                     assert inputs[1]["shape"][0] == B, self.tf_meta[op_name]
                 self.cache_hyper_para[op_name] = [C_in, C_out, B]
-            elif op_type == "Cast":
-                assert len(outputs) == 1
-                assert len(inputs) == 1 
-                dtype_in_size = self.dtype2size(inputs[0]["dtype"])
-                dtype_out_size = self.dtype2size(outputs[0]["dtype"])
-                self.cache_hyper_para[op_name] = [
-                    np.prod(inputs[0]["shape"]), np.prod(outputs[0]["shape"]), dtype_in_size, dtype_out_size, batch_size]
-            ### above is operator, below is activation, weight and tensors
+            # elif op_type == "Cast":
+            #     assert len(outputs) == 1
+            #     assert len(inputs) == 1 
+            #     dtype_in_size = self.dtype2size(inputs[0]["dtype"])
+            #     dtype_out_size = self.dtype2size(outputs[0]["dtype"])
+            #     self.cache_hyper_para[op_name] = [
+            #         np.prod(inputs[0]["shape"]), np.prod(outputs[0]["shape"]), dtype_in_size, dtype_out_size, batch_size]
             elif op_type == "Gradient":
                 try:
                     dtype_in_size = self.dtype2size(inputs[0]["dtype"])

@@ -24,8 +24,8 @@ import debug_utils
 import optimizer
 
 if args.option == "optimize" and not args.simulate:
-    from cost_model_xla import XlaDataset, FusionCostModel
-    from cost_model_xla.xla_module_cost_model import XLAModuleCostModel
+    # from cost_model_xla import XlaDataset, FusionCostModel
+    # from cost_model_xla.xla_module_cost_model import XLAModuleCostModel
     pass
 
 QueueType("NCCL")
@@ -34,14 +34,6 @@ debug_utils.DebugRecorder(is_enable=args.debug_traces)
 sys.setrecursionlimit(1000000)
 
 path_list = args.path.split(',')
-
-# ### TODO delete
-# from cost_model_amp import dataloader
-# dataloader.DataLoader(data_dir="/Users/bytedance/0/data/20201209/20201209_03_tf_resnet_b=4~256", 
-#                         metadata_path="/Users/bytedance/0/data/20201209/20201209_03_tf_resnet_b=4~256", model="resnet")
-# raise
-
-
 
 if __name__ == '__main__':
     ### map from operators to CUDA kernels, path[0] should be operator level traces and path[1] should be kernel level traces
@@ -281,23 +273,17 @@ if __name__ == '__main__':
             trace_filter.dump_for_cost_model(clct.traceM.name2sta, clct.pm.path)
 
     if args.option == "optimize":
-        '''
-        from cost_model_amp.amp_pred import AMPPredictor, AMPTrainer
-        amp_pred = AMPTrainer(
-            os.path.join(path_list[0], "host0/0/metadata.json"),
-            path_list[0])
-        amp_pred.collect_raw_data(path_list[0])
-        amp_pred.gen_train_data(clct.trail_dag)
-        amp_pred.train(test=True)
-        '''
+        from cost_model_amp.amp_pred import AMPPredictor, train_amp_model
+        if args.sub_option == "train_amp":
+            train_amp_model()
+            raise
+
+        amp_pred = AMPPredictor(clct.para_dict)
 
         if not args.simulate and len(path_list) < 3:
             raise RuntimeError("optimize requires positional path arguments: profile data path, cost model path & shape dict path.")
 
-        clct = Collector(path_list[0], comm_backend=args_.comm_backend)
-        clct.init(args.force)
         cost_models = {}
-
         if not args.simulate:
             models_dir = path_list[1]
             shape_dict_path = path_list[2]
