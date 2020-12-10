@@ -10,6 +10,8 @@ from trace_utils import *
 import arg_utils
 from bps_helper.preprocess import preprocess_pcap, parse_server_logs
 
+import cvxpy as cp
+
 args_ = arg_utils.SingleArg().args
 
 class COMM_OPS(object):
@@ -64,13 +66,42 @@ class ServerOpCounter(object):
 def optimize_time_shift(shift_constraints: dict):
     # shift_constraints contains node-level time shift constaints
     # mapping: (node_id_0: int, node_id_1: int) -> value: float
-    # denotes contraint: S_node_id_0 >= S_node_id_1 + value
+    # denotes contraint: S_node_id_0 - S_node_id_1 <= value
     # base node is chosen as the node with smallest node_id
     node_ids = set()
-    pass
+    for (src_id, dst_id) in shift_constraints:
+        node_ids.add(src_id)
+        node_ids.add(dst_id)
+    node_ids = sorted(list(node_ids))
+    basis_id = node_ids[0]
+    var_map = {}
+    variables = [cp.Variable() for _ in range(len(node_ids) - 1)]
+    for (var_id, node_id) in enumerate(node_ids[1:]):
+        var_map[node_id] = variables[var_id]
 
-
-
+    obj = cp.sum_squares(cp.hstack(variables))
+    
+    constraints = []
+    for (src_id, dst_id), value in shift_constraints.items():
+        if src_id == basis_id:
+            constraints.append(var_map[dst_id] >= -value)
+        elif dst_id == basis_id:
+            constraints.append(var_map[src_id] <= value)
+        else:
+            constraints.append(var_map[src_id] - var_map[dst_id] <= value)
+    
+    prob = cp.Problem(cp.Minimize(obj), constraints)
+    prob.solve()
+    
+    shift_map = {}
+    if prob.status not in ["infeasible", "unbounded"]:
+        shift_map[basis_id] = 0
+        for node_id in node_ids[1:]:
+            shift_map[node_id] = float(var_map[node_id].value)
+        return basis_id, shift_map
+    else:
+        print("[BPS ALIGN] Problem is {}".format(prob.status))
+        exit(-1)
 
 class bytepsGraph:
     """ Helper class for processing the detailed communication trace of BytePS
@@ -141,7 +172,7 @@ class bytepsGraph:
         # parse tensor assignment information
         self._parse_trace()
         self._build_comm_graph()
-        self._align_traces()
+        self._align_traces_zmq()
         self._calc_comm_delays()
         self._dump_cache()
         self._inited = True
@@ -408,74 +439,69 @@ class bytepsGraph:
     def _get_node_from_dev_name(self, s):
         return int(s.split("_")[-1])
     
-    def _align_traces(self):
+    def _align_traces_zmq(self):
         # comm_key is in format (source, target, tensor_name, op)
+        worker_ranks = set()
         source_ranks = set()
+        server_ranks = set()
         durations_dict = {}
         unique_tensors = set()
-        copy_first_ops = {}
+        copy_merged_ops = {}
         intervals = {}
-        master_node = -1
 
         for key, durations in self.comm_durations.items():
             source, target, tensor_name, op = key
             unique_tensors.add(tensor_name)
             source_rank = self._get_node_from_dev_name(source)
+            if source.startswith("server"):
+                server_ranks.add(source_rank)
+            else:
+                worker_ranks.add(source_rank)
             source_ranks.add(source_rank)
-            # if "server" in source:
-            #     if source_rank > master_node:
-            #         master_node = source_rank
+
             if source_rank not in durations_dict:
                 durations_dict[source_rank] = {}
-            if key not in intervals:
-                intervals[key] = IntervalTree()
+            if (source, target) not in intervals:
+                intervals[(source, target)] = IntervalTree()
             for st, ed in durations:
                 if st != ed:
-                    intervals[key][st:ed] = True
+                    intervals[(source, target)][st:ed] = True
             durations_dict[source_rank][key] = durations
 
         for key, durations in self.comp_durations.items():
             # comp_key is in format 
             server, tensor_name, op, tid = key
             unique_tensors.add(tensor_name)
-            if op != COMP_OPS.COPY_FIRST:
+            if op != COMP_OPS.COPY_MERGED:
                 continue
-            if server not in copy_first_ops:
-                copy_first_ops[server] = {}
-            if server not in intervals:
-                intervals[server] = IntervalTree()
-            for st, ed in durations:
-                intervals[server][st:ed] = True
-            copy_first_ops[server][tensor_name] = durations
-        
-        master_node = sorted(list(source_ranks))[0]
-        
-        if master_node == -1:
-            SingleLogger().error("Cannot find server node traces.")
-            return
+            if server not in copy_merged_ops:
+                copy_merged_ops[server] = {}
+            # if server not in intervals:
+            #     intervals[server] = IntervalTree()
+            # for st, ed in durations:
+            #     intervals[server][st:ed] = True
+            copy_merged_ops[server][tensor_name] = durations
         
         send_delays = {}
         send_delay_keys = {}
-        # for source_rank in durations_dict.keys():
-        #     if source_rank != master_node:
-        #         send_delays[source_rank] = float('inf')
-        for r0 in source_ranks:
-            for r1 in source_ranks:
+
+        for r0 in server_ranks:
+            for r1 in worker_ranks:
                 if r0 != r1:
                     send_delays[(r0, r1)] = float('inf')
 
-        self.master_host_id = master_node
+        # self.master_host_id = master_node
 
-        def _before_align_is_first_push(key, index):
-            source, target, tensor_name, op = key
-            my_rank = self._get_node_from_dev_name(source)
-            tg_rank = self._get_node_from_dev_name(target)
-            my_st, my_ed = durations_dict[my_rank][key][index]
-            for source_rank in source_ranks:
-                st, ed = durations_dict[source_rank][("worker_"+str(source_rank), "server_" + str(tg_rank), tensor_name, op)][index]
-                if st < my_st:
-                    return False
-            return True
+        # def _before_align_is_first_push(key, index):
+        #     source, target, tensor_name, op = key
+        #     my_rank = self._get_node_from_dev_name(source)
+        #     tg_rank = self._get_node_from_dev_name(target)
+        #     my_st, my_ed = durations_dict[my_rank][key][index]
+        #     for source_rank in source_ranks:
+        #         st, ed = durations_dict[source_rank][("worker_"+str(source_rank), "server_" + str(tg_rank), tensor_name, op)][index]
+        #         if st < my_st:
+        #             return False
+        #     return True
 
         trace_shifts = {}
         for source_rank, key_dict in durations_dict.items():
@@ -483,68 +509,43 @@ class bytepsGraph:
             #     continue
             for key, durations in key_dict.items():
                 source, target, tensor_name, op = key
-                if target.startswith("server") and op == "PUSH_REQ":
+                if target.startswith("worker") and op == COMM_OPS.PULL_RES:
                     # an op that can be used to align traces
                     if key in self._ignored_tensors:
                         SingleLogger().warn(
-                                "[BPS ALIGN]: Length mismatch between master server ({}) and node {} on tensor {}".format(
-                                    "server_" + str(master_node), source, tensor_name))
+                                "[BPS ALIGN]: Length mismatch between {} and {} on tensor {}".format(
+                                    source, target, tensor_name))
                         continue
                     target_node_id = self._get_node_from_dev_name(target)
                     if source_rank == target_node_id:
                         continue
                     for index in range(len(durations)):
-                        if not _before_align_is_first_push(key, index):
-                            tg_key = ("server_" + str(target_node_id), source, tensor_name, "PUSH_RES")
-                            tg_st, tg_ed = durations_dict[target_node_id][tg_key][index]
-                            if not intervals[tg_key].overlap(tg_st-500, tg_st):
-                                if tg_st - durations[index][1] < send_delays[(source_rank, target_node_id)]:
-                                # send_delays[(source_rank, target_node_id)] = min(send_delays[(source_rank, target_node_id)] ,tg_st - durations[index][1])
-                                    send_delay_keys[(source_rank, target_node_id)] = (key, index, "RES")
-                                    send_delays[(source_rank, target_node_id)] = tg_st - durations[index][1]
-                        else:
-                            # need to consult first_copy
-                            fc_st, fc_ed = copy_first_ops["server_"+str(target_node_id)][tensor_name][index]
-                            if not intervals["server_"+str(target_node_id)].overlap(fc_st-500, fc_st):
-                                if fc_st - durations[index][1] < send_delays[(source_rank, target_node_id)]:
-                                # send_delays[(source_rank, target_node_id)] = min(send_delays[(source_rank, target_node_id)], fc_st - durations[index][1])
-                                    send_delay_keys[(source_rank, target_node_id)] = (key, index, "COPY_FIRST")
-                                    send_delays[(source_rank, target_node_id)] = fc_st - durations[index][1]
+                        # find the corresponding copy_merged
+                        pr_st, _ = durations[index]
+                        _, cm_ed = copy_merged_ops["server_"+str(source_rank)][tensor_name][index]
+                        if not intervals[(source, target)].overlap(pr_st-500, pr_st-1):
+                            if pr_st - cm_ed < send_delays[(source_rank, target_node_id)]:
+                                send_delay_keys[(source_rank, target_node_id)] = (key, index)
+                                send_delays[(source_rank, target_node_id)] = pr_st - cm_ed
 
-        for rank in sorted(list(source_ranks))[1:]:
-            # ms2rk = send_delays[(master_node, rank)]
-            # rk2ms = send_delays[(rank, master_node)]
-            rk2ms = send_delays[(master_node, rank)]
-            ms2rk = send_delays[(rank, master_node)]
-            # >= -ms2rk, <= rk2ms
-            # print(-ms2rk, rk2ms, master_node, rank)
-            # print(send_delay_keys)
-            # input()
-            # if -ms2rk > rk2ms:
-            #     # exit(0)
+                        # if not _before_align_is_first_push(key, index):
+                        #     tg_key = ("server_" + str(target_node_id), source, tensor_name, "PUSH_RES")
+                        #     tg_st, tg_ed = durations_dict[target_node_id][tg_key][index]
+                        #     if not intervals[tg_key].overlap(tg_st-500, tg_st):
+                        #         if tg_st - durations[index][1] < send_delays[(source_rank, target_node_id)]:
+                        #         # send_delays[(source_rank, target_node_id)] = min(send_delays[(source_rank, target_node_id)] ,tg_st - durations[index][1])
+                        #             send_delay_keys[(source_rank, target_node_id)] = (key, index, "RES")
+                        #             send_delays[(source_rank, target_node_id)] = tg_st - durations[index][1]
+                        # else:
+                        #     # need to consult first_copy
+                        #     fc_st, fc_ed = copy_first_ops["server_"+str(target_node_id)][tensor_name][index]
+                        #     if not intervals["server_"+str(target_node_id)].overlap(fc_st-500, fc_st):
+                        #         if fc_st - durations[index][1] < send_delays[(source_rank, target_node_id)]:
+                        #         # send_delays[(source_rank, target_node_id)] = min(send_delays[(source_rank, target_node_id)], fc_st - durations[index][1])
+                        #             send_delay_keys[(source_rank, target_node_id)] = (key, index, "COPY_FIRST")
+                        #             send_delays[(source_rank, target_node_id)] = fc_st - durations[index][1]
 
-            # # else:
-            trace_shifts[rank] = ms2rk 
-
-                # if target == "server_" + str(master_node) and op == "PUSH_REQ":
-                #     # an op that can be used to align traces
-                #     if key in self._ignored_tensors:
-                #         SingleLogger().warn(
-                #                 "[BPS ALIGN]: Length mismatch between master server ({}) and node {} on tensor {}".format(
-                #                     "server_" + str(master_node), source, tensor_name))
-                #         continue
-
-                #     for index in range(len(durations)):
-                #         if not _before_align_is_first_push(key, index):
-                #             ms_key = ("server_" + str(master_node), source, tensor_name, "PUSH_RES")
-                #             ms_st, ms_ed = durations_dict[master_node][ms_key][index]
-                #             if not intervals[ms_key].overlap(ms_st-500, ms_st):
-                #                 send_delays[source_rank] = min(send_delays[source_rank] ,ms_st - durations[index][1])
-                #         else:
-                #             # need to consult first_copy
-                #             fc_st, fc_ed = copy_first_ops["server_"+str(master_node)][tensor_name][index]
-                #             if not intervals["server_"+str(master_node)].overlap(fc_st-500, fc_st):
-                #                 send_delays[source_rank] = min(send_delays[source_rank], fc_st - durations[index][1])
+        master_node, trace_shifts = optimize_time_shift(send_delays)
 
         SingleLogger().info("# Aligning BPS traces")
         SingleLogger().info("Aligning time based on node {}".format(master_node))
@@ -661,9 +662,9 @@ class bytepsGraph:
                         # if not queued
                         if not intervals[target].overlap(st - 500, st + 500) and not intervals[target].overlap(cp_st - 500, cp_st - 5):
                             latency = cp_st - ed
-                            if latency < 0:
-                                print(source, target, key)
-                                input()
+                            # if latency < 0:
+                            #     print(source, target, key)
+                            #     input()
                             if (source, target) not in network_delays:
                                 network_delays[(source, target)] = []
                             network_delays[(source, target)].append(latency)
@@ -677,9 +678,9 @@ class bytepsGraph:
                             #     print("push_res, index:", index, key, st - min_start_time, rs_st-min_start_time)
                             #     print(intervals[target].overlap(st - 500, st+500))
                             #     exit(0)
-                            if latency < 0:
-                                print(key, index)
-                                input()
+                            # if latency < 0:
+                            #     print(key, index)
+                            #     input()
                             if (source, target) not in network_delays:
                                 network_delays[(source, target)] = []
                             network_delays[(source, target)].append(latency)
@@ -948,7 +949,7 @@ class bytepsGraph:
                             # print("BW ST: {}, BW ED: {}".format(bw_st, bw_ed))
                             # print("PU ST: {}, PU ED: {}".format(pu_st, pu_ed))
                             # input()
-                            if not interval["worker_"+node_rank].overlap(bw_ed - 1000, bw_ed + 1000) and not interval["worker_"+node_rank].overlap(pu_st - 200, pu_st - 5):
+                            if not interval["worker_"+node_rank].overlap(bw_ed - 200, bw_ed + 200) and not interval["worker_"+node_rank].overlap(pu_st - 200, pu_st - 5):
                                 # if pu_st - bw_ed > 10000:
                                 #     print("BW ST: {}, BW ED: {}".format(bw_st, bw_ed))
                                 #     print("PU ST: {}, PU ED: {}".format(pu_st, pu_ed))
