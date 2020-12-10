@@ -414,20 +414,20 @@ class Replayer:
 		self.dag = self.orig_dag.copy()
 		self.exct_dag = self.orig_dag.copy()
 
-		### Add Merge nodes after each fused node
-		fused_nodes = [node for node in self.dag.nodes if "+" in node]
-		for node in fused_nodes:
-			merge_counter = 0
-			for succ in self.dag.successors(node):
-				prev_edge_attrs = self.dag[node][succ]
-				self.dag.remove_edge(node, succ)
-				merge_node_name = "{}_MERGE{}".format(node, merge_counter)
-				merge_counter += 1
-				self.dag.add_node(merge_node_name, avg=0.005, GAP_STR_OP2OP=1, GAP_STR_OP2COMM=1)
-				self.dag.add_edge(node, merge_node_name)
-				for key, val in prev_edge_attrs.items():
-					self.dag[node][merge_node_name][key] = val
-				self.dag.add_edge(merge_node_name, succ, avg=0.05, GAP_STR_OP2OP=1, GAP_STR_OP2COMM=1)
+		# ### Add Merge nodes after each fused node
+		# fused_nodes = [node for node in self.dag.nodes if "+" in node]
+		# for node in fused_nodes:
+		# 	merge_counter = 0
+		# 	for succ in self.dag.successors(node):
+		# 		prev_edge_attrs = self.dag[node][succ]
+		# 		self.dag.remove_edge(node, succ)
+		# 		merge_node_name = "{}_MERGE{}".format(node, merge_counter)
+		# 		merge_counter += 1
+		# 		self.dag.add_node(merge_node_name, avg=0.005, GAP_STR_OP2OP=1, GAP_STR_OP2COMM=1)
+		# 		self.dag.add_edge(node, merge_node_name)
+		# 		for key, val in prev_edge_attrs.items():
+		# 			self.dag[node][merge_node_name][key] = val
+		# 		self.dag.add_edge(merge_node_name, succ, avg=0.05, GAP_STR_OP2OP=1, GAP_STR_OP2COMM=1)
 			
 
 	def output_traces(self, _filename=None):
