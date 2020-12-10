@@ -781,10 +781,10 @@ class MCMCOptimizer(Optimizer):
                         G, new_node_name = contract_nodes_nx(G, ns)
                         PKG.contract_nodes_unsafe(ns)
                         self.parse_node_attr(G, new_node_name)
-                        ns0 = [self._debug_convert_to_the_other_machine(node) for node in ns]
-                        G, new_node_name0 = contract_nodes_nx(G, ns0)
-                        PKG.contract_nodes_unsafe(ns0)
-                        self.parse_node_attr(G, new_node_name0)
+                        # ns0 = [self._debug_convert_to_the_other_machine(node) for node in ns]
+                        # G, new_node_name0 = contract_nodes_nx(G, ns0)
+                        # PKG.contract_nodes_unsafe(ns0)
+                        # self.parse_node_attr(G, new_node_name0)
                         initial_partitions_formed += 1
             if graph_cache:
                 with open(graph_cache, "wb") as f:
