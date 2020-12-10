@@ -140,7 +140,7 @@ class XLAModuleOverheadModel():
         module_details_dict = {}
         max_dim = len(self.elem_op_cache.index2elemophash)
         abnormal_count = 0
-        for sample_id in sample_id_set:
+        for sample_id in tqdm(sample_id_set, desc="Reading details:"):
             if sample_id not in module_details_dict:
                 module_details_dict[sample_id] = []
             # read config.txt
@@ -482,10 +482,14 @@ def train_kernel_model(dataset_path, save_dir, epochs=800, batch_size=64,
                         use_output_hidden=True, drop_out=0.2, learning_rate=5e-4,
                         early_stopping_patience=15, early_stopping_epsilon=1e-5):
     # load kernel dataset
+    print("Loading kernel dataset...")
     dataset = XlaKernelDataset(dataset_path)
     # train module lvl model
+    print("Loading elementary Op cache...")
     elem_op_cache = ElementaryOpCache(dataset_path)
+    print("Loading module details...")
     module_overhead_model = XLAModuleOverheadModel(dataset_path, dataset, elem_op_cache)
+    print("Fitting module overhead model...")
     module_overhead_model.fit()
 
     ovhd_model_save_path = os.path.join(save_dir, "overhead.pickle")
@@ -500,6 +504,7 @@ def train_kernel_model(dataset_path, save_dir, epochs=800, batch_size=64,
     opcode_vocab_size = len(dataset.opcode2index) + 1
     ophash_vocab_size = len(dataset.ophash2index) + 1
 
+    print("Training fused kernel model...")
     batch_generator = BatchGenerator(dataset, batch_size)
     model = FusionKernelModel(opcode_vocab_size, op_code_embed_dim, 
                     ophash_vocab_size, subop_embed_dim, 
