@@ -651,7 +651,8 @@ class XLAModuleCostModel():
 
     @classmethod
     def train_on_dataset(cls, dataset_path, save_dir):
-        train_kernel_model(dataset_path, save_dir)
+        dataset_folder_path = os.path.join(dataset_path, "dataset")
+        train_kernel_model(dataset_folder_path, save_dir)
         graph_def_path = os.path.join(dataset_path, "cleaned_graph.json")
         with open(graph_def_path, "r") as f:
             cleaned_graph_def_str = f.read()
