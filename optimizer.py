@@ -796,7 +796,11 @@ class MCMCOptimizer(Optimizer):
             self.heat_history[node] = [(0, 0)] * self.heat_window_size
         SingleLogger().info("="*20 + " Search Starts " + "="*20)
         SingleLogger().info("Successfully initialized {} partitions.".format(initial_partitions_formed))
-        cost, exct_dag = self.evaluate(G)
+        if "BPF_DUMP_INIT_GRAPH_TO" in os.environ:
+            bpf_dump_init_graph_to = os.environ["BPF_DUMP_INIT_GRAPH_TO"]
+        else:
+            bpf_dump_init_graph_to = None
+        cost, exct_dag = self.evaluate(G, _filename=bpf_dump_init_graph_to)
         trajectory = []
         candidates, _ = self.candidate_selection(G, topk=None, critical_path=self.wrap_critical_path(exct_dag))
         search_space, weights = self.init_search_space(candidates, G, PKG)

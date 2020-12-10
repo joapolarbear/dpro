@@ -45,7 +45,6 @@ class Device:
 		### for debug
 		debug_utils.DebugRecorder().debug_event_start()
 
-
 		if not self.infi_para:
 			_last_end_time = max(_last_end_time, self.device_time)
 
@@ -249,6 +248,7 @@ class PSCommDevice(Device):
 class Replayer:
 	def __init__(self, dag, _step_num, leaf_dirs, dump_path, comm_backend, byteps_graph):
 		self.dag = dag
+		self.orig_dag = dag.copy()
 		self.step_num = _step_num
 		self.leaf_dirs = leaf_dirs
 		self.dump_path = dump_path
@@ -411,7 +411,21 @@ class Replayer:
 			device_.reset()
 
 		### Ininitalize the execution graph as the depdency graph
-		self.exct_dag = self.dag.copy()
+		self.dag = self.orig_dag.copy()
+		self.exct_dag = self.orig_dag.copy()
+
+		### Add Merge nodes after each fused node
+		fused_nodes = [node for node in self.dag.nodes if "+" in node]
+		for node in fused_nodes:
+			merge_counter = 0
+			for succ in self.dag.successors(node):
+				self.dag.remove_edge(node, succ)
+				merge_node_name = "{}_MERGE{}".format(node, merge_counter)
+				merge_counter += 1
+				self.dag.add_node(merge_node_name, avg=0.005, GAP_STR_OP2OP=0.001, GAP_STR_OP2COMM=0.001)
+				self.dag.add_edge(node, merge_node_name)
+				self.dag.add_edge(merge_node_name, succ)
+			
 
 	def output_traces(self, _filename=None):
 		#! Output the synthetic traces.

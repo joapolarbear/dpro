@@ -80,6 +80,7 @@ class GSDuplicateSubgraphError(GSInternalErrors):
 
 class GraphDefUtil(object):
     def __init__(self, graph_def, shape_dict_path=None):
+        import byteps as bps # type: ignore
         super().__init__()
         self.graph_def = graph_def
         self.original_graph = tf.Graph()
