@@ -372,10 +372,10 @@ class Optimizer:
     def op_defusion(self, _dag, _pkg: PKGraph, target, components):
         _pkg.split_node(target, components)
         _, new_node_names = self._defuse_node(_dag, _pkg, target, components)
-        target0 = self._debug_convert_to_the_other_machine(target)
-        components0 = tuple([tuple([self._debug_convert_to_the_other_machine(node) for node in comp]) for comp in components])
-        _pkg.split_node(target0, components0)
-        _, new_node_names0 = self._defuse_node(_dag, _pkg, target0, components0)
+        target1 = self._debug_convert_to_the_other_machine(target)
+        components1 = tuple([tuple([self._debug_convert_to_the_other_machine(node) for node in comp]) for comp in components])
+        _pkg.split_node(target1, components1)
+        _, new_node_names0 = self._defuse_node(_dag, _pkg, target1, components1)
         # target = "BW".join(target.split("FW"))
         # ns = target.split("+")
         # ns.reverse()
@@ -752,11 +752,11 @@ class MCMCOptimizer(Optimizer):
             for node in G.nodes():
                 if node not in self.node_attr_cache:
                     self.cache_node_attr(node, G.nodes[node])
-            nodes_on_1 = [node for node in G.nodes if node.startswith("traces_1")]
+            nodes_on_0 = [node for node in G.nodes if node.startswith("traces_0")]
             partition_G = G.copy()
 
-            nodes_on_1 = [node for node in partition_G.nodes if node.startswith("traces_1")]
-            partition_G = partition_G.subgraph(nodes_on_1)
+            nodes_on_0 = [node for node in partition_G.nodes if node.startswith("traces_0")]
+            partition_G = partition_G.subgraph(nodes_on_0)
             partition_PKG = PKGraph(partition_G)
 
             source_nodes = sorted(list(partition_G.nodes), key=lambda x: partition_G.in_degree(x))

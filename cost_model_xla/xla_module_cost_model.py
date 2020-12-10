@@ -896,6 +896,7 @@ class XLAModuleCostModel():
     def test_on_dataset(self, test_set_path):
         test_set_path = os.path.join(test_set_path, "dataset")
         training_dataset = self.training_dataset
+        print("Loading test set...")
         test_dataset = XlaModuleTestSet(test_set_path, training_dataset)
         elem_op_cache = self.elem_op_cache
         ovhd_model = self.ovhd_model
@@ -960,9 +961,6 @@ class XLAModuleCostModel():
             for (sid, predicted_module_time, true_module_time) in large_error_sids:
                 f.write(str(sid) + ", " + str(predicted_module_time) + ", " + str(true_module_time))
                 f.write("\n")
-
-        for i in range(10):
-            print("predicted: {}, true: {}".format(predicted[i], labels_as_list[i]))
 
         print("Tested on {} samples.".format(len(predicted)))
         print("Test MAPE: {}, Median percentage difference: {}".format(np.average(percentage_diff), np.median(percentage_diff)))
