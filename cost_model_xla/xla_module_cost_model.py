@@ -839,7 +839,6 @@ class XLAModuleCostModel():
                 print("[Cost Model] Failed to predict the running time of ops: {} ...".format(list(node_names)[:10]))
             else:
                 print("[Cost Model] Failed to predict the running time of ops: {} ...".format(node_names))
-            os._exit(0)
             shutil.rmtree(self._tmp_dir)
             os.makedirs(self._tmp_dir)
             return -1, {}
