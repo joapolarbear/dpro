@@ -763,7 +763,7 @@ class MCMCOptimizer(Optimizer):
             # Run post order traversal on partition_G
             visited_nodes = set()
             for source in tqdm(source_nodes, total=len(source_nodes)):
-                if source not in visited_nodes and source in partition_G.nodes:
+                if source not in visited_nodes and source in partition_G.nodes and source not in self.initial_forbidden_list:
                     _, _, partition_G = postorder_contract_nx(partition_G, partition_PKG, source, visited_nodes, forbidden_list=self.initial_forbidden_list, size_limit=800)
             for node_name in tqdm(partition_G.nodes()):
                 if "+" in node_name:
