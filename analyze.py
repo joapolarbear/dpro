@@ -16,8 +16,6 @@ from progress_utils import progressBar
 import arg_utils
 import debug_utils
 import optimizer
-from cost_model_xla import XlaDataset, FusionCostModel
-from cost_model_xla.xla_module_cost_model import XLAModuleCostModel
 
 args = arg_utils.SingleArg().args
 logger = logger_utils.SingleLogger(args.path.split(',')[0], 
@@ -292,6 +290,7 @@ if args.option == "collect":
 				print("Average time: %f ms" % (avg))
 
 if args.option == "optimize":
+	from cost_model_xla.xla_module_cost_model import XLAModuleCostModel
 	if len(path_list) < 3:
 		raise RuntimeError("optimize requires positional path arguments: profile data path, cost model path & shape dict path.")
 	clct = Collector(path_list[0], comm_backend=args_.comm_backend)

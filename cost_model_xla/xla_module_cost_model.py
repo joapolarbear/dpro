@@ -661,6 +661,9 @@ def train_kernel_model(dataset_path, save_dir, epochs=800, batch_size=64,
             epoch_loss_history = []
             epoch_mape_history = []
     
+            model_save_path = os.path.join(save_dir, "model_weights.h5")
+            model.save_weights(model_save_path)
+    
     model_save_path = os.path.join(save_dir, "model_weights.h5")
     model.save_weights(model_save_path)
 
