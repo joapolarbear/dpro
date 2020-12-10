@@ -443,9 +443,9 @@ class TraceManager:
             elif pid_info["cat_cursor"] == "operator.UPDATE" and cat in AS_START_CAT:
             # elif cat not in AS_START_CAT and cat in AS_START_CAT:
                 pid_info["step_cnt"] += 1
-                # if prefix == "host0.rank1":
-                #     print("Add step to {} for {}, before: {}".format(
-                #         pid_info["step_cnt"], event, pid_info["cat_cursor"]))
+                if prefix == "host0.rank1":
+                    print("Add step to {} for {}, before: {}".format(
+                        pid_info["step_cnt"], event, pid_info["cat_cursor"]))
             elif (pid_info["cat_cursor"] in AS_START_CAT) and cat == "operator.UPDATE":
                 ### handle the overlapping cases between UPDATE and (IO, FW)
                 pid_info["step_cnt"] -= 1

@@ -512,7 +512,8 @@ class DAGManager:
                     prev_rawname = prev_bw_nodes[0]         # no prefix, start with BW.
                     pre_nodes.append(prev_rawname)
                     if self.platform == "MXNET":
-                        update_id = para_dict.tensor2update[int(_id)]       # e.g., from tensor 256 to update 140
+                        # e.g., from tensor 256 to update 140
+                        update_id = para_dict.tensor_id2update_id(int(_id))
                         post_nodes.append(update_id)
                     elif self.platform == "TENSORFLOW":
                         if _first:
@@ -527,7 +528,7 @@ class DAGManager:
                 self._process_edge_nccl(mygraph, queue_type_list, u, v, para_dict=para_dict, pre_nodes=pre_nodes, post_nodes=post_nodes)
 
         if self.byteps_graph is not None and self.platform == "MXNET":
-            for update_id in range(para_dict.tensor2update["max"] + 1):
+            for update_id in range(para_dict.tensor_id2update_id("max") + 1):
                 update_name = self.add_prefix("UPDATE_%d"%update_id)
                 if args_.update_barrier:
                     self.wrap_add_dag(self.add_prefix("UPDATE_CAL"), update_name)
@@ -537,7 +538,7 @@ class DAGManager:
             # TODO (huhanpeng): need further to unify the name rule, for NCCL case
             # 1) What if there is no barrier ??? 
             # 2) connect the UPDATE_CAL to the following update nodes
-            for update_id in range(para_dict.tensor2update["max"] + 1):
+            for update_id in range(para_dict.tensor_id2update_id("max") + 1):
                 update_name = self.add_prefix("UPDATE_%d"%update_id)
                 self.wrap_add_dag(self.add_prefix("UPDATE_CAL"), update_name)
                 ### Connect all UPDATE nodes to an END node

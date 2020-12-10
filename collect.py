@@ -79,12 +79,11 @@ class Collector(object):
 
         self.time_dict = None
         self.run_span = {}
-        self.para_dict = None
 
         ### TODO (huhanpeng): assume different host use the same dag, original dag
         self.dag = None
         self.update_nodes_in_dag = None
-        self.metadata = None
+        self.para_dict = None
         self.trail_dag = None # global dag
         self.single = False # use to denote whether this is a single-GPU trial
         
@@ -775,31 +774,7 @@ class Collector(object):
         self.traceM = TraceManager(rst_traces, self.pm.dir_level, check=True)
 
     def collect_para_dict(self):
-        ### collect metadata
-        meta_path = self.pm.search(FileName.METADATA)
-        if meta_path is None:
-            SingleLogger().error("{} not found. Fail to map_tensors_to_update".format(FileName.METADATA.value))
-        else:
-            with open(meta_path, 'r') as fp:
-                self.metadata = json.load(fp)
-
-        if self.platform == "MXNET":
-            self.para_dict = ParameterDict(self.metadata["gradient_name_list"])
-            ### Map tensor name to its update index
-            if "opt_aggregate_num" in self.metadata:
-                aggregate_num = self.metadata["opt_aggregate_num"]
-            else:
-                aggregate_num = 0
-            self.para_dict.map_tensors_to_update(aggregate_num)
-        elif self.platform == "TENSORFLOW":
-            tensor_path = self.pm.search(FileName.TENSOR_NAME)
-            if tensor_path is None:
-                SingleLogger().error(
-                    "{} not found. Fail to map_tensors_to_update".format(FileName.TENSOR_NAME.value))
-            else:
-                with open(tensor_path, 'r') as fp:
-                    gradient_name_list = json.load(fp)["gradient_name_list"]
-            self.para_dict = ParameterDict(gradient_name_list)
+        self.para_dict = ParameterDict(self.pm)
 
     def _collect_rank_dag(self, gpu_path, worker_dag_list, critical_path, index):
         SingleLogger().info("- Collect DAG in %s ..." % (gpu_path))
@@ -932,7 +907,7 @@ class Collector(object):
             self.collect_traces()
             iter_time, _ = self.iter_time()
             if self.comm_backend == "NCCL":
-                self.nccl_graph.init_nccl_fusion(self.traceM, len(self.para_dict.gradient_name_list), show=False)
+                self.nccl_graph.init_nccl_fusion(self.traceM, self.para_dict.gradient_num(), show=False)
             self.collect_trial_dag()
             self.fine_tune_trace_dag()
             ### Asynchonously cache these info

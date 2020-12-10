@@ -1,33 +1,33 @@
 import os 
 import ujson as json
-
 import networkx as nx
 import traceback
 import time
 import sys
 from pathlib import Path
 
-import logger_utils
-from trace_utils import *
-from dag_utils import *
-from collect import Collector
-from replay import Replayer
-from progress_utils import progressBar
 import arg_utils
-import debug_utils
-import optimizer
-
+import logger_utils
 args = arg_utils.SingleArg().args
-if args.option == "optimize" and not args.simulate:
-    from cost_model_xla import XlaDataset, FusionCostModel
-    from cost_model_xla.xla_module_cost_model import XLAModuleCostModel
-    pass
-
 logger = logger_utils.SingleLogger(args.path.split(',')[0], 
     args.option, args.logging_level, 
     is_clean=args.clean, 
     show_progress=args.progress)
 logger.info(args)
+from trace_utils import *
+from dag_utils import *
+from collect import Collector
+from replay import Replayer
+from progress_utils import progressBar
+
+import debug_utils
+import optimizer
+
+if args.option == "optimize" and not args.simulate:
+    from cost_model_xla import XlaDataset, FusionCostModel
+    from cost_model_xla.xla_module_cost_model import XLAModuleCostModel
+    pass
+
 QueueType("NCCL")
 debug_utils.DebugRecorder(is_enable=args.debug_traces)
 
@@ -201,7 +201,6 @@ if __name__ == '__main__':
                 if args.progress:
                     pgsbar.showBar(idx)
                 idx += 10
-
         elif args.sub_option == "bottleneck":
             ''' Replay and add delays to some of the node on the critical path respectively.'''
             ### Get the execution graph first
@@ -245,6 +244,9 @@ if __name__ == '__main__':
             rst = sorted(rst, key=lambda x: (x["pid"], x["tid"]))
             with open(os.path.join(clct.pm.path, "replay_compare.json"), 'w') as f:
                 json.dump(rst, f)
+        elif args.sub_option == "theory":
+            replayer.daydream_dag(clct.para_dict)
+            replayer.replay()
 
     if args.option == "collect":
         if args.sub_option == "combine":

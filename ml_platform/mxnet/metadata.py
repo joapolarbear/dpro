@@ -31,23 +31,27 @@ GPUSINFO = {
     '1080Ti': GPUInfo(1, 2)
 }
 
+class Parameter:
+    def __init__(self, index, name, shape, dtype):
+        self.index = index
+        self.name = name
+        self.shape = shape
+        self.dtype = dtype
+
 class MetaInfo:
     def __init__(self, meta_dir, gpu_name=None):
         self.meta_dir = meta_dir
         with open(os.path.join(meta_dir, "metadata.json"), "r") as fp:
             self.mx_meta = json.load(fp)
-
-        self.gpu_name = gpu_name
-        self.gpu_info = GPUSINFO[self.gpu_name] if gpu_name is not None else None
-
-        self.cache_hyper_para = {}
-
-        ### dependency graph of this model
-        self.dag = self.gen_dag()
-
         all_output = self.mx_meta["outputs"]
         all_shape = self.mx_meta["out_shapes"]
         assert len(all_output) == len(all_shape)
+
+        self.gpu_name = gpu_name
+        self.gpu_info = GPUSINFO[self.gpu_name] if gpu_name is not None else None   
+
+        ### dependency graph of this model
+        self.dag = self.gen_dag()
 
         ### init name2shape dict, convert name to std. name
         self.name2shape = {}
@@ -66,7 +70,49 @@ class MetaInfo:
             else:
                 self.name2shape[std_name] = all_shape[idx]
 
+        self.cache_hyper_para = {}
         self.get_hyper_para()
+        self.gen_grad()
+
+        ### Map tensor name to its update index
+        if "opt_aggregate_num" in self.mx_meta:
+            aggregate_num = self.mx_meta["opt_aggregate_num"]
+        else:
+            aggregate_num = 0
+        self.tensor2update = {}
+        self.map_tensors_to_update(aggregate_num)
+        
+    def map_tensors_to_update(self, aggregate_num=0):
+        ''' Map each tensor id to its corresponding update operation
+        For MXNet
+        '''
+        max_update_id = 0
+        grad_cnt = len(self.gradient_name_list)
+        for idx in range(grad_cnt):
+            gra_idx = grad_cnt - 1 - idx
+            self.tensor2update[gra_idx] = idx if aggregate_num == 0 else int(idx / aggregate_num)
+            max_update_id = max(max_update_id, self.tensor2update[gra_idx])
+        self.tensor2update["max"] = max_update_id
+
+    def gen_grad(self):
+        self.gradient_name_list = []
+        self.parameters = []
+        for idx, para_ in enumerate(self.mx_meta["gradient_name_list"]):
+            ### e.g., bertencoder0_position_weight;shape=(512, 1024);dtype=float16
+            if isinstance(para_, list):
+                para_split = para_
+            else:
+                para_split = para_.split(";")
+            name_ = para_split[0]
+            if len(para_split) == 1:
+                ### No shape and dtype info are provided
+                shape_ = None
+                dtype_ = None
+            else:
+                shape_ = [int(e) for e in re.findall(r"\d+", para_split[1])]
+                dtype_ = para_split[2].split("dtype=")[1]
+            self.gradient_name_list.append(name_)
+            self.parameters.append(Parameter(idx, name_, shape_, dtype_))
 
     def is_ignore(self, node):
         if "Comm" in node:
@@ -315,4 +361,27 @@ class MetaInfo:
                     _dag.add_edge("Comm." + _var, "UPDATE")
                     _dag.add_edge("BW." + name, "Comm." + _var)
         return _dag
-        
+    
+    def tensor_size(self, tensor_name, _dtype):
+        shape_sum = np.prod(self.name2shape["Comm." + tensor_name])
+        return shape_sum * self.dtype2size(_dtype)
+
+    def dtype2size(self, _dtype):
+        if _dtype == "float32":
+            return 4
+        elif _dtype == "int32":
+            return 4
+        elif _dtype == "float16":
+            return 2
+        elif _dtype == "int16":
+            return 2
+        elif _dtype == "int64":
+            return 8
+        elif _dtype == "float64":
+            return 8
+        elif _dtype == "bool":
+            return np.size(bool)
+        elif _dtype == "string":
+            return 1
+        else:
+            raise ValueError("{} not defined".format(_dtype))

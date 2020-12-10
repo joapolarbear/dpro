@@ -3,52 +3,51 @@
 '''
 import re
 from trace_utils import *
-
-class Parameter:
-    def __init__(self, index, name, shape, dtype):
-        self.index = index
-        self.name = name
-        self.shape = shape
-        self.dtype = dtype
+import arg_utils
+args_ = arg_utils.SingleArg().args
+if args_.platform == "MXNET":
+    from ml_platform.mxnet.metadata import MetaInfo
+    SingleLogger().info("Use MXNET metadata")
+elif args_.platform == "TENSORFLOW":
+    from ml_platform.tensorflow.metadata import MetaInfo
+    SingleLogger().info("Use TENSORFLOW metadata")
+else:
+    raise NotImplementedError()
 
 class ParameterDict:
-    def __init__(self, raw_para_list):
-        self.gradient_name_list = []
-        self.parameters = []
-        for idx, para_ in enumerate(raw_para_list):
-            ### e.g., bertencoder0_position_weight;shape=(512, 1024);dtype=float16
-            if isinstance(para_, list):
-                para_split = para_
-            else:
-                para_split = para_.split(";")
-            name_ = para_split[0]
-            if len(para_split) == 1:
-                ### No shape and dtype info are provided
-                shape_ = None
-                dtype_ = None
-            else:
-                shape_ = [int(e) for e in re.findall(r"\d+", para_split[1])]
-                dtype_ = para_split[2].split("dtype=")[1]
-            self.gradient_name_list.append(name_)
-            self.parameters.append(Parameter(idx, name_, shape_, dtype_))
-        self.cnt = len(self.gradient_name_list)
+    def __init__(self, _pm):
+        ### collect metadata
+        if args_.metadata_path is None:
+            args_.metadata_path = os.path.dirname(_pm.search(FileName.METADATA))
+        if args_.metadata_path is None:
+            SingleLogger().error(
+                "{} not found. Fail to load metadata".format(FileName.METADATA.value))
+        self.metainfo = MetaInfo(args_.metadata_path)
+        self.cnt = len(self.metainfo.gradient_name_list)
 
-        self.tensor2update = {}
-
-    def map_tensors_to_update(self, aggregate_num=0):
-        ''' Map each tensor id to its corresponding update operation
-        For MXNet
-        '''
-        max_update_id = 0
-        for idx in range(self.cnt):
-            gra_idx = self.cnt - 1 - idx
-            self.tensor2update[gra_idx] = idx if aggregate_num == 0 else int(idx / aggregate_num)
-            max_update_id = max(max_update_id, self.tensor2update[gra_idx])
-        self.tensor2update["max"] = max_update_id
-        return self.tensor2update
+    def gradient_name_list(self):
+        return self.metainfo.gradient_name_list
+    
+    def gradient_num(self):
+        return self.cnt
+    
+    def tensor_id2update_id(self, tensor_id):
+        '''tensor id may be 'max' to return the maximum update id '''
+        return self.metainfo.tensor2update[tensor_id]
 
     def name_to_tensor_id(self, name):
-        return self.gradient_name_list.index(name)
+        return self.metainfo.gradient_name_list.index(name)
 
     def tensor_id_to_name(self, tensor_id):
-        return self.gradient_name_list[tensor_id]
+        return self.metainfo.gradient_name_list[tensor_id]
+
+    def tensor_id2size(self, tensor_id):
+        tensor_name = self.metainfo.gradient_name_list[tensor_id]
+        if args_.platform == "MXNET":
+            tensor_size = self.metainfo.tensor_size(tensor_name)
+        elif args_.platform == "TENSORFLOW":
+            tensor_name = tensor_name.split(":")[0]
+            _, _, _, tensor_size, _ = self.metainfo.ret_tf_metadata(tensor_name)
+        else:
+            raise NotImplementedError()
+        return tensor_size

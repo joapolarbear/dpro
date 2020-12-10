@@ -3,6 +3,7 @@ import json
 import os
 from ml_platform.tensorflow.amp_lists import whitelist, blacklist, greylist, clearlist
 from logger_utils import Singleton, SingleLogger
+from trace_utils import FileName
 
 OP_HYPER_PARAMETERS = {
     "Conv2D": ["H", "W", "C", "R", "S", "P", "Q", "K", "B", "use_bias"],
@@ -15,10 +16,16 @@ for key in OP_HYPER_PARAMETERS:
 
 class MetaInfo:
     def __init__(self, meta_dir):
-        with open(os.path.join(meta_dir, "metadata.json"), 'r') as fp:
+        with open(os.path.join(meta_dir, FileName.METADATA.value), 'r') as fp:
             self.tf_meta = json.load(fp)
+
+        with open(os.path.join(meta_dir, FileName.TENSOR_NAME.value), 'r') as fp:
+            self.gradient_name_list = json.load(fp)["gradient_name_list"]
+
         self.cache_hyper_para = {}
         self.get_hyper_para()
+
+        self.tensor2update = {}
 
     def parse_op_type(self, op_name):
         if op_name not in self.tf_meta:
@@ -138,8 +145,12 @@ class MetaInfo:
                     np.prod(inputs[0]["shape"]), np.prod(outputs[0]["shape"]), dtype_in_size, dtype_out_size, batch_size]
             ### above is operator, below is activation, weight and tensors
             elif op_type == "Gradient":
-                dtype_in_size = self.dtype2size(inputs[0]["dtype"])
-                dtype_out_size = self.dtype2size(outputs[0]["dtype"])
+                try:
+                    dtype_in_size = self.dtype2size(inputs[0]["dtype"])
+                    dtype_out_size = self.dtype2size(outputs[0]["dtype"])
+                except:
+                    print(self.tf_meta[op_name])
+                    raise
                 self.cache_hyper_para[op_name] = [
                     np.prod(inputs[0]["shape"]), np.prod(outputs[0]["shape"]), dtype_in_size, dtype_out_size]
             else:
@@ -162,6 +173,8 @@ class MetaInfo:
             return 8
         elif _dtype == "bool":
             return np.size(bool)
+        elif _dtype == "string":
+            return 1
         else:
             raise ValueError("{} not defined".format(_dtype))
 
