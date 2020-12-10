@@ -8,6 +8,7 @@ from tensorflow.keras import layers, Model
 import shutil
 import copy
 import random
+from multiprocessing import Pool
 from tqdm import tqdm
 
 import scipy.optimize as scipy_optimize
@@ -121,6 +122,53 @@ class XLAModuleOverheadModel():
             self._dataset_path = dataset_path
             self._read_execution_times()
             self._preprocess_data()
+    
+    def _process_config_and_exec_file(self, sample_id):
+        config_path = os.path.join(self._modules_dir_path, str(sample_id) + "_config.txt")
+        sample_details = []
+        sample_times = None
+        subop_exec_time = 0
+        max_dim = 0
+        abnormal = False
+        with open(config_path, "r") as f:
+            for line in f:
+                is_fused_op = bool(int(line.split(",")[0]))
+                if is_fused_op:
+                    fused_op_hash = int(line.split(",")[1])
+                    kernel_path = os.path.join(self._features_dir_path, line.split(",")[-1].split("/")[-1].strip())
+                    op_count = -1
+                    with open(kernel_path, "r") as f_kernel:
+                        for kernel_line in f_kernel:
+                            op_count += 1
+                    kernel_sid = int(line.split(",")[-1].split("/")[-1].split(".txt")[0])
+                    # get fusion execution time
+                    if kernel_sid in self.dataset.label_dict:
+                        exec_time = self.dataset.label_dict[kernel_sid]
+                    else:
+                        exec_time = self.dataset.label_dict[self.dataset.dedupedsid2finalsid[kernel_sid]]
+                    sample_details.append(len(self.elem_op_cache.index2elemophash) -1 + op_count)
+                    max_dim = max(max_dim, len(self.elem_op_cache.index2elemophash) + op_count)
+                else:
+                    _, elem_op_hash, op_code = [v.strip() for v in line.split(",")]
+                    elem_op_hash = int(elem_op_hash)
+                    exec_time, _ = self.elem_op_cache.query(elem_op_hash, op_code=op_code)
+                    sample_details.append(self.elem_op_cache.elemophash2index[elem_op_hash])
+                subop_exec_time += exec_time
+        # read exec.txt
+        exec_path = os.path.join(self._modules_dir_path, str(sample_id) + "_exec.txt")
+        exec_times = []
+        with open(exec_path, "r") as f: 
+            for line in f:
+                exec_times.append(float(line.strip()))
+        if len(exec_times) > 100:
+            module_avg_time = np.average(exec_times[-100:-10])
+        else:
+            module_avg_time = np.average(exec_times[10:-10])
+        if module_avg_time > subop_exec_time:
+            sample_times = (module_avg_time, subop_exec_time)
+        else:
+            abnormal = True
+        return sample_id, sample_details, sample_times, abnormal, max_dim
 
     def _read_execution_times(self):
         self._modules_dir_path = os.path.join(self._dataset_path, "modules")
@@ -130,61 +178,78 @@ class XLAModuleOverheadModel():
             sample_id = int(fn.split(".txt")[0].split("_")[0])
             sample_id_set.add(sample_id)
 
-        def add_config_suffix(sid):
-            return str(sid) + "_config.txt"
+        # def add_config_suffix(sid):
+        #     return str(sid) + "_config.txt"
 
-        def add_exec_suffix(sid):
-            return str(sid) + "_exec.txt"
+        # def add_exec_suffix(sid):
+        #     return str(sid) + "_exec.txt"
 
         module_time_dict = {}
         module_details_dict = {}
         max_dim = len(self.elem_op_cache.index2elemophash)
         abnormal_count = 0
-        for sample_id in tqdm(sample_id_set, desc="Reading details:"):
+
+        num_cores = min(os.cpu_count(), len(sample_id_set))
+        chunk_size = int( np.ceil(len(sample_id_set) / num_cores / 2))
+
+        with Pool(num_cores) as p:
+            sample_details = list(tqdm(p.imap_unordered(self._process_config_and_exec_file, sample_id_set, chunksize=chunk_size), total=len(sample_id_set), desc="Reading details", leave=False))
+        
+        for (sample_id, sample_details, sample_times, abnormal, max_dim_in_sample) in sample_details:
             if sample_id not in module_details_dict:
                 module_details_dict[sample_id] = []
-            # read config.txt
-            config_path = os.path.join(self._modules_dir_path, add_config_suffix(sample_id))
-            subop_exec_time = 0
-            with open(config_path, "r") as f:
-                for line in f:
-                    is_fused_op = bool(int(line.split(",")[0]))
-                    if is_fused_op:
-                        fused_op_hash = int(line.split(",")[1])
-                        kernel_path = os.path.join(self._features_dir_path, line.split(",")[-1].split("/")[-1].strip())
-                        op_count = -1
-                        with open(kernel_path, "r") as f_kernel:
-                            for kernel_line in f_kernel:
-                                op_count += 1
-                        kernel_sid = int(line.split(",")[-1].split("/")[-1].split(".txt")[0])
-                        # get fusion execution time
-                        if kernel_sid in self.dataset.label_dict:
-                            exec_time = self.dataset.label_dict[kernel_sid]
-                        else:
-                            exec_time = self.dataset.label_dict[self.dataset.dedupedsid2finalsid[kernel_sid]]
-                        module_details_dict[sample_id].append(len(self.elem_op_cache.index2elemophash) -1 + op_count)
-                        max_dim = max(max_dim, len(self.elem_op_cache.index2elemophash) + op_count)
-                    else:
-                        _, elem_op_hash, op_code = [v.strip() for v in line.split(",")]
-                        elem_op_hash = int(elem_op_hash)
-                        exec_time, _ = self.elem_op_cache.query(elem_op_hash, op_code=op_code)
-                        module_details_dict[sample_id].append(self.elem_op_cache.elemophash2index[elem_op_hash])
-                    subop_exec_time += exec_time
-            # read exec.txt
-            exec_path = os.path.join(self._modules_dir_path, add_exec_suffix(sample_id))
-            exec_times = []
-            with open(exec_path, "r") as f: 
-                for line in f:
-                    exec_times.append(float(line.strip()))
-            if len(exec_times) > 100:
-                module_avg_time = np.average(exec_times[-100:-10])
-            else:
-                module_avg_time = np.average(exec_times[10:-10])
-            if module_avg_time > subop_exec_time:
-                module_time_dict[sample_id] = (module_avg_time, subop_exec_time)
-            else:
+            max_dim = max(max_dim, max_dim_in_sample)
+            if abnormal:
                 abnormal_count += 1
-                module_details_dict.pop(sample_id)
+                continue
+            module_details_dict[sample_id] = sample_details
+            module_time_dict[sample_id] = sample_times
+
+        # for sample_id in tqdm(sample_id_set, desc="Reading details:"):
+        #     if sample_id not in module_details_dict:
+        #         module_details_dict[sample_id] = []
+        #     # read config.txt
+        #     config_path = os.path.join(self._modules_dir_path, add_config_suffix(sample_id))
+        #     subop_exec_time = 0
+        #     with open(config_path, "r") as f:
+        #         for line in f:
+        #             is_fused_op = bool(int(line.split(",")[0]))
+        #             if is_fused_op:
+        #                 fused_op_hash = int(line.split(",")[1])
+        #                 kernel_path = os.path.join(self._features_dir_path, line.split(",")[-1].split("/")[-1].strip())
+        #                 op_count = -1
+        #                 with open(kernel_path, "r") as f_kernel:
+        #                     for kernel_line in f_kernel:
+        #                         op_count += 1
+        #                 kernel_sid = int(line.split(",")[-1].split("/")[-1].split(".txt")[0])
+        #                 # get fusion execution time
+        #                 if kernel_sid in self.dataset.label_dict:
+        #                     exec_time = self.dataset.label_dict[kernel_sid]
+        #                 else:
+        #                     exec_time = self.dataset.label_dict[self.dataset.dedupedsid2finalsid[kernel_sid]]
+        #                 module_details_dict[sample_id].append(len(self.elem_op_cache.index2elemophash) -1 + op_count)
+        #                 max_dim = max(max_dim, len(self.elem_op_cache.index2elemophash) + op_count)
+        #             else:
+        #                 _, elem_op_hash, op_code = [v.strip() for v in line.split(",")]
+        #                 elem_op_hash = int(elem_op_hash)
+        #                 exec_time, _ = self.elem_op_cache.query(elem_op_hash, op_code=op_code)
+        #                 module_details_dict[sample_id].append(self.elem_op_cache.elemophash2index[elem_op_hash])
+        #             subop_exec_time += exec_time
+        #     # read exec.txt
+        #     exec_path = os.path.join(self._modules_dir_path, add_exec_suffix(sample_id))
+        #     exec_times = []
+        #     with open(exec_path, "r") as f: 
+        #         for line in f:
+        #             exec_times.append(float(line.strip()))
+        #     if len(exec_times) > 100:
+        #         module_avg_time = np.average(exec_times[-100:-10])
+        #     else:
+        #         module_avg_time = np.average(exec_times[10:-10])
+        #     if module_avg_time > subop_exec_time:
+        #         module_time_dict[sample_id] = (module_avg_time, subop_exec_time)
+        #     else:
+        #         abnormal_count += 1
+        #         module_details_dict.pop(sample_id)
         print("Processed {} samples, with {} have module time <= subop exec time.".format(len(sample_id_set), abnormal_count))
         
         self.module_details_dict = module_details_dict
