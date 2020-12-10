@@ -442,7 +442,7 @@ class Optimizer:
                 filtered_critical_path.append((node, length))
             elif "[" in node and "]" in node:
                 orig_name, pid = self._get_original_name_pid_from_index(node)
-                if orig_name in self.cost_models[pid].graph_def_util.operation_names:
+                if orig_name in self.cost_models[pid].graph_def_util.operation_names and orig_name not in self.forbidden_list:
                     filtered_critical_path.append((node, length))
 
         if topk is None:
@@ -711,11 +711,13 @@ class MCMCOptimizer(Optimizer):
             self.heat_window_size = args_.heat_window_size
         else:
             self.heat_window_size = 5
+
+        self.initial_forbidden_list = set()
         
         # limit the range of nodes during search
         for node in self.dag.nodes:
-            if "BW" in node:
-                self.forbidden_list.add(node)
+            if "BW" in node or not node.startswith("traces_0"):
+                self.initial_forbidden_list = set()
             else:
                 try:
                     orig_name, pid = self._get_original_name_pid_from_index(node)
@@ -723,7 +725,7 @@ class MCMCOptimizer(Optimizer):
                     # not standard nodes, ignore
                     self.forbidden_list.add(node)
                     continue
-                if orig_name not in self.cost_models[pid].graph_def_util.operation_names or "Assign" in orig_name:
+                if orig_name not in self.cost_models[pid].graph_def_util.operation_names or "Assign" in orig_name or "BytepsPushPull" in orig_name:
                     self.forbidden_list.add(node)
     
     def __dump_cluster_mapping(self, dag, output_path):
@@ -752,11 +754,8 @@ class MCMCOptimizer(Optimizer):
             for node in G.nodes():
                 if node not in self.node_attr_cache:
                     self.cache_node_attr(node, G.nodes[node])
-            nodes_on_0 = [node for node in G.nodes if node.startswith("traces_0")]
-            partition_G = G.copy()
 
-            nodes_on_0 = [node for node in partition_G.nodes if node.startswith("traces_0")]
-            partition_G = partition_G.subgraph(nodes_on_0)
+            partition_G = G.copy()
             partition_PKG = PKGraph(partition_G)
 
             source_nodes = sorted(list(partition_G.nodes), key=lambda x: partition_G.in_degree(x))
@@ -765,7 +764,7 @@ class MCMCOptimizer(Optimizer):
             visited_nodes = set()
             for source in tqdm(source_nodes, total=len(source_nodes)):
                 if source not in visited_nodes and source in partition_G.nodes:
-                    _, _, partition_G = postorder_contract_nx(partition_G, partition_PKG, source, visited_nodes, forbidden_list=self.forbidden_list, size_limit=800)
+                    _, _, partition_G = postorder_contract_nx(partition_G, partition_PKG, source, visited_nodes, forbidden_list=self.initial_forbidden_list, size_limit=800)
             for node_name in tqdm(partition_G.nodes()):
                 if "+" in node_name:
                     # fused node, test if compilable
