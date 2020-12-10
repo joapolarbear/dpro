@@ -790,6 +790,7 @@ def gen_kernel_dataset(trace_dir, op_time_dict, result_dir, num_samples=2000, nu
         graph_def = Parse(cleaned_graph_def_str, GraphDef())
     # sample_generator = SampleGenerator(graph_def=graph_def, shape_dict=shape_dict)
     sample_generator = SampleGenerator(graph_def=graph_def, shape_dict_path=os.path.join(trace_dir, "tensor_shapes.json"), ignored_nodes=ignored_node)
+    shutil.copy(os.path.join(trace_dir, "tensor_shapes.json"), result_dir)
     print("Start generation.")
     completed_samples = 0
     op_hash_set = set()

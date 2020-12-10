@@ -721,7 +721,7 @@ def load_kernel_model(model_save_dir):
     return elem_op_cache, ovhd_model, model
 
 class XLAModuleCostModel():
-    def __init__(self, save_dir, tmp_dir = "./cost_model_tmp", shape_dict_path=None):
+    def __init__(self, save_dir, tmp_dir = "./cost_model_tmp"):
         super().__init__()
         dataset_path = os.path.join(save_dir, "dataset.pickle")
         self.training_dataset = XlaKernelDataset(dataset_path)
@@ -729,6 +729,9 @@ class XLAModuleCostModel():
         graph_def_path = os.path.join(save_dir, "graph_def.pickle")
         with open(graph_def_path, "rb") as f:
             self.graph_def = pickle.load(f)
+        shape_dict_path = os.path.join(save_dir, "tensor_shapes.json")
+        if not os.path.exists(shape_dict_path):
+            shape_dict_path= None
         self.graph_def_util = GraphDefUtil(self.graph_def, shape_dict_path=shape_dict_path)
         self.computation_cache = {}
         # gutil = self.graph_def_util
@@ -739,6 +742,9 @@ class XLAModuleCostModel():
 
     @classmethod
     def train_on_dataset(cls, dataset_path, save_dir):
+        if not os.path.exists(save_dir):
+            os.mkdir(save_dir)
+        shutil.copy(os.path.join(dataset_path, "tensor_shapes.json"), save_dir)
         dataset_folder_path = os.path.join(dataset_path, "dataset")
         train_kernel_model(dataset_folder_path, save_dir)
         graph_def_path = os.path.join(dataset_path, "cleaned_graph.json")
@@ -888,6 +894,7 @@ class XLAModuleCostModel():
         return module_exec_time, breakdown_dict
     
     def test_on_dataset(self, test_set_path):
+        test_set_path = os.path.join(test_set_path, "dataset")
         training_dataset = self.training_dataset
         test_dataset = XlaModuleTestSet(test_set_path, training_dataset)
         elem_op_cache = self.elem_op_cache
@@ -909,7 +916,7 @@ class XLAModuleCostModel():
         small_time_count = 0
         large_time_count = 0
         large_error_sids = []
-        for i in trange(min(len(module_infos_as_list), 400)):
+        for i in tqdm(random.sample(list(range(len(module_infos_as_list))), k=min(400, len(module_infos_as_list)))):
             predicted_module_time = 0
             elem_op_hashes, fused_op_infos = module_infos_as_list[i]
 
