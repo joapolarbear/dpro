@@ -482,24 +482,39 @@ def train_kernel_model(dataset_path, save_dir, epochs=800, batch_size=64,
                         use_output_hidden=True, drop_out=0.2, learning_rate=5e-4,
                         early_stopping_patience=15, early_stopping_epsilon=1e-5):
     # load kernel dataset
-    print("Loading kernel dataset...")
-    dataset = XlaKernelDataset(dataset_path)
-    # train module lvl model
-    print("Loading elementary Op cache...")
-    elem_op_cache = ElementaryOpCache(dataset_path)
-    print("Loading module details...")
-    module_overhead_model = XLAModuleOverheadModel(dataset_path, dataset, elem_op_cache)
-    print("Fitting module overhead model...")
-    module_overhead_model.fit()
-
-    ovhd_model_save_path = os.path.join(save_dir, "overhead.pickle")
-    module_overhead_model.dump(ovhd_model_save_path)
-    
     dataset_save_path = os.path.join(save_dir, "dataset.pickle")
-    dataset.dump_dataset(dataset_save_path)
+    if os.path.exists(dataset_save_path):
+        print("Loading kernel dataset from cache.")
+        dataset = XlaKernelDataset(dataset_save_path)
+    else:
+        print("Loading kernel dataset...")
+        dataset = XlaKernelDataset(dataset_path)
+        dataset.dump_dataset(dataset_save_path)
 
     elem_op_cache_save_path = os.path.join(save_dir, "elem_op_cache.picke")
-    elem_op_cache.dump(elem_op_cache_save_path)
+    ovhd_model_save_path = os.path.join(save_dir, "overhead.pickle")
+
+    if os.path.exists(elem_op_cache_save_path):
+        if not os.path.exists(ovhd_model_save_path):
+            print("Loading elementary Op cache from cache.")
+            elem_op_cache = ElementaryOpCache(load_from=elem_op_cache_save_path)
+        else:
+            elem_op_cache = None
+            print("Overhead model and elementary op cache exists, doing nothing.")
+    else:
+        print("Loading elementary Op cache...")
+        elem_op_cache = ElementaryOpCache(dataset_path)
+        elem_op_cache.dump(elem_op_cache_save_path)
+    
+    if os.path.exists(ovhd_model_save_path):
+        print("Overhead model exists, doing nothing.")
+    else:
+        # train module lvl model
+        print("Loading module details...")
+        module_overhead_model = XLAModuleOverheadModel(dataset_path, dataset, elem_op_cache)
+        print("Fitting module overhead model...")
+        module_overhead_model.fit()
+        module_overhead_model.dump(ovhd_model_save_path)
 
     opcode_vocab_size = len(dataset.opcode2index) + 1
     ophash_vocab_size = len(dataset.ophash2index) + 1
