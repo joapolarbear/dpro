@@ -36,7 +36,6 @@ class MetaInfo:
 
         self.tensor2update = {}
         
-
     def pick_opnames_by_op_type(self, op_type):
         return [_name for _name in self.cache_hyper_para.keys() if self.parse_op_type(_name) == op_type]
 
@@ -64,6 +63,10 @@ class MetaInfo:
         outputs = self.tf_meta[op_name]["output"]
         dtype_size = self.dtype2size(outputs[0]["dtype"])
         return np.prod(outputs[0]["shape"]) * dtype_size
+
+    def ret_output_shape(self, op_name):
+        outputs = self.tf_meta[op_name]["output"]
+        return outputs[0]["shape"]
 
     def ret_metadata(self, op_name, batch_size=None):
         '''
