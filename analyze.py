@@ -278,8 +278,6 @@ if __name__ == '__main__':
             train_amp_model()
             raise
 
-        amp_pred = AMPPredictor(clct.para_dict)
-
         if not args.simulate and len(path_list) < 3:
             raise RuntimeError("optimize requires positional path arguments: profile data path, cost model path & shape dict path.")
 

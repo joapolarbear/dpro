@@ -543,7 +543,7 @@ class _AMPCostModel(_BaseCostModel):
     def __init__(self, opt):
         super().__init__(opt)
         ### AMP predictor
-        self.amp_predictor = AMPPredictor(meta_path=self.clct.pm.search(FileName.METADATA))
+        self.amp_predictor = AMPPredictor(self.opt.clct.para_dict)
         self.token = [">", "<"]
 
     def init_search_space(self, candidates, _dag: nx.DiGraph, _pkg: PKGraph):
@@ -588,19 +588,24 @@ class _TensorFusionCM(_BaseCostModel):
     def apply(self, s, __dag, __pkg):
         _, _fusion_threshold_mb, _cycle_time_ms = s
         
-
-
 class CostModelManager:
     def __init__(self, opt, cost_models):
-        self.xla_cost_model = _XLACostModel(opt, cost_models)
-        self.strategy2model = {
-            "+": self.xla_cost_model,
-            "-": self.xla_cost_model
-        }
-        self.cost_model_list = [self.xla_cost_model]
-
+        self.cost_model_list = [_XLACostModel(opt, cost_models), _AMPCostModel(opt)]
         self.mem_model_list = []
+        self.strategy2model = {}
 
+        ### Register Thoughput-oriented Cost Models
+        for cm in self.cost_model_list:
+            for _tok in cm.token:
+                assert _tok not in self.strategy2model
+                self.strategy2model[_tok] = cm
+
+        ### Register Memory-oriented Cost Models
+        for cm in self.mem_model_list:
+            for _tok in cm.token:
+                assert _tok not in self.strategy2model
+                self.strategy2model[_tok] = cm
+    
 class Optimizer:
     def __init__(self, collector, cost_models, memory_budget=None):
         self.clct = collector

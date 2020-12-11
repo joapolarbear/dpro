@@ -29,10 +29,13 @@ class MetaInfo:
         with open(os.path.join(meta_dir, FileName.TENSOR_NAME.value), 'r') as fp:
             self.gradient_name_list = json.load(fp)["gradient_name_list"]
 
+        ### Batch size used for this meta data file
+        self.old_B = None
         self.cache_hyper_para = {}
         self.get_hyper_para()
 
         self.tensor2update = {}
+        
 
     def pick_opnames_by_op_type(self, op_type):
         return [_name for _name in self.cache_hyper_para.keys() if self.parse_op_type(_name) == op_type]
@@ -73,7 +76,8 @@ class MetaInfo:
             return batch_size*K*P*Q*C*R*S, batch_size*K*P*Q*(C*R*S-1), batch_size*H*W*C, batch_size*P*Q*K, R*S*C*K
         elif op_type == "MatMul":
             C_in, C_out, old_B = self.cache_hyper_para[op_name]
-            return batch_size*C_in*C_out, batch_size*(C_in-1)*C_out, batch_size*C_in, batch_size*C_out, C_in*C_out
+            B = batch_size * old_B / self.old_B
+            return B*C_in*C_out, B*(C_in-1)*C_out, B*C_in, B*C_out, C_in*C_out
         elif op_type == "BW_MatMul":
             C_in, C_out, old_B = self.cache_hyper_para[op_name]
             return batch_size*C_in*C_out, (batch_size-1)*C_in*C_out, batch_size*C_in, C_in*C_out, batch_size*C_out
@@ -102,6 +106,8 @@ class MetaInfo:
                 N = shape_[0]
                 if N is None:
                     continue
+                if self.old_B is None:
+                    self.old_B = N
                 # P = shape_[1]
                 ### TODO (huhanpeng), assume the width=height
                 P = Q = shape_[2]
@@ -132,13 +138,16 @@ class MetaInfo:
                         else:
                             assert C == shape_[3] if shape_[1] == H else shape_[1]
                 self.cache_hyper_para[op_name] = [H, W, C, R, S, P, Q, K, N, 0]
+            
             elif op_type == "MatMul":
                 B = C_in = C_out = None
                 assert len(inputs) == 2 and len(
                     inputs[0]["shape"]) == 2 and len(inputs[1]["shape"]) == 2
+                
                 found = False
                 for i in range(2):
                     if "kernel" in inputs[i]["name"] or "ReadVariableOp" in inputs[i]["name"]:
+                        ### i is weight, 1-i is input
                         B, C_in = inputs[1-i]["shape"]
                         if C_in == inputs[i]["shape"][0]:
                             C_out = inputs[i]["shape"][1]
@@ -149,9 +158,12 @@ class MetaInfo:
                         found = True
                         break
                 if not found:
-                    B, C_in = inputs[0]["shape"]
-                    C_out = inputs[1]["shape"][1]
-                    assert inputs[1]["shape"][0] == B, self.tf_meta[op_name]
+                    B, C_out = outputs[0]["shape"]
+                    for _shape in inputs[0]["shape"]:
+                        if _shape != B and _shape != C_out:
+                            C_in = _shape
+                            break
+
                 self.cache_hyper_para[op_name] = [C_in, C_out, B]
             # elif op_type == "Cast":
             #     assert len(outputs) == 1
