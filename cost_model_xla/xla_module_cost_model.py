@@ -360,12 +360,18 @@ class XLAModuleOverheadModel():
                 sum_ovhds += self.coeffs_small[0]
                 # sum_ovhds += self.coeffs_small[-1] * num_fused_ops
                 for length in subop_lengths:
-                    sum_ovhds += self.coeffs_small[self.fusion_op_offset + length]
+                    if self.fusion_op_offset + length > len(self.coeffs_small) - 1:
+                        sum_ovhds += self.coeffs_small[-1]
+                    else:
+                        sum_ovhds += self.coeffs_small[self.fusion_op_offset + length]
             else:
                 sum_ovhds += self.coeffs_large[0]
                 # sum_ovhds += self.coeffs_large[-1] * num_fused_ops
                 for length in subop_lengths:
-                    sum_ovhds += self.coeffs_large[self.fusion_op_offset + length]
+                    if self.fusion_op_offset + length > len(self.coeffs_large) - 1:
+                        sum_ovhds += self.coeffs_large[-1]
+                    else:
+                        sum_ovhds += self.coeffs_large[self.fusion_op_offset + length]
         else:
             sum_ovhds += self.coeffs[0]
             # sum_ovhds += self.coeffs[-1] * num_fused_ops
