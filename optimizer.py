@@ -547,7 +547,7 @@ class Optimizer:
 
             for succ_ in _dag.successors(n):
                 # some filters
-                if not _pkg.can_contract_edge(n, succ_):
+                if succ_ in self.forbidden_list or not _pkg.can_contract_edge(n, succ_):
                     continue
                 if "+" not in succ_:
                     try:
@@ -557,10 +557,10 @@ class Optimizer:
                     if succ_orig_name not in self.cost_models[succ_pid].graph_def_util.operation_names:
                         continue
 
-                edge_data = _dag.get_edge_data(n, succ_)
-                if edge_data and "exec_edges" in edge_data and edge_data["exec_edges"]:
-                    print("IGNORED EXECUTION EDGE!!!!!!!!")
-                    continue
+                # edge_data = _dag.get_edge_data(n, succ_)
+                # if edge_data and "exec_edges" in edge_data and edge_data["exec_edges"]:
+                #     print("IGNORED EXECUTION EDGE!!!!!!!!")
+                #     continue
                 # else:
                 #     print(n, succ_)
                 #     print(edge_data)
@@ -718,6 +718,7 @@ class MCMCOptimizer(Optimizer):
         
         # limit the range of nodes during search
         for node in self.dag.nodes:
+            # ignore BW nodes and communication nodes
             if "BW" in node or (not node.startswith("traces_0") and not node.startswith("traces_1")):
                 self.initial_forbidden_list.add(node)
 
