@@ -32,6 +32,8 @@ class MetaInfo:
         ### Batch size used for this meta data file
         self.old_B = None
         self.cache_hyper_para = {}
+        ### Tranverse all metadata in advance, cache some importand operaots' metadata
+        ### And get self.old_B
         self.get_hyper_para()
 
         self.tensor2update = {}
@@ -45,13 +47,13 @@ class MetaInfo:
             return "CastToFp16"
         elif "CastToFp32" in op_name:
             return "CastToFp32"
+        if "ConstantFolding" in op_name:
+            return "unknown"
 
         if op_name not in self.tf_meta:
             raise KeyError("{} not in the metadata".format(op_name))
         if "op" not in self.tf_meta[op_name]:
             raise KeyError("op {} has not been given a type".format(op_name))
-        if "control_dependency" in op_name:
-            return "Gradient"
         return self.tf_meta[op_name]["op"]
 
     def ret_tensor_size(self, tensor_id):
@@ -74,22 +76,44 @@ class MetaInfo:
             S_mul, S_add, S_in, S_out, S_weight
         '''
         op_type = self.parse_op_type(op_name)
+        wei = 1 if batch_size is None else batch_size / self.old_B
+        inputs = self.tf_meta[op_name]["input"]
+        outputs = self.tf_meta[op_name]["output"]
         if op_type == "Conv2D":
             H, W, C, R, S, P, Q, K, old_B, use_bias = self.cache_hyper_para[op_name]
-            return batch_size*K*P*Q*C*R*S, batch_size*K*P*Q*(C*R*S-1), batch_size*H*W*C, batch_size*P*Q*K, R*S*C*K
+            return wei*old_B*K*P*Q*C*R*S, wei*old_B*K*P*Q*(C*R*S-1), wei*old_B*H*W*C, wei*old_B*P*Q*K, R*S*C*K
         elif op_type == "MatMul":
             C_in, C_out, old_B = self.cache_hyper_para[op_name]
-            B = batch_size * old_B / self.old_B
-            return B*C_in*C_out, B*(C_in-1)*C_out, B*C_in, B*C_out, C_in*C_out
+            return wei*old_B*C_in*C_out, wei*old_B*(C_in-1)*C_out, wei*old_B*C_in, wei*old_B*C_out, C_in*C_out
         elif op_type == "BW_MatMul":
             C_in, C_out, old_B = self.cache_hyper_para[op_name]
-            return batch_size*C_in*C_out, (batch_size-1)*C_in*C_out, batch_size*C_in, C_in*C_out, batch_size*C_out
+            return wei*old_B*C_in*C_out, (wei*old_B-1)*C_in*C_out, wei*old_B*C_in, C_in*C_out, wei*old_B*C_out
         elif op_type == "CastToFp16" or op_type == "CastToFp32":
             pre_node = op_name.split("-")[0]
             assert pre_node in self.tf_meta
             return 1, 1, self.ret_output_size_inB(pre_node), 1, 1
+        elif op_type == "Conv2DBackpropFilter":
+            S_out = wei * np.prod(outputs[0]["shape"])
+            SingleLogger().warn("{}({}) not fully implemented".format(op_name, op_type))
+            S_in = wei * np.prod(inputs[-1]["shape"])
+            S_wei = wei * np.prod(inputs[0]["shape"])
+            return 1, 1, S_in, S_out, S_wei
+        elif op_type == "unknown":
+            return 0, 0, 0, 0, 0
+        elif op_type == "Const":
+            S_out = wei * np.prod(outputs[0]["shape"])
+            return 0, 0, 0, S_out, 0
+        else:
+            ### Not cached operators
+            if len(outputs) > 1:
+                SingleLogger().warn("{} has multiple outputs: {}".format(op_name, outputs)) 
+            S_out = wei * np.prod(outputs[0]["shape"])
+            SingleLogger().warn("{} has not been fine-defined input/weight: {}".format(op_name, inputs))
+            S_in = wei * np.prod(inputs[0]["shape"])
+            S_wei = wei * np.prod(inputs[1]["shape"]) if len(inputs) > 1 else 1
+            return 0, 0, S_in, S_out, S_wei
 
-    def ret_rawmeta(self, op_name, batch_size):
+    def ret_rawmeta(self, op_name, batch_size=None):
         op_type = self.parse_op_type(op_name)
         if op_type == "CastToFp16" or op_type == "CastToFp32":
             return []
@@ -141,7 +165,8 @@ class MetaInfo:
                         else:
                             assert C == shape_[3] if shape_[1] == H else shape_[1]
                 self.cache_hyper_para[op_name] = [H, W, C, R, S, P, Q, K, N, 0]
-            
+                assert not None in self.cache_hyper_para[op_name], self.tf_meta[op_name]
+                assert not self.old_B is None
             elif op_type == "MatMul":
                 B = C_in = C_out = None
                 assert len(inputs) == 2 and len(
@@ -175,15 +200,6 @@ class MetaInfo:
             #     dtype_out_size = self.dtype2size(outputs[0]["dtype"])
             #     self.cache_hyper_para[op_name] = [
             #         np.prod(inputs[0]["shape"]), np.prod(outputs[0]["shape"]), dtype_in_size, dtype_out_size, batch_size]
-            elif op_type == "Gradient":
-                try:
-                    dtype_in_size = self.dtype2size(inputs[0]["dtype"])
-                    dtype_out_size = self.dtype2size(outputs[0]["dtype"])
-                except:
-                    print(self.tf_meta[op_name])
-                    raise
-                self.cache_hyper_para[op_name] = [
-                    np.prod(inputs[0]["shape"]), np.prod(outputs[0]["shape"]), dtype_in_size, dtype_out_size]
             else:
                 # SingleLogger().warn(
                 #     "Metadata for {} is not implemented yet. {}".format(op_name, op_type))

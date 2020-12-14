@@ -184,20 +184,21 @@ def parse_allinfo_from_name(name):
     else:
         pid, raw_name = name.split(DEL)
 
+    suffix = None
     if DDEL in raw_name:
         raw_name, suffix = raw_name.split(DDEL)
 
     if "I/O" in raw_name:
-        return pid, raw_name, CatName.IO.value
+        cat = CatName.IO.value
     elif "Comm" in raw_name or "PUSH" in raw_name or "PULL" in raw_name:
-        return pid, raw_name, CatName.COMM.value
+        cat = CatName.COMM.value
     elif "FW" in raw_name or "BW" in raw_name or "COMP" in raw_name or "UPDATE" in raw_name or "OUTPUT" in raw_name or "COPY_FIRST" in raw_name or "SUM" in raw_name or "COPY_MERGED" in raw_name:
-        return pid, raw_name, CatName.OPERATOR.value
+        cat = CatName.OPERATOR.value
     elif raw_name == "END":
-        return pid, raw_name, CatName.DEBUG.value
+        cat = CatName.DEBUG.value
     else:
         raise ValueError("Can not decide the cat of %s" % name)
-
+    return pid, raw_name, cat, suffix
 
 def parse_pid_from_name(name):
     if DEL not in name:
@@ -676,18 +677,6 @@ class TraceManager:
             converting dynamic graph into static graph.
         '''
         return self.iter_time, self.opt_step
-
-    def group_op_by_prefix(self, cat_name=None):
-        prefix2traces = {}
-        def _get_prefix(e):
-            prefix = e["pid"]
-            if prefix not in prefix2traces:
-                prefix2traces[prefix] = []
-            return prefix
-        for event in self.traces:
-            if (cat_name is None or parse_cat_from_name(event["name"]) == cat_name) and not self._is_ignore_for_sta(event):
-                prefix2traces[_get_prefix(event)].append(event)
-        return prefix2traces
 
     def map_name2idxlist(self, name):
         ''' map the trace name to the list of indexes in the traces

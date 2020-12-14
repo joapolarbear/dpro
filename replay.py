@@ -86,9 +86,9 @@ class Device:
         ### Really start to execute
         avg = self.replayer.dag.nodes[name]["avg"]
         if "+" in name and "Comm" not in name:
-            pid, raw_name, cat = parse_allinfo_from_name(name.split("+")[0])
+            pid, raw_name, cat, suffix = parse_allinfo_from_name(name.split("+")[0])
         else:
-            pid, raw_name, cat = parse_allinfo_from_name(name)
+            pid, raw_name, cat, suffix = parse_allinfo_from_name(name)
         delay, ratio = self.get_delay_para(name)
         duration = (1000.0 * max(avg + delay, 0)) * ratio
         if self.comm_backend == "BYTEPS" and "UPDATE_CAL" in name:
@@ -559,8 +559,8 @@ class Replayer:
         def wrap_add_edge(u, v):
             _dag.add_edge(u, v)
         for u, v in self.dag.edges():
-            u_pid, u_raw_name, u_cat = parse_allinfo_from_name(u)
-            v_pid, v_raw_name, v_cat = parse_allinfo_from_name(v)
+            u_pid, u_raw_name, u_cat, _ = parse_allinfo_from_name(u)
+            v_pid, v_raw_name, v_cat, _ = parse_allinfo_from_name(v)
             ### Only keep operators on one GPU, i.e. host0.rank0
             if u_pid != "host0.rank0" or v_pid != "host0.rank0":
                 continue

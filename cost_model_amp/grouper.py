@@ -208,16 +208,22 @@ class Grouper:
 
     def _predict(self, _xdata):
         grp_id = self.gen_grp_id(_xdata, None)
-        print("predict: {}".format(grp_id))
         if grp_id not in self.fitter_table:
             return 0
         rst = self.fitter_table[grp_id]["fitter"].predict(_xdata)
-        return rst * self.max_of_each_dim[0]
+        rst = rst * self.max_of_each_dim[0]
+        print("MP cost model: {}(group {}) predicts {} ms".format(self.op_type, grp_id, rst))
+        return rst
 
     def dump(self):
         cost_model_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".cost_model")
         if not os.path.exists(cost_model_dir):
             os.mkdir(cost_model_dir)
+        
+        ### function member can not be dumped with pickler
+        for grp_id, dict_ in self.fitter_table.items():
+            dict_["fitter"].fit_func = None
+        
         with open(os.path.join(cost_model_dir, "{}.txt".format(self.op_type)), "wb") as f:
             pickle.dump([self.dels, self.headers, self.max_of_each_dim,
                          self.op_type, self.fitter_table], f)
@@ -229,10 +235,11 @@ class Grouper:
             self.dels, self.headers, self.max_of_each_dim, self.op_type, \
                 self.fitter_table = pickle.load(f)
 
-        SingleLogger().info("Load AMP cost model for {}".format(self.op_type))
         for grp_id in self.fitter_table:
             SingleLogger().info(" - Load group {}".format(grp_id))
             self.fitter_table[grp_id]["fitter"].load_fit_func()
+        
+        SingleLogger().info("Load AMP cost model for {}".format(self.op_type))
 
 def load_grouper(cm_path):
     grp = Grouper()

@@ -552,15 +552,17 @@ class _AMPCostModel(_BaseCostModel):
         for n, l in candidates:
             # node heat
             heat = self.opt._get_heat_from_history(n)
-            ### Nodes that have never been fused
-            cat = parse_cat_fine_grained(n)
-            pid = parse_pid_from_name(n)
+            # ### Nodes that have never been fused
+            # cat = parse_cat_fine_grained(n)
+            # pid = parse_pid_from_name(n)
 
             ### check if mixed precision can be used for this node
-            ### TODO (huhanpeng) do not support quantizing fused nodes now
             if self.amp_predictor.is_need_amp(_dag, n):
                 search_space.append((">", n, None))
                 weights.append(l)
+        
+        return [(">", "host0.rank5->FW.resnet50/conv4_block6_2_conv/Conv2D", None)], [1]
+        SingleLogger().info("MP Cost Model init {} strategies.".format(len(search_space)))
         return search_space, weights
 
     def init_partition(self, G, PKG, initial_partitions_formed) -> int:
@@ -568,7 +570,8 @@ class _AMPCostModel(_BaseCostModel):
 
     def apply(self, s, __dag, __pkg):
         op, target, _ = s
-        self.amp_predictor.quantize(self, __dag, target)
+        nodes_introduced = self.amp_predictor.quantize(__dag, target)
+        return True, nodes_introduced, []
 
 class _TensorFusionCM(_BaseCostModel):
     ''' This is a cost model for HOROVOD tensor fusion
@@ -590,7 +593,10 @@ class _TensorFusionCM(_BaseCostModel):
         
 class CostModelManager:
     def __init__(self, opt, cost_models):
-        self.cost_model_list = [_XLACostModel(opt, cost_models), _AMPCostModel(opt)]
+        self.cost_model_list = [
+            # _XLACostModel(opt, cost_models),
+            _AMPCostModel(opt),
+        ]
         self.mem_model_list = []
         self.strategy2model = {}
 
@@ -611,22 +617,30 @@ class Optimizer:
         self.clct = collector
         self.platform = self.clct.platform
         self.comm_backend = self.clct.comm_backend
-        self.index2name = {}
-        self.index2pid = {}
-        self.name2index = {}
-        self.index2newname = {}
+
         self.step = 0
-        ## Get the dependency graph
-        self.dag = self.relabel_dag_node(self.clct.trail_dag)
-        # self.work_dir = os.path.join(self.clct.pm.path, ".optimize")
-        # if not os.path.exists(self.work_dir):
-        #     os.mkdir(self.work_dir)
-        with open(os.path.join(ROOT_PATH, "index2name.txt"), "w") as f:
-            for index, name in self.index2name.items():
-                f.write(str(index))
-                f.write(" : ")
-                f.write(str(name))
-                f.write("\n")
+        if args_.relabel:
+            ### To simplify the DAG representation, relabel dag with indexes
+            ### index2name: index to the layer name, i.e., which is substituted by the index
+            self.index2name = {}
+            ### index2pid: index to the pid which this index belongs to, 
+            # i.e., the same op in different pid use different index
+            self.index2pid = {}
+            ### name2index: given the layer name, store the index in each pid
+            self.name2index = {}
+            ### index2newname: index to new label in DAG 
+            self.index2newname = {}
+            
+            ## Get the dependency graph
+            self.dag = self.relabel_dag_node(self.clct.trail_dag)
+            with open(os.path.join(ROOT_PATH, "index2name.txt"), "w") as f:
+                for index, name in self.index2name.items():
+                    f.write(str(index))
+                    f.write(" : ")
+                    f.write(str(name))
+                    f.write("\n")
+        else:
+            self.dag = self.clct.trail_dag
         
         self.forbidden_list = []
 
@@ -657,11 +671,10 @@ class Optimizer:
                 # TODO (huhanpeng): different pids share the same index
                 if "Comm" in old_label and layer_name in self.name2index and layer_pid in self.name2index[layer_name]:
                     layer_index = self.name2index[layer_name][layer_pid]
-                    new_name = ("[%d]"%layer_index).join(old_label.split(layer_name))
-                    return new_name
+                    new_label = ("[%d]"%layer_index).join(old_label.split(layer_name))
+                    return new_label
 
                 layer_index = len(self.index2name)
-                new_name = ("[%d]"%layer_index).join(old_label.split(layer_name))
                 self.index2name[layer_index] = layer_name
                 self.index2pid[layer_index] = layer_pid
                 if layer_name not in self.name2index:
@@ -686,13 +699,20 @@ class Optimizer:
     
     def _debug_convert_to_the_other_machine(self, name_):
         if not "+" in name_:
-            name, pid = self._get_original_name_pid_from_index(name_)
             ret = []
-            for other_pid in self.name2index[name]:
-                if other_pid == pid:
-                    continue
-                other_index = self.name2index[name][other_pid]
-                ret.append(self.index2newname[other_index])
+            if args_.relabel:
+                name, pid = self._get_original_name_pid_from_index(name_)
+                for other_pid in self.name2index[name]:
+                    if other_pid == pid:
+                        continue
+                    other_index = self.name2index[name][other_pid]
+                    ret.append(self.index2newname[other_index])
+            else:
+                pid, rawname, cat, suffix = parse_allinfo_from_name(name_)
+                for other_pid in self.clct.all_pid():
+                    if other_pid == pid:
+                        continue
+                    ret.append(gen_long_name(other_pid, rawname, suffix))
             return ret
         else:
             new_names = []
@@ -702,8 +722,11 @@ class Optimizer:
             return ["+".join(ns) for ns in new_names]
 
     def _get_original_name_pid_from_index(self, name_):
-        index = self._parse_index_from_name(name_)
-        return self.index2name[index], self.index2pid[index]
+        if args_.relabel:
+            index = self._parse_index_from_name(name_)
+            return self.index2name[index], self.index2pid[index]
+        else:
+            return parse_layer_name(name_), parse_pid_from_name(name_)
 
     def get_node_attr(self, n, attr_):
         if attr_ in self.node_attr_cache[n]:
@@ -714,15 +737,6 @@ class Optimizer:
     def cache_node_attr(self, n, attrs):
         ### TODO (huhanpeng): need .copy() ???
         self.node_attr_cache[n] = attrs
-
-        # TODO (huhanpeng) not correct ???
-        # try:
-        #     
-        #     n0 = self._debug_convert_to_the_other_machine(n)
-        #     self.node_attr_cache[n0] = attrs
-        # except:
-        #     pass
-        # print("cache attributes for %s" % n)
 
     def evaluate(self, _dag, _filename=None):
         # t = time.time()
@@ -923,7 +937,7 @@ class MCMCOptimizer(Optimizer):
 
     def search(self, init_edges_to_contract = 0.3, graph_cache=os.path.join(ROOT_PATH, "graph_cache.pickle"), step_size=1):
         ### TODO (huhanpeng): is shallow copy is enough ???
-        if graph_cache is not None and os.path.isfile(graph_cache):
+        if args_.ckpt and graph_cache is not None and os.path.isfile(graph_cache):
             with open(graph_cache, "rb") as f:
                 G, PKG, node_attr_cache, initial_partitions_formed = pickle.load(f)
                 self.node_attr_cache = node_attr_cache
@@ -1080,7 +1094,7 @@ class MCMCOptimizer(Optimizer):
             SingleLogger().info("\033[94m" + "Best speedup: %d th acception, speed up to the origin: %6.4f %%"%(len(best_strategy), 100 * (self.base_cost - best_cost) / self.base_cost) + "'\033[0m'")
             with open(os.path.join(ROOT_PATH, "search_trajectory.txt"), "a") as f:
                 f.write(str(time.time()) + ": {}".format(100 * (self.base_cost - best_cost) / self.base_cost) + "\n")
-
+            raise
  
     def accept_or_not(self, cost, new_cost):
         # prob = min(1, (math.exp(beta * (cost - new_cost))))

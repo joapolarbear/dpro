@@ -170,14 +170,13 @@ LINEARITY = 'linear' # \in ['linear', log', 'exp', sigmoid', 'piecewise', 'max_l
 #     # flops_ = G * (1 / (1 + np.exp(-S_mul)) - a6)
 #     # flops_ = G * np.log(a6 * S_mul + a7)
 
-FIT_FUNC = None
-
 class CurveFiter:
     def __init__(self, headers, op_type="conv", E1_=None, E2_=None):
         self.headers = headers
         self.popt = self.perr = None
         self.op_type = op_type
         self.Es = [E1_, E2_]
+        self.FIT_FUNC = None
         self.load_fit_func()
 
     def load_fit_func(self):
@@ -416,15 +415,14 @@ class CurveFiter:
         else:
             raise
 
-        global FIT_FUNC
         if self.op_type == "conv" or self.op_type == "Conv2D":
-            FIT_FUNC = cost_func_conv2d
+            self.fit_func = cost_func_conv2d
             self.lower_bounds = lower_bounds_conv
         elif self.op_type == "dense" or self.op_type == "MatMul":
-            FIT_FUNC = cost_func_dense
+            self.fit_func = cost_func_dense
             self.lower_bounds = lower_bounds_dense
         elif self.op_type == "CastToFp16" or self.op_type == "CastToFp32":
-            FIT_FUNC = cost_func_cast
+            self.fit_func = cost_func_cast
             self.lower_bounds = lower_bounds_cast
         else:
             raise ValueError(self.op_type)
@@ -454,8 +452,8 @@ class CurveFiter:
         else:
             _train_x = np.transpose(train_x)
             _train_y = self.no_linear_label(np.transpose(train_y).flatten())
-            # FIT_FUNC(_train_x, *self.p0)
-            self.popt, pcov = curve_fit(FIT_FUNC, _train_x, _train_y, 
+            # self.fit_func(_train_x, *self.p0)
+            self.popt, pcov = curve_fit(self.fit_func, _train_x, _train_y, 
                 bounds=(self.lower_bounds, self.up_bounds), p0=self.p0, maxfev=100000)
             self.perr = np.sqrt(np.diag(pcov))
         return self.popt, self.perr
@@ -469,7 +467,7 @@ class CurveFiter:
 
         if self.popt is None:
             SingleLogger().error("Curvefitter is not trained")
-        avgs_pred = FIT_FUNC(_test_x, *self.popt)
+        avgs_pred = self.fit_func(_test_x, *self.popt)
         diff, ratio = predict_error(_test_y, avgs_pred)
         error = float(ratio.split("%")[0])
         if verbose:
@@ -477,7 +475,7 @@ class CurveFiter:
         return error
 
     def predict(self, xdata):
-        return FIT_FUNC(xdata, *self.popt)
+        return self.fit_func(xdata, *self.popt)
 
 
 

@@ -1204,7 +1204,7 @@ class Collector(object):
                 ### for Sync|Queue|MEMCPY_IN_FUSION_BUFFER|MEMCPY_OUT_FUSION_BUFFER sub operators
                 ### there are not corresponding fused traces, instead, each tensor has its own sub operator traces
                 ### when building the graph, use the average duration of corresponding tensor as the fused operator time 
-                prefix, rawname, _ = parse_allinfo_from_name(node_)
+                prefix, rawname, _, _ = parse_allinfo_from_name(node_)
                 op_type, op_name, sub_op = rawname.split(".")
 
                 tensor_list = re.findall("[0-9]+", op_name)
@@ -1360,6 +1360,8 @@ class Collector(object):
                 break
             print("Name: {}, min_gap: {} ({})".format(name, depend['min_gap'], depend['min_node']))
 
+    def all_pid(self):
+        return list(self.nccl_graph.prefix2rank.keys())
 
 
 

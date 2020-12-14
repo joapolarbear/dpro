@@ -50,3 +50,9 @@ class ParameterDict:
 
     def ret_rawmeta(self, *args, **kwargs):
         return self.metainfo.ret_rawmeta(*args, **kwargs)
+    
+    def check_amp_lists(self, *args, **kwargs):
+        return self.metainfo.check_amp_lists(*args, **kwargs)
+    
+    def parse_op_type(self, *args, **kwargs):
+        return self.metainfo.parse_op_type(*args, **kwargs)
