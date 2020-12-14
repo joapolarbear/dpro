@@ -254,11 +254,11 @@ class Optimizer:
     def cache_node_attr(self, n, attrs):
         ### TODO (huhanpeng): need .copy() ???
         self.node_attr_cache[n] = attrs
-        try:
-            n0 = self._debug_convert_to_the_other_machine(n)
-            self.node_attr_cache[n0] = attrs
-        except:
-            pass
+        # try:
+        #     n0 = self._debug_convert_to_the_other_machine(n)
+        #     self.node_attr_cache[n0] = attrs
+        # except:
+        #     pass
         # print("cache attributes for %s" % n)
 
     def op_fusion(self, _dag, _pkg: PKGraph, u_, v_):
@@ -267,12 +267,13 @@ class Optimizer:
             ### u_ and v_ are both FW nodes
             _pkg.contract_edge(u_, v_)
             self._fuse_pair(_dag, u_, v_)
-            u0_ = self._debug_convert_to_the_other_machine(u_)
-            v0_ = self._debug_convert_to_the_other_machine(v_)
-            _pkg.contract_edge(u0_, v0_)
-            self._fuse_pair(_dag, u0_, v0_)
+            # u0_ = self._debug_convert_to_the_other_machine(u_)
+            # v0_ = self._debug_convert_to_the_other_machine(v_)
+            # _pkg.contract_edge(u0_, v0_)
+            # self._fuse_pair(_dag, u0_, v0_)
             # self._fuse_pair(_dag, self.convert_fw2bw(v_), self.convert_fw2bw(u_))
-            return True, set([u_+"+"+v_, u0_+"+"+v0_]), set([u_, v_, u0_, v0_])
+            # return True, set([u_+"+"+v_, u0_+"+"+v0_]), set([u_, v_, u0_, v0_])
+            return True, set([u_+"+"+v_]), set([u_, v_])
         else:
             return False, None, None
 
@@ -372,10 +373,10 @@ class Optimizer:
     def op_defusion(self, _dag, _pkg: PKGraph, target, components):
         _pkg.split_node(target, components)
         _, new_node_names = self._defuse_node(_dag, _pkg, target, components)
-        target1 = self._debug_convert_to_the_other_machine(target)
-        components1 = tuple([tuple([self._debug_convert_to_the_other_machine(node) for node in comp]) for comp in components])
-        _pkg.split_node(target1, components1)
-        _, new_node_names0 = self._defuse_node(_dag, _pkg, target1, components1)
+        # target1 = self._debug_convert_to_the_other_machine(target)
+        # components1 = tuple([tuple([self._debug_convert_to_the_other_machine(node) for node in comp]) for comp in components])
+        # _pkg.split_node(target1, components1)
+        # _, new_node_names0 = self._defuse_node(_dag, _pkg, target1, components1)
         # target = "BW".join(target.split("FW"))
         # ns = target.split("+")
         # ns.reverse()
@@ -383,7 +384,8 @@ class Optimizer:
         # target = "+".join(ns)
         # assert target in _dag.nodes
         # self._defuse_pair(_dag, target, pos)
-        return True, set(new_node_names + new_node_names0), set([target])
+        # return True, set(new_node_names + new_node_names0), set([target])
+        return True, set(new_node_names), set([target])
     
     def _get_defused_node_names(self, fused_node_):
         return fused_node_.split("+")
