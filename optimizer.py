@@ -540,8 +540,7 @@ class _TensorFusionCM(_BaseCostModel):
     
     def apply(self, s, __dag, __pkg):
         _, _fusion_threshold_mb, _cycle_time_ms = s
-        
-        
+              
 class CostModelManager:
     def __init__(self, opt, cost_models):
         self.cost_model_list = [
