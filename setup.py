@@ -39,7 +39,8 @@ setup(name='byteprofile analysis',
           'matplotlib',
           'pymc3',
           'tensorflow',
-          'tqdm'
+          'tqdm',
+          "cvxpy"
       ],
       # zip_safe=False
       )
