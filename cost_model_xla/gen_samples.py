@@ -14,7 +14,7 @@ import hashlib
 import json
 import scipy
 # from wwl import PairwiseWWL, PairwiseOverlap
-import igraph
+# import igraph
 from scipy.special import softmax
 from tqdm import trange, tqdm
 from multiprocessing import Pool
