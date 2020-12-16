@@ -578,6 +578,7 @@ class Replayer:
                 update_op = succs_[0]
 
                 tensor_list = re.findall("[0-9]+", op_name)
+                fused_size = 0
                 for tensor_id_str in tensor_list:
                     comm_op = gen_long_name(
                         "host0.rank0", "{}.{}".format(op_type, tensor_id_str))
@@ -585,8 +586,12 @@ class Replayer:
                     wrap_add_edge(u, comm_op)
                     ### Comm --> UPDATE
                     wrap_add_edge(comm_op, update_op)
-                    _dag.nodes[comm_op]["avg"] = self.theoretical_avg(
-                        int(tensor_id_str), metadata)
+                    tensor_id = int(tensor_id_str)
+                    bw_in_g = 100
+                    tensor_size = metadata.tensor_id2size(tensor_id)
+                    _dag.nodes[comm_op]["avg"] = tensor_size / (bw_in_g * 1e6)
+                    fused_size += tensor_size
+                SingleLogger().info("Fused Tensor Size for {}: {} MB".format(op_name, fused_size / (1024.0 * 1024.0)))
             else:
                 wrap_add_edge(u, v)
         for node_ in _dag.nodes():
@@ -594,11 +599,7 @@ class Replayer:
                 continue
             nx.set_node_attributes(_dag, {node_: self.dag.nodes[node_]})
         self.dag = _dag
-    
-    def theoretical_avg(self, tensor_id, metadata, bw_in_g=100):
-        tensor_size = metadata.tensor_id2size(tensor_id)
-        # return 1e3 * tensor_size / (bw_in_g * 1e9)
-        return tensor_size / (bw_in_g * 1e6)
+
                         
                 
 

@@ -5,6 +5,7 @@ import numpy as np
 from logger_utils import Singleton, SingleLogger
 import pickle
 import os
+import scipy.interpolate as interpolate
 
 class Delimiter:
     def __init__(self, target_dim, td_len=1., fd_len=0., unit_len=1., max_grp_size=20):
@@ -209,11 +210,30 @@ class Grouper:
     def _predict(self, _xdata):
         grp_id = self.gen_grp_id(_xdata, None)
         if grp_id not in self.fitter_table:
-            return 0
-        rst = self.fitter_table[grp_id]["fitter"].predict(_xdata)
+            rst = self._interpolate_predict(_xdata, grp_id)
+        else:
+            rst = self.fitter_table[grp_id]["fitter"].predict(_xdata)
         rst = rst * self.max_of_each_dim[0]
         print("MP cost model: {}(group {}) predicts {} ms".format(self.op_type, grp_id, rst))
         return rst
+
+    def _grp_id2list(self, grp_id):
+        return [int(gid) for gid in grp_id.split("-")]
+
+    def _interpolate_predict(self, _xdata, grp_id):
+        grp_id_list = np.array(self._grp_id2list(grp_id))
+        ### shape = (n_grps, n_dels)
+        all_grp_id_list = np.array([self._grp_id2list(gid)
+                                    for gid in self.fitter_table.keys()])
+        ### shape = (n_grps, n_popts)
+        popt_list = np.array([_dict["fitter"].popt
+                                    for _dict in self.fitter_table.values()])
+        ret_popt = interpolate.LinearNDInterpolator(all_grp_id_list, popt_list)(grp_id_list)
+        if np.isnan(np.min(ret_popt)):
+            ret_popt = interpolate.NearestNDInterpolator(all_grp_id_list, popt_list)(grp_id_list)
+        self.fitter_table[grp_id]["fitter"] = CurveFiter(self.headers, op_type=self.op_type)
+        self.fitter_table[grp_id]["fitter"].popt = ret_popt
+        return self.fitter_table[grp_id]["fitter"].predict(_xdata)
 
     def dump(self):
         cost_model_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".cost_model")
@@ -234,12 +254,11 @@ class Grouper:
         with open(cm_path, "rb") as f:
             self.dels, self.headers, self.max_of_each_dim, self.op_type, \
                 self.fitter_table = pickle.load(f)
-
+        
+        SingleLogger().info("Load AMP cost model for {} ...".format(self.op_type))
         for grp_id in self.fitter_table:
             SingleLogger().info(" - Load group {}".format(grp_id))
             self.fitter_table[grp_id]["fitter"].load_fit_func()
-        
-        SingleLogger().info("Load AMP cost model for {}".format(self.op_type))
 
 def load_grouper(cm_path):
     grp = Grouper()

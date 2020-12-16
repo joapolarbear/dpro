@@ -3,7 +3,7 @@ import json
 import os
 from ml_platform.tensorflow.amp_lists import whitelist, blacklist, greylist, clearlist
 from logger_utils import Singleton, SingleLogger
-from trace_utils import FileName
+from trace_utils import FileName, parse_allinfo_from_name
 
 OP_HYPER_PARAMETERS = {
     "Conv2D": ["H", "W", "C", "R", "S", "P", "Q", "K", "B", "use_bias"],
@@ -69,6 +69,14 @@ class MetaInfo:
     def ret_output_shape(self, op_name):
         outputs = self.tf_meta[op_name]["output"]
         return outputs[0]["shape"]
+
+    def ret_op_precision(self, op_name):
+        if op_name not in self.tf_meta:
+            return None
+        outputs = self.tf_meta[op_name]["output"]
+        if len(outputs) == 0:
+            return None
+        return outputs[0]["dtype"]
 
     def ret_metadata(self, op_name, batch_size=None):
         '''
@@ -242,3 +250,10 @@ class MetaInfo:
         else:
             return
         # TODO (huhanpeng): use a more complex rule, just like in AMP of TensorFlow.
+
+    def standarize_name(self, op_name):
+        '''convert trace long name to metadata name'''
+        _, rawname, cat, _ = parse_allinfo_from_name(op_name)
+        rawname = rawname.split(".")[1]
+        rawname = rawname.split(":")[0]
+        return rawname, cat

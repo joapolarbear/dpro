@@ -32,12 +32,13 @@ class AMPPredictor:
         if len(self.cost_model) == 0:
             SingleLogger().warn("No AMP cost model at {}".format(cm_dir))
         self.meta_info = meta_info
+        self.op_status = {}
         
     def pred_amp_avg(self, op_name, _avg=None):
         ''' Predict fp16 time of fp32 operators
             If _avg is given, use the relative value
         '''
-        rawname, _ = self.metadata_name(op_name)
+        rawname, _ = self.meta_info.standarize_name(op_name)
         op_type = self.meta_info.parse_op_type(rawname)
         if op_type not in self.cost_model:
             SingleLogger().warn("{}({}) is not supported for AMP now".format(op_name, op_type))
@@ -56,13 +57,6 @@ class AMPPredictor:
         else:
             return avg_fp16
 
-    def metadata_name(self, op_name):
-        '''convert trace/dag name to metadata name'''
-        _, rawname, cat, _ = parse_allinfo_from_name(op_name)
-        rawname = rawname.split(".")[1]
-        rawname = rawname.split(":")[0]
-        return rawname, cat
-
     def output_cast_time(self, op_name, tofp16=True):
         ''' 
         Parameters
@@ -70,7 +64,7 @@ class AMPPredictor:
         op_name: str, long name
             pid->op_type.name.sub_op~>suffix
         '''
-        rawname, cat = self.metadata_name(op_name)
+        rawname, cat = self.meta_info.standarize_name(op_name)
         assert cat != CatName.COMM.value
         cm_name = "CastToFp16" if tofp16 else "CastToFp32"
         if cm_name not in self.cost_model:
@@ -107,11 +101,13 @@ class AMPPredictor:
             else:
                 ### the boundary of mixed precision, add a cast op
                 cast_op = "%s~>AMPCastToFp16" % op_name
-                if "ConstantFolding" in u or "LayoutOptimizer" in u:
-                    for _u, _ in dag.in_edges(u):
-                        _add_cast_op(_u, op_name, cast_op, self.output_cast_time(_u))
-                else:
-                    _add_cast_op(u, op_name, cast_op, self.output_cast_time(u))
+                to_process = [u]
+                while len(to_process) > 0:
+                    _u = to_process.pop(0)
+                    if "ConstantFolding" in _u or "LayoutOptimizer" in _u:
+                        to_process += [x for x, _ in dag.in_edges(_u) if x != _u]
+                        continue
+                    _add_cast_op(_u, op_name, cast_op, self.output_cast_time(_u))
 
         ### handle successors
         out_cast_time = self.output_cast_time(op_name, tofp16=False)
@@ -155,8 +151,11 @@ class AMPPredictor:
                 _add_cast_op(op_name, succ, cast_op, out_cast_time)
 
         ### update the meta info of current node
-        dag.nodes[op_name]["avg"] = self.pred_amp_avg(op_name, _avg=dag.nodes[op_name]["avg"])
-        dag.nodes[op_name]["dtype"] = "fp16"
+        prev_avg = dag.nodes[op_name]["avg"]
+        dag.nodes[op_name]["avg"] = self.pred_amp_avg(op_name, _avg=prev_avg)
+        self.op_status[op_name]["dtype"] = "float16"
+        SingleLogger().info("Convert {} from {} ms to {} ms".format(
+            op_name, prev_avg, dag.nodes[op_name]["avg"]))
 
         dag.add_nodes_from(nodes_to_add)
         dag.add_edges_from(edges_to_add)
@@ -165,16 +164,16 @@ class AMPPredictor:
 
     def is_white_for_amp(self, dag, op_name):
         ''' check whether an OP is finally white or not, according the propogation rules in AMP of TensorFlow '''
-        if dag.nodes[op_name].get("is_white", "none") == "none":
-            rawname, _ = self.metadata_name(op_name)
+        if self.op_status[op_name]["is_white"] == "none":
+            rawname, _ = self.meta_info.standarize_name(op_name)
             amp_color = self.meta_info.check_amp_lists(rawname)
             if amp_color == "white":
                 ### cache the intermediate result
-                dag.nodes[op_name]["is_white"] = True
+                self.op_status[op_name]["is_white"] = True
                 return True
             if amp_color == "black":
                 ### cache the intermediate result
-                dag.nodes[op_name]["is_white"] = False
+                self.op_status[op_name]["is_white"] = False
                 return False
             ### TODO (huhanpeng) ignore grey and clear first
             # print("name: {}, amp_color: {}".format(op_name, amp_color))
@@ -187,19 +186,30 @@ class AMPPredictor:
                 if not is_white:
                     break
             ### cache the intermediate result
-            dag.nodes[op_name]["is_white"] = is_white
+            self.op_status[op_name]["is_white"] = is_white
             return is_white
         else:
             ### return the cached results
-            return dag.nodes[op_name]["is_white"]
+            return self.op_status[op_name]["is_white"]
 
     def is_need_amp(self, dag, op_name):
         ''' check whether an OP need be quantized, only those with fp32 and in the final white list need be quantized'''
         if "Comm" in op_name or "AMPCastToFp16" in op_name:
             return False
-        if dag.nodes[op_name].get("dtype", "fp32") != "fp32":
+        if not self.check_dtype_fp32(op_name):
             return False
         return self.is_white_for_amp(dag, op_name)
+    
+    def check_dtype_fp32(self, op_name):
+        ''' Return true if this op is fp32 else False '''
+        if op_name not in self.op_status:
+            self.op_status[op_name] = {"dtype": None, "is_white": "none"}
+            rawname, _ = self.meta_info.standarize_name(op_name)
+            dtype = self.meta_info.ret_op_precision(rawname)
+            self.op_status[op_name]["dtype"] = dtype
+            return dtype == "float32"
+        else:
+            return self.op_status[op_name]["dtype"] == "float32"
 
 from cost_model_amp import dataloader, grouper
 

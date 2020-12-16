@@ -481,18 +481,6 @@ class Collector(object):
                 for _id, tensor_id in enumerate(tensor_list):
                     trace["args"]["tensor%d"%_id] = self.para_dict.tensor_id_to_name(tensor_id)
 
-            ### add dependency info the traces
-            # tensor_list = re.findall("[0-9]+", trace["name"].split(".")[1])     # a str list, each element is the index of tensor
-            # tensor_list = sorted([int(e) for e in tensor_list])
-            # sorted_name = "+".join([str(e) for e in tensor_list])
-            # if sorted_name not in self.groupname:
-            #     self.groupname.append(sorted_name)
-            # for tensor_id in tensor_list:
-            #     # tensor_name = self.metadata["gradient_name_list"][int(tensor_id)]
-            #     group_id = self.groupname.index(sorted_name)
-            #     # if group_id not in self.tensor2group[tensor_id]:
-            #     self.tensor2group[tensor_id].append(group_id)
-
             if pid is not None:
                 trace["tid"] = trace["pid"]
                 trace["pid"] = pid
@@ -1208,9 +1196,11 @@ class Collector(object):
                 op_type, op_name, sub_op = rawname.split(".")
 
                 tensor_list = re.findall("[0-9]+", op_name)
-                tensor_list = sorted([int(e) for e in tensor_list])
+                ### this tensor_list has been sorted
+                # tensor_list = sorted([int(e) for e in tensor_list])
                 avgs = []
-                for tensor_id in tensor_list:
+                for tensor_id_str in tensor_list:
+                    tensor_id = int(tensor_id_str)
                     org_name = gen_long_name(prefix, "{}.{}.{}".format(op_type, tensor_id, sub_op))
                     avgs.append(self.traceM.lookup_stat(None, None, org_name))
                 assert len(avgs) > 0

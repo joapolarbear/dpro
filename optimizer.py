@@ -561,7 +561,7 @@ class _AMPCostModel(_BaseCostModel):
                 search_space.append((">", n, None))
                 weights.append(l)
         
-        return [(">", "host0.rank5->FW.resnet50/conv4_block6_2_conv/Conv2D", None)], [1]
+        # return [(">", "host1.rank6->FW.resnet50/conv1_conv/Conv2D", None)], [1]
         SingleLogger().info("MP Cost Model init {} strategies.".format(len(search_space)))
         return search_space, weights
 
@@ -581,15 +581,24 @@ class _TensorFusionCM(_BaseCostModel):
         self.fusion_threshold_mb = 64 * 1024 * 1024
         self.cycle_time_ms = 3.5
         self.token = ["o"]
+
+        self.meta_info = self.opt.clct.para_dict
     
     def init_search_space(self, candidates, _dag: nx.DiGraph, _pkg: PKGraph):
         search_space = []
         weights = []
         
+        for node in _dag.nodes():
+            if "Comm" in node and "Sync" in node:
+                pass
+
+        self.meta_info.standarize_name()
+
         return search_space, weights
     
     def apply(self, s, __dag, __pkg):
         _, _fusion_threshold_mb, _cycle_time_ms = s
+        
         
 class CostModelManager:
     def __init__(self, opt, cost_models):
@@ -740,7 +749,6 @@ class Optimizer:
 
     def evaluate(self, _dag, _filename=None):
         # t = time.time()
-
         ### input _dag is a dependency graph, using the replayer to get the simulated traces and execution graph
         ### Return the iteration time and the execution graph
         _output = False if _filename is None else True
@@ -1094,7 +1102,6 @@ class MCMCOptimizer(Optimizer):
             SingleLogger().info("\033[94m" + "Best speedup: %d th acception, speed up to the origin: %6.4f %%"%(len(best_strategy), 100 * (self.base_cost - best_cost) / self.base_cost) + "'\033[0m'")
             with open(os.path.join(ROOT_PATH, "search_trajectory.txt"), "a") as f:
                 f.write(str(time.time()) + ": {}".format(100 * (self.base_cost - best_cost) / self.base_cost) + "\n")
-            raise
  
     def accept_or_not(self, cost, new_cost):
         # prob = min(1, (math.exp(beta * (cost - new_cost))))

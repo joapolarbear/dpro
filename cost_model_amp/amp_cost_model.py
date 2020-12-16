@@ -40,19 +40,20 @@ class DNNPredictor:
     def train(self):
         train_input_fn = self.make_dataset(self.batch_size, self.train_x, self.train_y, True, 1000)
         test_input_fn = self.make_dataset(len(self.test_y), self.test_x, self.test_y)
-    
-        # Hook to stop training if loss does not decrease in over 100000 steps.
-        hook = tf.estimator.experimental.stop_if_no_decrease_hook(self.model, "loss", 1000)
-        ops = tf.get_default_graph().get_operations()
-        logging_hook = tf.estimator.LoggingTensorHook({
-            "loss" : self.model['loss'], 
-            "prediction" : prediction}, every_n_iter=100)
-        train_spec = tf.estimator.TrainSpec(input_fn=train_input_fn, hooks=[hook, logging_hook])
-        eval_spec = tf.estimator.EvalSpec(input_fn=test_input_fn)
-        tf.estimator.train_and_evaluate(self.model, train_spec, eval_spec)
         # Train the model.
         # By default, the Estimators log output every 100 steps.
-        # self.model.train(input_fn=train_input_fn, steps=100000)
+        self.model.train(input_fn=train_input_fn, steps=100000)
+
+        # # Hook to stop training if loss does not decrease in over 100000 steps.
+        # hook = tf.estimator.experimental.stop_if_no_decrease_hook(self.model, "loss", 1000)
+        # ops = tf.get_default_graph().get_operations()
+        # logging_hook = tf.estimator.LoggingTensorHook({
+        #     "loss" : self.model['loss'], 
+        #     "prediction" : prediction}, every_n_iter=100)
+        # train_spec = tf.estimator.TrainSpec(input_fn=train_input_fn, hooks=[hook, logging_hook])
+        # eval_spec = tf.estimator.EvalSpec(input_fn=test_input_fn)
+        # tf.estimator.train_and_evaluate(self.model, train_spec, eval_spec)
+        
 
     def predict(self):
         test_input_fn = self.make_dataset(len(self.test_y), self.test_x, self.test_y)

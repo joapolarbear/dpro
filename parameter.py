@@ -56,3 +56,9 @@ class ParameterDict:
     
     def parse_op_type(self, *args, **kwargs):
         return self.metainfo.parse_op_type(*args, **kwargs)
+    
+    def standarize_name(self, *args, **kwargs):
+        return self.metainfo.standarize_name(*args, **kwargs)
+    
+    def ret_op_precision(self, *args, **kwargs):
+        return self.metainfo.ret_op_precision(*args, **kwargs)
