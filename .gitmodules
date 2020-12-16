@@ -1,3 +1,6 @@
 [submodule "3rdparty/mixbench"]
 	path = 3rdparty/mixbench
 	url = https://github.com/ekondis/mixbench.git
+[submodule "3rdparty/nvprof2json"]
+	path = 3rdparty/nvprof2json
+	url = https://github.com/joapolarbear/nvprof2json.git

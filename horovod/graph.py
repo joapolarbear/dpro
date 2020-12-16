@@ -1,4 +1,6 @@
 from enum import Enum
+import re
+
 class NCCL_ALGO(Enum):
     TREE=0
     RING=1
@@ -64,6 +66,7 @@ class ncclGraph:
         self.algo = algo
         self.rank_num = 0
         self.trace_parsed = False
+        self.nrank = 0
 
         self.graph = {}
         self.raw_name2IDnum = {}
@@ -73,6 +76,7 @@ class ncclGraph:
         self.host_id2prefix = {}
         self.host_prefix2id = {}
 
+        self.nccl_fusion = {"grp_names": [], "tensor2grpID": []}
        
     def parse_tree_topo(self, tree_dict, map_to=None):
         ''' If `map_to` is set, map the rank to the given prefix '''
@@ -189,8 +193,8 @@ class ncclGraph:
                 self.graph["Ring"][channel_id][sender]["next"] = recver
                 self.graph["Ring"][channel_id][recver]["prev"] = sender
 
-
     def map_rank2prefix(self, rank, prefix):
+        self.nrank = max(rank+1, self.nrank)
         if rank not in self.rank2prefix:
             self.rank2prefix[rank] = prefix
         if prefix not in self.prefix2rank:
@@ -236,48 +240,19 @@ class ncclGraph:
                         print("\t\t\tSend to %d" % peer_rank)
 
 
-    def parse_traces(self, traces):
-        ''' `traces` must be sorted according to `ts` '''
-        if self.trace_parsed and self.algo == NCCL_ALGO.RING:
+    def parse_traces(self, raw_name2IDnum):
+        ''' Parse traces from one GPU, to get NCCL hyper-parameters: chunkNum, sliceNum, channelNum and loopNum
+        * We assume each GPU share the same hyper-parameters
+        * After NCCL hyper-parameters are parsed, set the flag self.trace_parsed to True to avoid parsing repeatedly
+        * `traces` must be sorted according to `ts` 
+        !!! To reduce the time to loop through traces, move the main process to the trace collection
+        * directly asign the result
+        '''
+        if (self.trace_parsed and self.algo == NCCL_ALGO.RING):
             return
 
         self.trace_parsed = True
-        first_fwd = None
-        if self.algo == NCCL_ALGO.RING or self.algo == NCCL_ALGO.TREE:
-            for trace in traces:
-                ### Stop the loop early if one FW trace appears twice
-                if "FW" in trace["name"]:
-                    if first_fwd is None:
-                        first_fwd = trace["name"]
-                    elif trace["name"] == first_fwd:       
-                        break
-
-                ### Just check traces whose pid is comm_detail
-                if "comm_detail" not in trace["tid"] and "comm_detail" not in trace["pid"]:
-                    continue
-
-                ### Ignore instant event
-                if trace["ph"].lower() == "i":
-                    continue
-
-                ### Get the rawname withoud RECV/SEND
-                if ".RECV" in trace["name"]:
-                    raw_name = trace["name"].split(".RECV")[0]
-                elif ".SEND" in trace["name"]:
-                    raw_name = trace["name"].split(".SEND")[0]
-                else:
-                    raw_name = trace["name"]
-
-                if raw_name not in self.raw_name2IDnum:
-                    self.raw_name2IDnum[raw_name] = {"chunkNum": 0, "sliceNum": 0, "channelNum": 0, "loopNum": 0}
-
-                self.raw_name2IDnum[raw_name]["chunkNum"] = max(int(trace["args"]["chunkId"]) + 1, self.raw_name2IDnum[raw_name]["chunkNum"])
-                self.raw_name2IDnum[raw_name]["sliceNum"] = max(int(trace["args"]["sliceId"]) + 1, self.raw_name2IDnum[raw_name]["sliceNum"])
-                self.raw_name2IDnum[raw_name]["channelNum"] = max(int(trace["args"]["channelId"]) + 1, self.raw_name2IDnum[raw_name]["channelNum"])
-                self.raw_name2IDnum[raw_name]["loopNum"] = max(int(trace["args"]["loopId"]) + 1, self.raw_name2IDnum[raw_name]["loopNum"])
-        else:
-            raise ValueError("NCCL_ALGO error: %s" % self.algo.value)
-
+        self.raw_name2IDnum = raw_name2IDnum
 
     def get_IDnum(self, raw_name):
         assert self.trace_parsed is True
@@ -309,21 +284,16 @@ class ncclGraph:
         else:
             raise NotImplementedError()
 
-    def send_to_recv(self, prefix, chunkId, channelId):
+    def send_to_recv(self, prefix, chunkStep, channelId):
         ''' Given a Send op, find the Recv Op 
         '''
         ### for the remaining steps
         if self.algo == NCCL_ALGO.RING:
-            ### For ring, chunkId denotes the step of each chunk of tensor
-            rank = self.prefix2rank[prefix]
-            c, k = self.ring_step_to_chunk_order_id(rank, chunkId, Send=True)
+            ### For ring, chunkStep denotes the step of each process
             ### !!! dependency
+            rank = self.prefix2rank[prefix]
             next_rank = self.graph["Ring"][channelId][rank]["next"]
-            nc = c
-            nk = k
-            next_chunkId = self.ring_chunk_order_id_to_step(next_rank, nc, nk, Send=False)
-            
-            return self.rank2prefix[next_rank], next_chunkId
+            return self.rank2prefix[next_rank], chunkStep
 
         elif self.algo == NCCL_ALGO.TREE:
             # TODO (huhanpeng)
@@ -331,43 +301,27 @@ class ncclGraph:
         else:
             raise ValueError("NCCL_ALGO error: %s" % self.algo.value)
 
-    def send_to_last_recv(self, prefix, chunkId):
+    def send_to_last_recv(self, prefix, chunkStep):
         ''' Given a Send op, find the *last* Recv Op 
         '''
         ### for the remaining steps
         if self.algo == NCCL_ALGO.RING:
-            ### For ring, chunkId denotes the step of each chunk of tensor
-            rank = self.prefix2rank[prefix]
-            c, k = self.ring_step_to_chunk_order_id(rank, chunkId, Send=True)
-            ### !!! dependency
-            last_rank = rank
-            lc = c
-            lk = k - 1 if (k > 0 and c == rank) else k
-            last_chunkId = self.ring_chunk_order_id_to_step(last_rank, lc, lk, Send=False)
-            
-            return self.rank2prefix[last_rank], last_chunkId
-
+            ### For ring, chunkStep denotes the step of each chunk of tensor
+            assert chunkStep > 0
+            return prefix, chunkStep-1
         elif self.algo == NCCL_ALGO.TREE:
             # TODO (huhanpeng)
             raise NotImplementedError()
         else:
             raise ValueError("NCCL_ALGO error: %s" % self.algo.value)
 
-    def recv_to_send(self, prefix, chunkId, sliceId, channelId):
+    def recv_to_send(self, prefix, chunkId, sliceId, chunkStep):
         ''' Given a Recv op, find the Send Op 
         '''
         ### for the remaining steps
         if self.algo == NCCL_ALGO.RING:
             ### For ring, chunkId denotes the step of each chunk of tensor
-            rank = self.prefix2rank[prefix]
-            c, k = self.ring_step_to_chunk_order_id(rank, chunkId, Send=False)
-            ### !!! dependency
-            next_rank = rank
-            nc = c
-            nk = k + 1 if c == rank else k
-            next_chunkId = self.ring_chunk_order_id_to_step(next_rank, nc, nk, Send=True)
-            
-            return self.rank2prefix[next_rank], next_chunkId, sliceId, channelId
+            return prefix, chunkStep+1
 
         elif self.algo == NCCL_ALGO.TREE:
             # TODO (huhanpeng)
@@ -426,21 +380,35 @@ class ncclGraph:
         self.host_id2prefix = dict(enumerate(dirs))
         self.host_prefix2id = dict([(v, u) for u, v in enumerate(dirs)])
 
+    def init_host_drift(self, host_id_time_list):
+        ''' Initialize the drift to the base host, let host_id=0 as the base host
+        host_id_time_list: a list of (host_id, ref_time),
+        '''
+        self.master_host_id = 0
+        self.time_drift = [0] * len(self.host_id2prefix)
+        host_gpu_cnt = [0] * len(self.host_id2prefix)
+        for host_id, ref_time in host_id_time_list:
+            self.time_drift[host_id] += ref_time
+            host_gpu_cnt[host_id] += 1
+        base = self.time_drift[self.master_host_id] / host_gpu_cnt[self.master_host_id]
+        for idx in range(len(self.time_drift)):
+            self.time_drift[idx] = base - self.time_drift[idx] / host_gpu_cnt[idx]
+
     def ret_hostid(self, prefix):
         if "." in prefix:
             prefix = prefix.split(".")[0]
         return self.host_prefix2id[prefix]
 
     def dump(self, path_):
-        str_ = "%d,%d,%d\n"%(self.algo.value, self.rank_num, int(self.trace_parsed))
+        str_ = "%d,%d,%d,%d\n"%(self.algo.value, self.rank_num, int(self.trace_parsed), self.nrank)
         str_ += str(self.graph) + "\n"
         str_ += str(self.raw_name2IDnum) + "\n"
         str_ += str(self.rank2prefix) + "\n"
         str_ += str(self.prefix2rank) + "\n"
 
         str_ += str(self.host_id2prefix) + "\n"
-        str_ += str(self.host_prefix2id)
-
+        str_ += str(self.host_prefix2id) + "\n"
+        str_ += str(self.nccl_fusion)
         with open(path_, 'w') as fp:
             fp.write(str_)
 
@@ -448,10 +416,11 @@ class ncclGraph:
         with open(path_, 'r') as fp:
             str_ = fp.read().split("\n")
 
-        algo, rank_num, trace_parsed = str_[0].split(",")
+        algo, rank_num, trace_parsed, nrank = str_[0].split(",")
         self.algo = NCCL_ALGO(int(algo))
         self.rank_num = int(rank_num)
         self.trace_parsed = bool(trace_parsed)
+        self.nrank = int(nrank)
 
         self.graph = eval(str_[1])
         self.raw_name2IDnum = eval(str_[2])
@@ -460,8 +429,35 @@ class ncclGraph:
 
         self.host_id2prefix = eval(str_[5])
         self.host_prefix2id = eval(str_[6])
+        self.nccl_fusion = eval(str_[7])
 
+    def init_nccl_fusion(self, traceM, grad_num, show=False):
+        ### go over traces and store all combinations of traces
+        self.nccl_fusion["tensor2grpID"] = [None] * grad_num
+        for event in traceM.traces:
+            if traceM._is_ignore_for_sta(event):
+                continue
+            if event["args"]["step"] > (traceM.opt_step + 1):
+                ### only go through one step of traces, even if there exists overlapping,
+                # no possible overlapping between three steps
+                break
+            elif event["args"]["step"] != traceM.opt_step or "Comm." not in event["name"]:
+                continue
+            tensor_list = re.findall("[0-9]+", event["name"].split(".")[1])
+            # tensor_list = sorted([int(e) for e in tensor_list])
+            sorted_name = "+".join([str(e) for e in tensor_list])
+            if sorted_name not in self.nccl_fusion["grp_names"]:
+                for tensor_id in tensor_list:
+                    self.nccl_fusion["tensor2grpID"][int(tensor_id)] = len(self.nccl_fusion["grp_names"])
+                self.nccl_fusion["grp_names"].append(sorted_name)
+        if show:
+            for tensor_id, grp_id in enumerate(self.nccl_fusion["tensor2grpID"]):
+                print("Tensor ID: {} -> Group ID: {}".format(tensor_id, grp_id))
+            for grp_id, grp_name in enumerate(self.nccl_fusion["grp_names"]):
+                print("Group ID: {} --> Group Name: {}".format(grp_id, grp_name))
 
+    def tensor2group_name(self, tensor_id):
+        return self.nccl_fusion["grp_names"][self.nccl_fusion["tensor2grpID"][tensor_id]]
 
 
 

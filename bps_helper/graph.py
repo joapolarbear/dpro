@@ -572,6 +572,7 @@ class bytepsGraph:
                 self.comp_durations[key] = new_durations
         
         self.time_drift = trace_shifts
+        self.master_host_id = master_node
 
     def _calc_comm_delays(self):
         intervals = {}

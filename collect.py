@@ -4,13 +4,14 @@ import os
 
 # append for auto_profiling
 import sys, os
+import re
 import ujson as json
 import networkx as nx
-import threading
 import time
-import logger_utils
 import arg_utils
 import debug_utils
+import numpy as np
+import multiprocessing
 
 from trace_utils import *
 from dag_utils import * 
@@ -58,65 +59,10 @@ class RunningSpan:
         self.start = None
         self.end = None
 
-class ClockAligner:
-    def __init__(self, byteps_graph = None):
-        self.traces_per_host = {}
-        self.marker_per_host = {}
-        self.standard = None
-        self.ref = None
-        self.byteps_graph = byteps_graph
-
-    def append_traces(self, host_id, traces):
-        if host_id not in self.traces_per_host:
-            self.traces_per_host[host_id] = []
-            self.marker_per_host[host_id] = (None, None)
-        self.traces_per_host[host_id] += traces
-
-    def mark_ref_time(self, host_id, _t, ref_name, _override=False):
-        if host_id not in self.traces_per_host:
-            self.traces_per_host[host_id] = []
-            self.marker_per_host[host_id] = (None, None)
-
-        if self.marker_per_host[host_id][0] is None or _override:
-            self.marker_per_host[host_id] = (_t, ref_name)
-
-    def align(self):
-        rst_traces = []
-        host_ids = list(self.traces_per_host.keys())
-
-        def host_id_to_rank(host_id):
-            return int(host_id.split("_")[-1])
-
-        standard_time, ref_name = self.marker_per_host[host_ids[0]]
-        if self.byteps_graph is not None:
-            host_ranks = [host_id_to_rank(fn) for fn in host_ids]
-            base_host_name = host_ids[host_ranks.index(self.byteps_graph.master_host_id)]
-        else:
-            base_host_name = host_ids[0]
-        if standard_time is None and self.byteps_graph is None:
-            SingleLogger().warn("Have not set the align standard, fail to do clock synchronization")
-        for host_id, traces in self.traces_per_host.items():
-            if host_id == base_host_name or (standard_time is None and self.byteps_graph is None):
-                pass
-            else:
-                # if n != ref_name:
-                #     print("ref_name: %s, name: %s" % (ref_name, n))
-                #     raise
-                if self.byteps_graph is None:
-                    t, n = self.marker_per_host[host_id]
-                    bias = standard_time - t
-                else:
-                    bias = self.byteps_graph.time_drift[host_id_to_rank(host_id)]
-                SingleLogger().info("Align - add {} us to {}".format(bias, host_id))
-                for trace in traces:
-                    trace["ts"] += bias
-            rst_traces += traces
-        return rst_traces
 
 class Collector(object):
     #! class used to go through the file system and collect info
     def __init__(self, root_path, comm_backend = "NCCL", platform = "TENSORFLOW"):
-        self.logger = logger_utils.SingleLogger()
         self.pm = PathManager(root_path)
         self.traceM = None
         self.comm_backend = comm_backend.upper()
@@ -132,68 +78,39 @@ class Collector(object):
         else:
             # BYTEPS
             self.byteps_graph = bytepsGraph()
-        self.trail_dag = None
 
         self.time_dict = None
         self.run_span = {}
-        ### Used for clock synchronization when combime traces from multiple machines
-        self.clock_aligner = None
         self.para_dict = None
 
         ### TODO (huhanpeng): assume different host use the same dag, original dag
         self.dag = None
-
-    def update_final_traces(self, _io=False, _comm=False, _operator=False):
-        trace_path = self.pm.search(FileName.TRACE)
-        assert os.path.exists(trace_path)
-        self.logger.info("Updating " + trace_path) 
-        with open(trace_path, 'r') as f:
-            self.time_dict = json.load(f)
-
-        if _io is True:
-            self.delete_traces_by_cat("I/O")
-            self.bpf_collect_io()
-
-        if _comm is True:
-            self.delete_traces_by_cat("Comm")
-            self.bpf_collect_comm()
-
-        if _operator is True:
-            self.delete_traces_by_cat("operator")
-            self.bpf_collect_comp()
-
-        TraceManager(self.time_dict, self.pm.dir_level).get_iter_time()
-
-        with open(trace_path, 'w') as f:
-            json.dump(self.time_dict, f, indent=4)
-
+        self.metadata = None
+        self.trail_dag = None # global dag
+        self.single = False # use to denote whether this is a single-GPU trial
+        
     def delete_traces_by_cat(self, _cat):
         _rst_traces = {"traceEvents": []}
         _rst_traces["traceEvents"] = [_trace for _trace in self.time_dict["traceEvents"] if _trace["cat"] != _cat]
         self.time_dict = _rst_traces
 
-    def re_gen_final_traces(self):
-        trace_path = self.pm.search(FileName.TRACE)
-        self.logger.info("Recombining " + trace_path)
-        self.time_dict = {"traceEvents":[]}
-        ### Apply dependencies in dag to the mxnet traces.
-        self.bpf_collect_comp()
-        ### Collect communication traces, IO traces and UPDATE traces and apply dependency
-        self.bpf_collect_io()
-        self.bpf_collect_comm()
-        TraceManager(self.time_dict, self.pm.dir_level).get_iter_time()
-        with open(trace_path, 'w') as f:
-            json.dump(self.time_dict, f, indent=4)
-
-    def bpf_collect_for_rank(self, _path, pid, host_id=None):
-        tmp_pm = PathManager(_path)
+    def _collect_rank_traces(self, *args):
+        tmp_pm, pid, host_id = args[0]
+        SingleLogger().info("Collec traces for {} ...".format(tmp_pm.path))
+        self.rst_traces = []
+        self.raw_name2IDnum = {}
+        def add_trace_safe(ret):
+            if ret is not None:
+                self.rst_traces += ret
+        self.ref_name = self.ref_time = None
         assert tmp_pm.dir_level == DirLevel.GPU
-        self.bpf_collect_comp(tmp_pm, pid, host_id)
-        self.bpf_collect_io(tmp_pm, pid, host_id)
-        self.bpf_collect_comm_detail(tmp_pm, pid, host_id)
-        self.bpf_collect_comm(tmp_pm, pid, host_id)
+        add_trace_safe(self._collect_rank_comp(tmp_pm, pid, host_id))
+        add_trace_safe(self._collect_rank_io(tmp_pm, pid, host_id))
+        add_trace_safe(self._collect_rank_comm_detail(tmp_pm, pid, host_id))
+        add_trace_safe(self._collect_rank_comm(tmp_pm, pid, host_id))
+        return self.rst_traces, self.ref_name, self.ref_time, self.raw_name2IDnum
 
-    def bpf_collect_comp(self, tmp_pm=None, pid=None, host_id=None):
+    def _collect_rank_comp(self, tmp_pm=None, pid=None, host_id=None):
         '''Apply dependency info to the mxnet trace results
 
         Parameters
@@ -207,31 +124,41 @@ class Collector(object):
         rst_traces : dict
             A dict containing MXNet trace results combined with dependency info.
         '''
-        debug_utils.DebugRecorder().debug_event_start()
-        comp_path = self.pm.search(FileName.COMP) if tmp_pm is None else tmp_pm.search(FileName.COMP)
-        if self.dag is None:
-            dag_path = self.pm.search(FileName.DAG) if tmp_pm is None else tmp_pm.search(FileName.DAG)
-            debug_utils.DebugRecorder().debug_event_start()
-            self.dag = nx.read_gml(dag_path)
-            debug_utils.DebugRecorder().debug_event_end("collect_" + pid+"_comp.read_dag", "Collct", "0")
-
+        # debug_utils.DebugRecorder().debug_event_start()
+        comp_path = tmp_pm.search(FileName.COMP)
         if comp_path is None:
             return
+        with open(comp_path, 'r') as f:
+            raw_traces = json.load(f)
+        ### Consider mulptiprocessing, each GPU will read its own dag
+        if self.dag is None:
+            dag_path = self.pm.search(FileName.DAG) if tmp_pm is None else tmp_pm.search(FileName.DAG)
+            # debug_utils.DebugRecorder().debug_event_start()
+            self.dag = nx.read_gml(dag_path)
+            # debug_utils.DebugRecorder().debug_event_end("collect_" + pid+"_comp.read_dag", "Collct", "0")
+
+        if self.platform == "MXNET":
+            dag_node_names_std = list(self.dag.nodes)
+        else:
+            dag_node_names_std = set([standard_name(n, platform=self.platform) for n in self.dag.nodes])
 
         wk_prefix, _ = PathManager("/".join(comp_path.split('/')[:-1])).ret_prefix()
         if wk_prefix not in self.run_span:
             self.run_span[wk_prefix] = RunningSpan()
 
-        debug_utils.DebugRecorder().debug_event_start()
-        ''' Output trace resutls '''
-        with open(comp_path, 'r') as f:
-            raw_traces = json.load(f)
-        debug_utils.DebugRecorder().debug_event_end("collect_" + pid+"_comp.jsonload", "Collct", "0")
-
         one_pid = None
+        # if self.platform == "TENSORFLOW":
         kernel_pid = None
-        rst_traces = {"traceEvents": []}
         kernel_times = {}
+
+        ### collect traces of FW + BP OPs and UPDATE OPs
+        tid_hub = []
+        def _ret_operator_tid(tid_):
+            if tid_ in tid_hub:
+                return "operator%d"%(tid_hub.index(tid_))
+            else:
+                tid_hub.append(tid_)
+                return "operator%d"%(len(tid_hub) - 1)
 
         ### convert the ph from B/E to X
         ### TODO(huhanpeng): it's more safe to use a stack style method
@@ -264,12 +191,14 @@ class Collector(object):
                 traces.append(trace)
                 index += 1
             else:
-                index += 1
+                index += 1  
 
-        debug_utils.DebugRecorder().debug_event_start()
+        ### At this point, traces are unsorted
+
+        # debug_utils.DebugRecorder().debug_event_start()
         traces = sorted(traces, key=lambda x: x["ts"], reverse=False)
-        SingleLogger().info("Comp traces length: {}.".format(len(traces)))
-        debug_utils.DebugRecorder().debug_event_end("collect_" + pid+"_comp.sorted", "Collct", "0")
+        SingleLogger().debug("Original Comp traces length: {}.".format(len(traces)))
+        # debug_utils.DebugRecorder().debug_event_end("collect_" + pid+"_comp.sorted", "Collct", "0")
 
         ### find the last BP op in the timeline
         if self.platform == "MXNET":
@@ -299,9 +228,9 @@ class Collector(object):
                     elif statue == "bw" and "FW" in name:
                         statue = "fw"
                         return last_fw, first_bw, last_bw
-            debug_utils.DebugRecorder().debug_event_start()          
+            # debug_utils.DebugRecorder().debug_event_start()          
             last_fw, first_bw, last_bw = real_last_bw_name()
-            debug_utils.DebugRecorder().debug_event_end("collect_" + pid+"_comp.real_last_bw_name", "Collct", "0")
+            # debug_utils.DebugRecorder().debug_event_end("collect_" + pid+"_comp.real_last_bw_name", "Collct", "0")
 
             def is_update_op(_trace):
                 ### TODO (huhanpeng) !!! change this when model is changed
@@ -316,18 +245,8 @@ class Collector(object):
                 else:
                     return False
 
-        ### collect traces of FW + BP OPs and UPDATE OPs
-        tid_hub = []
-        def _ret_operator_tid(tid_):
-            if tid_ in tid_hub:
-                return "operator%d"%(tid_hub.index(tid_))
-            else:
-                tid_hub.append(tid_)
-                return "operator%d"%(len(tid_hub) - 1)
-
-        cnt = 0
         index = 0
-        dag_node_names_std = set([standard_name(n, platform=self.platform) for n in self.dag.nodes])
+        rst_traces = []
         while index < len(traces):
             trace = traces[index]
             index += 1
@@ -335,7 +254,8 @@ class Collector(object):
                 raw_name = trace["name"]
             elif self.platform == "TENSORFLOW":
                 raw_name = trace["args"]["name"]
-            name = standard_name(raw_name, platform=self.platform)       
+
+            name = standard_name(raw_name, platform=self.platform)
 
             ### deduplication
             ### TODO (huhanpeng): should be careful, only choose one prosess here
@@ -352,17 +272,14 @@ class Collector(object):
             if name not in dag_node_names_std:
                 ### Only collect nodes in the dag
                 ### TODO (huhanpeng): some trvial nodes may also be useful
-                if args_.trace_level == "debug":
+                if args_.trace_level == "trace":
                     trace["name"] = "%s.%d"%(trace["name"], index)
                     trace["tid"] = trace["cat"] = "debug"
                     if pid is not None:
                         trace["pid"] = pid
-                    rst_traces["traceEvents"].append(trace)
+                    rst_traces.append(trace)
+                # print(trace)
                 continue
-
-            ### Initialize the start time of the entire running span
-            self.run_span[wk_prefix].init_start(trace["ts"])
-
             innodes = [_n for _n, _ in self.dag.in_edges(name)]
             _args = {"name": name}
             for i, _n in enumerate(innodes):
@@ -372,8 +289,10 @@ class Collector(object):
             if pid is not None:
                 trace["pid"] = pid
             trace["tid"] = _ret_operator_tid(trace["tid"])
+            rst_traces.append(trace)
 
-            rst_traces["traceEvents"].append(trace)
+            ### Initialize the start time of the entire running span
+            self.run_span[wk_prefix].init_start(trace["ts"])
 
             ### Handle OUTPUT
             if self.platform == "MXNET":
@@ -394,7 +313,7 @@ class Collector(object):
                             output_tid = _trace["tid"] if output_tid is None else output_tid
                             index += 1
                     if output_ts is not None and output_dur is not None:
-                        rst_traces["traceEvents"].append({
+                        rst_traces.append({
                             "name": "OUTPUT0",
                             "ts": output_ts,
                             "dur": output_dur,
@@ -433,9 +352,9 @@ class Collector(object):
                                 if _update_ts is None:
                                     _update_ts = _trace["ts"]
                                     ### Add UPDATE_CAL node
-                                    rst_traces["traceEvents"].append({
+                                    rst_traces.append({
                                         "name": "UPDATE_CAL",
-                                        "ts": _cal_ts,
+                                        "ts": _cal_ts if _cal_ts is not None else _update_ts,
                                         "dur": _duration,
                                         "ph": "X",
                                         "cat": "operator",
@@ -446,7 +365,7 @@ class Collector(object):
                                         }
                                     })
                                 _duration = _trace["ts"] + _trace["dur"] - _update_ts
-                                rst_traces["traceEvents"].append({
+                                rst_traces.append({
                                     "name": "UPDATE_%d"%_cnt,
                                     "ts": _trace["ts"],
                                     "dur": _trace["dur"],
@@ -468,27 +387,28 @@ class Collector(object):
                     self.run_span[wk_prefix].init_end(_trace["ts"])
             else:
                 raise NotImplementedError("Unsupported platform {}.".format(self.platform))
-        
-        occurence_counter = {}
-        for trace in rst_traces["traceEvents"]:
-            if "ph" in trace and trace["ph"] == "X":
-                if trace["name"] in kernel_times:
-                    if trace["name"] not in occurence_counter:
-                        occurence_counter[trace["name"]] = 0
-                    try:
-                        kernel_ts, kernel_dur = kernel_times[trace["name"]][occurence_counter[trace["name"]]]
-                    except:
-                        # SingleLogger.warn("Length mismatch between kernel and op launch traces for op {}".format(trace["name"]))
-                        occurence_counter[trace["name"]] += 1
-                        continue
-                    trace["ts"] = kernel_ts
-                    trace["dur"] = kernel_dur
-                    occurence_counter[trace["name"]] += 1
-        self.clock_aligner.append_traces(host_id, rst_traces["traceEvents"])
-        debug_utils.DebugRecorder().debug_event_end("collect_" + pid+"_comp", "Collct", "0")
 
-    def bpf_collect_io(self, tmp_pm=None, pid=None, host_id=None):
-        debug_utils.DebugRecorder().debug_event_start()
+        if self.platform == "TENSORFLOW":
+            occurence_counter = {}
+            for trace in rst_traces:
+                if "ph" in trace and trace["ph"] == "X":
+                    if trace["name"] in kernel_times:
+                        if trace["name"] not in occurence_counter:
+                            occurence_counter[trace["name"]] = 0
+                        try:
+                            kernel_ts, kernel_dur = kernel_times[trace["name"]][occurence_counter[trace["name"]]]
+                        except:
+                            # SingleLogger.warn("Length mismatch between kernel and op launch traces for op {}".format(trace["name"]))
+                            occurence_counter[trace["name"]] += 1
+                            continue
+                        trace["ts"] = kernel_ts
+                        trace["dur"] = kernel_dur
+                        occurence_counter[trace["name"]] += 1
+        SingleLogger().debug("Comp traces length: {}.".format(len(rst_traces)))
+        return rst_traces
+
+    def _collect_rank_io(self, tmp_pm=None, pid=None, host_id=None):
+        # debug_utils.DebugRecorder().debug_event_start()
         io_path = self.pm.search(FileName.IO) if tmp_pm is None else tmp_pm.search(FileName.IO)
         if io_path is None:
             return
@@ -515,47 +435,43 @@ class Collector(object):
                     trace["tid"] = "I/O"
                 rst_traces.append(trace)
 
-        self.clock_aligner.append_traces(host_id, rst_traces)
-        debug_utils.DebugRecorder().debug_event_end("collect_" + pid+"_io", "Collct", "0")
+        # debug_utils.DebugRecorder().debug_event_end("collect_" + pid+"_io", "Collct", "0")
+        return rst_traces
 
-    def bpf_collect_comm_detail(self, tmp_pm, pid=None, host_id=None):
+    def _collect_rank_comm_detail(self, tmp_pm, pid=None, host_id=None):
         if self.comm_backend != "NCCL":
             return
 
-        debug_utils.DebugRecorder().debug_event_start()
+        # debug_utils.DebugRecorder().debug_event_start()
         comm_d_path = self.pm.search(FileName.COMM_DETAIL) if tmp_pm is None else tmp_pm.search(FileName.COMM_DETAIL)
-
         if comm_d_path is None:
             return
 
         wk_prefix, _ = PathManager("/".join(comm_d_path.split('/')[:-1])).ret_prefix()
-
         rst_traces = []
-        debug_utils.DebugRecorder().debug_event_start()
+        # debug_utils.DebugRecorder().debug_event_start()
         try:
             with open(comm_d_path, 'r') as f:
                 traces = json.load(f)
-        except json.decoder.JSONDecodeError:
-            traceback.print_exc()
-            traces = []
-        debug_utils.DebugRecorder().debug_event_end("collect_" + pid+"_comm_detail.jsonload", "Collct", "0")
+        except ValueError:
+            ### in case some comm_detail trace files are empty
+            return
+        # debug_utils.DebugRecorder().debug_event_end("collect_" + pid+"_comm_detail.jsonload", "Collct", "0")
 
-        algo = args_.nccl_algo
-        if algo is None:
-            raise ValueError("--nccl_algo must be given")
-        elif algo.lower() == "tree":
-            self.nccl_graph.parse_tree_topo(traces["Tree"], map_to=pid)
-        elif algo.lower() == "ring":
-            self.nccl_graph.parse_ring_topo(traces["RealRing"], map_to=pid)  
-            # self.nccl_graph.parse_connect_topo(traces["Ring"], map_to=pid)  
-        if isinstance(traces, dict):    
-            traces = traces["traceEvents"]
+        if isinstance(traces, dict): 
+            ### there may be no NCCL traces for intro-machien GPUs
+            traces = traces.get("traceEvents", [])
+
+        # self.tensor2group = []
+        # for _ in self.metadata["gradient_name_list"]:
+        #     self.tensor2group.append([])
+        # self.groupname = []
 
         traces = sorted(traces, key=lambda x: x["ts"], reverse=False)
         first_op = None
         for trace in traces:
             ### ignore digit
-            if trace["name"].split(".")[-2].isdigit():
+            if re.match("[^.]+\.[0-9+]+\.(SEND|RECV)", trace["name"]) is None:
                 continue
 
             if first_op is None:
@@ -569,29 +485,67 @@ class Collector(object):
                 break
 
             if trace["ph"].lower() == "i":
-                if args_.trace_level != "debug":
-                    continue
-                trace["s"] = "p"
+                continue
 
-            trace["name"] = "Comm." + trace["name"].split("horovod_allreduce.")[1]
+            ### If this is a communication event and fuse multiple tensors, **sort** these tensor
+            _, op_name, sub_op = trace["name"].split(".")
+            tensor_list = re.findall("[0-9]+", op_name)
+            tensor_list = sorted([int(e) for e in tensor_list])
+            trace["name"] = "{}.{}.{}".format("Comm", "+".join([str(e) for e in tensor_list]), sub_op)
             trace["args"]["name"] = gen_long_name(None, trace["name"], suffix=("%d_%d_%d_%d"%(
                                     int(trace["args"]["loopId"]),
                                     int(trace["args"]["channelId"]),
                                     int(trace["args"]["chunkId"]), 
                                     int(trace["args"]["sliceId"]))))
+            if args_.trace_level == "debug":
+                for _id, tensor_id in enumerate(tensor_list):
+                    trace["args"]["tensor%d"%_id] = self.para_dict.tensor_id_to_name(tensor_id)
+
+            ### add dependency info the traces
+            # tensor_list = re.findall("[0-9]+", trace["name"].split(".")[1])     # a str list, each element is the index of tensor
+            # tensor_list = sorted([int(e) for e in tensor_list])
+            # sorted_name = "+".join([str(e) for e in tensor_list])
+            # if sorted_name not in self.groupname:
+            #     self.groupname.append(sorted_name)
+            # for tensor_id in tensor_list:
+            #     # tensor_name = self.metadata["gradient_name_list"][int(tensor_id)]
+            #     group_id = self.groupname.index(sorted_name)
+            #     # if group_id not in self.tensor2group[tensor_id]:
+            #     self.tensor2group[tensor_id].append(group_id)
+
             if pid is not None:
                 trace["tid"] = trace["pid"]
                 trace["pid"] = pid
+
+            ### parse the trace to get the maximum number of chunks, slices, channels, loops for each raw_name
+            ### Get the rawname withoud RECV/SEND
+            if ".RECV" in trace["name"]:
+                raw_name = trace["name"].split(".RECV")[0]
+            elif ".SEND" in trace["name"]:
+                raw_name = trace["name"].split(".SEND")[0]
+            else:
+                raw_name = trace["name"]
+            if raw_name not in self.raw_name2IDnum:
+                    self.raw_name2IDnum[raw_name] = {"chunkNum": 0, "sliceNum": 0, "channelNum": 0, "loopNum": 0}
+            self.raw_name2IDnum[raw_name]["chunkNum"] = max(int(trace["args"]["chunkId"]) + 1, self.raw_name2IDnum[raw_name]["chunkNum"])
+            self.raw_name2IDnum[raw_name]["sliceNum"] = max(int(trace["args"]["sliceId"]) + 1, self.raw_name2IDnum[raw_name]["sliceNum"])
+            self.raw_name2IDnum[raw_name]["channelNum"] = max(int(trace["args"]["channelId"]) + 1, self.raw_name2IDnum[raw_name]["channelNum"])
+            self.raw_name2IDnum[raw_name]["loopNum"] = max(int(trace["args"]["loopId"]) + 1, self.raw_name2IDnum[raw_name]["loopNum"])
+
             rst_traces.append(trace)
 
-        assert len(rst_traces) > 0
+        # self.tensor2group = np.array(self.tensor2group)
+        # print(self.tensor2group)
+        # self.tensor2group.dump(os.path.join(tmp_pm.path, "fusion_combination.txt"))
+        # raise
 
-        self.nccl_graph.parse_traces(rst_traces)
-        self.clock_aligner.append_traces(host_id, rst_traces)
-        debug_utils.DebugRecorder().debug_event_end("collect_" + pid+"_comm_detail", "Collct", "0")
+        if len(rst_traces) ==  0:
+            SingleLogger().warn("No comm_detail traces for {}".format(comm_d_path))
+        # debug_utils.DebugRecorder().debug_event_end("collect_" + pid+"_comm_detail", "Collct", "0")
+        return rst_traces
 
-    def bpf_collect_comm(self, tmp_pm=None, pid=None, host_id=None):
-        debug_utils.DebugRecorder().debug_event_start()
+    def _collect_rank_comm(self, tmp_pm=None, pid=None, host_id=None):
+        # debug_utils.DebugRecorder().debug_event_start()
         comm_path = self.pm.search(FileName.COMM) if tmp_pm is None else tmp_pm.search(FileName.COMM)
         if comm_path is None:   
             return
@@ -599,11 +553,8 @@ class Collector(object):
             dag_path = self.pm.search(FileName.DAG)
             self.dag = nx.read_gml(dag_path)
         comm_traces = self.parse_comm_traces(comm_path, pid=pid, host_id=host_id)
-        if host_id is None:
-            self.time_dict["traceEvents"] += comm_traces
-        else:
-            self.clock_aligner.append_traces(host_id, comm_traces)
-        debug_utils.DebugRecorder().debug_event_end("collect_" + pid+"_comm", "Collct", "0")
+        # debug_utils.DebugRecorder().debug_event_end("collect_" + pid+"_comm", "Collct", "0")
+        return comm_traces
     
     def parse_comm_traces(self, path, pid=None, host_id=None):
         self.gradient_name_table = {}
@@ -612,17 +563,17 @@ class Collector(object):
         wk_prefix, _ = PathManager("/".join(path.split('/')[:-1])).ret_prefix()
 
         #! read communication traces offline
-        debug_utils.DebugRecorder().debug_event_start()
+        # debug_utils.DebugRecorder().debug_event_start()
         with open(path, 'r') as f:
             json_str = f.read()
-        debug_utils.DebugRecorder().debug_event_end("collect_" + pid+"_comm.read_traces", "Collct", "0")
+        # debug_utils.DebugRecorder().debug_event_end("collect_" + pid+"_comm.read_traces", "Collct", "0")
 
         ### TODO (huhanpeng) delete
         ''' Fix the json file
             For Horovod, the timeline_ outputs traces as soon as a new trace is appended to the queue
             Making the trace file ends abnormally.
         '''
-        debug_utils.DebugRecorder().debug_event_start()
+        # debug_utils.DebugRecorder().debug_event_start()
         if json_str[-1] != ']':
             json_str_lines = json_str.split("\n")
             if json_str_lines[-1] == '':
@@ -633,9 +584,23 @@ class Collector(object):
         comm_traces = json.loads(json_str)
         if isinstance(comm_traces, dict):
             comm_traces = comm_traces["traceEvents"]
-        debug_utils.DebugRecorder().debug_event_end("collect_" + pid+"_comm.load_string", "Collct", "0")
+        # debug_utils.DebugRecorder().debug_event_end("collect_" + pid+"_comm.load_string", "Collct", "0")
 
         ret = []
+        def _append_trace(ret, name, ts, dur, tid, cat, input0):
+            ret.append({
+                    "name": name,
+                    "ts": ts,
+                    "dur": dur,
+                    "ph": "X",
+                    "pid": pid,
+                    "tid": tid,
+                    "cat": cat,
+                    "args":{
+                        "name": name,
+                        "input0": input0
+                    }
+                })
         for trace in comm_traces:
             if trace["ph"] == "M":
                 if trace["name"] == "process_name":
@@ -643,9 +608,9 @@ class Collector(object):
                     if trace["args"]["name"] == "":
                         continue
                     _split_name = trace["args"]["name"].split(".")
-                    ### Ignore the traces whose names end with purly digits
-                    if str.isdigit(_split_name[-1]):
-                        continue
+                    # ### Ignore the traces whose names end with purly digits
+                    # if str.isdigit(_split_name[-1]):
+                    #     continue
 
                     if "Sync" in trace["args"]["name"]:
                         raw_name = "Sync"
@@ -671,6 +636,9 @@ class Collector(object):
                 continue
             elif "ts" in trace and self.run_span[wk_prefix].if_end(trace["ts"]):
                 break
+            elif trace["ph"] == "i" and args_.trace_level == "debug":
+                trace["pid"] = trace["tid"] = "mark"
+                ret.append(trace)
             elif trace["pid"] in self.gradient_name_table and trace["ph"] == "B":
                 cur_pid = self.gradient_name_table[trace["pid"]]
                 cur_pid["list"].append((trace["name"], trace["ts"]))
@@ -682,171 +650,200 @@ class Collector(object):
                 dur = trace["ts"] - ts
                 process_name = cur_pid["process_name"]
 
-                if "Sync" in process_name and "none" not in op_name:
-                    if self.clock_aligner is not None and host_id is not None:
-                            ### register the start time of first UPDATE
-                            self.clock_aligner.mark_ref_time(host_id, ts, "%s.%s"%(process_name, op_name))
+                if "Sync" in process_name:
+                    tensor_id_str = op_name.split(".")[1]
+                else:
+                    tensor_id_str = process_name.split(".")[1]
 
-                if "Sync" in process_name and args_.trace_level != "debug":
+                input0 = None
+                if args_.trace_level == "debug" and tensor_id_str.isdigit():
+                    tensor_name = self.para_dict.tensor_id_to_name(int(tensor_id_str))
+                    input_nodes = [u for u, _ in self.dag.in_edges(tensor_name)]
+                    if len(input_nodes) == 1:
+                        input0 = list(input_nodes)[0]
+                    elif len(input_nodes) == 0:
+                        input0 = None
+                        # SingleLogger().warn("%s has no in edges" % process_name)
+                    else:
+                        raise ValueError("Each communication node can not "
+                            "have more than 1 in-edge nodes: %s" % process_name)
+
+                if "Sync" in process_name and "none" not in op_name:
+                    ### register the end time of the first sync operator
+                    self.ref_name, self.ref_time = "%s.%s"%(process_name, op_name), trace["ts"]
+                    ### add traces
+                    process_name = "Comm." + tensor_id_str
+                    op_name = cat = "Sync"
+                    _append_trace(ret, "%s.%s"%(process_name, op_name), ts, dur, "Comm", "Comm", input0)
+                    continue
+                elif op_name in QueueType().ret_list():
+                    _append_trace(ret, "%s.%s"%(process_name, op_name), ts, dur, "Comm", "Comm", input0)
                     continue
 
-                ### TODO (huhanpeng): Sync node only used for debug currently
-                cat = "Comm" if "Sync" not in process_name else "debug"
-
-                input_nodes = [u for u, _ in self.dag.in_edges(process_name)]
-                if len(input_nodes) == 1:
-                    input0 = list(input_nodes)[0]
-                elif len(input_nodes) == 0:
-                    input0 = None
-                    # self.logger.warn("%s has no in edges" % process_name)
-                else:
-                    raise ValueError("Each communication node can not "
-                        "have more than 1 in-edge nodes: %s" % process_name)
-                ret.append(
-                    {
-                        "name": "%s.%s"%(process_name, op_name),
-                        "ts": ts,
-                        "dur": dur,
-                        "ph": "X",
-                        "pid": process_name if pid is None else pid,
-                        "tid": cur_pid["tid"] if pid is None else process_name,
-                        "cat": cat,
-                        "args":{
-                            "name": "%s.%s"%(process_name, op_name),
-                            "input0": input0
-                        }
-                    })
+                if args_.trace_level != "debug":
+                    continue
+                _append_trace(ret, "%s.%s"%(process_name, op_name), ts, dur, process_name, "debug", input0)
             else:
                 pass
         return ret
 
-    def bpf_collect_update(self):
-        raise NotImplementedError()
-        with open(self.path_dict["update"], 'r') as f:
-            rst_traces = json.load(f)
-        self.time_dict["traceEvents"] += rst_traces["traceEvents"]
+    def _collect_nccl_graph(self, tmp_pm=None, pid=None, host_id=None):
+        algo = args_.nccl_algo
+        nccl_rank_graph_path = self.pm.search(FileName.NCCL_RANK_GRAPH) if tmp_pm is None else tmp_pm.search(FileName.NCCL_RANK_GRAPH)
+        with open(nccl_rank_graph_path, 'r') as f:
+            nccl_rank_graph = json.load(f)
+        if algo is None:
+            raise ValueError("--nccl_algo must be given")
+        elif algo.lower() == "tree":
+            self.nccl_graph.parse_tree_topo(nccl_rank_graph["Tree"], map_to=pid)
+        elif algo.lower() == "ring":
+            self.nccl_graph.parse_ring_topo(nccl_rank_graph["RealRing"], map_to=pid)
+            # self.nccl_graph.parse_connect_topo(traces["Ring"], map_to=pid)
 
-    ### TODO (huhanpeng): delete
-    def loop_collect(self, sub_option):
-        if self.pm.dir_level == DirLevel.GPU:
-            if sub_option == "operator":
-                self.update_final_traces(_operator=True)
+    def clock_align(self, traces_list, host_ids):
+        SingleLogger().info("Combine and align traces ...")
+        if self.byteps_graph is not None:
+            base_host_id = self.byteps_graph.master_host_id
+        else:
+            base_host_id = self.nccl_graph.master_host_id
+        rst = []
+        for idx in range(len(traces_list)):
+            host_id = host_ids[idx]
+            if host_id == base_host_id:
+                pass
             else:
-                self.re_gen_final_traces()
+                if self.byteps_graph is not None:
+                    bias = self.byteps_graph.time_drift[host_id]
+                else:
+                    bias = self.nccl_graph.time_drift[host_id]
+                SingleLogger().info("Align - add {} us to host {}".format(bias, host_id))
+                for trace in traces_list[idx]:
+                    trace["ts"] += bias
+            rst += traces_list[idx]
+        return rst
 
-    def iter_combine(self):
+    def collect_traces(self):
+        SingleLogger().info("# Collecting Traces")
+        SingleLogger().info("Generating %s" % (FileName.TRACE.value))
         ts_ = time.time()
-        rst_traces = {"traceEvents": []}
-        if self.pm.dir_level == DirLevel.GPU:
-            raise NotImplementedError()
-            self.time_dict = {"traceEvents":[]}
-            self.bpf_collect_comp()
-            self.bpf_collect_io()
-            self.bpf_collect_comm()
-            rst_traces["traceEvents"] += self.time_dict["traceEvents"]
-        elif self.pm.dir_level == DirLevel.WORKER:
-            raise NotImplementedError()
-            ### collect computation traces and IO traces
-            for _dir in self.pm.dirs:
-                self.time_dict = {"traceEvents":[]} 
-                gpu_path = os.path.join(self.pm.path, _dir)
-                ### All GPUs on all host machines share the communication traces
-                self.bpf_collect_for_rank(_path=gpu_path, pid="rank%s"%_dir)
-                rst_traces["traceEvents"] += self.time_dict["traceEvents"]
-            self.time_dict = {"traceEvents":[]} 
-            self.bpf_collect_comm()
-            rst_traces["traceEvents"] += self.time_dict["traceEvents"]
-
-        elif self.pm.dir_level == DirLevel.TRIAL:
-            self.clock_aligner = ClockAligner(byteps_graph= self.byteps_graph if self.comm_backend == "BYTEPS" else None)
-            if self.comm_backend == "NCCL":
-                self.nccl_graph.map_host_prefix_id(self.pm.dirs)
-            for _dir in self.pm.dirs:
-                worker_path = os.path.join(self.pm.path, _dir)
-                worker_root, worker_dirs, _ = list(os.walk(worker_path))[0]
-                worker_dirs = sorted(worker_dirs)
-                for __dir in worker_dirs:
-                    self.time_dict = {"traceEvents":[]} 
-                    gpu_path = os.path.join(worker_root, __dir)
-                    ### All GPUs on all host machines share the communication traces
-                    self.bpf_collect_for_rank(_path=gpu_path, pid=str(_dir)+".rank%s"%__dir, host_id=_dir)
-
-            ### align the time
-            rst_traces["traceEvents"] += self.clock_aligner.align()
-            self.clock_aligner = None
-
-            if self.comm_backend == "NCCL" and not args_.pretty:
-                self.nccl_graph.print_graph()
-
-            # ### only read comm.json once
-            # self.time_dict = {"traceEvents":[]} 
-            # self.bpf_collect_comm()
-            # rst_traces["traceEvents"] += self.time_dict["traceEvents"]
-        if self.comm_backend == "BYTEPS":
-            rst_traces["traceEvents"] += self.byteps_graph.gen_compatible_trace(dump_path=os.path.join(self.pm.path, FileName.BPS_ALIGNED_TRACE.value))
-
-        self.logger.info("Take %f s to combine all traces" % (time.time() - ts_))
-        return rst_traces["traceEvents"]
-
-    def dump_traces(self):
-        if rst_traces is None:
-            rst_traces = self.traceM.traces
-        rst_traces = sorted(rst_traces, key=lambda x: (x["pid"], x["tid"]))
-        with open(os.path.join(self.pm.path, FileName.TRACE.value), 'w') as f:
-            json.dump(rst_traces, f)
-
-    def collect_traces(self, force_=False):
-        self.logger.info("# Collecting Traces")
-        self.logger.info("Generating %s" % (FileName.TRACE.value))
-        self.traceM = TraceManager(self.iter_combine(), self.pm.dir_level)
-
-    def iter_time(self):
-        if self.traceM is None:
-            self.collect_traces()
-        self.logger.info("Original Iteration Time")
-        return self.traceM.get_iter_time()
-
-    def collect_update_dict(self):
-        ### Map tensor name to its update index
-        info_path = self.pm.search(FileName.INFO)
-        para_path = self.pm.search(FileName.TENSOR_NAME)
-        if info_path is None:
-            self.logger.warn("Fail to map_tensors_to_update")
-            aggregate_num = 0
-        else:
-            with open(info_path, 'r') as fp:
-                aggregate_num = json.load(fp)["opt_aggregate_num"]
-        self.para_dict = ParameterDict(para_path)
-        return self.para_dict.map_tensors_to_update(aggregate_num)
-
-    def collect_trail_dag(self):
+        rst_traces = []
         assert self.pm.dir_level == DirLevel.TRIAL
-        self.logger.info("# Collecting DAG")
-        critical_path = []
-        worker_dag_list = []
 
-        if self.platform == "MXNET":
-            update_dict = self.collect_update_dict()
-        else:
-            update_dict = None
+        arg_list = []
+        if self.comm_backend == "NCCL":
+            self.nccl_graph.map_host_prefix_id(self.pm.dirs)
         for _dir in self.pm.dirs:
             worker_path = os.path.join(self.pm.path, _dir)
             worker_root, worker_dirs, _ = list(os.walk(worker_path))[0]
-            for worker_dir in worker_dirs:
-                gpu_path = os.path.join(worker_root, worker_dir)
-                self.logger.info("## Collect DAG in %s" % (gpu_path))
-                dagmanager = DAGManager(gpu_path, self.traceM, self.nccl_graph, self.byteps_graph)
-                max_para_degree, _critical_path = dagmanager.gen_gpu_dag(_pretty=args_.pretty, update_dict=update_dict)
-                worker_dag_list.append(dagmanager.gpu_dag)
-                if _critical_path is not None:
-                    critical_path += _critical_path
+            worker_dirs = sorted(worker_dirs)
+            for __dir in worker_dirs:
+                self.time_dict = {"traceEvents":[]} 
+                gpu_path = os.path.join(worker_root, __dir)
+                tmp_pm, pid, host_id_str = PathManager(gpu_path), str(_dir)+".rank%s"%__dir, _dir
+                arg_list.append([tmp_pm, pid, host_id_str])
+                if self.comm_backend == "NCCL":
+                    self._collect_nccl_graph(tmp_pm, pid, host_id_str)
+        with multiprocessing.Pool(len(arg_list)) as p:
+            rst = p.map(self._collect_rank_traces, arg_list)
+        traces_list, ref_name_list, ref_time_list, raw_name2IDnum_list = zip(*rst)
+
+        if self.comm_backend == "NCCL":
+            host_ids = [self.nccl_graph.host_prefix2id[host_id_str] for _, _, host_id_str in arg_list]
+            self.nccl_graph.init_host_drift(zip(host_ids, ref_time_list))
+            ### Since some GPU may have no comm detailed traces, select the first non-empty file to parse chunk num...
+            raw_name2IDnum = None
+            for e in raw_name2IDnum_list:
+                if len(e) > 0:
+                    raw_name2IDnum = e
+                    break
+            assert raw_name2IDnum is not None
+            self.nccl_graph.parse_traces(raw_name2IDnum)
+        else:
+            host_ids = self.byteps_graph.time_drift.keys()
+        ### align the time
+        rst_traces = self.clock_align(traces_list, host_ids)
+        self.single = (len(rst) == 1)
+
+        if self.comm_backend == "NCCL" and not args_.pretty:
+            self.nccl_graph.print_graph()
+        if self.comm_backend == "BYTEPS":
+            rst_traces += self.byteps_graph.gen_compatible_trace(dump_path=os.path.join(self.pm.path, FileName.BPS_ALIGNED_TRACE.value))
+
+        SingleLogger().info("Take {} s to combine all traces of length {}".format(time.time() - ts_, len(rst_traces)))
+        self.traceM = TraceManager(rst_traces, self.pm.dir_level, check=True)
+
+    def collect_meta_data(self):
+        ### collect metadata
+        meta_path = self.pm.search(FileName.METADATA)
+        if meta_path is None:
+            SingleLogger().error("{} not found. Fail to map_tensors_to_update".format(FileName.METADATA.value))
+        else:
+            with open(meta_path, 'r') as fp:
+                self.metadata = json.load(fp)
+
+    def collect_update_dict(self):
+        ### Map tensor name to its update index
+        if "opt_aggregate_num" in self.metadata:
+            aggregate_num = self.metadata["opt_aggregate_num"]
+        else:
+            aggregate_num = 0
+        self.para_dict = ParameterDict(self.metadata["gradient_name_list"])
+        self.para_dict.map_tensors_to_update(aggregate_num)
+
+    def _collect_rank_dag(self, gpu_path, worker_dag_list, critical_path, index):
+        SingleLogger().info("- Collect DAG in %s ..." % (gpu_path))
+        dagmanager = DAGManager(gpu_path, self.traceM, self.nccl_graph, self.byteps_graph, platform=self.platform)
+        max_para_degree, _critical_path = dagmanager.gen_gpu_dag(_pretty=args_.pretty, para_dict=self.para_dict)
+        worker_dag_list[index] = dagmanager.dag
+        critical_path[index] = _critical_path
+
+    def collect_trial_dag(self):
+        assert self.pm.dir_level == DirLevel.TRIAL
+        SingleLogger().info("Collecting DAG ...")
+        ts_ = time.time()
+        if self.comm_backend == "NCCL":
+            critical_path = [None] * self.nccl_graph.nrank
+            worker_dag_list = [None] * self.nccl_graph.nrank
+        else:
+            raise ValueError("Need to check whether byteps_graph has nrank member")
+
+        if self.single:
+            worker_path = os.path.join(self.pm.path, self.pm.dirs[0])
+            gpu_path = os.path.join(worker_path, first_valid_dir(worker_path))
+            dag, _critical_path = self._collect_rank_dag(gpu_path, worker_dag_list, critical_path, 0)
+        else:
+            threads = []
+            for _dir in self.pm.dirs:
+                worker_path = os.path.join(self.pm.path, _dir)
+                worker_root, worker_dirs, _ = list(os.walk(worker_path))[0]
+                for worker_dir in sorted(worker_dirs):
+                    gpu_path = os.path.join(worker_root, worker_dir)
+                    t = threading.Thread(target=self._collect_rank_dag, args=(gpu_path, worker_dag_list, critical_path, len(threads)))
+                    t.start()
+                    threads.append(t)
+            for t in threads:
+                t.join()
+            # with multiprocessing.Pool(len(arg_list)) as p:
+            #     rst = p.map(self._collect_rank_dag, arg_list)
+            # worker_dag_list, critical_path = zip(*rst)
 
         ### Combine all worker_dag_list on one worker, build the dependency
-        composed_dag = nx.compose_all(worker_dag_list)
+        SingleLogger().info("Compose all gpu DAGs together ... ")
+        all_edges = []
+        for _edges in worker_dag_list:
+            all_edges += _edges
+        composed_dag = nx.DiGraph()
+        composed_dag.add_edges_from(all_edges)
         if self.comm_backend == "BYTEPS":
             composed_dag = nx.compose(composed_dag, self.byteps_graph.get_comm_graph())
 
         self.trail_dag = composed_dag
+        SingleLogger().info("Take {} s construct the DAG with {} nodes".format(time.time() - ts_, len(self.trail_dag.nodes)))
+
+    def iter_time(self):
+        if self.traceM is None:
+            self.collect_traces()
+        return self.traceM.get_iter_time()
 
     def init(self, force_=False):
         trace_path = self.pm.search(FileName.TRACE)
@@ -922,34 +919,34 @@ class Collector(object):
                 # initialize BytePS graph helper
                 self.byteps_graph.init(byteps_comm_detail_path, byteps_server_trace_path)
 
+        ### TODO (huhanpeng) dump it or not
+        if self.platform == "MXNET":
+            self.collect_meta_data()
+            self.collect_update_dict()
+
         trail_dag_path = self.pm.search(FileName.TRAIL_DAG)
         if force_ or trace_path is None or (self.comm_backend == "NCCL" and nccl_graph_path is None) or trail_dag_path is None:
             self.collect_traces()
-            self.collect_trail_dag()
+            iter_time, step_idx = self.iter_time()
+            self.nccl_graph.init_nccl_fusion(self.traceM, len(self.metadata["gradient_name_list"]))
+            self.collect_trial_dag()
             self.fine_tune_trace_dag()
-            ### Cache these info
+            ### Asynchonously cache these info
             self.traceM.dump(self.pm.path)
+            graph_thread = threading.Thread(target=nx.write_gml, 
+                args=(self.trail_dag, os.path.join(self.pm.path, FileName.TRAIL_DAG.value), lambda x: str(x)))
+            graph_thread.start()
             if self.comm_backend == "NCCL":
                 self.nccl_graph.dump(os.path.join(self.pm.path, FileName.NCCL_GRAPH.value))
-            nx.write_gml(self.trail_dag, os.path.join(self.pm.path, FileName.TRAIL_DAG.value), lambda x: str(x))
         else:
             self.traceM = TraceManager()
             self.traceM.load(self.pm.path)
+            iter_time, _ = self.iter_time()
             if self.comm_backend == "NCCL":
                 self.nccl_graph.load(nccl_graph_path)
             self.trail_dag = nx.read_gml(trail_dag_path)
-        
-        # for (u,v,c) in self.trail_dag.edges.data():
-        #     if "exec_edges" in c:
-        #         print(u, v, c)
-        #         exit(0)
 
-        ### TODO (huhanpeng) dump it or not
-        if self.platform == "MXNET":
-            if self.para_dict is None:
-                self.collect_update_dict()
-
-        return self.iter_time()    
+        return iter_time
         
     def all_prefix_list(self):
         ''' Return all prefixes under the dirctory.
@@ -974,9 +971,9 @@ class Collector(object):
         ### Fine tune the traces and dependency graph
         if self.comm_backend == "BYTEPS":
             self.byteps_graph.calc_bw_to_comm_delay(self.traceM.traces, self.trail_dag)
-        self.add_gap_to_nodes()
         ### TODO (huhanpeng): does this adapt to BytePS ???
         self.add_avg_to_nodes()
+        self.add_gap_to_nodes() 
         if self.comm_backend == "NCCL":
             self.clip_recv_events()
 
@@ -1074,23 +1071,11 @@ class Collector(object):
 
     def add_gap_to_nodes(self):
         ''' Add gaps for each node '''
-        self.logger.info("Add gap to dependency DAG nodes...")
+        SingleLogger().info("Add gap to dependency DAG nodes...")
         prev_events_dict = {}
-        self.name2idxlist = {}
         for idx, event in enumerate(self.traceM.traces):
             if self.traceM._is_ignore_for_sta(event):
                 continue
-
-            ### Map the trace name to its indexs in all traces, 
-            ### e.g. trace_name --> [idx0, idx1, None, ...], traces[idx0][name] = trace_name
-            unique_name = self.traceM.ret_unique_name(event)
-            if unique_name not in self.trail_dag.nodes:
-                continue
-            if unique_name not in self.name2idxlist:
-                self.name2idxlist[unique_name] = [None] * self.traceM.max_cnt
-            if event["args"]["cnt"] != -1:
-                self.name2idxlist[unique_name][event["args"]["cnt"]] = idx
-
             ### Get previous event for this pid
             if event["pid"] not in prev_events_dict:
                 prev_events_dict[event["pid"]] = {}
@@ -1099,7 +1084,7 @@ class Collector(object):
             ### Handle the gap among FW, BW and OUTPUT nodes (exclude BW->UPDATE)
             cat_ = parse_cat_from_name(event["name"])
             if self.comm_backend == "NCCL":
-                ### TODO(huhanpeng): Only calculate gaps for operator nodes now
+                ### Calculate gaps for operator nodes now
                 is_need_gap = (cat_ in cur_pid_dict and cat_ == CatName.OPERATOR.value)
             else:
                 ### BYTEPS
@@ -1140,30 +1125,31 @@ class Collector(object):
 
             if self.comm_backend == "NCCL":
                 ### Handle the gap between BW and the first Comm node
-                if queue_type_ in node_:
-                    bw_node, _ = list(self.trail_dag.in_edges(node_))[0]
-                    prefix_ = parse_pid_from_name(node_)
-                    comm_node = None
-                    for succ_ in self.trail_dag.successors(node_):
-                        if parse_pid_from_name(succ_) == prefix_:
-                            comm_node = succ_
-                            break
-                    try:
-                        u_idx_l, v_idx_l = self.name2idxlist[bw_node], self.name2idxlist[comm_node] 
-                    except KeyError:
-                        ### Some rank does not have SEND nodes
-                        continue
-                    gap = 0
-                    cnt = 0
-                    for cnt_ in range(self.traceM.max_cnt):
-                        u_idx, v_idx = u_idx_l[cnt_], v_idx_l[cnt_]
-                        if u_idx is None or v_idx is None:
-                            continue
-                        u_event = self.traceM.traces[u_idx]
-                        v_event = self.traceM.traces[v_idx]
-                        gap += v_event["ts"] - (u_event["ts"] + u_event["dur"])
-                        cnt += 1
-                    self.trail_dag.nodes[bw_node][GAP_STR_OP2COMM] = gap / cnt if cnt != 0 else 0
+                # if queue_type_ in node_:
+                #     bw_node, _ = list(self.trail_dag.in_edges(node_))[0]
+                #     prefix_ = parse_pid_from_name(node_)
+                #     comm_node = None
+                #     for succ_ in self.trail_dag.successors(node_):
+                #         if parse_pid_from_name(succ_) == prefix_:
+                #             comm_node = succ_
+                #             break
+                #     try:
+                #         u_idx_l, v_idx_l = self.traceM.map_name2idxlist(bw_node), self.traceM.map_name2idxlist(comm_node)
+                #     except KeyError:
+                #         ### Some rank does not have SEND nodes
+                #         continue
+                #     gap = 0
+                #     cnt = 0
+                #     for cnt_ in range(self.traceM.max_step):
+                #         u_idx, v_idx = u_idx_l[cnt_], v_idx_l[cnt_]
+                #         if u_idx is None or v_idx is None:
+                #             continue
+                #         u_event = self.traceM.traces[u_idx]
+                #         v_event = self.traceM.traces[v_idx]
+                #         gap += v_event["ts"] - (u_event["ts"] + u_event["dur"])
+                #         cnt += 1
+                #     self.trail_dag.nodes[bw_node][GAP_STR_OP2COMM] = gap / cnt if cnt != 0 else 0
+                pass
             else:
                 ## Add BW -> Comm delays using byteps_graph
                 ## inter node delays are directly added in replayer
@@ -1174,13 +1160,16 @@ class Collector(object):
                     self.trail_dag.nodes[node_][GAP_STR_OP2COMM] = gap
 
     def clip_recv_events(self):
-        self.logger.info("Clip RECV events...")
+        SingleLogger().info("Clip RECV events...")
         for u, v in self.trail_dag.edges:
             if "I/O" in u:
                 continue
 
-            u_idx_l = self.name2idxlist[u] if u in self.name2idxlist else None
-            v_idx_l = self.name2idxlist[v] if v in self.name2idxlist else None
+            try:
+                u_idx_l = self.traceM.map_name2idxlist(u)
+                v_idx_l = self.traceM.map_name2idxlist(v)
+            except KeyError:
+                continue
             if u_idx_l is None or v_idx_l is None:
                 ### some dag nodes do not appear in the traces
                 continue
@@ -1191,7 +1180,7 @@ class Collector(object):
                 ### Revise RECV events according to SEND-RECV dependents
                 ### TODO (huhanpeng): cat2sta's maximum has not be updated
                 recv_dict = None
-                for cnt_ in range(self.traceM.max_cnt):
+                for cnt_ in range(self.traceM.max_step):
                     u_idx, v_idx = u_idx_l[cnt_], v_idx_l[cnt_]
                     if u_idx is None or v_idx is None:
                         continue
@@ -1228,33 +1217,36 @@ class Collector(object):
                         self.traceM.cat2sta[cat]["time"] -= recv_dict["less"]
                         self.traceM.cat2sta[cat]["avg"] = self.traceM.cat2sta[cat]["time"] / self.traceM.cat2sta[cat]["cnt"]
                     ### Update DAG information
-                    for next_ in self.trail_dag.successors(name_):
-                        self.trail_dag.edges[name_, next_]["weight"] = avg
+                    self.trail_dag.nodes[name_]["avg"] = avg
 
     def add_avg_to_nodes(self):
+        SingleLogger().info("Add avg to nodes ...")
         for node_ in self.trail_dag.nodes:
             ### Add duration to the node as an attribute
-            self.trail_dag.nodes[node_]["avg"] = self.traceM.lookup_stat(None, None, node_)
+            cat = parse_cat_fine_grained(node_)
+            if cat == "Comm.other":
+                ### for Sync|Queue|MEMCPY_IN_FUSION_BUFFER|MEMCPY_OUT_FUSION_BUFFER sub operators
+                ### there are not corresponding fused traces, instead, each tensor has its own sub operator traces
+                ### when building the graph, use the average duration of corresponding tensor as the fused operator time 
+                prefix, rawname, _ = parse_allinfo_from_name(node_)
+                op_type, op_name, sub_op = rawname.split(".")
 
-            # if parse_cat_from_name(node_) == CatName.COMM.value:
-            #     if "avg" in self.trail_dag.nodes[node_]:
-            #         self.trail_dag.nodes[node_]["avg"] /= 10
+                tensor_list = re.findall("[0-9]+", op_name)
+                tensor_list = sorted([int(e) for e in tensor_list])
+                avgs = []
+                for tensor_id in tensor_list:
+                    org_name = gen_long_name(prefix, "{}.{}.{}".format(op_type, tensor_id, sub_op))
+                    avgs.append(self.traceM.lookup_stat(None, None, org_name))
+                assert len(avgs) > 0
+                self.trail_dag.nodes[node_]["avg"] = sum(avgs) / len(avgs)
+            else:
+                self.trail_dag.nodes[node_]["avg"] = self.traceM.lookup_stat(None, None, node_)
 
     def add_gaps_clip_events(self):
         ''' According to the traces and DAG, add a 'gap' field for each edge (u, v)
         which denotes the gap between two events u and v.
         '''
-        name2idxlist = {}
-        for idx, event in enumerate(self.traceM.traces):
-            if self.traceM._is_ignore_for_sta(event):
-                continue
-
-            unique_name = self.traceM.ret_unique_name(event)
-            if unique_name not in name2idxlist:
-                name2idxlist[unique_name] = [None] * self.traceM.max_cnt
-
-            if event["args"]["cnt"] != -1:
-                name2idxlist[unique_name][event["args"]["cnt"]] = idx
+        name2idxlist = self.traceM.map_name2idxlist()
 
         ### Calculate the average gap for each edge
         for u, v in self.trail_dag.edges:
@@ -1278,7 +1270,7 @@ class Collector(object):
                 ### Revise RECV events according to SEND-RECV dependents
                 ### TODO (huhanpeng): cat2sta's maximum has not be updated
                 recv_dict = None
-                for cnt_ in range(self.traceM.max_cnt):
+                for cnt_ in range(self.traceM.max_step):
                     u_idx, v_idx = u_idx_l[cnt_], v_idx_l[cnt_]
                     if u_idx is None or v_idx is None:
                         continue
@@ -1318,14 +1310,14 @@ class Collector(object):
                     for next_ in self.trail_dag.successors(name_):
                         self.trail_dag.edges[name_, next_]["weight"] = avg
             else:
-                for cnt_ in range(self.traceM.max_cnt):
+                for cnt_ in range(self.traceM.max_step):
                     u_idx, v_idx = u_idx_l[cnt_], v_idx_l[cnt_]
                     if u_idx is None or v_idx is None:
                         continue
                     gap += (self.traceM.traces[v_idx]["ts"] - (self.traceM.traces[u_idx]["ts"] + self.traceM.traces[u_idx]["dur"]))
                     n += 1
             if gap < 0 and not ("SEND" in u and "RECV" in v):
-                self.logger.warn("The gap < 0 between %s and %s" % (u, v))
+                SingleLogger().warn("The gap < 0 between %s and %s" % (u, v))
                 # raise
             gap = 0 if n == 0 else gap / float(n)
             self.trail_dag.edges[u, v]["gap"] = gap
@@ -1357,5 +1349,44 @@ class Collector(object):
         # critical_path = dag_longest_path(self.trail_dag, self.pm, weight="cost", default_weight=0, _debug_level=2)
         critical_path = dag_longest_path(self.trail_dag, self.pm, weight="weight", default_weight=0, _debug_level=2)
         return critical_path
+
+    def list_max_gap(self, head=None):
+        SingleLogger().info("Calculating the minimum gap before each node ... ")
+        name2idxlist = self.traceM.map_name2idxlist()
+        name2depend = {}
+        for v in self.trail_dag.nodes:
+            if v not in name2idxlist:
+                continue
+            v_idx_l = name2idxlist[v]
+            for u, _ in self.trail_dag.in_edges(v):
+                if u not in name2idxlist:
+                    continue
+                u_idx_l = name2idxlist[u]
+                cnt = 0.
+                for cnt_ in range(self.traceM.max_step):
+                    u_idx, v_idx = u_idx_l[cnt_], v_idx_l[cnt_]
+                    if u_idx is None or v_idx is None:
+                        continue
+                    if v not in name2depend:
+                        name2depend[v] = {u: 0}
+                    elif u not in name2depend[v]:
+                        name2depend[v][u] = 0
+                    name2depend[v][u] += (self.traceM.traces[v_idx]["ts"] - (self.traceM.traces[u_idx]["ts"] + self.traceM.traces[u_idx]["dur"]))
+                    cnt += 1.
+                if cnt > 0:
+                    name2depend[v][u] /= cnt
+                    if 'min_gap' not in name2depend[v] or name2depend[v][u] < name2depend[v]['min_gap']:
+                        name2depend[v]['min_gap'] = name2depend[v][u]
+                        name2depend[v]['min_node'] = u
+        name2depend = sorted(name2depend.items(), key=lambda x: x[1]['min_gap'], reverse=True)
+        for idx, (name, depend) in enumerate(name2depend):
+            if head and idx >= head:
+                break
+            print("Name: {}, min_gap: {} ({})".format(name, depend['min_gap'], depend['min_node']))
+
+
+
+
+
 
 

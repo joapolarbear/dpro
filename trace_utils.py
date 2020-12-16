@@ -1,18 +1,24 @@
 import os
+import re
 import ujson as json
 import random
+import math
 import xlsxwriter
 import traceback
 import logger_utils
+import threading
 from enum import Enum
+import numpy as np
 from logger_utils import Singleton, SingleLogger
 
 QUEUETYPE = {
     "NCCL": {
         "fine": [
-            "NEGOTIATE_ALLREDUCE_none",
+            "Sync",
             "QUEUE",
-            "NCCL_ALLREDUCE"
+            "MEMCPY_IN_FUSION_BUFFER",
+            "NCCL_ALLREDUCE",
+            "MEMCPY_OUT_FUSION_BUFFER"
             ],
         "coarse": [
             "NEGOTIATE_ALLREDUCE",
@@ -51,6 +57,7 @@ class FileName(Enum):
     COMM_DETAIL="comm_detail.json"
     INFO="info.json"
     NCCL_GRAPH="nccl_graph.txt"
+    NCCL_RANK_GRAPH="nccl_rank_graph.json"
     TRAIL_DAG="trail_dag.gml"
     STATISTIC="statistic.txt"
     BPS_COMM_DETAIL="comm_timeline.json"
@@ -59,6 +66,7 @@ class FileName(Enum):
     KEY_DICT="key_dict.txt"
     BYTEPS_CACHE="bps_cache.pickle"
     BPS_ALIGNED_TRACE="bps_comm_aligned.json"
+    METADATA="metadata.json"
 
 class CatName(Enum):
     OPERATOR="operator"
@@ -94,6 +102,13 @@ def read_traces(traces_path):
 
 def _is_comm_trace(trace):
     return trace["cat"] == "Comm"
+
+def first_valid_dir(_path):
+    for _dir in os.listdir(_path):
+        if _dir.startswith('.'):
+            continue
+        return _dir
+    raise ValueError("No valid directory under {}".format(_path))
 
 ######################## Delete ########################
 def return_stat(traces):
@@ -140,46 +155,6 @@ def return_stat(traces):
         statistic["var"] = statistic["var"] / float(statistic["cnt"])
     return name2sta, cat2sta
 
-
-def return_path_dict(root_path):
-    ### TODO : delete
-    ''' Map the paths of each file from its name
-    Args:
-        root_path: the root path for one GPU
-    '''
-    assert os.path.isdir(root_path)
-    root_path = os.path.abspath(root_path)
-    __root, _, files = list(os.walk(root_path))[0]
-    path_dict = {"root": __root}
-    path_dict["local_rank"] = int(__root.split("/")[-1])
-    for __file in files:
-        cur_path = os.path.join(__root, __file)
-        if FileName.TRACE.value in __file:
-            path_dict[FileName.TRACE.value] = cur_path
-        elif __file == FileName.DAG.value:
-            # mygraph = nx.read_gml(cur_path)
-            path_dict[FileName.DAG.value] = cur_path
-        elif __file == FileName.COMP.value:
-            path_dict[FileName.COMP.value] = cur_path
-        elif __file == FileName.COMM.value:
-            path_dict[FileName.COMM.value] = cur_path
-        elif __file == FileName.IO.value:
-            path_dict[FileName.IO.value] = cur_path
-        elif "loss" in __file:
-            idx = int(__file.split("loss")[1].split(".")[0])
-            if "loss" not in path_dict:
-                path_dict["loss"] = {idx: cur_path}
-            else:
-                path_dict["loss"][idx] = cur_path
-        elif __file == FileName.SYMBOL.value:
-            path_dict[FileName.SYMBOL.value] = cur_path
-        elif __file == FileName.TENSOR_NAME.value:
-            path_dict[FileName.TENSOR_NAME.value] = cur_path
-        elif __file == FileName.COMM_DETAIL.value:
-            path_dict[FileName.COMM_DETAIL.value] = cur_path
-        else:
-            pass
-    return path_dict
 ######################## Delete ########################
 
 
@@ -207,9 +182,10 @@ def parse_allinfo_from_name(name):
         raw_name = name
         pid = "none"
     else:
-        ns = name.split(DEL)
-        pid = ns[0]
-        raw_name = ns[1]
+        pid, raw_name = name.split(DEL)
+
+    if DDEL in raw_name:
+        raw_name, suffix = raw_name.split(DDEL)
 
     if "I/O" in raw_name:
         return pid, raw_name, CatName.IO.value
@@ -235,7 +211,12 @@ def parse_rawname_from_name(name):
     else:
         return name.split(DEL)[1]
 
+warned = False
 def parse_layer_name(name):
+    global warned
+    if not warned:
+        SingleLogger().warn("parse_layer_name() may be not safe")
+        warned = True
     if DEL in name:
         name = name.split(DEL)[1]
     if DDEL in name:
@@ -285,6 +266,7 @@ def parse_cat_fine_grained(name_):
     elif "COMM" in name_:
         ret_cat = "operator.COMM"
     elif "COMP" in name_:
+        # TODO (delete)
         ret_cat = "operator.COMP"
     elif "UPDATE_" in name_:
         ret_cat = "operator.UPDATE"
@@ -317,41 +299,55 @@ def load_list(path):
 
 
 class TraceManager:
-    def __init__(self, traces=None, dir_level=None):
+    def __init__(self, traces=None, dir_level=None, check=False):
         if traces is None:
             return
-        self.traces = traces
-        # self.traces = sorted(self.traces, key=lambda x: (x["ts"], x["name"]), reverse=False)
-        self._deduplicate_trace()
+        self.traces = self.check_traces(traces) if check else traces
+        self.traces = sorted(self.traces, key=lambda x: (x["ts"], x["name"]), reverse=False)
+        
+        self.dir_level = dir_level
+        self.max_step = 0
+        self.opt_step = 0   # which step has the cloest performance to the average performance
+        self.iter_time = -1
 
         self.name2sta = None
         self.cat2sta = None
-        self.dir_level = dir_level
-
-        self.max_cnt = 0
         self.ret_stat()
-    
-    def _deduplicate_trace(self):
-        operator_traces_list = self.group_op_by_prefix_and_cat()
-        deduplicated_trace = []
-        for _, traces in operator_traces_list.items():
-            traces = sorted(traces, key=lambda x: (x["ts"], x["name"]))
-            index = 0
-            while index < len(traces):
-                this_event = traces[index]
-                this_name = self.ret_unique_name(this_event)
-                index += 1
-                while index < len(traces):
-                    next_event = traces[index]
-                    next_name = self.ret_unique_name(next_event)
-                    if next_name == this_name:
-                        this_event["dur"] = next_event["ts"] + next_event["dur"] - this_event["ts"]
-                        index += 1
-                    else:
-                        break
-                deduplicated_trace.append(this_event)
-        self.traces = sorted(deduplicated_trace, key=lambda x: (x["ts"], x["name"]))
-                
+
+    def dump(self, dir_):
+        trace_thread = threading.Thread(target=self._dump, args=(dir_,))
+        trace_thread.start()
+
+    def _dump(self, dir_):
+        rst_traces = sorted(self.traces, key=lambda x: (x["pid"], x["tid"]))
+        with open(os.path.join(dir_, FileName.TRACE.value), 'w') as f:
+            json.dump(rst_traces, f)
+        str_ = "%d,%d,%d,%f\n"%(self.dir_level.value, self.max_step, self.opt_step, self.iter_time)
+        str_ += str(self.name2sta) + "\n"
+        str_ += str(self.cat2sta)
+        with open(os.path.join(dir_, FileName.STATISTIC.value), 'w') as fp:
+            fp.write(str_)
+
+    def load(self, dir_):
+        self.traces = read_traces(os.path.join(dir_, FileName.TRACE.value))
+        with open(os.path.join(dir_, FileName.STATISTIC.value), 'r') as fp:
+            str_ = fp.read().split("\n")
+
+        dir_level, max_step, opt_step, iter_time = str_[0].split(",")
+        self.dir_level = DirLevel(int(dir_level))
+        self.max_step = int(max_step)
+        self.opt_step = int(opt_step)
+        self.iter_time = float(iter_time)
+
+        self.name2sta = eval(str_[1])
+        self.cat2sta = eval(str_[2])
+
+    def check_traces(self, traces):
+        for trace in traces:
+            if trace.get("name", None) is None or trace.get("ts", None) is None:
+                print(trace)
+                raise RuntimeError("Check trace failed.")
+        return traces
         
     def _is_comm_trace(self, event):
         return event["cat"] == "Comm"
@@ -371,37 +367,145 @@ class TraceManager:
             suffix=None
         return gen_long_name(event["pid"], event["name"], suffix=suffix)
 
-    def ret_stat(self):
-        """ Basic Statistic """
+    def ret_stat(self, cal_median=False):
+        """ 1. Basic Statistic;
+            2. add step field
+            3. iteration time
+        """
+
+        ### based on the assumption that FW or IO is the start of a step
+        AS_START_CAT = ["I/O", "operator.FW"]
+
         self.name2sta = {}
         self.cat2sta = {}
+        prefix_dict = {}
         for event in self.traces:
             if self._is_ignore_for_sta(event):
                 continue
+            prefix = event["pid"]
+            if prefix not in prefix_dict:
+                prefix_dict[prefix] = {
+                    "cat_cursor": None, 
+                    "step_cnt": 0,
+                    ### used for calculating iteration time, and fw time
+                    "step_start": None,
+                    "fw_list": [],
+                    "bw_list": [],
+                    "iter_list": [],
+                    "step_start_ts": None,
+                    "cur_iter_time": 0,
+                    "fw_end": None,
+                    "bw_start": None,
+                    "bw_end": None,
+                }
+            cat = parse_cat_fine_grained(event["name"])
+
+            ### statistic info
             unique_name = self.ret_unique_name(event)
             if unique_name in self.name2sta:
                 if MAX_CNT is not None and self.name2sta[unique_name]["cnt"] >= MAX_CNT:
                     event["args"]["cnt"] = -1
                     continue
                 self.name2sta[unique_name]["cnt"] += 1
-                self.name2sta[unique_name]["time"] += event["dur"] / 1000.0
+                if cal_median:
+                    self.name2sta[unique_name]["time"].append(event["dur"] / 1000.0)
+                else:
+                    self.name2sta[unique_name]["time"] += event["dur"] / 1000.0
                 self.name2sta[unique_name]["min_t"] = min(self.name2sta[unique_name]["min_t"], event["dur"] / 1000.0)
                 self.name2sta[unique_name]["max_t"] = max(self.name2sta[unique_name]["max_t"], event["dur"] / 1000.0)
             else:
                 self.name2sta[unique_name] = {
                     "cnt": 1, 
-                    "time": event["dur"] / 1000.0, 
+                    "time": [event["dur"] / 1000.0] if cal_median else event["dur"] / 1000.0, 
                     "min_t": event["dur"] / 1000.0, 
                     "max_t": event["dur"] / 1000.0,
                     # \TODO: add `cat` field for communication traces
                     # "cat": event["cat"] 
-                    "cat": event["cat"]
+                    "cat": cat,
+                    "id": len(self.name2sta)
                     }
             event["args"]["cnt"] = self.name2sta[unique_name]["cnt"] - 1
+
+            pid_info = prefix_dict[prefix]
+            ### add step field
+            if pid_info["cat_cursor"] is None:
+                pass
+            elif pid_info["cat_cursor"] not in AS_START_CAT and cat in AS_START_CAT:
+                pid_info["step_cnt"] += 1
+            elif pid_info["cat_cursor"] in AS_START_CAT and cat == "operator.UPDATE":
+                ### handle the overlapping cases between UPDATE and (IO, FW)
+                pid_info["step_cnt"] -= 1
+            event["args"]["step"] = pid_info["step_cnt"]
+            pid_info["cat_cursor"] = cat
+            self.max_step = max(event["args"]["step"], self.max_step)
+
+            ### calculate the iteration time
+            if parse_cat_from_name(event["name"]) != CatName.OPERATOR.value:
+                continue    
+            if pid_info["step_start"] is None:
+                ### initialization
+                pid_info["step_start_ts"] = event['ts']
+                pid_info["cur_iter_time"] = event['ts'] + event['dur']
+                pid_info["step_start"] = event["args"]["step"]
+            elif pid_info["step_start"] != event["args"]["step"]:
+                ### a new iteration
+                assert pid_info["step_start_ts"] is not None
+                if pid_info["step_start"] == -1:
+                    continue
+                assert event["args"]["step"] > pid_info["step_start"], (event)
+                pid_info["iter_list"].append((pid_info["cur_iter_time"] - pid_info["step_start_ts"]) / 1000.0)
+                pid_info["fw_list"].append((pid_info["fw_end"] - pid_info["step_start_ts"]) / 1000.0)
+                pid_info["bw_list"].append((pid_info["bw_end"] - pid_info["bw_start"]) / 1000.0)
+                SingleLogger().debug("%s - the %d th iteration: FW: %f, BW: %f, Iteration time: %f" % (prefix, len(pid_info["iter_list"]), pid_info["fw_list"][-1], pid_info["bw_list"][-1], pid_info["iter_list"][-1]))
+                pid_info["step_start_ts"] = event['ts']
+                pid_info["bw_start"] = None
+                pid_info["cur_iter_time"] = event['ts'] + event['dur']
+                pid_info["step_start"] = event["args"]["step"]
+            else:
+                ### during an iteration
+                pid_info["cur_iter_time"] = event['ts'] + event['dur']
+
+                ### TODO (huhanpeng): change after fine-tune update
+                ### here we assume UPDATE is following the last BP op.
+                if "FW" in event["name"]:
+                    pid_info["fw_end"] = pid_info["cur_iter_time"]
+                if "BW" in event["name"]:
+                    if pid_info["bw_start"] is None:
+                        pid_info["bw_start"] = pid_info["cur_iter_time"]
+                    pid_info["bw_end"] = pid_info["cur_iter_time"]
+
+        ### calculate the average iteration time
+        iter_list_all = []
+        for prefix in prefix_dict.keys():
+            ### Necessary for the last step
+            pid_info = prefix_dict[prefix]
+            if pid_info["fw_end"] is None or pid_info["bw_end"] is None or pid_info["bw_start"] is None:
+                continue
+            pid_info["iter_list"].append((pid_info["cur_iter_time"] - pid_info["step_start_ts"]) / 1000.0)
+            pid_info["fw_list"].append((pid_info["fw_end"] - pid_info["step_start_ts"]) / 1000.0)
+            pid_info["bw_list"].append((pid_info["bw_end"] - pid_info["bw_start"]) / 1000.0)
+            SingleLogger().debug("%s - the %d th iteration: FW:%f, BW: %f, Iteration time: %f" % (prefix, len(pid_info["iter_list"]), pid_info["fw_list"][-1], pid_info["bw_list"][-1], pid_info["iter_list"][-1]))
+
+            fw_time = sum(pid_info["fw_list"]) / float(len(pid_info["fw_list"]))
+            bw_time = sum(pid_info["bw_list"]) / float(len(pid_info["bw_list"]))
+            iter_time = sum(pid_info["iter_list"]) / float(len(pid_info["iter_list"]))
+            iter_list_all.append(pid_info["iter_list"])
+            SingleLogger().info("<%s> fw : %f, bw: %f ms -- iteration time: %f ms" % (prefix,
+                    fw_time, bw_time, iter_time))
+
+        ### iter_list_all, shape = (n_GPUs, n_steps) ==> (n_steps)
+        iter_list_all = np.average(np.array(iter_list_all), axis=0)
+        self.iter_time = np.average(iter_list_all)
+        self.opt_step = np.argmin(np.abs(iter_list_all - self.iter_time))
+        SingleLogger().info("<Overall> step %d is the one closest to average %f - %s" % (self.opt_step, self.iter_time, iter_list_all))
                 
         """calculate the avg """
         for name, statistic in self.name2sta.items():
-            statistic["avg"] = statistic["time"] / statistic["cnt"]
+            if cal_median:
+                statistic["avg"] = sum(statistic["time"]) / statistic["cnt"]
+                statistic["median"] = sorted(statistic["time"])[int(statistic["cnt"]/2)]
+            else:
+                statistic["avg"] = statistic["time"] / statistic["cnt"]
             statistic["var"] = 0.0
 
             # assert statistic["time"] != 0
@@ -412,7 +516,7 @@ class TraceManager:
                     self.cat2sta[cat]["max_name"] = name
             else:
                 self.cat2sta[cat] = {"max_t": statistic["avg"], "max_name": name, "time": 0, "cnt": 0, "op_cnt":0}
-            self.cat2sta[cat]["time"] += statistic["time"]
+            self.cat2sta[cat]["time"] += sum(statistic["time"]) if cal_median else statistic["time"]
             self.cat2sta[cat]["cnt"] += statistic["cnt"]
             self.cat2sta[cat]["op_cnt"] += 1
 
@@ -420,14 +524,54 @@ class TraceManager:
             statistic["avg"] = statistic["time"] / statistic["cnt"]
 
         """calculate the variance"""
-        for event in self.traces:
+        for idx, event in enumerate(self.traces):
             if self._is_ignore_for_sta(event):
                 continue
             unique_name = self.ret_unique_name(event)
             self.name2sta[unique_name]["var"] += pow(event["dur"] / 1000.0 - self.name2sta[unique_name]["avg"], 2)
+            
+            ### record which steps this operator occurs in
+            if "step_ids" not in self.name2sta[unique_name]:
+                self.name2sta[unique_name]["step_ids"] = [None] * (self.max_step + 1)
+            self.name2sta[unique_name]["step_ids"][event["args"]["step"]] = idx
+
         for name, statistic in self.name2sta.items():
             statistic["var"] = statistic["var"] / float(statistic["cnt"])
-            self.max_cnt = max(statistic["cnt"], self.max_cnt)
+
+    def print_stat(self, sort=True, line_num=None):
+        if sort:
+            sort_sta = sorted(self.name2sta.items(), key=lambda x: x[1]["avg"], reverse=True)
+        else:
+            sort_sta = self.name2sta.items()
+        SingleLogger().info("Profile Statistics.")
+        SingleLogger().info("===================")
+        SingleLogger().info("%-80s\t Total Count\t Min Time (ms)\t Max Time (ms)\t Avg Time (ms)\t Std.dev (ms)\t Median (ms)" % ("Name"))
+        SingleLogger().info("%-80s\t -----------\t -------------\t -------------\t -------------\t ---------------\t ---------------" % ("----"))
+        line_cnt = 0
+        for name, statistic in sort_sta:
+            if (line_num and line_cnt >= line_num):
+                break        
+            SingleLogger().info("%-80s\t %11d\t %12.4f\t %13.4f\t %13.4f\t %13.4f\t %13.4f" % 
+                    (name,
+                    statistic["cnt"],
+                    statistic["min_t"],
+                    statistic["max_t"],
+                    statistic["avg"],
+                    math.sqrt(statistic["var"]),
+                    statistic.get('median', -1)
+                    ))
+            line_cnt += 1
+
+        # Group by category
+        SingleLogger().info("")
+        SingleLogger().info("Group by category")
+        SingleLogger().info("===================")
+        line_cnt = 0
+        for cat, statistic in self.cat2sta.items():
+            if (line_num and line_cnt >= line_num):
+                    break
+            SingleLogger().info("Category: %-10s\t The most time-consuming OP: %-30s -> %13.4f (ms)" % (cat, statistic["max_name"], statistic["max_t"] / 1000.0))
+            line_cnt += 1
 
     def lookup_stat(self, wk_prefix, rank_prefix, name,  _field="avg"):
         ''' look up data from the stat info, return average time in ms by default
@@ -454,7 +598,7 @@ class TraceManager:
     def has_prefix(self, name):
         return DEL in name
 
-    def export2xlsx(self, _stats, _dir, filename=None, sheet_name=None):
+    def export2xlsx(self, _dir, _stats=None, filename=None, sheet_name=None):
         ''' Export the statitic results to an XLSX file
 
         Parameters
@@ -464,12 +608,14 @@ class TraceManager:
         _dir: str
             The directory to store the XLSX file
         '''
+        if _stats is None:
+            _stats = [self.name2sta]
         workbook = xlsxwriter.Workbook(os.path.join(_dir, 'statistic.xlsx' if filename is None else filename + ".xlsx"))
         for idx, _stat in enumerate(_stats):
             worksheet = workbook.add_worksheet(sheet_name[idx] if sheet_name is not None else None)
             row = 0
             header = []
-            for name, statistic in _stat.items():
+            for name, statistic in sorted(_stat.items()):
                 if row == 0:
                     # -- Output the header of the sheet
                     col = 0
@@ -501,64 +647,17 @@ class TraceManager:
         *Note* that this function is strongly dependent on how the bps_trace_final.json
         is generated based on the temp.json, i.e., which ops of temp.json are used in 
         the bps_trace_final.json
+
+        Returns
+        -------
+        iter_time: float, average iteration time, overall
+        self.opt_step: int, the index of the step where the iteration 
+            time is the cloest to the average performance, used for
+            converting dynamic graph into static graph.
         '''
-        assert isinstance(self.traces, list)
-        operator_traces_list = self.group_computation_op_by_prefix()
+        return self.iter_time, self.opt_step
 
-        ret = []
-        for prefix in sorted(operator_traces_list.keys()):
-            operator_traces = operator_traces_list[prefix] 
-            fw_bw_list = []
-            iter_list = []
-            operator_traces = sorted(operator_traces, key=lambda x: x["ts"])
-
-            iter_cnt = None
-            step_start_ts = None
-            cur_iter_time = 0
-            fw_bw_end = 0
-            for event in operator_traces:
-                if iter_cnt is None:
-                    ### initialization
-                    step_start_ts = event['ts']
-                    cur_iter_time = event['ts'] + event['dur']
-                    iter_cnt = event["args"]["cnt"]
-                elif iter_cnt != event["args"]["cnt"]:
-                    ### a new iteration
-                    assert step_start_ts is not None
-                    if iter_cnt == -1:
-                        continue
-                    if event["args"]["cnt"] < iter_cnt:
-                        # SingleLogger().warn("Illegal cnt field for this event %s %s %d" % (event["pid"], event["name"], event["args"]["cnt"]))
-                        continue
-                    iter_list.append((cur_iter_time - step_start_ts) / 1000.0)
-                    fw_bw_list.append((fw_bw_end - step_start_ts) / 1000.0)
-                    # SingleLogger().info("%s - the %d th iteration: FW+BW: %f, Iteration time: %f" % (prefix, len(iter_list), fw_bw_list[-1], iter_list[-1]))
-                    SingleLogger().debug("%s - the %d th iteration: FW+BW: %f, Iteration time: %f" % (prefix, len(iter_list), fw_bw_list[-1], iter_list[-1]))
-                    step_start_ts = event['ts']
-                    cur_iter_time = event['ts'] + event['dur']
-                    iter_cnt = event["args"]["cnt"]
-                else:
-                    ### during an iteration
-                    cur_iter_time = event['ts'] + event['dur']
-
-                    ### TODO (huhanpeng): change after fine-tune update
-                    ### here we assume UPDATE is following the last BP op.
-                    if "FW" in event["name"] or "BW" in event["name"]:
-                        fw_bw_end = cur_iter_time
-
-            ### Needed if there is only one step
-            iter_list.append((cur_iter_time - step_start_ts) / 1000.0)
-            fw_bw_list.append((fw_bw_end - step_start_ts) / 1000.0)
-            SingleLogger().debug("%s - the %d th iteration: FW+BW: %f, Iteration time: %f" % (prefix, len(iter_list), fw_bw_list[-1], iter_list[-1]))
-
-            fw_bw_time = sum(fw_bw_list) / float(len(fw_bw_list))
-            iter_time = sum(iter_list) / float(len(iter_list))
-            ret.append((prefix, fw_bw_time, iter_time))
-            SingleLogger().info("<%s> fw + bw: %f ms -- iteration time: %f ms" % (prefix,
-                    fw_bw_time, iter_time))
-        return ret
-
-    def group_computation_op_by_prefix(self):
+    def group_op_by_prefix(self, cat_name=None):
         prefix2traces = {}
         def _get_prefix(e):
             prefix = e["pid"]
@@ -566,7 +665,7 @@ class TraceManager:
                 prefix2traces[prefix] = []
             return prefix
         for event in self.traces:
-            if event["cat"] == "operator" and not self._is_ignore_for_sta(event):
+            if (cat_name is None or parse_cat_from_name(event["name"]) == cat_name) and not self._is_ignore_for_sta(event):
                 prefix2traces[_get_prefix(event)].append(event)
         return prefix2traces
     
@@ -582,30 +681,15 @@ class TraceManager:
             prefix2traces[_get_prefix_and_cat(event)].append(event)
         return prefix2traces
 
-    def dump(self, dir_):
-        rst_traces = sorted(self.traces, key=lambda x: (x["pid"], x["tid"]))
-        with open(os.path.join(dir_, FileName.TRACE.value), 'w') as f:
-            json.dump(rst_traces, f)
+    def map_name2idxlist(self, name):
+        ''' map the trace name to the list of indexes in the traces
+        Returns
+        -------
+        A list of indexs, some elements may be None 
 
-        str_ = "%d,%d\n"%(self.dir_level.value, self.max_cnt)
-        str_ += str(self.name2sta) + "\n"
-        str_ += str(self.cat2sta)
-        with open(os.path.join(dir_, FileName.STATISTIC.value), 'w') as fp:
-            fp.write(str_)
-
-    def load(self, dir_):
-        self.traces = read_traces(os.path.join(dir_, FileName.TRACE.value))
-
-        with open(os.path.join(dir_, FileName.STATISTIC.value), 'r') as fp:
-            str_ = fp.read().split("\n")
-
-        dir_level, max_cnt = str_[0].split(",")
-        self.dir_level = DirLevel(int(dir_level))
-        self.max_cnt = int(max_cnt)
-
-        self.name2sta = eval(str_[1])
-        self.cat2sta = eval(str_[2])
-
+        '''
+        assert self.has_prefix(name) or name == "END", name
+        return self.name2sta[name]["step_ids"]
 
 class BiasRange:
     def __init__(self, _l, _r):
@@ -668,8 +752,6 @@ class PathManager:
         ### get the sub files and directories
         _, self.dirs, self.files = list(os.walk(self.path))[0]
         self.dirs = sorted(self.dirs)
-        ### only for DirLevel.GPU path
-        self.path_dict = return_path_dict(self.path) if self.dir_level == DirLevel.GPU else None
 
     def get_dir_level(self, _dir):
         ''' return the level of the current dir '''
@@ -679,7 +761,11 @@ class PathManager:
                 return 0
             else:
                 return 1 + recur_look_up(os.path.join(root, dirs[0]))
-        level = recur_look_up(_dir)
+        try:
+            level = recur_look_up(_dir)
+        except:
+            print(_dir)
+            raise
         return DirLevel(level)
 
     def search_comm(self):
@@ -689,28 +775,14 @@ class PathManager:
         ''' Search the target file, if not exit, return None '''
         if isinstance(target, Enum):
             target = target.value
-        
-        if self.dir_level == DirLevel.GPU: 
-            if target in self.path_dict:
-                return self.path_dict[target]
-            else:
-                ### only allow to traceback to one upper folder
-                parent_path = os.path.dirname(self.path)
-                root, dirs, files = list(os.walk(parent_path))[0]
-                if target in files:
-                    return os.path.join(root, target)
-                else:
-                    SingleLogger().warn("Fail to find %s in path %s" % (str(target), self.path))
-                    return
-        elif self.dir_level == DirLevel.WORKER:
-            if target in self.files:
-                return os.path.join(self.path, target)
-            else:
-                SingleLogger().warn("Fail to find %s in path %s" % (str(target), self.path))
-                return
+        if target in self.files:
+            return os.path.join(self.path, target)
+        if self.dir_level == DirLevel.WORKER:
+            for worker_dir in self.dirs:
+                gpu_root, gpu_dirs, gpu_files = list(os.walk(os.path.join(self.path, worker_dir)))[0]
+                if target in gpu_files:
+                    return os.path.join(gpu_root, target)
         elif self.dir_level == DirLevel.TRIAL:
-            if target in self.files:
-                return os.path.join(self.path, target)
             for _dir in self.dirs:
                 worker_root, worker_dirs, worker_files = list(os.walk(os.path.join(self.path, _dir)))[0]
                 if target in worker_files:
@@ -720,8 +792,8 @@ class PathManager:
                         gpu_root, gpu_dirs, gpu_files = list(os.walk(os.path.join(worker_root, worker_dir)))[0]
                         if target in gpu_files:
                             return os.path.join(gpu_root, target)
-            SingleLogger().warn("Fail to find %s in path %s" % (str(target), self.path))
-            return
+        SingleLogger().warn("Fail to find %s in path %s" % (str(target), self.path))
+        return
 
     """
     def fuzzy_search(self, target):

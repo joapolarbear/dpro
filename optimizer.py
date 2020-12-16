@@ -16,6 +16,7 @@ from tqdm import tqdm, trange
 from replay import Replayer
 from trace_utils import *
 from dag_utils import *
+from cost_model_amp.amp_pred import AMPPredictor
 from cost_model_xla.pk_graph import PKGraph, PKGraphCycleError, contract_nodes_nx, \
                     defuse_nodes_inplace_nx, postorder_contract_nx, subgraph_partition_connected_nx
 
@@ -29,6 +30,7 @@ MAX_TREE_DEPTH = 1000
 MAX_LOOP = 1000
 UCB_GAMMA = args_.ucb_gamma
 MCMC_BETA = args_.mcmc_beta
+ROOT_PATH = "/Users/bytedance/0/data"
 
 class OptApplyStrategyError(Exception):
     pass
@@ -90,117 +92,82 @@ class GraphState:
         else:
             self.state = GraphExpand.PARTIAL
 
-class Optimizer:
-    def __init__(self, collector, cost_models, memory_budget=None):
-        self.clct = collector
-        self.cost_models = cost_models
-        self.platform = self.clct.platform
-        self.comm_backend = self.clct.comm_backend
-        self.index2name = {}
-        self.index2pid = {}
-        self.name2index = {}
-        self.index2newname = {}
-        self.step = 0
-        ### Get the dependency graph
-        self.dag = self.relabel_dag_node(self.clct.trail_dag)
-        with open("/root/index2name.txt", "w") as f:
-            for index, name in self.index2name.items():
-                f.write(str(index))
-                f.write(" : ")
-                f.write(str(name))
-                f.write("\n")
-        
-        self.forbidden_list = []
+class _BaseCostModel:
+    def __init__(self, opt):
+        self.opt = opt
+        self.dag = self.opt.dag
+        self.node_attr_cache = self.opt.node_attr_cache
 
-        self.base_cost, _ = self.evaluate(self.dag)
-        SingleLogger().info("Start to search, the original iteration time is %f" % self.base_cost)
+    def init_search_space(self, candidates, _dag: nx.DiGraph, _pkg: PKGraph):
+        raise NotImplementedError()
 
-        ### Used to cache the node attribtue
-        self.node_attr_cache = AttrCache()
+    def apply(self, s, __dag, __pkg):
+        raise NotImplementedError()
 
-        ### Budget
-        self.memory_budget = memory_budget
+    def init_partition(self, G, PKG, initial_partitions_formed) -> int:
+        return 0
 
-        ### Some hyper-parameter
-        self.enable_defusion = False
+class _XLACostModel(_BaseCostModel):
+    def __init__(self, opt, xla_cost_model):
+        super().__init__(opt)
+        self.cost_models = xla_cost_model
+        self.forbidden_list = set()
+        self.init_forbidden_list()
 
-        ### DEBUG ONLY
-        self.cost_model_error = []
+    def init_forbidden_list(self):
+        self.initial_forbidden_list = set()
+        # limit the range of nodes during search
+        for node in self.dag.nodes:
+            # ignore BW nodes and communication nodes
+            if "BW" in node:
+                self.initial_forbidden_list.add(node)
 
-    def relabel_dag_node(self, _dag) -> nx.DiGraph:
-        if self.platform == "TENSORFLOW":
-            def relabel_func(old_label):
-                if ("BW" in old_label or "FW" in old_label or "Comm" in old_label) and "^" not in old_label:
-                    layer_name = parse_layer_name(old_label)
-                    layer_pid = parse_pid_from_name(old_label)
-                    # if layer_pid not in self.cost_models or layer_name not in self.cost_models[layer_pid].graph_def_util.operation_names:
-                    #     return "DEL~"+old_label
-                    layer_index = len(self.index2name)
-                    new_name = ("[%d]"%layer_index).join(old_label.split(layer_name))
-                    self.index2name[layer_index] = layer_name
-                    self.index2pid[layer_index] = layer_pid
-                    if layer_name not in self.name2index:
-                        self.name2index[layer_name] = {}
-                    self.name2index[layer_name][layer_pid] = layer_index
-                    new_label = ("[%d]"%layer_index).join(old_label.split(layer_name))
-                    self.index2newname[layer_index] = new_label
-                    return ("[%d]"%layer_index).join(old_label.split(layer_name))
-                else:
-                    return old_label
-        elif self.platform == "MXNET":
-            def relabel_func(old_label):
-                if ("BW" in old_label or "FW" in old_label or "Comm" in old_label) and "^" not in old_label:
-                    layer_name = parse_layer_name(old_label)
-                    layer_pid = parse_pid_from_name(old_label)
-                    # if layer_pid not in self.cost_models or layer_name not in self.cost_models[layer_pid]:
-                    #     return "DEL~"+old_label
-                    layer_index = self.clct.para_dict.parse_layer_index(layer_name)
-                    self.index2name[layer_index] = layer_name
-                    self.index2pid[layer_index] = layer_pid
-                    return ("[%d]"%layer_index).join(old_label.split(layer_name))
-                # else:
-                #     return old_label
-        else:
-            raise NotImplementedError("Unsupported platform {}".format(self.platform))
-        # new_dag = nx.relabel_nodes(_dag, relabel_func)
-        # nodes_to_remove = []
-        # for node, attrs in new_dag.nodes.items():
-        #     if "DEL~" in node:
-        #         nodes_to_remove.append(node)
-        # for node in nodes_to_remove:
-        #     new_dag.remove_node(node)
-        return nx.relabel_nodes(_dag, relabel_func)
+            try:
+                orig_name, pid = self._get_original_name_pid_from_index(node)
+            except:
+                # not standard nodes, ignore
+                self.forbidden_list.add(node)
+                self.initial_forbidden_list.add(node)
+                continue
+            cat = parse_cat_from_name(orig_name)
+            if orig_name not in self.cost_models[pid].graph_def_util.operation_names or "Assign" in orig_name or cat == CatName.COMM.value:
+                self.forbidden_list.add(node)
+                self.initial_forbidden_list.add(node)
 
-    def concat_name(self, u_, v_):
-        return "%s+%s"%(u_, v_)
-    
-    def _parse_index_from_name(self, name_):
-        return int(name_.split("[")[1].split("]")[0])
-    
-    def _debug_convert_to_the_other_machine(self, name_):
-        if not "+" in name_:
-            name, pid = self._get_original_name_pid_from_index(name_)
-            if pid == "traces_0.rank0":
-                other_pid = "traces_1.rank0"
-            else:
-                other_pid = "traces_0.rank0"
-            other_index = self.name2index[name][other_pid]
-            return self.index2newname[other_index]
-        else:
-            new_names = []
-            for sub_name in name_.split("+"):
-                new_names.append(self._debug_convert_to_the_other_machine(sub_name))
-            return "+".join(new_names)
+    def init_partition(self, G, PKG, initial_partitions_formed):
+        partition_G = G.copy()
+        partition_PKG = PKGraph(partition_G)
 
-    def _get_original_name_pid_from_index(self, name_):
-        index = self._parse_index_from_name(name_)
-        return self.index2name[index], self.index2pid[index]
+        source_nodes = sorted([node for node in partition_G.nodes if node not in self.initial_forbidden_list], key=lambda x: partition_G.in_degree(x))
+
+        # Run post order traversal on partition_G
+        visited_nodes = set()
+        for source in tqdm(source_nodes, total=len(source_nodes)):
+            if source not in visited_nodes and source in partition_G.nodes:
+                _, _, partition_G = postorder_contract_nx(partition_G, partition_PKG, source, visited_nodes, forbidden_list=self.initial_forbidden_list, size_limit=800)
+        for node_name in tqdm(partition_G.nodes()):
+            if "+" in node_name:
+                # fused node, test if compilable
+                try:
+                    self.parse_node_attr(partition_G, node_name)
+                    compilable=True
+                except OptQueryCostModelError:
+                    # traceback.print_exc()
+                    compilable=False
+                if compilable:
+                    ns = node_name.split("+")
+                    G, new_node_name = contract_nodes_nx(G, ns)
+                    PKG.contract_nodes_unsafe(ns)
+                    self.parse_node_attr(G, new_node_name)
+                    initial_partitions_formed += 1
+
+        return initial_partitions_formed
 
     def _get_original_name_pid_from_fused_node(self, u_):
         single_pid = None
         orig_names = []
         for node_name in self._get_defused_node_names(u_):
-            orig_name, pid = self._get_original_name_pid_from_index(node_name)
+            orig_name, pid = self.opt._get_original_name_pid_from_index(node_name)
             orig_names.append(orig_name)
             if single_pid is None:
                 single_pid = pid
@@ -208,7 +175,26 @@ class Optimizer:
                 if single_pid != pid:
                     raise RuntimeError("Fused DAG node {} contains ops from different machines.".format(u_))
         return orig_names, single_pid
-    
+
+    def _get_defused_node_names(self, fused_node_):
+        return fused_node_.split("+")
+
+    def _wrap_xla_predict(self, pid, nodes_to_fuse, fused_u_):
+        '''
+        nodes_to_fuse: a list of layer names to fuse
+        fused_u_: a str of fused names with layer index
+        '''
+        if args_.simulate:
+            _sum = 0
+            for name_ in self._get_defused_node_names(fused_u_):
+                _sum += self.node_attr_cache[name_]["avg"]
+            return _sum * 0.8, None
+        else:
+            return self.cost_models[pid].predict(nodes_to_fuse)
+
+    def _wrap_xla_need_fuse(self, pid, orig_name):
+        return (args_.simulate or orig_name in self.cost_models[pid].graph_def_util.operation_names) and orig_name not in self.forbidden_list
+
     def _query_cost_model(self, fused_u_):
         # query cost model for exec time of a fused node u
         nodes_in_u, u_pid = self._get_original_name_pid_from_fused_node(fused_u_)
@@ -217,7 +203,9 @@ class Optimizer:
             SingleLogger().info("[COST MODEL QUERY] {} Nodes to fuse: {}".format(len(nodes_to_fuse), nodes_to_fuse))
         else:
             SingleLogger().info("[COST MODEL QUERY] {} Nodes to fuse ...".format(len(nodes_to_fuse)))
-        predicted_time, _ = self.cost_models[u_pid].predict(nodes_to_fuse)
+
+        predicted_time, _ = self._wrap_xla_predict(u_pid, nodes_to_fuse, fused_u_)
+
         # executed_time, _ = self.cost_models[u_pid].execute(nodes_to_fuse)
         predicted_time /= 1000
         # executed_time /= 1000
@@ -233,6 +221,134 @@ class Optimizer:
             pass
         return predicted_time
 
+    def init_search_space(self, candidates, _dag: nx.DiGraph, _pkg: PKGraph):
+        ### Based on the candidates, init the search space for the new dependency graph `_dag`
+        ### TODO (huhanpeng): currently only consider fusion
+        ###             Need to add quantization
+        search_space = []
+        weights = []
+        prun_cnt = 0
+        # time_spanning_trees = []
+        # time_st = []
+        for n, l in candidates:
+            # node heat
+            heat = self.opt._get_heat_from_history(n)
+
+            if "+" in n:
+                ### This a fused node
+                ns = n.split("+")
+                cat = parse_cat_fine_grained(ns[0])
+                pid = parse_pid_from_name(ns[0])
+                ns = set(ns)
+                subgraph: nx.DiGraph = self.dag.subgraph(ns)
+
+                # st = time.time()
+                # randomly split edges using spanning tree
+                valid_split_plans = subgraph_partition_connected_nx(subgraph)
+                split_weights = []
+                for splits in valid_split_plans:
+                    split_weights.append(gmean([len(nodes) for nodes in splits]))
+                split_weights = np.exp(5e-4*(len(ns) - 80)) * (np.array(split_weights) / np.sum(split_weights))
+                for split_index, splits in enumerate(valid_split_plans):
+                    search_space.append(("-", n, splits))
+                    weights.append(self.opt._combine_weight(l, heat) * split_weights[split_index] )
+            else:
+                ### Nodes that have never been fused
+                cat = parse_cat_fine_grained(n)
+                pid = parse_pid_from_name(n)
+            try:
+                n_orig_name, n_pid = self.opt._get_original_name_pid_from_index(n)
+            except (IndexError, KeyError):
+                continue
+
+            if not self._wrap_xla_need_fuse(n_pid, n_orig_name):
+                continue
+
+            for succ_ in _dag.successors(n):
+                # some filters
+                if not _pkg.can_contract_edge(n, succ_):
+                    continue
+                if "+" not in succ_:
+                    try:
+                        succ_orig_name, succ_pid = self.opt._get_original_name_pid_from_index(succ_)
+                    except (IndexError, KeyError):
+                        continue
+
+                    if not self._wrap_xla_need_fuse(succ_pid, succ_orig_name):
+                        continue
+
+                _pid = parse_pid_from_name(succ_)
+                _cat = parse_cat_fine_grained(succ_)
+                if pid != _pid or cat != _cat:
+                    continue
+
+                ### Assumption 1: for edge a->b, only if the indegree of b is 1, the node can be fused
+                # bw_v = self.convert_fw2bw(n)
+                # if len(_dag.in_edges(succ_)) > 1 or len(_dag.in_edges(bw_v)) > 1:
+                # if len(_dag.in_edges(succ_)) > 1:
+                #     continue
+
+                # bw_u = self.convert_fw2bw(succ_)
+                # assert bw_u in _dag.nodes and bw_v in _dag.nodes
+                
+                # TODO (huhanpeng): this process is only for NCCL now
+                # if args.comm_backend != "NCCL":
+                #   raise NotImplementedError()
+
+                ### Assumption 2: for edge bw_u->bw_v, if comm_bw_u > bw_v, it can not bring any speedup if fusing u and v.
+                def ret_comm_time(_node):
+                    __ret = _dag.nodes[_node]["avg"]
+                    for __succ in _dag.successors(_node):
+                        _pid = parse_pid_from_name(__succ)
+                        if "Comm" in __succ and pid == _pid:
+                            __ret += ret_comm_time(__succ)
+                    return __ret
+
+                comm_t = 0
+                # for bw_u_succ in _dag.successors(bw_u):
+                for bw_u_succ in _dag.successors(n):
+                    if "Comm" in bw_u_succ:
+                        if self.opt.comm_backend == "NCCL":
+                            comm_t += ret_comm_time(bw_u_succ)
+                        else:
+                            ### TODO (huhanpeng): is there only one comm sub operator ???
+                            comm_t += _dag.nodes[bw_u_succ]["avg"]
+                
+                # if comm_t >= _dag.nodes[bw_v]["avg"]:
+                if comm_t >= _dag.nodes[succ_]["avg"]:
+                    prun_cnt += 1
+                    # G_star = self.apply_strategies(self.dag, ("+", n, succ_))
+                    # iter_time, _ = self.evaluate(G_star)
+                    SingleLogger().debug("Prune fusing {} and {} with comm time {}".format(n, succ_, comm_t))
+                    continue
+
+                # calculate heat using max(heat(n), heat(succ_))
+                heat_succ = self.opt._get_heat_from_history(succ_)
+
+                heat_combined = (heat + heat_succ) / 2
+
+                # if n == "traces_0.rank0->BW.[2654]":
+                #     print("Heat for (traces_0.rank0->BW.[2654], {}):".format(succ_))
+                #     print(heat_combined)
+                #     input()
+                
+                # if heat_combined > 0:
+                #     print("Heat for ({}, {}): {}".format(n, succ_, heat_combined))
+                #     input()
+
+                # DEBUG_COMPARE
+                # heat_combined = 1
+
+                search_space.append(("+", n, succ_))
+                weights.append(self.opt._combine_weight(l, heat_combined))
+        SingleLogger().info("Init search space len={} from {} candidates, prune {}".format(len(search_space), len(candidates), prun_cnt))
+        # SingleLogger().info("Time spent for spanning tree: {}".format(sum(time_spanning_trees)/ len(time_spanning_trees)))
+        # SingleLogger().info("Time spent for source/sink: {}".format(sum(time_st)/ len(time_st)))
+        return search_space, weights
+
+    def concat_name(self, u_, v_):
+        return "%s+%s"%(u_, v_)
+
     def combine_avg(self, u, v):
         # call cost model to obtain the combined time
         fused_name = self.concat_name(u, v)
@@ -245,87 +361,11 @@ class Optimizer:
         # return max(max((ug + vg) / 0.8, ug), vg)
         return max(ug, vg)
 
-    def get_node_attr(self, n, attr_):
-        if attr_ in self.node_attr_cache[n]:
-            return self.node_attr_cache[n][attr_]
-        else:
-            return 0
-
-    def cache_node_attr(self, n, attrs):
-        ### TODO (huhanpeng): need .copy() ???
-        self.node_attr_cache[n] = attrs
-        # try:
-        #     n0 = self._debug_convert_to_the_other_machine(n)
-        #     self.node_attr_cache[n0] = attrs
-        # except:
-        #     pass
-        # print("cache attributes for %s" % n)
-
-    def op_fusion(self, _dag, _pkg: PKGraph, u_, v_):
-        # test if two nodes can be fused
-        if _pkg.can_contract_edge(u_, v_):
-            ### u_ and v_ are both FW nodes
-            _pkg.contract_edge(u_, v_)
-            self._fuse_pair(_dag, u_, v_)
-            # u0_ = self._debug_convert_to_the_other_machine(u_)
-            # v0_ = self._debug_convert_to_the_other_machine(v_)
-            # _pkg.contract_edge(u0_, v0_)
-            # self._fuse_pair(_dag, u0_, v0_)
-            # self._fuse_pair(_dag, self.convert_fw2bw(v_), self.convert_fw2bw(u_))
-            # return True, set([u_+"+"+v_, u0_+"+"+v0_]), set([u_, v_, u0_, v0_])
-            return True, set([u_+"+"+v_]), set([u_, v_])
-        else:
-            return False, None, None
-
-    def _fuse_pair(self, _dag, u_, v_):
-        # print("fuse {} {}".format(u_, v_))
-        ### Cache the node attributes in case they will be used when de-fuse
-        # SingleLogger().info("\033[94m Fusing pair: {}, {}\033[0m".format(u_, v_))
-        if u_ not in self.node_attr_cache:
-            self.cache_node_attr(u_, _dag.nodes[u_])
-        if v_ not in self.node_attr_cache:
-            self.cache_node_attr(v_, _dag.nodes[v_])
-
-        new_name = self.concat_name(u_, v_)
-        ### Add new nodes and get the attibute
-        if new_name in self.node_attr_cache:
-            _dag.add_node(new_name, **self.node_attr_cache[new_name])
-        else:
-            _dag.add_node(new_name)
-            ### Calculate the new attribute
-            self.combine_nodes_attr(_dag, new_name, u_, v_)
-            ### cache the attribute
-            self.cache_node_attr(new_name, _dag.nodes[new_name])
-
-        ### Update edges
-        for in_, _ in _dag.in_edges(u_):
-            if in_ != v_:
-                _dag.add_edge(in_, new_name)
-        for in_, _ in _dag.in_edges(v_):
-            if in_ != u_:
-                _dag.add_edge(in_, new_name)
-
-        for out_ in _dag.successors(u_):
-            if out_ != v_:
-                _dag.add_edge(new_name, out_)
-        for out_ in _dag.successors(v_):
-            if out_ != u_:
-                _dag.add_edge(new_name, out_)
-
-        ### Remove current nodes
-        _dag.remove_node(u_)
-        _dag.remove_node(v_)
-
-        assert u_ not in _dag.nodes 
-        assert v_ not in _dag.nodes
-        assert u_ in self.node_attr_cache and "avg" in self.node_attr_cache[u_]
-        assert v_ in self.node_attr_cache and "avg" in self.node_attr_cache[v_]
-
     def combine_nodes_attr(self, _dag, target, u_, v_):
         ### In graph _dag, combine the attributes of u_ and v_, store the results in _dag as the attributes of target
         _dag.nodes[target]["avg"] = self.combine_avg(u_, v_)
-        _dag.nodes[target][GAP_STR_OP2OP] = self.combine_gap(self.get_node_attr(u_, GAP_STR_OP2OP), self.get_node_attr(v_, GAP_STR_OP2OP))
-        _dag.nodes[target][GAP_STR_OP2COMM] = self.combine_gap(self.get_node_attr(u_, GAP_STR_OP2COMM), self.get_node_attr(v_, GAP_STR_OP2COMM))
+        _dag.nodes[target][GAP_STR_OP2OP] = self.combine_gap(self.opt.get_node_attr(u_, GAP_STR_OP2OP), self.opt.get_node_attr(v_, GAP_STR_OP2OP))
+        _dag.nodes[target][GAP_STR_OP2COMM] = self.combine_gap(self.opt.get_node_attr(u_, GAP_STR_OP2COMM), self.opt.get_node_attr(v_, GAP_STR_OP2COMM))
 
     def combine_attr_except_avg(self, target, attr1, attr2):
         ### In graph _dag, combine the attributes of u_ and v_, store the results in _dag as the attributes of target
@@ -358,44 +398,242 @@ class Optimizer:
             attrs["avg"] = self._query_cost_model(new_name)
             ### set and cache the attribute
             nx.set_node_attributes(_dag, {new_name:attrs})
-            self.cache_node_attr(new_name, _dag.nodes[new_name])
+            self.opt.cache_node_attr(new_name, _dag.nodes[new_name])
 
-    def convert_fw2bw(self, _name):
-        assert "FW" in _name
-        _name = "BW".join(_name.split("FW"))
-        if "+" in _name:
-            ns = _name.split("+")
-            ns.reverse()
-            return "+".join(ns)
+    def op_fusion(self, _dag, _pkg: PKGraph, u_, v_):
+        # test if two nodes can be fused
+        if _pkg.can_contract_edge(u_, v_):
+            nodes_to_add = []
+            nodes_to_remove = []
+            _pkg.contract_edge(u_, v_)
+            self._fuse_pair(_dag, u_, v_)
+            nodes_to_add.append(u_+"+"+v_)
+            nodes_to_remove += [u_, v_]
+            return True, nodes_to_add, nodes_to_remove
         else:
-            return _name
+            return False, None, None
+
+    def _fuse_pair(self, _dag, u_, v_):
+        # print("fuse {} {}".format(u_, v_))
+        ### Cache the node attributes in case they will be used when de-fuse
+        # SingleLogger().info("\033[94m Fusing pair: {}, {}\033[0m".format(u_, v_))
+        if u_ not in self.node_attr_cache:
+            self.opt.cache_node_attr(u_, _dag.nodes[u_])
+        if v_ not in self.node_attr_cache:
+            self.opt.cache_node_attr(v_, _dag.nodes[v_])
+
+        new_name = self.concat_name(u_, v_)
+        ### Add new nodes and get the attibute
+        if new_name in self.node_attr_cache:
+            _dag.add_node(new_name, **self.node_attr_cache[new_name])
+        else:
+            _dag.add_node(new_name)
+            ### Calculate the new attribute
+            self.combine_nodes_attr(_dag, new_name, u_, v_)
+            ### cache the attribute
+            self.opt.cache_node_attr(new_name, _dag.nodes[new_name])
+
+        ### Update edges
+        for in_, _ in _dag.in_edges(u_):
+            if in_ != v_:
+                _dag.add_edge(in_, new_name)
+        for in_, _ in _dag.in_edges(v_):
+            if in_ != u_:
+                _dag.add_edge(in_, new_name)
+
+        for out_ in _dag.successors(u_):
+            if out_ != v_:
+                _dag.add_edge(new_name, out_)
+        for out_ in _dag.successors(v_):
+            if out_ != u_:
+                _dag.add_edge(new_name, out_)
+
+        ### Remove current nodes
+        _dag.remove_node(u_)
+        _dag.remove_node(v_)
+
+        assert u_ not in _dag.nodes 
+        assert v_ not in _dag.nodes
+        assert u_ in self.node_attr_cache and "avg" in self.node_attr_cache[u_]
+        assert v_ in self.node_attr_cache and "avg" in self.node_attr_cache[v_]
 
     def op_defusion(self, _dag, _pkg: PKGraph, target, components):
+        nodes2add = []
+        nodes2rm = []
+
         _pkg.split_node(target, components)
         _, new_node_names = self._defuse_node(_dag, _pkg, target, components)
-        # target1 = self._debug_convert_to_the_other_machine(target)
-        # components1 = tuple([tuple([self._debug_convert_to_the_other_machine(node) for node in comp]) for comp in components])
-        # _pkg.split_node(target1, components1)
-        # _, new_node_names0 = self._defuse_node(_dag, _pkg, target1, components1)
-        # target = "BW".join(target.split("FW"))
-        # ns = target.split("+")
-        # ns.reverse()
-        # pos = len(ns) - pos - 2
-        # target = "+".join(ns)
-        # assert target in _dag.nodes
-        # self._defuse_pair(_dag, target, pos)
-        # return True, set(new_node_names + new_node_names0), set([target])
-        return True, set(new_node_names), set([target])
-    
-    def _get_defused_node_names(self, fused_node_):
-        return fused_node_.split("+")
+        nodes2add += new_node_names
+        nodes2rm.append(target)
+        return True, set(nodes2add), set(nodes2rm)
 
     def _defuse_node(self, _dag, _pkg, target, components):
         component_names = defuse_nodes_inplace_nx(_dag, _pkg, target, components)
         for new_node_name in component_names:
             self.parse_node_attr(_dag, new_node_name)
         return True, component_names
+
+    def apply(self, s, __dag, __pkg):
+        op, target, next_ = s
+        ### TODO (huhanpeng): need further add other optimization techiniques
+        if op == "+":
+            ### Fuse two nodes
+            return self.op_fusion(__dag, __pkg, target, next_)
+        elif op == "-":
+            return self.op_defusion(__dag, __pkg, target, next_)
+
+class _AMPCostModel(_BaseCostModel):
+    def __init__(self, opt):
+        super().__init__(opt)
+        ### AMP predictor
+        self.amp_predictor = AMPPredictor(meta_path=self.clct.pm.search(FileName.METADATA))
+
+    def init_search_space(self, candidates, _dag: nx.DiGraph, _pkg: PKGraph):
+        search_space = []
+        weights = []
+        for n, l in candidates:
+            # node heat
+            heat = self.opt._get_heat_from_history(n)
+            ### Nodes that have never been fused
+            cat = parse_cat_fine_grained(n)
+            pid = parse_pid_from_name(n)
+
+            ### check if mixed precision can be used for this node
+            ### TODO (huhanpeng) do not support quantizing fused nodes now
+            if self.amp_predictor.is_need_amp(_dag, n):
+                search_space.append((">", n, None))
+                weights.append(l)
+        return search_space, weights
+
+    def init_partition(self, G, PKG, initial_partitions_formed) -> int:
+        return initial_partitions_formed
+
+    def apply(self, s, __dag, __pkg):
+        op, target, _ = s
+        self.amp_predictor.quantize(self, __dag, target)
+
+class CostModelManager:
+    def __init__(self, opt, cost_models):
+        self.xla_cost_model = _XLACostModel(opt, cost_models)
+        self.strategy2model = {
+            "+": self.xla_cost_model,
+            "-": self.xla_cost_model
+        }
+        self.cost_model_list = [self.xla_cost_model]
+
+        self.mem_model_list = []
+
+class Optimizer:
+    def __init__(self, collector, cost_models, memory_budget=None):
+        self.clct = collector
+        self.platform = self.clct.platform
+        self.comm_backend = self.clct.comm_backend
+        self.index2name = {}
+        self.index2pid = {}
+        self.name2index = {}
+        self.index2newname = {}
+        self.step = 0
+        ## Get the dependency graph
+        self.dag = self.relabel_dag_node(self.clct.trail_dag)
+        # self.work_dir = os.path.join(self.clct.pm.path, ".optimize")
+        # if not os.path.exists(self.work_dir):
+        #     os.mkdir(self.work_dir)
+        with open(os.path.join(ROOT_PATH, "index2name.txt"), "w") as f:
+            for index, name in self.index2name.items():
+                f.write(str(index))
+                f.write(" : ")
+                f.write(str(name))
+                f.write("\n")
         
+        self.forbidden_list = []
+
+        self.base_cost, _, mem_usage = self.evaluate(self.dag)
+        SingleLogger().info("Start to search, the original iteration time is %f" % self.base_cost)
+
+        ### Used to cache the node attribtue
+        self.node_attr_cache = AttrCache()
+
+        ### Budget, in GB
+        self.memory_budget = memory_budget if memory_budget is not None else 1
+
+        ### Some hyper-parameter
+        self.enable_defusion = False
+
+        ### DEBUG ONLY
+        self.cost_model_error = []
+
+        self.cst_md_mng = CostModelManager(self, cost_models)
+
+    def relabel_dag_node(self, _dag) -> nx.DiGraph:
+        def relabel_func(old_label):
+            if ("BW" in old_label or "FW" in old_label or "Comm" in old_label) and "^" not in old_label:
+                layer_name = parse_layer_name(old_label)
+                layer_pid = parse_pid_from_name(old_label)
+                # if layer_pid not in self.cost_models or layer_name not in self.cost_models[layer_pid].graph_def_util.operation_names:
+                #     return "DEL~"+old_label
+                # TODO (huhanpeng): different pids share the same index
+                if "Comm" in old_label and layer_name in self.name2index and layer_pid in self.name2index[layer_name]:
+                    layer_index = self.name2index[layer_name][layer_pid]
+                    new_name = ("[%d]"%layer_index).join(old_label.split(layer_name))
+                    return new_name
+
+                layer_index = len(self.index2name)
+                new_name = ("[%d]"%layer_index).join(old_label.split(layer_name))
+                self.index2name[layer_index] = layer_name
+                self.index2pid[layer_index] = layer_pid
+                if layer_name not in self.name2index:
+                    self.name2index[layer_name] = {}
+                self.name2index[layer_name][layer_pid] = layer_index
+                new_label = ("[%d]"%layer_index).join(old_label.split(layer_name))
+                self.index2newname[layer_index] = new_label
+                return new_label
+            else:
+                return old_label
+        # new_dag = nx.relabel_nodes(_dag, relabel_func)
+        # nodes_to_remove = []
+        # for node, attrs in new_dag.nodes.items():
+        #     if "DEL~" in node:
+        #         nodes_to_remove.append(node)
+        # for node in nodes_to_remove:
+        #     new_dag.remove_node(node)
+        return nx.relabel_nodes(_dag, relabel_func)
+    
+    def _parse_index_from_name(self, name_):
+        return int(name_.split("[")[1].split("]")[0])
+    
+    # def _debug_convert_to_the_other_machine(self, name_):
+    #     if not "+" in name_:
+    #         name, pid = self._get_original_name_pid_from_index(name_)
+    #         ret = []
+    #         for other_pid in self.name2index[name]:
+    #             if other_pid == pid:
+    #                 continue
+    #             other_index = self.name2index[name][other_pid]
+    #             ret.append(self.index2newname[other_index])
+    #         return ret
+    #     else:
+    #         new_names = []
+    #         for sub_name in name_.split("+"):
+    #             new_names.append(self._debug_convert_to_the_other_machine(sub_name))
+    #         new_names = list(np.array(new_names).T)
+    #         return ["+".join(ns) for ns in new_names]
+
+    def _get_original_name_pid_from_index(self, name_):
+        index = self._parse_index_from_name(name_)
+        return self.index2name[index], self.index2pid[index]
+
+    def get_node_attr(self, n, attr_):
+        if attr_ in self.node_attr_cache[n]:
+            return self.node_attr_cache[n][attr_]
+        else:
+            return 0
+
+    def cache_node_attr(self, n, attrs):
+        ### TODO (huhanpeng): need .copy() ???
+        self.node_attr_cache[n] = attrs
+
+        # print("cache attributes for %s" % n)
+
     def evaluate(self, _dag, _filename=None):
         # t = time.time()
 
@@ -408,10 +646,9 @@ class Optimizer:
                 comm_backend=self.clct.comm_backend,
                 byteps_graph=self.clct.byteps_graph)
         step_end_time_ms = [t / 1000 for t in replayer.replayAndDelay(None, _ouput=_output, _filename=_filename).values()]
-
         # print("Evaluate time {}".format(time.time() - t))
 
-        return max(step_end_time_ms), replayer.exct_dag
+        return max(step_end_time_ms), replayer.exct_dag, 0
 
     def candidate_selection(self, GS, topk=None, critical_path=None):
         ### Select nodes on the critical path of the execution graph as the candidates
@@ -424,7 +661,7 @@ class Optimizer:
             else:
                 raise ValueError("Invalid type for input (type: {}), only GraphState and nx.DiGraph are allowed".format(type(GS)))
 
-            iter_time, exct_dag = self.evaluate(new_dag)
+            iter_time, exct_dag, mem_usage = self.evaluate(new_dag)
             if isinstance(GS, GraphState) and GS.iter_time is None:
                 GS.iter_time = iter_time
                 if self.opt_GS is None or iter_time < self.opt_GS.iter_time:
@@ -436,23 +673,11 @@ class Optimizer:
             critical_path = self.wrap_critical_path(exct_dag)
         else:
             new_dag = GS
-        
-        filtered_critical_path = []
-        for (node, length) in critical_path:
-            if "+" in node:
-                # fused node
-                filtered_critical_path.append((node, length))
-            elif "[" in node and "]" in node:
-                orig_name, pid = self._get_original_name_pid_from_index(node)
-                if orig_name in self.cost_models[pid].graph_def_util.operation_names and orig_name not in self.forbidden_list:
-                    filtered_critical_path.append((node, length))
 
         if topk is None:
-            # print(sorted(filtered_critical_path_orig_name, key=lambda x: x[1], reverse=True)[:20])
-            # input()
-            return filtered_critical_path, new_dag
+            return critical_path, new_dag
         else:
-            critical_path = sorted(filtered_critical_path, key=lambda x: x[1], reverse=True)
+            critical_path = sorted(critical_path, key=lambda x: x[1], reverse=True)
             return critical_path[:topk], new_dag
 
     def wrap_critical_path(self, _dag, verbose=False):
@@ -476,158 +701,44 @@ class Optimizer:
     def init_search_space(self, candidates, _dag: nx.DiGraph, _pkg: PKGraph):
         ### Based on the candidates, init the search space for the new dependency graph `_dag`
         ### TODO (huhanpeng): currently only consider fusion
-        ### 			Need to add quantization
+        ###             Need to add quantization
         search_space = []
         weights = []
-        prun_cnt = 0
-        # time_spanning_trees = []
-        # time_st = []
-        for n, l in candidates:
-            # node heat
-            heat = self._get_heat_from_history(n)
 
-            # DEBUG_COMPARE:
-            # heat = 1
+        ### OOM
+        if self.mem_usage > self.memory_budget:
+            for _cost_model in self.cst_md_mng.mem_model_list:
+                ss_, wei_ = _cost_model.init_search_space(candidates, _dag, _pkg)
+                search_space += ss_
+                weights += wei_
+            if len(search_space) == 0:
+                SingleLogger().WARN("No optimization strategy to reduce memory usage: {} > {}".format(self.mem_usage, self.memory_budget))
 
-            if self.enable_defusion and "+" in n:
-                ### This a fused node
-                ns = n.split("+")
-                cat = parse_cat_fine_grained(ns[0])
-                pid = parse_pid_from_name(ns[0])
-                ns = set(ns)
-                subgraph: nx.DiGraph = self.dag.subgraph(ns)
+        for _cost_model in self.cst_md_mng.cost_model_list:
+            ss_, wei_ = _cost_model.init_search_space(candidates, _dag, _pkg)
+            search_space += ss_
+            weights += wei_
 
-                # st = time.time()
-                # randomly split edges using spanning tree
-                valid_split_plans = subgraph_partition_connected_nx(subgraph)
-                split_weights = []
-                for splits in valid_split_plans:
-                    split_weights.append(gmean([len(nodes) for nodes in splits]))
-                split_weights = np.exp(5e-4*(len(ns) - 80)) * (np.array(split_weights) / np.sum(split_weights))
-                for split_index, splits in enumerate(valid_split_plans):
-                    search_space.append(("-", n, splits))
-                    weights.append( self._combine_weight(l, heat) * split_weights[split_index] )
-                # ed = time.time()
-                # time_spanning_trees.append(ed - st)
+        # # time_spanning_trees = []
+        # # time_st = []
+        # for n, l in candidates:
+        #     # node heat
+        #     heat = self._get_heat_from_history(n)
 
-                # split out source or sink nodes
-                # st = time.time()
-                # splittable_nodes = []
-                # for node_name, degree in subgraph.out_degree():
-                #     if degree == 0:
-                #         splittable_nodes.append(node_name)
-                # for node_name, degree in subgraph.in_degree():
-                #     if degree == 0:
-                #         splittable_nodes.append(node_name)
-                # for node_to_split_out in splittable_nodes:
-                #     rest_of_nodes = list(ns - set([node_to_split_out]))
-                #     rest_subgraph = subgraph.subgraph(rest_of_nodes)
-                #     ccs = nx.connected_components(rest_subgraph.to_undirected())
-                #     components = [(node_to_split_out, )]
-                #     for cc in ccs:
-                #         components.append(tuple(cc))
-                #     search_space.append(("-", n, tuple(components)))
-                #     weights.append(l)
-                # ed = time.time()
-                # time_st.append(ed - st)
-            else:
-                ### Nodes that have never been fused
-                cat = parse_cat_fine_grained(n)
-                pid = parse_pid_from_name(n)
+        #     # DEBUG_COMPARE:
+        #     # heat = 1
+        #     if  "+" not in n:
 
-            # if cat != "operator.FW":
-            # 	### TODO (huhanpeng): only pick FW, then fuse corresponding BW
-            # 	continue
-            try:
-                n_orig_name, n_pid = self._get_original_name_pid_from_index(n)
-            except (IndexError, KeyError):
-                continue
-            if n_orig_name not in self.cost_models[n_pid].graph_def_util.operation_names:
-                continue
+        #         ### Nodes that have never been fused
+        #         cat = parse_cat_fine_grained(n)
+        #         pid = parse_pid_from_name(n)
 
-            for succ_ in _dag.successors(n):
-                # some filters
-                if succ_ in self.forbidden_list or not _pkg.can_contract_edge(n, succ_):
-                    continue
-                if "+" not in succ_:
-                    try:
-                        succ_orig_name, succ_pid = self._get_original_name_pid_from_index(succ_)
-                    except (IndexError, KeyError):
-                        continue
-                    if succ_orig_name not in self.cost_models[succ_pid].graph_def_util.operation_names:
-                        continue
+        #         ### check if mixed precision can be used for this node
+        #         ### TODO (huhanpeng) do not support quantizing fused nodes now
+        #         if self.amp_predictor.is_need_amp(_dag, n):
+        #             search_space.append((">", n, None))
+        #             weights.append(l)
 
-                # edge_data = _dag.get_edge_data(n, succ_)
-                # if edge_data and "exec_edges" in edge_data and edge_data["exec_edges"]:
-                #     print("IGNORED EXECUTION EDGE!!!!!!!!")
-                #     continue
-                # else:
-                #     print(n, succ_)
-                #     print(edge_data)
-                #     print("==================")
-                _pid = parse_pid_from_name(succ_)
-                _cat = parse_cat_fine_grained(succ_)
-                if pid != _pid or cat != _cat:
-                    continue
-
-                ### Assumption 1: for edge a->b, only if the indegree of b is 1, the node can be fused
-                # bw_v = self.convert_fw2bw(n)
-                # if len(_dag.in_edges(succ_)) > 1 or len(_dag.in_edges(bw_v)) > 1:
-                # if len(_dag.in_edges(succ_)) > 1:
-                #     continue
-
-                # bw_u = self.convert_fw2bw(succ_)
-                # assert bw_u in _dag.nodes and bw_v in _dag.nodes
-                
-                # TODO (huhanpeng): this process is only for NCCL now
-                # if args.comm_backend != "NCCL":
-                # 	raise NotImplementedError()
-
-                ### Assumption 2: for edge bw_u->bw_v, if comm_bw_u > bw_v, it can not bring any speedup if fusing u and v.
-                def ret_comm_time(_node):
-                    __ret = _dag.nodes[_node]["avg"]
-                    for __succ in _dag.successors(_node):
-                        _pid = parse_pid_from_name(__succ)
-                        if "Comm" in __succ and pid == _pid:
-                            __ret += ret_comm_time(__succ)
-                    return __ret
-
-                comm_t = 0
-                # for bw_u_succ in _dag.successors(bw_u):
-                for bw_u_succ in _dag.successors(n):
-                    if "Comm" in bw_u_succ:
-                        if self.comm_backend == "NCCL":
-                            comm_t += ret_comm_time(bw_u_succ)
-                        else:
-                            comm_t += _dag.nodes[bw_u_succ]["avg"]
-                
-                # if comm_t >= _dag.nodes[bw_v]["avg"]:
-                if comm_t >= _dag.nodes[succ_]["avg"]:
-                    prun_cnt += 1
-                    # G_star = self.apply_strategies(self.dag, ("+", n, succ_))
-                    # iter_time, _ = self.evaluate(G_star)
-                    SingleLogger().info("Prune fusing {} and {} with comm time {}".format(n, succ_, comm_t))
-                    continue
-
-                # calculate heat using max(heat(n), heat(succ_))
-                heat_succ = self._get_heat_from_history(succ_)
-
-                heat_combined = (heat + heat_succ) / 2
-
-                # if n == "traces_0.rank0->BW.[2654]":
-                #     print("Heat for (traces_0.rank0->BW.[2654], {}):".format(succ_))
-                #     print(heat_combined)
-                #     input()
-                
-                # if heat_combined > 0:
-                #     print("Heat for ({}, {}): {}".format(n, succ_, heat_combined))
-                #     input()
-
-                # DEBUG_COMPARE
-                # heat_combined = 1
-
-                search_space.append(("+", n, succ_))
-                weights.append(self._combine_weight(l, heat_combined))
         # SingleLogger().info("Init search space len={} from {} candidates, prune {}".format(len(search_space), len(candidates), prun_cnt))
         # SingleLogger().info("Time spent for spanning tree: {}".format(sum(time_spanning_trees)/ len(time_spanning_trees)))
         # SingleLogger().info("Time spent for source/sink: {}".format(sum(time_st)/ len(time_st)))
@@ -640,31 +751,24 @@ class Optimizer:
         __dag = _dag.copy()
         __pkg = _pkg.copy()
 
-        def __apply(s):
-            op, target, next_ = s
-            ### TODO (huhanpeng): need further add other optimization techiniques
-            if op == "+":
-                ### Fuse two nodes
-                return self.op_fusion(__dag, __pkg, target, next_)
-            elif op == "-":
-                return self.op_defusion(__dag, __pkg, target, next_)
-
         if isinstance(strategy, list):
             nodes_introduced = set()
             nodes_removed = set()
             for s in strategy:
-                success, n_introduced, n_removed = __apply(s)
+                op, target, next_ = s
+                success, n_introduced, n_removed = self.cst_md_mng.strategy2model[op].apply(s, __dag, __pkg)
                 if not success:
                     raise OptApplyStrategyError
                 nodes_introduced.update(n_introduced)
                 nodes_removed.update(n_removed)
         else:
-            success, nodes_introduced, nodes_removed = __apply(strategy)
+            op, target, next_ = strategy
+            success, nodes_introduced, nodes_removed = self.cst_md_mng.strategy2model[op].apply(strategy, __dag, __pkg)
             if not success:
                 raise OptApplyStrategyError
         return __dag, __pkg, nodes_introduced, nodes_removed
 
-    def pick_strategy(self, search_space, weights=None, invalid_strategies = None):
+    def pick_strategy(self, search_space, weights=None, invalid_strategies=None):
         ### TODO (huhanpeng): need some priority/heuristic
         valid_search_space = []
         valid_weights = []
@@ -706,33 +810,12 @@ class MCMCOptimizer(Optimizer):
     ''' Markov Chain Monte Carlo algorithm'''
     def __init__(self, *args, **kwargs):
         super(MCMCOptimizer, self).__init__(*args, **kwargs)
-        self.enable_defusion = True
-        self.forbidden_list = set()
         self.heat_history = {}
         if args_.heat_window_size:
             self.heat_window_size = args_.heat_window_size
         else:
             self.heat_window_size = 5
 
-        self.initial_forbidden_list = set()
-        
-        # limit the range of nodes during search
-        for node in self.dag.nodes:
-            # ignore BW nodes and communication nodes
-            if "BW" in node or (not node.startswith("traces_0") and not node.startswith("traces_1")):
-                self.initial_forbidden_list.add(node)
-
-            try:
-                orig_name, pid = self._get_original_name_pid_from_index(node)
-            except:
-                # not standard nodes, ignore
-                self.forbidden_list.add(node)
-                self.initial_forbidden_list.add(node)
-                continue
-            if orig_name not in self.cost_models[pid].graph_def_util.operation_names or "Assign" in orig_name or "BytepsPushPull" in orig_name:
-                self.forbidden_list.add(node)
-                self.initial_forbidden_list.add(node)
-    
     def __dump_cluster_mapping(self, dag, output_path):
         cluster_index = 0
         with open(output_path, "w") as f:
@@ -743,7 +826,7 @@ class MCMCOptimizer(Optimizer):
                         f.write("{} {}\n".format(orig_node_name, cluster_index))
                     cluster_index += 1
 
-    def search(self, graph_cache="/root/graph_cache.pickle", step_size=1):
+    def search(self, graph_cache=os.path.join(ROOT_PATH, "graph_cache.pickle"), step_size=1):
         ### TODO (huhanpeng): is shallow copy is enough ???
         if graph_cache is not None and os.path.isfile(graph_cache):
             with open(graph_cache, "rb") as f:
@@ -760,35 +843,8 @@ class MCMCOptimizer(Optimizer):
                 if node not in self.node_attr_cache:
                     self.cache_node_attr(node, G.nodes[node])
 
-            partition_G = G.copy()
-            partition_PKG = PKGraph(partition_G)
-
-            source_nodes = sorted([node for node in partition_G.nodes if node not in self.initial_forbidden_list], key=lambda x: partition_G.in_degree(x))
-
-            # Run post order traversal on partition_G
-            visited_nodes = set()
-            for source in tqdm(source_nodes, total=len(source_nodes)):
-                if source not in visited_nodes and source in partition_G.nodes:
-                    _, _, partition_G = postorder_contract_nx(partition_G, partition_PKG, source, visited_nodes, forbidden_list=self.initial_forbidden_list, size_limit=800)
-            for node_name in tqdm(partition_G.nodes()):
-                if "+" in node_name:
-                    # fused node, test if compilable
-                    try:
-                        self.parse_node_attr(partition_G, node_name)
-                        compilable=True
-                    except OptQueryCostModelError:
-                        # traceback.print_exc()
-                        compilable=False
-                    if compilable:
-                        ns = node_name.split("+")
-                        G, new_node_name = contract_nodes_nx(G, ns)
-                        PKG.contract_nodes_unsafe(ns)
-                        self.parse_node_attr(G, new_node_name)
-                        # ns0 = [self._debug_convert_to_the_other_machine(node) for node in ns]
-                        # G, new_node_name0 = contract_nodes_nx(G, ns0)
-                        # PKG.contract_nodes_unsafe(ns0)
-                        # self.parse_node_attr(G, new_node_name0)
-                        initial_partitions_formed += 1
+            for _cost_model in self.cst_md_mng.cost_model_list:
+                initial_partitions_formed = _cost_model.init_partition(G, PKG, initial_partitions_formed)
             if graph_cache:
                 with open(graph_cache, "wb") as f:
                     pickle.dump([G, PKG, self.node_attr_cache, initial_partitions_formed], f)
@@ -800,11 +856,13 @@ class MCMCOptimizer(Optimizer):
             self.heat_history[node] = [(0, 0)] * self.heat_window_size
         SingleLogger().info("="*20 + " Search Starts " + "="*20)
         SingleLogger().info("Successfully initialized {} partitions.".format(initial_partitions_formed))
+
         if "BPF_DUMP_INIT_GRAPH_TO" in os.environ:
             bpf_dump_init_graph_to = os.environ["BPF_DUMP_INIT_GRAPH_TO"]
         else:
             bpf_dump_init_graph_to = None
-        cost, exct_dag = self.evaluate(G, _filename=bpf_dump_init_graph_to)
+        cost, exct_dag, self.mem_usage = self.evaluate(G, _filename=bpf_dump_init_graph_to)
+
         trajectory = []
         candidates, _ = self.candidate_selection(G, topk=None, critical_path=self.wrap_critical_path(exct_dag))
         search_space, weights = self.init_search_space(candidates, G, PKG)
@@ -861,9 +919,9 @@ class MCMCOptimizer(Optimizer):
                     SingleLogger().info(msg + "\033[0m")
                 ### Start to replay
                 if self.step % 20 == 0:
-                    cost_star, exct_dag = self.evaluate(G_star, _filename="/root/searched_graph/{}.json".format(self.step))
+                    cost_star, exct_dag, mem_usage = self.evaluate(G_star, _filename=os.path.join(ROOT_PATH, "searched_graph/{}.json".format(self.step)))
                 else:
-                    cost_star, exct_dag = self.evaluate(G_star)
+                    cost_star, exct_dag, mem_usage = self.evaluate(G_star)
                 # if step < 200:
                 #     MCMC_BETA = 1
                 # else:
@@ -916,6 +974,7 @@ class MCMCOptimizer(Optimizer):
                     PKG = PKG_star
                     cost = cost_star
                     trajectory += strategy_history_in_step
+                    self.mem_usage = mem_usage
 
                     ### clean up heat history for removed nodes
                     for node in strategy_removed_nodes:
@@ -932,7 +991,7 @@ class MCMCOptimizer(Optimizer):
                     break
             SingleLogger().info("\033[94m" + "Speedup to the origin: %6.4f %%"%(100 * (self.base_cost - cost) / self.base_cost) + "'\033[0m'")
             SingleLogger().info("\033[94m" + "Best speedup: %d th acception, speed up to the origin: %6.4f %%"%(len(best_strategy), 100 * (self.base_cost - best_cost) / self.base_cost) + "'\033[0m'")
-            with open("/root/search_trajectory.txt", "a") as f:
+            with open(os.path.join(ROOT_PATH, "search_trajectory.txt"), "a") as f:
                 f.write(str(time.time()) + ": {}".format(100 * (self.base_cost - best_cost) / self.base_cost) + "\n")
 
  
