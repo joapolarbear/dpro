@@ -346,7 +346,7 @@ class TraceManager:
         for trace in traces:
             if trace.get("name", None) is None or trace.get("ts", None) is None:
                 print(trace)
-                raise
+                raise RuntimeError("Check trace failed.")
         return traces
         
     def _is_comm_trace(self, event):
@@ -496,7 +496,7 @@ class TraceManager:
         ### iter_list_all, shape = (n_GPUs, n_steps) ==> (n_steps)
         iter_list_all = np.average(np.array(iter_list_all), axis=0)
         self.iter_time = np.average(iter_list_all)
-        self.opt_step = np.argmin(np.abs(iter_list_all - iter_time))
+        self.opt_step = np.argmin(np.abs(iter_list_all - self.iter_time))
         SingleLogger().info("<Overall> step %d is the one closest to average %f - %s" % (self.opt_step, self.iter_time, iter_list_all))
                 
         """calculate the avg """
@@ -586,6 +586,8 @@ class TraceManager:
             unique_name = gen_long_name(rank_prefix, name)
         elif self.dir_level == DirLevel.TRIAL:
             unique_name = gen_long_name("%s.%s"%(wk_prefix, rank_prefix), name)
+        else:
+            raise RuntimeError("Unsupported DirLevel.")
 
         if unique_name not in self.name2sta:
             # SingleLogger().warn("Fail to find the trace of %s" % unique_name)
@@ -665,6 +667,18 @@ class TraceManager:
         for event in self.traces:
             if (cat_name is None or parse_cat_from_name(event["name"]) == cat_name) and not self._is_ignore_for_sta(event):
                 prefix2traces[_get_prefix(event)].append(event)
+        return prefix2traces
+    
+    def group_op_by_prefix_and_cat(self):
+        prefix2traces = {}
+        def _get_prefix_and_cat(e):
+            prefix = e["pid"]
+            e_cat = parse_cat_from_name(e["name"])
+            if (prefix, e_cat) not in prefix2traces:
+                prefix2traces[(prefix, e_cat)] = []
+            return (prefix, e_cat)
+        for event in self.traces:
+            prefix2traces[_get_prefix_and_cat(event)].append(event)
         return prefix2traces
 
     def map_name2idxlist(self, name):

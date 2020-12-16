@@ -73,9 +73,12 @@ class Device:
 		'''
 		### for debug
 		debug_utils.DebugRecorder().debug_event_start()
-
+		
+		# TODO(chenyu): what if self.infi_para?
 		if not self.infi_para:
 			start_t = self.real_start_t(_last_end_time)
+		else:
+			raise NotImplementedError("Infi para is not yet implemented.")
 
 		if name == "END":
 			#! No event is generated, but has successors
@@ -147,7 +150,7 @@ class Device:
 					if gap > 1000:
 						SingleLogger().debug("Large GAP detected: {}, key = {}, gap = {}".format(name, key, value))
 		if gap < 0:
-			raise RuntimeError("Negative GAP detected: {}, key = {}, gap = {}".format(name, key, gap))
+			raise RuntimeError("Negative GAP detected: {}, gap = {}".format(name, gap))
 		self.device_time = _end_time + gap
 
 	def mark_as_exct(self, name, _start_t, _end_time):
@@ -313,6 +316,7 @@ class PSCommDevice(Device):
 class Replayer:
 	def __init__(self, dag, _step_num, leaf_dirs, dump_path, comm_backend, byteps_graph, show_queue=False):
 		self.dag = dag
+		self.orig_dag = dag.copy()
 		self.step_num = _step_num
 		self.leaf_dirs = leaf_dirs
 		self.dump_path = dump_path
@@ -501,7 +505,8 @@ class Replayer:
 			device_.reset()
 
 		### Ininitalize the execution graph as the depdency graph
-		self.exct_dag = self.dag.copy()
+		self.dag = self.orig_dag.copy()
+		self.exct_dag = self.orig_dag.copy()
 
 	def dump_critical_path(self, file, critical_path):
 		rst = {

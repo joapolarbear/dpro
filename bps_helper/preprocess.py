@@ -1,4 +1,7 @@
+from networkx.utils.rcm import reverse_cuthill_mckee_ordering
 from scapy.all import *
+from scapy.layers.inet import TCP
+from scapy.layers.inet import IP
 from arg_utils import SingleArg
 import json
 import os
@@ -29,9 +32,9 @@ def __parse_single_packet(packet):
         if selected == "s":
             if index < 4:
                 index = data.find(b"s:", index+2)
-                if index < 4 or index > 24:
+                if index < 4 or index > 37:
                     return None
-            key = int.from_bytes(data[index+4:index+12], "little", signed=False)
+            key = int.from_bytes(data[index+4+8:index+12+8], "little", signed=False)
             is_request = data[index+2]
             if is_request != 1 and is_request != 0:
                 return None
@@ -44,9 +47,9 @@ def __parse_single_packet(packet):
                 return None
         else:
             if index != -1:
-                if index > 24:
+                if index > 37:
                     return None
-                key = int.from_bytes(data[index+4:index+12], "little", signed=False)
+                key = int.from_bytes(data[index+4+8:index+12+8], "little", signed=False)
                 is_request = data[index+2]
                 if is_request != 1 and is_request != 0:
                     return None
@@ -125,7 +128,7 @@ def __parse_packets(packets, key_to_tensor_name):
     __check_valid(cleaned_port_logs)
     return cleaned_port_logs
 
-def __generate_comm_events(logs, pid, key_to_tensor_name):
+def __generate_comm_events_capture(logs, pid, key_to_tensor_name):
     events = []
     for ev, op, res, ts, key in logs:
         if key in key_to_tensor_name:
@@ -145,6 +148,55 @@ def __generate_comm_events(logs, pid, key_to_tensor_name):
             event["tid"] = 0
             events.append(event)
     return events
+
+def __populate_key_name_mapping(key_dict_path, gradient_name_list_path = None, platform="TENSORFLOW"):
+    key_to_tensor_name = {}
+    if platform == "MXNET":
+        # read id to name mapping
+        tensor_index_to_tensor_name = {}
+        with open(gradient_name_list_path, "r") as f:
+            index = 0
+            for line in f:
+                tensor_index_to_tensor_name[index] = line.strip()
+                index += 1
+
+        with open(key_dict_path, "r") as f:
+            for line in f:
+                name, keys = line.split(":")
+                if "gradient" in name:
+                    tensor_id = int(name.split("_")[-1])
+                    tensor_name = tensor_index_to_tensor_name[tensor_id]
+                    key_list = keys.split()
+                    try:
+                        if len(key_list) > 1:
+                            for index, key in enumerate(key_list):
+                                key_to_tensor_name[int(key)] = tensor_name+"~PART"+str(index)
+                        else:
+                            key_to_tensor_name[int(key_list[0])] = tensor_name
+                    except:
+                        pass
+    elif platform == "TENSORFLOW":
+        with open(key_dict_path, "r") as f:
+            for line in f:
+                try:
+                    name, keys = line.split(":")
+                except:
+                    continue
+                if "BytePSPushPull" in name or "grad" in name:
+                    tensor_name = name.strip()
+                    key_list = keys.split()
+                    try:
+                        if len(key_list) > 1:
+                            for index, key in enumerate(key_list):
+                                key_to_tensor_name[int(key)] = tensor_name+"~PART"+str(index)
+                        else:
+                            key_to_tensor_name[int(key_list[0])] = tensor_name
+                    except:
+                        pass
+    else:
+        raise NotImplementedError("Unsupported platform {}.".format(platform))
+    return key_to_tensor_name
+
 
 def preprocess_pcap(pcap_paths, process_names_list, node_ip_to_rank, 
                     key_dict_path, gradient_name_list_path=None,
@@ -186,51 +238,7 @@ def preprocess_pcap(pcap_paths, process_names_list, node_ip_to_rank,
     if save_path is None:
         save_path = os.path.join(args_.path, "comm_timeline.json")
 
-    key_to_tensor_name = {}
-    if platform == "MXNET":
-        # read id to name mapping
-        tensor_index_to_tensor_name = {}
-        with open(gradient_name_list_path, "r") as f:
-            index = 0
-            for line in f:
-                tensor_index_to_tensor_name[index] = line.strip()
-                index += 1
-
-        with open(key_dict_path, "r") as f:
-            for line in f:
-                name, keys = line.split(":")
-                if "gradient" in name:
-                    tensor_id = int(name.split("_")[-1])
-                    tensor_name = tensor_index_to_tensor_name[tensor_id]
-                    key_list = keys.split()
-                    try:
-                        if len(key_list) > 1:
-                            for index, key in enumerate(key_list):
-                                key_to_tensor_name[int(key)] = tensor_name+"~PART"+str(index)
-                        else:
-                            key_to_tensor_name[int(key_list[0])] = tensor_name
-                    except:
-                        pass
-    elif platform == "TENSORFLOW":
-        with open(key_dict_path, "r") as f:
-            for line in f:
-                try:
-                    name, keys = line.split(":")
-                except:
-                    pass
-                if "BytePSPushPull" in name or "grad" in name:
-                    tensor_name = name.strip()
-                    key_list = keys.split()
-                    try:
-                        if len(key_list) > 1:
-                            for index, key in enumerate(key_list):
-                                key_to_tensor_name[int(key)] = tensor_name+"~PART"+str(index)
-                        else:
-                            key_to_tensor_name[int(key_list[0])] = tensor_name
-                    except:
-                        pass
-    else:
-        raise NotImplementedError("Unsupported platform {}.".format(platform))
+    key_to_tensor_name = __populate_key_name_mapping(key_dict_path, gradient_name_list_path=gradient_name_list_path, platform=platform)
 
     # read pcap files and perform preprocessing
     machine_logs_list = []
@@ -252,14 +260,164 @@ def preprocess_pcap(pcap_paths, process_names_list, node_ip_to_rank,
 
     chrome_events = []
     for index, log_dict in enumerate(machine_logs_list):
-        print(process_names_list[index])
+        # print(process_names_list[index])
         for key, logs in log_dict.items():
-            _, ip = key
-            events = __generate_comm_events(logs, key_to_pid[key], key_to_tensor_name)
-            if '1' in process_names_list[index]:
-                for ev in events:
-                    if 'ts' in ev:
-                        ev['ts'] = ev['ts']
+            events = __generate_comm_events_capture(logs, key_to_pid[key], key_to_tensor_name)
+            chrome_events += events
+
+    meta_events = []
+    for pid in range(len(pid_to_name)):
+        meta_events.append(
+            {"name": "process_name", "ph": "M", "pid": pid, "tid": 0,
+                "args": {
+                "name" : pid_to_name[pid]
+                }
+            }
+        )
+
+    chrome_json = meta_events + chrome_events
+
+    with open(save_path, 'w') as f:
+        json.dump(chrome_json, f)
+        real_path = os.path.realpath(f.name)
+    
+    return real_path
+
+############################# TIME STAMP PARSING ###############################
+
+def __parse_timestamp_logs(log_lines, key_to_tensor_name):
+    # parse header
+    node_metas = []
+    for line in log_lines:
+        if line.startswith("role"):
+            metas = [m.strip() for m in line.split(",")]
+            node_meta = {}
+            for meta in metas:
+                key, val = meta.split("=")
+                node_meta[key] = val
+            node_metas.append(node_meta)
+
+    logs = {}
+    for line in log_lines:
+        if line.startswith("role"):
+            continue
+        ts, is_start, is_push, is_req, tid, sender, recver = line.split()
+        tid = int(tid)
+        ts = int(ts)
+        sender = int(sender)
+        recver = int(recver)
+        if is_start in ["True", "true"]:
+            is_start = True
+        else:
+            is_start = False
+        if is_push in ["True", "true"]:
+            is_push = True
+        else:
+            is_push = False
+        if is_req in ["True", "true"]:
+            is_req = True
+        else:
+            is_req = False
+        if tid in key_to_tensor_name:
+            if (sender, recver) not in logs:
+                logs[(sender, recver)] = []
+            logs[(sender, recver)].append((ts, is_start, is_push, is_req, tid))
+        # else:
+        #     print("Sender: {}, Recver: {}, ts: {}, is_start: {}, is_push: {}, is_req: {}, tid: {}".format(sender, recver, ts, is_start, is_push, is_req, tid))
+        #     input()
+    return logs, node_metas
+
+def __generate_comm_events_timestamp(logs, pid, key_to_tensor_name):
+    events = []
+    for (ts, is_start, is_push, _, tid) in logs:
+        op = "PUSH" if is_push else "PULL"
+        if tid in key_to_tensor_name:
+            event = {}
+            event["name"] = key_to_tensor_name[tid] + "." + op
+            event["ph"] = "B" if is_start else "E"
+            event["ts"] = ts
+            event["pid"] = pid
+            event["tid"] = 0
+            events.append(event)
+        else:
+            event = {}
+            event["name"] = str(tid) + "."+ op
+            event["ph"] = "B" if is_start else "E"
+            event["ts"] = ts
+            event["pid"] = pid
+            event["tid"] = 0
+            events.append(event)
+    return events
+
+def preprocess_comm_timestamp(file_paths, node_ip_to_rank, 
+                            key_dict_path, gradient_name_list_path=None,
+                            save_path=None, platform="TENSORFLOW"):
+    """
+    Reads and preprocesses communication timestamp files. 
+
+    Parameters
+    ----------
+    file_paths : list
+        Paths to timestamp files.
+    
+    node_ip_to_rank: dict
+        IP address to node rank mappings.
+        e.g. {'10.xx.x.12': 0, '10.xx.xx.13': 1}
+    
+    gradient_name_list_path: str
+        Path to the file containing the list of gradient names. This is captured
+        by the trace collecting process.
+    
+    key_dict_path: str
+        Path to the file containing the gradient name to communication key 
+        mapping. This is captured by the trace collecting process.
+
+    save_path: str
+        Path to the output trace file. Default: "PATH/comm_timeline.json"
+
+    """
+    # get default save_path
+    if save_path is None:
+        save_path = os.path.join(args_.path, "comm_timeline.json")
+
+    tid_to_tensor_name = __populate_key_name_mapping(key_dict_path, gradient_name_list_path=gradient_name_list_path, platform=platform)
+
+    # read pcap files and perform preprocessing
+    logs_dict = {}
+    all_node_metas = []
+    for path in file_paths:
+        with open(path, "r") as f:
+            lines = f.read().splitlines()
+            logs, node_metas = __parse_timestamp_logs(lines, tid_to_tensor_name)
+        for key, val in logs.items():
+            if key not in logs_dict:
+                logs_dict[key] = val
+            else:
+                logs_dict[key] += val
+        all_node_metas += node_metas
+    
+    node_id_to_name = {}
+    for node_meta in all_node_metas:
+        ip = node_meta["ip"]
+        nid = int(node_meta["id"])
+        role = node_meta["role"]
+        node_rank = node_ip_to_rank[ip]
+        node_name = role + "_" + str(node_rank)
+        node_id_to_name[nid] = node_name
+
+    pid_count = 0
+    pid_to_name = {}
+    key_to_pid = {}
+    for (sender, recver) in logs_dict.keys():
+        if sender in node_id_to_name and recver in node_id_to_name:
+            key_to_pid[(sender, recver)] = pid_count
+            pid_to_name[pid_count] = node_id_to_name[sender] + " -> " + node_id_to_name[recver]
+            pid_count += 1
+
+    chrome_events = []
+    for (sender, recver), logs in logs_dict.items():
+        if (sender, recver) in key_to_pid:
+            events = __generate_comm_events_timestamp(logs, key_to_pid[(sender, recver)], tid_to_tensor_name)
             chrome_events += events
 
     meta_events = []
@@ -365,7 +523,7 @@ def parse_server_logs(server_log_paths, node_rank_list, key_dict_path,
                 try:
                     name, keys = line.split(":")
                 except:
-                    pass
+                    continue
                 if "BytePSPushPull" in name or "grad" in name:
                     tensor_name = name.strip()
                     key_list = keys.split()

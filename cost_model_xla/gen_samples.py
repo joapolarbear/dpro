@@ -1,3 +1,4 @@
+from collections import deque
 import tensorflow as tf
 from tensorflow.core.framework import types_pb2
 from google.protobuf import text_format
@@ -12,24 +13,26 @@ import os
 import hashlib
 import json
 import scipy
-from wwl import PairwiseWWL, PairwiseOverlap
+# from wwl import PairwiseWWL, PairwiseOverlap
 import igraph
 from scipy.special import softmax
-from tqdm import trange
+from tqdm import trange, tqdm
 from multiprocessing import Pool
 
 from .p_dispersion import p_dispersion_local_search, p_dispersion_lp, parallel_p_dispersion_local_search
+from .pk_graph import PKGraph, PKGraphCycleError, contract_nodes_nx, \
+                        defuse_nodes_inplace_nx, postorder_contract_nx, subgraph_partition_connected_nx
 
 def format_feed(node_name, shape):
     feed_str = "feed {{\n\tid {{ node_name: \"{}\" }}\n\tshape {{\n".format(node_name)
     for dim in shape:
         dim_str = "\t\tdim {{ size: {} }}\n".format(int(dim))
         feed_str += dim_str
-    feed_str += "\t\n}\n}\n"
+    feed_str += "\t}\n}\n"
     return feed_str
 
 def format_fetch(node_name):
-    fetch_str = "fetch {{\n\tid {{ node_name: \"{}\" }}\n}}".format(node_name)
+    fetch_str = "fetch {{\n\tid {{ node_name: \"{}\" }}\n}}\n".format(node_name)
     return fetch_str
 
 def serialize_feed_fetch_to_tf2xla_config(feed_names, feed_shapes, fetch_names, config_path):
@@ -47,27 +50,37 @@ def get_input_def_from_graph_(graph):
             input_op_defs.append(op.node_def)
     return input_op_defs
 
-def worker_func(subgraphs, node_features, k, wid):
-    pw_wwl = PairwiseWWL(subgraphs, node_features)
-    selected_indices = p_dispersion_local_search(pw_wwl, k, sample_ratio=0.05, patience=10, tqdm_position=wid)
-    return selected_indices
+# def worker_func(subgraphs, node_features, k, wid):
+#     pw_wwl = PairwiseWWL(subgraphs, node_features)
+#     selected_indices = p_dispersion_local_search(pw_wwl, k, sample_ratio=0.05, patience=10, tqdm_position=wid)
+#     return selected_indices
 
-def worker_func_overlap(subgraphs, node_features, k, wid):
-    pw_ovlp = PairwiseOverlap(subgraphs, node_features)
-    selected_indices = p_dispersion_local_search(pw_ovlp, k, sample_ratio=0.05, patience=10, tqdm_position=wid)
-    return selected_indices
+# def worker_func_overlap(subgraphs, node_features, k, wid):
+#     pw_ovlp = PairwiseOverlap(subgraphs, node_features)
+#     selected_indices = p_dispersion_local_search(pw_ovlp, k, sample_ratio=0.05, patience=10, tqdm_position=wid)
+#     return selected_indices
 
-class GDUNonFixedShapeError(Exception):
+class GSInternalErrors(Exception):
     pass
 
-class GDUNotInGraphError(Exception):
+class GSNonFixedShapeError(GSInternalErrors):
     pass
 
-class GDUSubgraphTooSmallError(Exception):
+class GSNotInGraphError(GSInternalErrors):
+    pass
+
+class GSSubgraphTooSmallError(GSInternalErrors):
+    pass
+
+class GSFailedToCompileSampleError(GSInternalErrors):
+    pass
+
+class GSDuplicateSubgraphError(GSInternalErrors):
     pass
 
 class GraphDefUtil(object):
     def __init__(self, graph_def, shape_dict_path=None):
+        import byteps.tensorflow as bps # type: ignore
         super().__init__()
         self.graph_def = graph_def
         self.original_graph = tf.Graph()
@@ -113,28 +126,64 @@ class GraphDefUtil(object):
 
     def get_subgraph_def_config_from_nodes(self, node_names, output_dir, sample_index):
         # check ops are in the graph
+        all_node_names = set()
         for node_name in node_names:
             if node_name not in self.operation_names:
-                raise GDUNotInGraphError("[Cost Model] {} not in graph ops.".format(node_name))
+                raise GSNotInGraphError("[Cost Model] {} not in graph ops.".format(node_name))
+            all_node_names.add(node_name)
+        # constant analysis
+        output_map = {}
+        input_map = {}
+        constant_nodes = set()
+        for name in node_names:
+            op = self.original_graph.get_operation_by_name(name)
+            if op.type == "Const":
+                constant_nodes.add(name)
+            if name not in input_map:
+                input_map[name] = []
+            for input_tensor in op.inputs:
+                input_op_name = input_tensor.op.name
+                if input_tensor.op.type == "Const":
+                    constant_nodes.add(input_op_name)
+                if input_op_name not in output_map:
+                    output_map[input_op_name] = []
+                output_map[input_op_name].append(name)
+                input_map[name].append(input_op_name)
+
+        constant_queue = deque(list(constant_nodes))
+        while len(constant_queue) != 0:
+            c_node = constant_queue.pop()
+            if c_node in output_map:
+                c_outputs = output_map[c_node]
+                for successor_node in c_outputs:
+                    all_constant = True
+                    for node_input in input_map[successor_node]:
+                        if node_input not in constant_nodes:
+                            all_constant = False
+                            break
+                    if all_constant:
+                        constant_nodes.add(successor_node)
+                        constant_queue.appendleft(successor_node)
+
         subgraph_nodes = set()
         for name in node_names:
             potential_op = self.original_graph.get_operation_by_name(name)
-            forbidden_op_types = ["Transpose", "VariableV2", "Tile", "Sum", 
+            require_const_op_types = ["Transpose", "VariableV2", "Tile", "Sum", 
             "UnsortedSegmentSum", "Pad", "DynamicStitch", "Concat", "DynamicSlice", 
             "BatchToSpaceND", "BroadcastArgs","BroadcastGradientArgs", 
             "Concat", "ConcatV2", "ConcatOffset", "Empty", "FFT", "FFT2D", "FFT3D",
             "Fill", "Gather", "Scatter", "ResizeNearestNeighbor", "ResizeBilinear",
             "ResizeBilinearGrad", "ListDiff", "Slice", "InvertPermutation", 
             "Reshape", "Transpose", "ConjugateTranspose", "Range"]
-            if potential_op.type not in forbidden_op_types:
+            if potential_op.type not in require_const_op_types or potential_op.name in constant_nodes:
                 subgraph_nodes.add(potential_op)
         if len(subgraph_nodes) < 2:
-            raise GDUSubgraphTooSmallError("Subgraph too small (# effective ops < 2).")
+            raise GSSubgraphTooSmallError("Subgraph too small (# effective ops < 2).")
         for node in subgraph_nodes:
             # check fixed shape
             if not self.is_fixed_shape(node.outputs[0].shape):
                 # print("[Cost Model] {} has non-fixed shape at compile time.".format(node.name))
-                raise GDUNonFixedShapeError("{} has non-fixed shape at compile time.".format(node.name))
+                raise GSNonFixedShapeError("{} has non-fixed shape at compile time.".format(node.name))
         subgraph_frontline_nodes = set()
         internal_subgraph_nodes = set()
         subgraph_input_nodes = set()
@@ -147,8 +196,6 @@ class GraphDefUtil(object):
                     subgraph_frontline_nodes.add(node)
                     node_is_internal = False
                     break
-                elif input_op.type == "VariableV2":
-                    pass
             if node_is_internal:
                 if node.type == 'Placeholder':
                     subgraph_input_nodes.add(node)
@@ -177,11 +224,11 @@ class GraphDefUtil(object):
                     # check if shape fixed
                     if not self.is_fixed_shape(op_input_source.outputs[0].shape):
                         # print("[Cost Model] {} has non-fixed shape at compile time.".format(op_input_source.name))
-                        raise GDUNonFixedShapeError("{} has non-fixed shape at compile time.".format(op_input_source.name))
-                    if "BroadcastGradientArgs" in op_input_source.name:
-                        node_def = op_input_source.node_def
-                        if not op_input_source in subgraph_input_nodes and not op_input_source in internal_subgraph_nodes and not op_input_source in subgraph_frontline_nodes:
-                            subgraph_frontline_nodes.append(op_input_source)
+                        raise GSNonFixedShapeError("{} has non-fixed shape at compile time.".format(op_input_source.name))
+                    # if "BroadcastGradientArgs" in op_input_source.name:
+                    #     node_def = op_input_source.node_def
+                    #     if not op_input_source in subgraph_input_nodes and not op_input_source in internal_subgraph_nodes and not op_input_source in subgraph_frontline_nodes:
+                    #         subgraph_frontline_nodes.append(op_input_source)
                     if op_input_source in subgraph_input_nodes or op_input_source in internal_subgraph_nodes:
                         node_def = op_input_source.node_def
                     elif op_input_source.type == 'Const':
@@ -244,9 +291,10 @@ class GraphDefUtil(object):
             for input_tensor in node.inputs:
                 all_ops_used_as_input.add(input_tensor.op.name)
         for node_def in [op.node_def for op in subgraph_nodes]:
-            if node_def.name not in all_ops_used_as_input:
+            if node_def.name not in all_ops_used_as_input and node_def.op != "Const" and node_def.name not in constant_nodes:
                 node = out_graph.get_operation_by_name(node_def.name)
                 output_nodes.append(node)
+
         tf2xla_config_path = os.path.join(output_dir, "{}_config.pbtxt".format(sample_index))
         feed_names = []
         feed_shapes = []
@@ -256,7 +304,7 @@ class GraphDefUtil(object):
                 shape_as_list = [int(value) for value in list(node.outputs[0].shape)]
             except:
                 print("[GraphDefUtil] Node {} has non-fixed shapes.".format(node.name))
-                raise GDUNonFixedShapeError("[GraphDefUtil] Node {} has non-fixed shapes.".format(node.name))
+                raise GSNonFixedShapeError("[GraphDefUtil] Node {} has non-fixed shapes.".format(node.name))
             feed_shapes.append(shape_as_list)
         fetch_names = []
         for node in output_nodes:
@@ -266,20 +314,27 @@ class GraphDefUtil(object):
         return os.path.join(output_dir, "{}.pbtxt".format(sample_index)), tf2xla_config_path
 
 class SampleGenerator():
-    def __init__(self, graph_def, shape_dict_path=None):
+    def __init__(self, graph_def, shape_dict_path=None, ignored_nodes=None):
         self.graph_def_util = GraphDefUtil(graph_def, shape_dict_path=shape_dict_path)
         self.nx_graph = nx.DiGraph()
         self.node_sample_weights = {}
         self.edge_sample_weights = {}
         self.edge_max_weight = 1
-        self._preprocess_nx_graph()
+        self._preprocess_nx_graph(ignored_nodes)
         self.generated_graph_hashes = set()
+        self.ignored_nodes = ignored_nodes
 
-    def _preprocess_nx_graph(self):
+    def _preprocess_nx_graph(self, ignored_nodes=None):
+        if ignored_nodes is not None:
+            ignored_nodes = set(ignored_nodes)
+        else:
+            ignored_nodes = set()
         original_graph = self.graph_def_util.original_graph
         op_info_dict = {}
         unique_op_types = set()
         for op_name in self.graph_def_util.operation_names:
+            if op_name in ignored_nodes:
+                continue
             if op_name not in op_info_dict:
                 op_info_dict[op_name] = {}
             op = original_graph.get_operation_by_name(op_name)
@@ -308,6 +363,8 @@ class SampleGenerator():
             self.nx_graph.add_node(op_name, name=op_name, hash_value=op_hash)
             self.node_sample_weights[op_hash] = 0
             for input_tensor in op.inputs:
+                if input_tensor.op.name in ignored_nodes:
+                    continue
                 self.nx_graph.add_edge(input_tensor.op.name, op_name)
         # generate feature vector for each node
         len_type_one_hot = len(unique_op_types)
@@ -388,6 +445,26 @@ class SampleGenerator():
             subgraph_nodes.add(next_node)
             current_node = next_node
         return list(subgraph_nodes)
+    
+    def _max_cluster_sampler(self, forbidden_list, size_limit=800):
+        G: nx.DiGraph = self.nx_graph.copy()
+        PKG = PKGraph(G)
+
+        source_nodes = sorted(list(G.nodes), key=lambda x: G.in_degree(x))
+
+        # Run post order traversal on G
+        print("Finding maximal clusters in the graph... This may take a while...")
+        visited_nodes = set()
+        for source in tqdm(source_nodes, total=len(source_nodes)):
+            if source not in visited_nodes and source in G.nodes:
+                _, _, G = postorder_contract_nx(G, PKG, source, visited_nodes, forbidden_list=forbidden_list, size_limit=size_limit)
+        
+        clusters_formed = []
+        for node_name in G.nodes():
+            if "+" in node_name:
+                cluster_nodes = node_name.split("+")
+                clusters_formed.append(cluster_nodes)
+        return clusters_formed
 
     def get_original_graph_def(self):
         return self.graph_def_util.original_graph.as_graph_def(), get_input_def_from_graph_(self.graph_def_util.original_graph)
@@ -403,10 +480,59 @@ class SampleGenerator():
         self.node_sample_weights[self.nx_graph.nodes[chosen_node]["hash_value"]] += 1
         return chosen_node
     
+    # this method returns a generator of functions
+    def gen_max_cluster(self, forbidden_nodes=None, random_sample=False, min_cluster_size=4, max_cluster_size=800, cache_dir=None, forbidden_ratio=0.2):
+        clusters = []
+        if cache_dir is not None:
+            # check if cluster cache exists
+            cache_path = os.path.join(cache_dir, "max_cluster.pickle")
+            if os.path.exists(cache_path):
+                with open(cache_path, "rb") as f:
+                    clusters = pickle.load(f)
+                compute_cluster = False
+            else:
+                compute_cluster = True
+        else:
+            compute_cluster = True
+        if compute_cluster:
+            if forbidden_nodes is None or random_sample:
+                forbidden_nodes = random.sample(self.nx_graph.nodes, k=int(len(self.nx_graph.nodes) * forbidden_ratio))
+            clusters = self._max_cluster_sampler(forbidden_list=forbidden_nodes, size_limit=max_cluster_size)
+            if cache_dir is not None:
+                with open(os.path.join(cache_dir, "max_cluster.pickle"), "wb") as f:
+                    pickle.dump(clusters, f)
+        def ret_gen():
+            for cluster_nodes in clusters:
+                def try_generate_cluster_config(output_dir, sample_id, 
+                                                _min_cluster_size = min_cluster_size, 
+                                                _cluster_nodes = cluster_nodes):
+                    return self.gen_subgraph_def_config(_cluster_nodes, output_dir, sample_id, _min_cluster_size)
+                yield try_generate_cluster_config
+        return ret_gen(), len(clusters)
+
+    def gen_subgraph_def_config(self, cluster_nodes, output_dir, sample_id, min_cluster_size):
+        # filter the selected nodes
+        filtered_selected_node_names = []
+        for node_name in cluster_nodes:
+            if not "Assign" in node_name and not "Initializer" in node_name:
+                filtered_selected_node_names.append(node_name)
+        if len(filtered_selected_node_names) < min_cluster_size:
+            raise GSSubgraphTooSmallError
+
+        graph_def_path, graph_def_config_path = self.graph_def_util.get_subgraph_def_config_from_nodes(filtered_selected_node_names, output_dir, sample_id)
+
+        sub_g = self.nx_graph.subgraph(filtered_selected_node_names)
+        g_hash = nx.algorithms.weisfeiler_lehman_graph_hash(sub_g, node_attr="hash_value")
+        if g_hash in self.generated_graph_hashes:
+            raise GSDuplicateSubgraphError
+        else:
+            self.generated_graph_hashes.add(g_hash)
+            return graph_def_path, graph_def_config_path, sub_g
+    
     def gen_random_subgraph(self, output_dir, sample_id, choose_root_from_ops=None, min_levels=1, max_levels=10, forest_fire_p=0.5):
         # op selection logic
         if choose_root_from_ops is None:
-            filtered_op = [op for op in self.graph_def_util.original_graph.get_operations() if op.type != "Placeholder" and op.type != "Const" and op.type != "Identity"]
+            filtered_op = [op for op in self.graph_def_util.original_graph.get_operations() if op.type != "Placeholder" and op.type != "Const" and op.type != "Identity" and op.name not in self.ignored_nodes]
         else:
             filtered_op = []
             for op_name in choose_root_from_ops:
@@ -414,7 +540,7 @@ class SampleGenerator():
                     op = self.graph_def_util.original_graph.get_operation_by_name(op_name)
                 except Exception as e:
                     continue
-                if op.type != "Placeholder" and op.type != "Const" and op.type != "Identity" and op.type != "VariableV2":
+                if op.type != "Placeholder" and op.type != "Const" and op.type != "Identity" and op.type != "VariableV2" and op.name not in self.ignored_nodes:
                     filtered_op.append(op)
         if not filtered_op:
             # print(choose_root_from_ops)
@@ -435,157 +561,138 @@ class SampleGenerator():
                 selected_node_names = self._random_walk_sampler(root_op, num_levels)
             else:
                 raise RuntimeError("This should not happen")
-            # filter the selected nodes
-            filtered_selected_node_names = []
-            for node_name in selected_node_names:
-                if not "Assign" in node_name and not "Initializer" in node_name:
-                    filtered_selected_node_names.append(node_name)
-            if len(filtered_selected_node_names) < min_levels+ 1:
-                continue
             try:
-                graph_def_path, graph_def_config_path = self.graph_def_util.get_subgraph_def_config_from_nodes(filtered_selected_node_names, output_dir, sample_id)
-            except KeyboardInterrupt as e:
-                raise RuntimeError()
-            except Exception as e:
-                # this graph is not valid because it contains non-fixed shapes
-                # traceback.print_exc()
-                # exit(0)
-                continue
-            sub_g = self.nx_graph.subgraph(selected_node_names)
-            g_hash = nx.algorithms.weisfeiler_lehman_graph_hash(sub_g, node_attr="name")
-            if g_hash in self.generated_graph_hashes:
+                graph_def_path, graph_def_config_path, sub_g = self.gen_subgraph_def_config(selected_node_names, output_dir, sample_id, min_levels+1)
+            except GSInternalErrors as e:
                 duplicated_graph_count += 1
-                print("\033[91m Graph hash duplicated. \033[0m")
-                if duplicated_graph_count > 50:
-                    raise RuntimeError("Cannot generate new samples.")
-            else:
-                # print("\033[94m Adding graph hash {}. \033[0m".format(g_hash))
-                self.generated_graph_hashes.add(g_hash)
-                break
+                if duplicated_graph_count > 200:
+                    raise RuntimeError("Cannot generate new subgraphs.")
+                continue
+            break
         return graph_def_path, graph_def_config_path, sub_g
 
-class SubgraphSelector():
-    def __init__(self, graph_def, op_time_dict, num_samples, subgraph_dir, min_levels=2, max_levels=100, dispersion_algorithm="partitioned", shape_dict_path=None):
-        self.sample_generator = SampleGenerator(graph_def, shape_dict_path=shape_dict_path)
-        if not os.path.isdir(subgraph_dir):
-            os.mkdir(subgraph_dir)
-        self.num_samples = num_samples
-        self.subgraph_dir = subgraph_dir
-        self.op_time_dict = op_time_dict
-        self.min_levels = min_levels
-        self.max_levels = max_levels
-        self.dispersion_algorithm = dispersion_algorithm
+# class SubgraphSelector():
+#     def __init__(self, graph_def, op_time_dict, num_samples, subgraph_dir, min_levels=2, max_levels=100, dispersion_algorithm="partitioned", shape_dict_path=None):
+#         self.sample_generator = SampleGenerator(graph_def, shape_dict_path=shape_dict_path)
+#         if not os.path.isdir(subgraph_dir):
+#             os.mkdir(subgraph_dir)
+#         self.num_samples = num_samples
+#         self.subgraph_dir = subgraph_dir
+#         self.op_time_dict = op_time_dict
+#         self.min_levels = min_levels
+#         self.max_levels = max_levels
+#         self.dispersion_algorithm = dispersion_algorithm
 
-    def _gen_subgraph_samples(self):
-        sampled_subgraphs = []
-        # generate subgraph samples
-        for i in trange(self.num_samples):
-            while True:
-                try:
-                    graph_def_path, graph_def_config_path, nx_subgraph = self.sample_generator.gen_random_subgraph(self.subgraph_dir, i, choose_root_from_ops=list(self.op_time_dict.keys()), min_levels=self.min_levels, max_levels=self.max_levels)
-                    sampled_subgraphs.append(nx_subgraph)
-                    break
-                except KeyboardInterrupt as e:
-                    raise RuntimeError()
-                except NameError as e:
-                    raise e
-                except AttributeError as e:
-                    raise e
-                except Exception as e:
-                    continue
-        self.sampled_subgraphs = sampled_subgraphs
+#     def _gen_subgraph_samples(self):
+#         sampled_subgraphs = []
+#         # generate subgraph samples
+#         for i in trange(self.num_samples):
+#             while True:
+#                 try:
+#                     graph_def_path, graph_def_config_path, nx_subgraph = self.sample_generator.gen_random_subgraph(self.subgraph_dir, i, choose_root_from_ops=list(self.op_time_dict.keys()), min_levels=self.min_levels, max_levels=self.max_levels)
+#                     sampled_subgraphs.append(nx_subgraph)
+#                     break
+#                 except KeyboardInterrupt as e:
+#                     raise RuntimeError()
+#                 except NameError as e:
+#                     raise e
+#                 except AttributeError as e:
+#                     raise e
+#                 except Exception as e:
+#                     continue
+#         self.sampled_subgraphs = sampled_subgraphs
     
-    def _compute_node_features(self):
-        # convert all subgraphs into igraph format
-        igraph_subgraphs = []
-        node_features = []
-        for subgraph in self.sampled_subgraphs:
-            g = igraph.Graph.from_networkx(nx.DiGraph.to_undirected(subgraph))
-            original_node_names = g.vs["_nx_name"]
-            features = []
-            for node_name in original_node_names:
-                feature_vec = subgraph.nodes[node_name]["feature_vec"]
-                features.append(feature_vec)
-            igraph_subgraphs.append(g)
-            node_features.append(np.array(features))
-        # compute pair wise wwl distence
-        self.igraph_subgraphs = igraph_subgraphs
-        self.node_features = node_features
+#     def _compute_node_features(self):
+#         # convert all subgraphs into igraph format
+#         igraph_subgraphs = []
+#         node_features = []
+#         for subgraph in self.sampled_subgraphs:
+#             g = igraph.Graph.from_networkx(nx.DiGraph.to_undirected(subgraph))
+#             original_node_names = g.vs["_nx_name"]
+#             features = []
+#             for node_name in original_node_names:
+#                 feature_vec = subgraph.nodes[node_name]["feature_vec"]
+#                 features.append(feature_vec)
+#             igraph_subgraphs.append(g)
+#             node_features.append(np.array(features))
+#         # compute pair wise wwl distence
+#         self.igraph_subgraphs = igraph_subgraphs
+#         self.node_features = node_features
     
-    def gen_samples(self):
-        self._gen_subgraph_samples()
-        self._compute_node_features()
+#     def gen_samples(self):
+#         self._gen_subgraph_samples()
+#         self._compute_node_features()
     
-    def _select_partition(self, l, i, p_size):
-        return l[i*p_size:(i+1)*p_size]
+#     def _select_partition(self, l, i, p_size):
+#         return l[i*p_size:(i+1)*p_size]
     
-    def get_subset_indices_partitioned(self, k, k_in_each_partition=200):
-        num_partitions = int(np.ceil(k / k_in_each_partition))
-        data_partition_size = int(np.ceil(len(self.igraph_subgraphs) / num_partitions))
+#     def get_subset_indices_partitioned(self, k, k_in_each_partition=200):
+#         num_partitions = int(np.ceil(k / k_in_each_partition))
+#         data_partition_size = int(np.ceil(len(self.igraph_subgraphs) / num_partitions))
 
-        total_selected_indices = []
+#         total_selected_indices = []
         
-        map_iterable = []
-        for i in range(num_partitions):
-            k_in_this_partition = min(k - i*k_in_each_partition, k_in_each_partition)
-            map_iterable.append( (
-                self._select_partition(self.igraph_subgraphs, i, data_partition_size), 
-                self._select_partition(self.node_features, i, data_partition_size),
-                k_in_this_partition,
-                i
-                ) )
-        with Pool(min(os.cpu_count(), num_partitions)) as p:
-            selected_indices = p.starmap(worker_func, map_iterable)
+#         map_iterable = []
+#         for i in range(num_partitions):
+#             k_in_this_partition = min(k - i*k_in_each_partition, k_in_each_partition)
+#             map_iterable.append( (
+#                 self._select_partition(self.igraph_subgraphs, i, data_partition_size), 
+#                 self._select_partition(self.node_features, i, data_partition_size),
+#                 k_in_this_partition,
+#                 i
+#                 ) )
+#         with Pool(min(os.cpu_count(), num_partitions)) as p:
+#             selected_indices = p.starmap(worker_func, map_iterable)
         
-        # flatten total selected_indices
-        flattened_selected_indices = [idx for result in selected_indices for idx in result]
+#         # flatten total selected_indices
+#         flattened_selected_indices = [idx for result in selected_indices for idx in result]
 
-        # for i in range(num_partitions):
-        #     k_in_this_partition = min(k - i*k_in_each_partition, k_in_each_partition)
-        #     pw_wwl = PairwiseWWL(
-        #         self._select_partition(self.igraph_subgraphs, i, data_partition_size),
-        #         self._select_partition(self.node_features, i, data_partition_size),
-        #         sinkhorn=True)
-        #     selected_indices = calc_p_dispersion(pw_wwl, k_in_this_partition, )
-        #     total_selected_indices += selected_indices
-        return flattened_selected_indices
+#         # for i in range(num_partitions):
+#         #     k_in_this_partition = min(k - i*k_in_each_partition, k_in_each_partition)
+#         #     pw_wwl = PairwiseWWL(
+#         #         self._select_partition(self.igraph_subgraphs, i, data_partition_size),
+#         #         self._select_partition(self.node_features, i, data_partition_size),
+#         #         sinkhorn=True)
+#         #     selected_indices = calc_p_dispersion(pw_wwl, k_in_this_partition, )
+#         #     total_selected_indices += selected_indices
+#         return flattened_selected_indices
 
-    def get_subset_indices_parallel(self, k):
-        pw_wwl = PairwiseWWL(self.igraph_subgraphs, self.node_features)
-        selected_indices = parallel_p_dispersion_local_search(pw_wwl, k, sample_ratio=0.05, patience=10)
-        return selected_indices
+#     def get_subset_indices_parallel(self, k):
+#         pw_wwl = PairwiseWWL(self.igraph_subgraphs, self.node_features)
+#         selected_indices = parallel_p_dispersion_local_search(pw_wwl, k, sample_ratio=0.05, patience=10)
+#         return selected_indices
     
-    def get_subset_indices_overlap(self, k, k_in_each_partition=1000):
-        num_partitions = int(np.ceil(k / k_in_each_partition))
-        data_partition_size = int(np.ceil(len(self.igraph_subgraphs) / num_partitions))
+#     def get_subset_indices_overlap(self, k, k_in_each_partition=1000):
+#         num_partitions = int(np.ceil(k / k_in_each_partition))
+#         data_partition_size = int(np.ceil(len(self.igraph_subgraphs) / num_partitions))
 
-        total_selected_indices = []
+#         total_selected_indices = []
         
-        map_iterable = []
-        for i in range(num_partitions):
-            k_in_this_partition = min(k - i*k_in_each_partition, k_in_each_partition)
-            map_iterable.append( (
-                self._select_partition(self.igraph_subgraphs, i, data_partition_size), 
-                self._select_partition(self.node_features, i, data_partition_size),
-                k_in_this_partition,
-                i
-                ) )
-        with Pool(min(os.cpu_count(), num_partitions)) as p:
-            selected_indices = p.starmap(worker_func_overlap, map_iterable)
+#         map_iterable = []
+#         for i in range(num_partitions):
+#             k_in_this_partition = min(k - i*k_in_each_partition, k_in_each_partition)
+#             map_iterable.append( (
+#                 self._select_partition(self.igraph_subgraphs, i, data_partition_size), 
+#                 self._select_partition(self.node_features, i, data_partition_size),
+#                 k_in_this_partition,
+#                 i
+#                 ) )
+#         with Pool(min(os.cpu_count(), num_partitions)) as p:
+#             selected_indices = p.starmap(worker_func_overlap, map_iterable)
         
-        # flatten total selected_indices
-        flattened_selected_indices = [idx for result in selected_indices for idx in result]
-        return flattened_selected_indices
+#         # flatten total selected_indices
+#         flattened_selected_indices = [idx for result in selected_indices for idx in result]
+#         return flattened_selected_indices
     
-    def get_subset_indices(self, k):
-        if self.dispersion_algorithm == "partitioned":
-            return self.get_subset_indices_partitioned(k)
-        elif self.dispersion_algorithm == "parallel":
-            return self.get_subset_indices_parallel(k)
-        elif self.dispersion_algorithm == "overlap":
-            return self.get_subset_indices_overlap(k)
-        else:
-            raise NotImplementedError
+#     def get_subset_indices(self, k):
+#         if self.dispersion_algorithm == "partitioned":
+#             return self.get_subset_indices_partitioned(k)
+#         elif self.dispersion_algorithm == "parallel":
+#             return self.get_subset_indices_parallel(k)
+#         elif self.dispersion_algorithm == "overlap":
+#             return self.get_subset_indices_overlap(k)
+#         else:
+#             raise NotImplementedError
 
 
 # def gen_diverse_subgraphs(graph_def, op_time_dict, num_samples, num_profiles, subgraph_dir, min_levels=2, max_levels=100, p_dispersion_alg = "local_search"):

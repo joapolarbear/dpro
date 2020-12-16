@@ -1,285 +1,414 @@
-from cost_model_xla.gen_samples import GDUNotInGraphError
+from cost_model_xla.gen_samples import GSNotInGraphError
 import tensorflow as tf
 import numpy as np
 import math
 from tensorflow import keras
-import tensorflow.keras.backend as K
-from tensorflow.keras import activations, initializers, constraints
-from tensorflow.keras import regularizers
+
 from tensorflow.keras import layers, Model
-import argparse
 import shutil
 import copy
 import random
+from multiprocessing import Pool
 from tqdm import tqdm
-import matplotlib.pyplot as plt
-import seaborn as sns
-import pandas as pd
-import scipy.sparse as sp
+
+import scipy.optimize as scipy_optimize
+
 import os
 import pickle
-import code
 try:
     GraphDef = tf.GraphDef
 except:
     GraphDef = tf.compat.v1.GraphDef
-from cost_model_xla.xlatools import compile_to_hlo, extract_kernel_features_from_hlo, replay_and_generate_kernel_sample
+from cost_model_xla.xlatools import compile_to_hlo, extract_kernel_features_from_hlo, replay_and_generate_kernel_sample, BPF_PROFILE_GPU
 from google.protobuf.json_format import Parse
-from cost_model_xla.cost_model import XlaKernelDataset, XlaKernelGCNDataset, XLAModuleOverheadModel, ElementaryOpCache, XlaModuleTestSet, GraphDefUtil
-from cost_model_xla.gen_samples import GDUNotInGraphError, GDUNonFixedShapeError, GDUSubgraphTooSmallError
+from cost_model_xla.gen_dataset_utils import XlaKernelDataset, XlaModuleTestSet
+from cost_model_xla.gen_samples import GSNotInGraphError, GSNonFixedShapeError, GSSubgraphTooSmallError, GraphDefUtil
 from tqdm import tqdm, trange
 from collections import defaultdict
 import traceback
 
 gpus = tf.config.experimental.list_physical_devices('GPU')
 if gpus:
-  # Restrict TensorFlow to only use the first GPU
-  try:
-    tf.config.experimental.set_visible_devices(gpus[1], 'GPU')
-  except RuntimeError as e:
-    # Visible devices must be set at program startup
-    print(e)
+  # Restrict TensorFlow to use other GPUS
+  avoided_gpu_id = BPF_PROFILE_GPU
+  for dev in gpus:
+      dev_id = int(dev.name.split("GPU:")[-1])
+      if dev_id != avoided_gpu_id:
+        tf.config.experimental.set_visible_devices(dev, 'GPU')
+        print("Set cost model to use GPU {}".format(dev_id))
+        break
 
-def normalize_adj(adj):
-    d = sp.diags(np.power(np.array(adj.sum(1)), -0.5).flatten(), 0)
-    a_norm = adj.dot(d).transpose().dot(d).tocsr()
-    return a_norm
-
-def preprocess_adj(adj):
-    """Preprocessing of adjacency matrix for simple GCN model and conversion to tuple representation."""
-    return normalize_adj(adj + sp.eye(adj.shape[0]))
-
-# from https://github.com/tkipf/keras-gcn/
-class GraphConvolution(layers.Layer):
-    """Basic graph convolution layer as in https://arxiv.org/abs/1609.02907"""
-    def __init__(self, units, support=1,
-                 activation=None,
-                 kernel_initializer='glorot_uniform',
-                 bias_initializer='zeros',
-                 kernel_regularizer=None,
-                 bias_regularizer=None,
-                 activity_regularizer=None,
-                 kernel_constraint=None,
-                 bias_constraint=None,
-                 **kwargs):
-        if 'input_shape' not in kwargs and 'input_dim' in kwargs:
-            kwargs['input_shape'] = (kwargs.pop('input_dim'),)
-        super(GraphConvolution, self).__init__(**kwargs)
-        self.units = units
-        self.activation = activations.get(activation)
-        self.kernel_initializer = initializers.get(kernel_initializer)
-        self.bias_initializer = initializers.get(bias_initializer)
-        self.kernel_regularizer = regularizers.get(kernel_regularizer)
-        self.bias_regularizer = regularizers.get(bias_regularizer)
-        self.activity_regularizer = regularizers.get(activity_regularizer)
-        self.kernel_constraint = constraints.get(kernel_constraint)
-        self.bias_constraint = constraints.get(bias_constraint)
-        self.supports_masking = True
-
-        self.support = support
-        assert support >= 1
-
-    def compute_output_shape(self, input_shapes):
-        features_shape = input_shapes[0]
-        output_shape = (features_shape[0], self.units)
-        return output_shape  # (batch_size, output_dim)
-
-    def build(self, input_shapes):
-        features_shape = input_shapes[0]
-        assert len(features_shape) == 2
-        input_dim = features_shape[1]
-
-        self.kernel = self.add_weight(shape=(input_dim * self.support,
-                                             self.units),
-                                      initializer=self.kernel_initializer,
-                                      name='kernel',
-                                      regularizer=self.kernel_regularizer,
-                                      constraint=self.kernel_constraint)
-        self.bias = self.add_weight(shape=(self.units,),
-                                    initializer=self.bias_initializer,
-                                    name='bias',
-                                    regularizer=self.bias_regularizer,
-                                    constraint=self.bias_constraint)
-        self.built = True
-
-    def call(self, inputs, mask=None):
-        features = inputs[0]
-        basis = inputs[1:]
-
-        supports = list()
-        for i in range(self.support):
-            supports.append(K.dot(basis[i], features))
-        supports = K.concatenate(supports, axis=1)
-        output = K.dot(supports, self.kernel)
-
-        output += self.bias
-        return self.activation(output)
-
-    def get_config(self):
-        config = {'units': self.units,
-                  'support': self.support,
-                  'activation': activations.serialize(self.activation),
-                  'kernel_initializer': initializers.serialize(
-                      self.kernel_initializer),
-                  'bias_initializer': initializers.serialize(
-                      self.bias_initializer),
-                  'kernel_regularizer': regularizers.serialize(
-                      self.kernel_regularizer),
-                  'bias_regularizer': regularizers.serialize(
-                      self.bias_regularizer),
-                  'activity_regularizer': regularizers.serialize(
-                      self.activity_regularizer),
-                  'kernel_constraint': constraints.serialize(
-                      self.kernel_constraint),
-                  'bias_constraint': constraints.serialize(self.bias_constraint)
-        }
-
-        base_config = super(GraphConvolution, self).get_config()
-        return dict(list(base_config.items()) + list(config.items()))
-
-def get_kernel_gcn_model(fusion_type_dim, features_dim, op_code_vocab_size, op_code_embed_dim, subop_vocab_size, 
-                subop_embed_dim, gcn_output_units, output_hidden_dim, dropout=0.2):
-    # define layers
-    op_code_embedding = layers.Embedding(op_code_vocab_size, op_code_embed_dim, name="embed_op_code")
-    subop_embedding = layers.Embedding(subop_vocab_size, subop_embed_dim, name="embed_op_hash")
-    GCN = GraphConvolution(gcn_output_units, activation="relu", name="GCN_1")
-    GCN2 = GraphConvolution(gcn_output_units, activation="relu", name="GCN_2")
-    output_hidden = layers.Dense(output_hidden_dim, activation="relu", name="output_hidden")
-    output_transform = layers.Dense(1, activation=None, name="output_transform")
-
-
-    # define inputs
-    # inputs contains:
-    #   fusion_types: (concated_graph_size, one_hot_dim (usually 2))
-    #   op_code_indexes: (concated_graph_size)
-    #   op_hash_indexes: (concated_graph_size)
-    #   adj: (concated_graph_size, concated_graph_size), sparse block diagonal matrix
-    #   features: (concated_graph_size, feature_length)
-    #   graph_size_segments: (batch_size)
-    fusion_types = layers.Input(shape=(fusion_type_dim,), name="fusion_types")
-    op_code_indexes = layers.Input(shape=(), name="op_code")
-    op_hash_indexes = layers.Input(shape=(), name="op_hash")
-    adj = layers.Input(shape=(None,), sparse=True, name="adj_matrix")
-    features = layers.Input(shape=(features_dim,), name="node_features")
-    graph_size_segments = layers.Input(shape=(), dtype="int32", name="graph_sizes")
-
-    # reshape indexes for embedding layer
-    # shape=(1, concated_graph_size)
-    op_code_reshaped = tf.expand_dims(op_code_indexes, axis=0, name="reshape_op_code")
-    op_hash_reshaped = tf.expand_dims(op_hash_indexes, axis=0, name="reshape_op_hash")
-
-    # shape=(1, concated_graph_size, op_code_embed_dim)
-    op_code_embedded = op_code_embedding(op_code_reshaped) 
-    # shape=(1, concated_graph_size, subop_embed_dim)
-    op_hash_embedded = subop_embedding(op_hash_reshaped)
-
-    # reshape them back
-    # shape=(concated_graph_size, op_code_embed_dim)
-    op_code_embedded = tf.squeeze(op_code_embedded, axis=[0], name="reshape_embed_op_code")
-    # shape=(concated_graph_size, subop_embed_dim)
-    op_hash_embedded = tf.squeeze(op_hash_embedded, axis=[0], name="reshape_embed_op_hash")
-
-    # shape=(concated_graph_size, op_code_embed_dim+subop_embed_dim+feature_length)
-    input_feature_vec = layers.concatenate([op_code_embedded, op_hash_embedded, features], axis=-1, name="input_vec_concat")
-
-    # pass through gcn layers
-    # shape=(concated_graph_size, gcn_output_units)
-    gcn_output = GCN([input_feature_vec, adj])
-    gcn_output = layers.Dropout(dropout, name="dropout_GCN_1")(gcn_output)
-    gcn_output2 = GCN2([gcn_output, adj])
-    gcn_output2 = layers.Dropout(dropout, name="dropout_GCN_2")(gcn_output2)
-
-    # max pooling
-    # shape=(batch_size, gcn_output_units)
-    max_pooled_outputs = tf.math.segment_max(gcn_output2, graph_size_segments, name="max_pool")
-
-    # avg pooling
-    # shape=(batch_size, gcn_output_units)
-    avg_pooled_outputs = tf.math.segment_mean(gcn_output2, graph_size_segments, name="avg_pool")
-
-    # sum pooling
-    # shape=(batch_size, gcn_output_units)
-    sum_pooled_outputs = tf.math.segment_sum(gcn_output2, graph_size_segments, name="sum_pool")
-
-    # graph_embedding
-    # shape=[batch_size, fusion_type_len + 3*gcn_output_units]
-    graph_embedding = layers.concatenate([fusion_types, max_pooled_outputs, avg_pooled_outputs, sum_pooled_outputs], axis=-1, name="output_concat")
-
-    output = output_hidden(graph_embedding)
-    output = layers.Dropout(dropout)(output)
-    output = output_transform(output)
-
-    return [fusion_types, op_code_indexes, op_hash_indexes, adj, features, graph_size_segments], output
-
-# class FusionKernelGCN(Model):
-#     def __init__(self, op_code_vocab_size, op_code_embed_dim, subop_vocab_size, 
-#                 subop_embed_dim, gcn_output_units, output_hidden_dim, dropout=0.2):
-#         super(FusionKernelGCN, self).__init__()
-#         self.op_code_embedding = layers.Embedding(op_code_vocab_size, op_code_embed_dim)
-#         self.subop_embedding = layers.Embedding(subop_vocab_size, subop_embed_dim)
-#         self.GCN = GraphConvolution(gcn_output_units, activation="relu")
-#         self.GCN2 = GraphConvolution(gcn_output_units, activation="relu")
-#         self.output_hidden = layers.Dense(output_hidden_dim, activation="relu")
-#         self.output_transform = layers.Dense(1, activation=None)
-#         self.drop_out = layers.Dropout(dropout)
+class ElementaryOpCache():
+    def __init__(self, dataset_path=None, load_from=None):
+        if load_from is not None:
+            self.load(load_from)
+        else:
+            if dataset_path is None:
+                raise RuntimeError("At least one of dataset_path and load_from must be set.")
+            self._dataset_path = dataset_path
+            self._cache_path = os.path.join(dataset_path, "elementary_ops.txt")
+            self._load_cache()
     
-#     def call(self, inputs, training=False):
-#         # inputs contains:
-#         #   fusion_types: (concated_graph_size, one_hot_dim (usually 2))
-#         #   op_code_indexes: (concated_graph_size)
-#         #   op_hash_indexes: (concated_graph_size)
-#         #   adj: (concated_graph_size, concated_graph_size), sparse block diagonal matrix
-#         #   features: (concated_graph_size, feature_length)
-#         #   graph_size_segments: (batch_size)
-#         fusion_types, op_code_indexes, op_hash_indexes, adj, features, graph_size_segments = inputs
+    def _load_cache(self):
+        total_counter = 0
+        hash_dict = defaultdict(list)
+        op_code_dict = defaultdict(list)
+        with open(self._cache_path, "r") as f:
+            for line in f:
+                hash_value, op_code, time = [v.strip() for v in line.split(",")]
+                hash_value = int(hash_value)
+                time = float(time)
+                hash_dict[hash_value].append(time)
+                op_code_dict[op_code].append(time)
+                total_counter += 1
+        self.hash_dict = hash_dict
+        self.op_code_dict = op_code_dict
+        psd = []
+        lens = []
+        counter = 0
+        for key, times in hash_dict.items():
+            lens.append(len(times))
+            if np.max(times) != 0:
+                counter += 1
+            if len(times) >= 1 and np.average(times) != 0:
+                psd.append(np.std(times) / np.average(times))
 
-#         # reshape indexes for embedding layer
-#         # shape=(1, concated_graph_size)
-#         op_code_reshaped = tf.expand_dims(op_code_indexes, axis=0)
-#         op_hash_reshaped = tf.expand_dims(op_hash_indexes, axis=0)
+        print("[OP Cache INFO] Total recorded elementary ops: {}, deduplicated size of elementary ops: {}, non_zero ops: {}".format(total_counter ,len(hash_dict), counter))
+        print("[OP Cache INFO] Mean PSD: {}, Max PSD: {}, Min PSD: {}, \n max collected len: {}, min collected len: {}, mean collected len: {}".format(np.average(psd), np.max(psd), np.min(psd), np.max(lens), np.min(lens), np.average(lens)))
 
-#         # shape=(1, concated_graph_size, op_code_embed_dim)
-#         op_code_embedded = self.op_code_embedding(op_code_reshaped) 
-#         # shape=(1, concated_graph_size, subop_embed_dim)
-#         op_hash_embedded = self.subop_embedding(op_hash_reshaped)
+        elemophash2index = {}
+        index2elemophash = {}
+        sorted_elem_op_hashes = sorted(list(self.hash_dict.keys()))
+        for index, op_hash in enumerate(sorted_elem_op_hashes):
+            elemophash2index[op_hash] = index
+            index2elemophash[index] = op_hash
+        
+        self.elemophash2index = elemophash2index
+        self.index2elemophash = index2elemophash
+    
+    def query(self, hash_v, op_code=None):
+        if hash_v not in self.hash_dict:
+            if op_code is not None and op_code in self.op_code_dict:
+                return np.average(self.op_code_dict[op_code]), False
+            else:
+                return 0, False
+        else:
+            return np.average(self.hash_dict[hash_v]), True
 
-#         # reshape them back
-#         # shape=(concated_graph_size, op_code_embed_dim)
-#         op_code_embedded = tf.squeeze(op_code_embedded)
-#         # shape=(concated_graph_size, subop_embed_dim)
-#         op_hash_embedded = tf.squeeze(op_hash_embedded)
+    def dump(self, save_path):
+        with open(save_path, "wb") as f:
+            pickle.dump([self._dataset_path, self._cache_path, 
+                        self.hash_dict, self.op_code_dict,
+                        self.elemophash2index, self.index2elemophash], f)
+    
+    def load(self, save_path):
+        with open(save_path, "rb") as f:
+            (self._dataset_path, self._cache_path, 
+            self.hash_dict, self.op_code_dict,
+            self.elemophash2index, self.index2elemophash) = pickle.load(f)
 
-#         # shape=(concated_graph_size, op_code_embed_dim+subop_embed_dim+feature_length)
-#         input_feature_vec = layers.concatenate([op_code_embedded, op_hash_embedded, features], axis=-1)
+class XLAModuleOverheadModel():
+    def __init__(self, dataset_path = None, dataset=None, elem_op_cache=None, load_from=None, use_dual_model=True, split_threshold=10, regularization_lambda = 0.1):
+        if load_from is not None:
+            self.load(load_from)
+        else:
+            self.regularization_lambda = regularization_lambda
+            self.use_dual_model = use_dual_model
+            self.split_threshold = split_threshold
+            if dataset_path is None or dataset is None or elem_op_cache is None:
+                raise RuntimeError("Must set all parameters if not loading from cache.")
+            self.dataset = dataset
+            self.elem_op_cache = elem_op_cache
+            self._dataset_path = dataset_path
+            self._read_execution_times()
+            self._preprocess_data()
+    
+    def _process_config_and_exec_file(self, sample_id):
+        config_path = os.path.join(self._modules_dir_path, str(sample_id) + "_config.txt")
+        sample_details = []
+        sample_times = None
+        subop_exec_time = 0
+        max_dim = 0
+        abnormal = False
+        with open(config_path, "r") as f:
+            for line in f:
+                is_fused_op = bool(int(line.split(",")[0]))
+                if is_fused_op:
+                    fused_op_hash = int(line.split(",")[1])
+                    kernel_path = os.path.join(self._features_dir_path, line.split(",")[-1].split("/")[-1].strip())
+                    op_count = -1
+                    with open(kernel_path, "r") as f_kernel:
+                        for kernel_line in f_kernel:
+                            op_count += 1
+                    kernel_sid = int(line.split(",")[-1].split("/")[-1].split(".txt")[0])
+                    # get fusion execution time
+                    if kernel_sid in self.dataset.label_dict:
+                        exec_time = self.dataset.label_dict[kernel_sid]
+                    else:
+                        exec_time = self.dataset.label_dict[self.dataset.dedupedsid2finalsid[kernel_sid]]
+                    sample_details.append(len(self.elem_op_cache.index2elemophash) -1 + op_count)
+                    max_dim = max(max_dim, len(self.elem_op_cache.index2elemophash) + op_count)
+                else:
+                    _, elem_op_hash, op_code = [v.strip() for v in line.split(",")]
+                    elem_op_hash = int(elem_op_hash)
+                    exec_time, _ = self.elem_op_cache.query(elem_op_hash, op_code=op_code)
+                    sample_details.append(self.elem_op_cache.elemophash2index[elem_op_hash])
+                subop_exec_time += exec_time
+        # read exec.txt
+        exec_path = os.path.join(self._modules_dir_path, str(sample_id) + "_exec.txt")
+        exec_times = []
+        with open(exec_path, "r") as f: 
+            for line in f:
+                exec_times.append(float(line.strip()))
+        if len(exec_times) > 100:
+            module_avg_time = np.average(exec_times[-100:-10])
+        else:
+            module_avg_time = np.average(exec_times[10:-10])
+        if module_avg_time > subop_exec_time:
+            sample_times = (module_avg_time, subop_exec_time)
+        else:
+            abnormal = True
+        return sample_id, sample_details, sample_times, abnormal, max_dim
 
-#         # pass through gcn layers
-#         # shape=(concated_graph_size, gcn_output_units)
-#         gcn_output = self.GCN(input_feature_vec, adj)
-#         gcn_output = self.drop_out(gcn_output)
-#         gcn_output2 = self.GCN2(gcn_output, adj)
-#         gcn_output2 = self.drop_out(gcn_output2)
+    def _read_execution_times(self):
+        self._modules_dir_path = os.path.join(self._dataset_path, "modules")
+        self._features_dir_path = os.path.join(self._dataset_path, "features")
+        sample_id_set = set()
+        for fn in os.listdir(self._modules_dir_path):
+            sample_id = int(fn.split(".txt")[0].split("_")[0])
+            sample_id_set.add(sample_id)
 
-#         # max pooling
-#         # shape=(batch_size, gcn_output_units)
-#         max_pooled_outputs = tf.math.segment_max(gcn_output2, graph_size_segments)
+        # def add_config_suffix(sid):
+        #     return str(sid) + "_config.txt"
 
-#         # avg pooling
-#         # shape=(batch_size, gcn_output_units)
-#         avg_pooled_outputs = tf.math.segment_mean(gcn_output2, graph_size_segments)
+        # def add_exec_suffix(sid):
+        #     return str(sid) + "_exec.txt"
 
-#         # sum pooling
-#         # shape=(batch_size, gcn_output_units)
-#         sum_pooled_outputs = tf.math.segment_sum(gcn_output2, graph_size_segments)
+        module_time_dict = {}
+        module_details_dict = {}
+        max_dim = len(self.elem_op_cache.index2elemophash)
+        abnormal_count = 0
 
-#         # graph_embedding
-#         # shape=[batch_size, fusion_type_len + 3*gcn_output_units]
-#         graph_embedding = layers.concatenate([fusion_types, max_pooled_outputs, avg_pooled_outputs, sum_pooled_outputs], axis=-1)
+        num_cores = min(os.cpu_count(), len(sample_id_set))
+        chunk_size = int( np.ceil(len(sample_id_set) / num_cores / 2))
 
-#         output = self.output_hidden(graph_embedding)
-#         output = self.drop_out(output)
-#         output = self.output_transform(output)
+        with Pool(num_cores) as p:
+            sample_details = list(tqdm(p.imap_unordered(self._process_config_and_exec_file, sample_id_set, chunksize=chunk_size), total=len(sample_id_set), desc="Reading details", leave=False))
+        
+        for (sample_id, sample_details, sample_times, abnormal, max_dim_in_sample) in sample_details:
+            if sample_id not in module_details_dict:
+                module_details_dict[sample_id] = []
+            max_dim = max(max_dim, max_dim_in_sample)
+            if abnormal:
+                abnormal_count += 1
+                continue
+            module_details_dict[sample_id] = sample_details
+            module_time_dict[sample_id] = sample_times
 
-#         return output
+        # for sample_id in tqdm(sample_id_set, desc="Reading details:"):
+        #     if sample_id not in module_details_dict:
+        #         module_details_dict[sample_id] = []
+        #     # read config.txt
+        #     config_path = os.path.join(self._modules_dir_path, add_config_suffix(sample_id))
+        #     subop_exec_time = 0
+        #     with open(config_path, "r") as f:
+        #         for line in f:
+        #             is_fused_op = bool(int(line.split(",")[0]))
+        #             if is_fused_op:
+        #                 fused_op_hash = int(line.split(",")[1])
+        #                 kernel_path = os.path.join(self._features_dir_path, line.split(",")[-1].split("/")[-1].strip())
+        #                 op_count = -1
+        #                 with open(kernel_path, "r") as f_kernel:
+        #                     for kernel_line in f_kernel:
+        #                         op_count += 1
+        #                 kernel_sid = int(line.split(",")[-1].split("/")[-1].split(".txt")[0])
+        #                 # get fusion execution time
+        #                 if kernel_sid in self.dataset.label_dict:
+        #                     exec_time = self.dataset.label_dict[kernel_sid]
+        #                 else:
+        #                     exec_time = self.dataset.label_dict[self.dataset.dedupedsid2finalsid[kernel_sid]]
+        #                 module_details_dict[sample_id].append(len(self.elem_op_cache.index2elemophash) -1 + op_count)
+        #                 max_dim = max(max_dim, len(self.elem_op_cache.index2elemophash) + op_count)
+        #             else:
+        #                 _, elem_op_hash, op_code = [v.strip() for v in line.split(",")]
+        #                 elem_op_hash = int(elem_op_hash)
+        #                 exec_time, _ = self.elem_op_cache.query(elem_op_hash, op_code=op_code)
+        #                 module_details_dict[sample_id].append(self.elem_op_cache.elemophash2index[elem_op_hash])
+        #             subop_exec_time += exec_time
+        #     # read exec.txt
+        #     exec_path = os.path.join(self._modules_dir_path, add_exec_suffix(sample_id))
+        #     exec_times = []
+        #     with open(exec_path, "r") as f: 
+        #         for line in f:
+        #             exec_times.append(float(line.strip()))
+        #     if len(exec_times) > 100:
+        #         module_avg_time = np.average(exec_times[-100:-10])
+        #     else:
+        #         module_avg_time = np.average(exec_times[10:-10])
+        #     if module_avg_time > subop_exec_time:
+        #         module_time_dict[sample_id] = (module_avg_time, subop_exec_time)
+        #     else:
+        #         abnormal_count += 1
+        #         module_details_dict.pop(sample_id)
+        print("Processed {} samples, with {} have module time <= subop exec time.".format(len(sample_id_set), abnormal_count))
+        
+        self.module_details_dict = module_details_dict
+        self.module_time_dict = module_time_dict
+        self.max_dim = max_dim
+        self.fusion_op_offset = len(self.elem_op_cache.index2elemophash) - 1
+    
+    def _preprocess_data(self):
+        # generate the matrix A, and vector b
+        self.row_dim = len(self.module_details_dict)
+        self.column_dim = self.max_dim + 1
+        A = np.zeros((self.row_dim, self.column_dim))
+        b = np.zeros((self.row_dim,))
+        for row_index, key in enumerate(self.module_details_dict.keys()):
+            # fill A
+            A[row_index, 0] = 1
+            for column_index in self.module_details_dict[key]:
+                A[row_index, column_index + 1] += 1
+            # fill B
+            module_avg_time, subop_exec_time = self.module_time_dict[key]
+            b[row_index] = module_avg_time - subop_exec_time
+
+        A_normed = A.copy()
+        A_normed = (A_normed.T / b).T
+
+        if self.use_dual_model:
+            small_mask = np.sum(A, axis=1) < self.split_threshold
+            A_normed_small = A_normed[small_mask]
+            b_normed_small = np.ones((A_normed_small.shape[0], ))
+            A_normed_large = A_normed[~small_mask]
+            b_normed_large = np.ones((A_normed_large.shape[0], ))
+        else:
+            A_normed_small = None
+            b_normed_small = None
+            A_normed_large = None
+            b_normed_large = None
+
+        self.A = A
+        self.A_normed = A_normed
+        self.b = b
+        self.b_normed = np.ones((self.row_dim, ))
+        self.A_normed_small = A_normed_small
+        self.b_normed_small = b_normed_small
+        self.A_normed_large = A_normed_large
+        self.b_normed_large = b_normed_large
+
+    def fit(self):
+        if self.use_dual_model:
+            reg_A = self.regularization_lambda * np.eye(self.A_normed_large.shape[1])
+            reg_b = np.zeros(self.A_normed_large.shape[1])
+            coeffs = None
+            residual = None
+            coeffs_large, residual_large = scipy_optimize.nnls(np.concatenate((self.A_normed_large, reg_A), axis=0), np.concatenate((self.b_normed_large, reg_b), axis=0))
+            coeffs_small, residual_small = scipy_optimize.nnls(np.concatenate((self.A_normed_small, reg_A), axis=0), np.concatenate((self.b_normed_small, reg_b), axis=0))
+            self.avg_elem_ovhd_large = np.average(coeffs_large[1:-1])
+            self.avg_elem_ovhd_small = np.average(coeffs_small[1:-1])
+            self.avg_elem_ovhd = None
+        else:
+            reg_A = self.regularization_lambda * np.eye(self.A_normed.shape[1])
+            reg_b = np.zeros(self.A_normed.shape[1])
+            coeffs, residual = scipy_optimize.nnls(np.concatenate((self.A_normed, reg_A), axis=0), np.concatenate((self.b_normed, reg_b), axis=0))
+            self.avg_elem_ovhd_large = None
+            self.avg_elem_ovhd_small = None
+            self.avg_elem_ovhd = np.average(coeffs[1:-1])
+            coeffs_large = residual_large = coeffs_small = residual_small = None
+        # print("Fitted model. Residual: {}".format(residual))
+        self.coeffs = coeffs
+        self.coeffs_large = coeffs_large
+        self.coeffs_small = coeffs_small
+
+    def refit(self, use_dual_model=True, split_threshold=5, regularization_lambda = 0.1):
+        self.use_dual_model = use_dual_model
+        self.split_threshold = split_threshold
+        self.regularization_lambda = regularization_lambda
+        self._preprocess_data()
+        self.fit()
+    
+    def reinit(self, use_dual_model=True, split_threshold=5, regularization_lambda = 0.1):
+        self._read_execution_times()
+        self.refit(use_dual_model, split_threshold, regularization_lambda)
+    
+    # def get_overhead(self, elem_op_hashes, num_fused_ops):
+    def get_overhead(self, elem_op_hashes, subop_lengths):
+        sum_ovhds = 0
+        num_ops = len(elem_op_hashes) + len(subop_lengths)
+        for (hash_v, op_code) in elem_op_hashes:
+            if hash_v in self.elem_op_cache.elemophash2index:
+                if self.use_dual_model:
+                    if num_ops < self.split_threshold:
+                        # use small model
+                        sum_ovhds += self.coeffs_small[self.elem_op_cache.elemophash2index[hash_v]]
+                    else:
+                        sum_ovhds += self.coeffs_large[self.elem_op_cache.elemophash2index[hash_v]]
+                else:
+                    sum_ovhds += self.coeffs[self.elem_op_cache.elemophash2index[hash_v]]
+            else:
+                if self.use_dual_model:
+                    if num_ops < self.split_threshold:
+                        # use small model
+                        sum_ovhds += self.avg_elem_ovhd_small
+                    else:
+                        sum_ovhds += self.avg_elem_ovhd_large
+                else:
+                    sum_ovhds += self.avg_elem_ovhd
+        if self.use_dual_model:
+            if num_ops < self.split_threshold:
+                # use small model
+                sum_ovhds += self.coeffs_small[0]
+                # sum_ovhds += self.coeffs_small[-1] * num_fused_ops
+                for length in subop_lengths:
+                    if self.fusion_op_offset + length > len(self.coeffs_small) - 1:
+                        sum_ovhds += self.coeffs_small[-1]
+                    else:
+                        sum_ovhds += self.coeffs_small[self.fusion_op_offset + length]
+            else:
+                sum_ovhds += self.coeffs_large[0]
+                # sum_ovhds += self.coeffs_large[-1] * num_fused_ops
+                for length in subop_lengths:
+                    if self.fusion_op_offset + length > len(self.coeffs_large) - 1:
+                        sum_ovhds += self.coeffs_large[-1]
+                    else:
+                        sum_ovhds += self.coeffs_large[self.fusion_op_offset + length]
+        else:
+            sum_ovhds += self.coeffs[0]
+            # sum_ovhds += self.coeffs[-1] * num_fused_ops
+            for length in subop_lengths:
+                sum_ovhds += self.coeffs[self.fusion_op_offset + length]
+        return sum_ovhds
+    
+    def dump(self, dump_path):
+        with open(dump_path, "wb") as f:
+            pickle.dump([self.max_dim, self.fusion_op_offset, 
+                        self.regularization_lambda, self.use_dual_model, self.split_threshold,
+                        self.coeffs, self.coeffs_large, self.coeffs_small, 
+                        self.avg_elem_ovhd, self.avg_elem_ovhd_large, self.avg_elem_ovhd_small, 
+                        self.A, self.A_normed, self.A_normed_large, self.A_normed_small, 
+                        self.b, self.b_normed, self.b_normed_large, self.b_normed_small, 
+                        self.elem_op_cache, self.dataset, self._dataset_path, 
+                        self.module_details_dict, self.module_time_dict, 
+                        self.row_dim, self.column_dim], f)
+    
+    def load(self, file_path):
+        try:
+            with open(file_path, "rb") as f:
+                (self.max_dim, self.fusion_op_offset, self.regularization_lambda, self.use_dual_model, self.split_threshold,
+                self.coeffs, self.coeffs_large, self.coeffs_small, 
+                self.avg_elem_ovhd, self.avg_elem_ovhd_large, self.avg_elem_ovhd_small, 
+                self.A, self.A_normed, self.A_normed_large, self.A_normed_small, 
+                self.b, self.b_normed, self.b_normed_large, self.b_normed_small, 
+                self.elem_op_cache, self.dataset, self._dataset_path, 
+                self.module_details_dict, self.module_time_dict, 
+                self.row_dim, self.column_dim) = pickle.load(f)
+        except:
+            self.use_dual_model = False
+            self.split_threshold = -1
+            self.regularization_lambda = 0.1
+            with open(file_path, "rb") as f:
+                (self.coeffs, self.avg_elem_ovhd, self.A, self.A_normed, self.b, self.b_normed, self.avg_elem_ovhd, self.elem_op_cache,
+                self.dataset, self._dataset_path, self.module_details_dict, self.module_time_dict, self.row_dim, self.column_dim) = pickle.load(f)
 
 class FusionKernelModel(Model):
     def __init__(self, op_code_vocab_size, op_code_embed_dim, subop_vocab_size, 
@@ -418,88 +547,50 @@ class BatchGenerator(BatchGeneratorBase):
 
         return fusion_types, op_codes, op_hashes, padded_feature_vectors, labels, epoch_end
 
-class GCNBatchGenerator(BatchGeneratorBase):
-    def __init__(self, dataset, batch_size):
-        super().__init__(dataset, batch_size)
-    
-    def get_fusion_type_shape(self):
-        return self.dataset_.max_fusion_type
-    
-    def get_feature_shape(self):
-        return self.dataset_.feature_dim
-    
-    def re_init_(self):
-        self.adjs_, self.fusion_types_, self.op_codes_, self.op_hashes_, self.feature_vectors_, self.labels_ = self.shuffle_lists_(self.dataset_.get_training_set())
-        self.current_iter_ = 0
-    
-    def next_batch(self):
-        select_batch, epoch_end, effective_batch_size = self.get_batch_selector_()
-        adjs, fusion_types, op_codes, op_hashes, feature_vectors, labels = [select_batch(x) for x in [self.adjs_, self.fusion_types_, self.op_codes_, self.op_hashes_, self.feature_vectors_, self.labels_]]
-
-        def flatten2D(arr):
-            shapes = []
-            flattened = []
-            for elements in arr:
-                shapes.append(len(elements))
-                for ele in elements:
-                    flattened.append(ele)
-            return flattened, shapes
-        # construct block diagonal adj matrix and normalize it
-        block_matrix = sp.block_diag(adjs)
-        normed_block_matrix = normalize_adj(block_matrix)
-
-        labels = np.array(labels)
-        fusion_types = np.array(fusion_types, dtype=np.float32)
-
-        # needs flattening
-        flat_op_codes, opc_shapes = flatten2D(op_codes)
-        flat_op_codes = np.array(flat_op_codes)
-
-        flat_op_hashes, oph_shapes = flatten2D(op_hashes)
-        flat_op_hashes = np.array(flat_op_hashes)
-
-        flat_op_vectors, opv_shapes = flatten2D(feature_vectors)
-        flat_op_vectors = np.array(flat_op_vectors, dtype=np.float32)
-
-        if not (opc_shapes == oph_shapes == opv_shapes):
-            print("Expected equal shapes among op codes, op hashes and op feature vecs, but got {}".format([opc_shapes, oph_shapes, opv_shapes]))
-
-        expanded_shapes = []
-        for index, size in enumerate(opc_shapes):
-            expanded_shapes += [index] * size
-        graph_sizes = np.array(expanded_shapes, dtype=np.int32)
-
-        self.current_iter_ += effective_batch_size
-
-        if epoch_end:
-            self.re_init_()
-
-        return normed_block_matrix, fusion_types, flat_op_codes, flat_op_hashes, flat_op_vectors, labels, graph_sizes, epoch_end
-
 def train_kernel_model(dataset_path, save_dir, epochs=800, batch_size=64, 
                         op_code_embed_dim=16, subop_embed_dim=16, node_embed_dim=64, 
                         embedding_output_dim=32, use_embed_hidden=False, 
                         use_output_hidden=True, drop_out=0.2, learning_rate=5e-4,
                         early_stopping_patience=15, early_stopping_epsilon=1e-5):
     # load kernel dataset
-    dataset = XlaKernelDataset(dataset_path)
-    # train module lvl model
-    elem_op_cache = ElementaryOpCache(dataset_path)
-    module_overhead_model = XLAModuleOverheadModel(dataset_path, dataset, elem_op_cache)
-    module_overhead_model.fit()
-
-    ovhd_model_save_path = os.path.join(save_dir, "overhead.pickle")
-    module_overhead_model.dump(ovhd_model_save_path)
-    
     dataset_save_path = os.path.join(save_dir, "dataset.pickle")
-    dataset.dump_dataset(dataset_save_path)
+    if os.path.exists(dataset_save_path):
+        print("Loading kernel dataset from cache.")
+        dataset = XlaKernelDataset(dataset_save_path)
+    else:
+        print("Loading kernel dataset...")
+        dataset = XlaKernelDataset(dataset_path)
+        dataset.dump_dataset(dataset_save_path)
 
     elem_op_cache_save_path = os.path.join(save_dir, "elem_op_cache.picke")
-    elem_op_cache.dump(elem_op_cache_save_path)
+    ovhd_model_save_path = os.path.join(save_dir, "overhead.pickle")
+
+    if os.path.exists(elem_op_cache_save_path):
+        if not os.path.exists(ovhd_model_save_path):
+            print("Loading elementary Op cache from cache.")
+            elem_op_cache = ElementaryOpCache(load_from=elem_op_cache_save_path)
+        else:
+            elem_op_cache = None
+            print("Overhead model and elementary op cache exists, doing nothing.")
+    else:
+        print("Loading elementary Op cache...")
+        elem_op_cache = ElementaryOpCache(dataset_path)
+        elem_op_cache.dump(elem_op_cache_save_path)
+    
+    if os.path.exists(ovhd_model_save_path):
+        print("Overhead model exists, doing nothing.")
+    else:
+        # train module lvl model
+        print("Loading module details...")
+        module_overhead_model = XLAModuleOverheadModel(dataset_path, dataset, elem_op_cache)
+        print("Fitting module overhead model...")
+        module_overhead_model.fit()
+        module_overhead_model.dump(ovhd_model_save_path)
 
     opcode_vocab_size = len(dataset.opcode2index) + 1
     ophash_vocab_size = len(dataset.ophash2index) + 1
 
+    print("Training fused kernel model...")
     batch_generator = BatchGenerator(dataset, batch_size)
     model = FusionKernelModel(opcode_vocab_size, op_code_embed_dim, 
                     ophash_vocab_size, subop_embed_dim, 
@@ -576,6 +667,9 @@ def train_kernel_model(dataset_path, save_dir, epochs=800, batch_size=64,
             epoch_loss_history = []
             epoch_mape_history = []
     
+            model_save_path = os.path.join(save_dir, "model_weights.h5")
+            model.save_weights(model_save_path)
+    
     model_save_path = os.path.join(save_dir, "model_weights.h5")
     model.save_weights(model_save_path)
 
@@ -633,7 +727,7 @@ def load_kernel_model(model_save_dir):
     return elem_op_cache, ovhd_model, model
 
 class XLAModuleCostModel():
-    def __init__(self, save_dir, tmp_dir = "./cost_model_tmp", shape_dict_path=None):
+    def __init__(self, save_dir, tmp_dir = "./cost_model_tmp"):
         super().__init__()
         dataset_path = os.path.join(save_dir, "dataset.pickle")
         self.training_dataset = XlaKernelDataset(dataset_path)
@@ -641,6 +735,9 @@ class XLAModuleCostModel():
         graph_def_path = os.path.join(save_dir, "graph_def.pickle")
         with open(graph_def_path, "rb") as f:
             self.graph_def = pickle.load(f)
+        shape_dict_path = os.path.join(save_dir, "tensor_shapes.json")
+        if not os.path.exists(shape_dict_path):
+            shape_dict_path= None
         self.graph_def_util = GraphDefUtil(self.graph_def, shape_dict_path=shape_dict_path)
         self.computation_cache = {}
         # gutil = self.graph_def_util
@@ -650,19 +747,23 @@ class XLAModuleCostModel():
             os.makedirs(self._tmp_dir)
 
     @classmethod
-    def train_on_dataset(cls, dataset_path, graph_def, save_dir):
-        train_kernel_model(dataset_path, save_dir)
-        if isinstance(graph_def, str):
-            with open(graph_def, "r") as f:
-                cleaned_graph_def_str = f.read()
-            graph_def = Parse(cleaned_graph_def_str, GraphDef())
+    def train_on_dataset(cls, dataset_path, save_dir):
+        if not os.path.exists(save_dir):
+            os.mkdir(save_dir)
+        shutil.copy(os.path.join(dataset_path, "tensor_shapes.json"), save_dir)
+        dataset_folder_path = os.path.join(dataset_path, "dataset")
+        train_kernel_model(dataset_folder_path, save_dir)
+        graph_def_path = os.path.join(dataset_path, "cleaned_graph.json")
+        with open(graph_def_path, "r") as f:
+            cleaned_graph_def_str = f.read()
+        graph_def = Parse(cleaned_graph_def_str, GraphDef())
         with open(os.path.join(save_dir, "graph_def.pickle"), "wb") as f:
             pickle.dump(graph_def, f)
 
     def predict(self, node_names):
         try:
             graph_def_path, config_path = self.graph_def_util.get_subgraph_def_config_from_nodes(node_names, self._tmp_dir, 0)
-        except (GDUNotInGraphError, GDUSubgraphTooSmallError, GDUNonFixedShapeError) as e:
+        except (GSNotInGraphError, GSSubgraphTooSmallError, GSNonFixedShapeError) as e:
             print("[Cost Model] Failed to generate legal graph def for input nodes: {}".format(e))
             return -1, {}
         except RuntimeError:
@@ -744,7 +845,6 @@ class XLAModuleCostModel():
                 print("[Cost Model] Failed to predict the running time of ops: {} ...".format(list(node_names)[:10]))
             else:
                 print("[Cost Model] Failed to predict the running time of ops: {} ...".format(node_names))
-            os._exit(0)
             shutil.rmtree(self._tmp_dir)
             os.makedirs(self._tmp_dir)
             return -1, {}
@@ -799,7 +899,9 @@ class XLAModuleCostModel():
         return module_exec_time, breakdown_dict
     
     def test_on_dataset(self, test_set_path):
+        test_set_path = os.path.join(test_set_path, "dataset")
         training_dataset = self.training_dataset
+        print("Loading test set...")
         test_dataset = XlaModuleTestSet(test_set_path, training_dataset)
         elem_op_cache = self.elem_op_cache
         ovhd_model = self.ovhd_model
@@ -820,7 +922,7 @@ class XLAModuleCostModel():
         small_time_count = 0
         large_time_count = 0
         large_error_sids = []
-        for i in trange(min(len(module_infos_as_list), 400)):
+        for i in tqdm(random.sample(list(range(len(module_infos_as_list))), k=min(400, len(module_infos_as_list)))):
             predicted_module_time = 0
             elem_op_hashes, fused_op_infos = module_infos_as_list[i]
 
@@ -864,9 +966,6 @@ class XLAModuleCostModel():
             for (sid, predicted_module_time, true_module_time) in large_error_sids:
                 f.write(str(sid) + ", " + str(predicted_module_time) + ", " + str(true_module_time))
                 f.write("\n")
-
-        for i in range(10):
-            print("predicted: {}, true: {}".format(predicted[i], labels_as_list[i]))
 
         print("Tested on {} samples.".format(len(predicted)))
         print("Test MAPE: {}, Median percentage difference: {}".format(np.average(percentage_diff), np.median(percentage_diff)))

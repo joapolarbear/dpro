@@ -68,11 +68,11 @@ def standard_name(_name, platform="TENSORFLOW"):
         _name = "BW." + _name.split("_backward")[0] if "_backward" in _name else "FW." + _name
         _name = _name.split("_fwd")[0] if "_fwd" in _name else _name
     elif platform == "TENSORFLOW":
-        for prefix in ["COMM.", "COMP.", "BW.", "FW."]:
+        for prefix in ["Comm.", "Comp.", "BW.", "FW."]:
             if _name.startswith(prefix):
                 return _name   
         if "BytePSPushPull" in _name and "tensor" not in _name:
-            _name = "COMM." + _name
+            _name = "Comm." + _name
         else:
             if _name.startswith("gradients"):
                 _name = "BW." + _name
