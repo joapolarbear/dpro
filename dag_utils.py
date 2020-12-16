@@ -59,13 +59,13 @@ def dag_longest_path(G, pathM=None, weight='weight', default_weight=0, _debug_le
     return list(zip(critical_path, len_list))
 
 def tf_relabel_func(_name, update_nodes_in_dag):
-    for prefix in ["COMM.", "COMP.", "BW.", "FW."]:
+    for prefix in ["Comm.", "Comp.", "BW.", "FW."]:
         if _name.startswith(prefix):
             return _name
     if _name.startswith("^"):
         _name = _name[1:]
     if "BytePSPushPull" in _name and "tensor" not in _name:
-        _name = "COMM." + _name
+        _name = "Comm." + _name
     if "allreduce" in _name.lower():
         if "." in _name:
             _, tensor_name = _name.split(".")

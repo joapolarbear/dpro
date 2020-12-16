@@ -278,8 +278,8 @@ if __name__ == '__main__':
             train_amp_model()
             raise
 
-        if not args.simulate and len(path_list) < 3:
-            raise RuntimeError("optimize requires positional path arguments: profile data path, cost model path & shape dict path.")
+        if not args.simulate and len(path_list) < 2:
+            raise RuntimeError("optimize requires positional path arguments: profile data path & cost model path.")
 
         cost_models = {}
         if not args.simulate:
@@ -291,7 +291,7 @@ if __name__ == '__main__':
                 p = Path(model_path)
                 if p.is_dir():
                     node_name = p.name
-                    cm = XLAModuleCostModel(model_path, tmp_dir=os.path.join(args.cost_model_tmp_dir, node_name), shape_dict_path=shape_dict_path)
+                    cm = XLAModuleCostModel(model_path, tmp_dir=os.path.join(args.cost_model_tmp_dir, node_name))
                     cost_models[node_name] = cm
                     logger.info("Added cost model for {}".format(node_name))
                 else:

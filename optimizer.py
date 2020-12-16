@@ -17,7 +17,7 @@ from replay import Replayer
 from trace_utils import *
 from dag_utils import *
 from cost_model_amp.amp_pred import AMPPredictor
-from pk_graph import PKGraph, PKGraphCycleError, contract_nodes_nx, \
+from cost_model_xla.pk_graph import PKGraph, PKGraphCycleError, contract_nodes_nx, \
                     defuse_nodes_inplace_nx, postorder_contract_nx, subgraph_partition_connected_nx
 
 class GraphExpand(Enum):
@@ -118,51 +118,36 @@ class _XLACostModel(_BaseCostModel):
         self.token = ["+", "-"]
 
     def init_forbidden_list(self):
+        self.initial_forbidden_list = set()
         # limit the range of nodes during search
         for node in self.dag.nodes:
+            # ignore BW nodes and communication nodes
             if "BW" in node:
+                self.initial_forbidden_list.add(node)
+
+            try:
+                orig_name, pid = self._get_original_name_pid_from_index(node)
+            except:
+                # not standard nodes, ignore
                 self.forbidden_list.add(node)
-            else:
-                try:
-                    orig_name, pid = self.opt._get_original_name_pid_from_index(node)
-                except:
-                    # not standard nodes, ignore
-                    self.forbidden_list.add(node)
-                    continue
-                cat = parse_cat_fine_grained(node)
-                if not self._wrap_xla_need_fuse(pid, orig_name, cat)  or "Assign" in orig_name:
-                    self.forbidden_list.add(node)
+                self.initial_forbidden_list.add(node)
+                continue
+            cat = parse_cat_from_name(orig_name)
+            if orig_name not in self.cost_models[pid].graph_def_util.operation_names or "Assign" in orig_name or cat == CatName.COMM.value:
+                self.forbidden_list.add(node)
+                self.initial_forbidden_list.add(node)
 
     def init_partition(self, G, PKG, initial_partitions_formed):
-        nodes_on_1 = [node for node in G.nodes if node.startswith("traces_1")]
         partition_G = G.copy()
-
-        nodes_on_1 = [node for node in partition_G.nodes if node.startswith("traces_1")]
-        partition_G = partition_G.subgraph(nodes_on_1)
         partition_PKG = PKGraph(partition_G)
-        # code.interact(local=locals())
-        # exit(0)
-        source_nodes = [node for node in partition_G.nodes if len(partition_G.in_edges(node)) == 0]
-        # SingleLogger().info("Randomly initialize partitions by contracting edges...")
-        # for i in trange(k):
-        #     while True:
-        #         while True:
-        #             (u, v) = random.choice(list(partition_G.edges()))
-        #             if u.startswith("traces_1") and v.startswith("traces_1"):
-        #                 break
-        #         if partition_PKG.can_contract_edge(u, v):
-        #             partition_PKG.contract_edge(u, v)
-        #             partition_G, new_node_name = contract_nodes_nx(partition_G, [u, v])
-        #             u0 = self._debug_convert_to_the_other_machine(u)
-        #             v0 = self._debug_convert_to_the_other_machine(v)
-        #             partition_PKG.contract_edge(u0, v0)
-        #             partition_G, new_node_name = contract_nodes_nx(partition_G, [u0, v0])
-        #             break
-        # 
+
+        source_nodes = sorted([node for node in partition_G.nodes if node not in self.initial_forbidden_list], key=lambda x: partition_G.in_degree(x))
 
         # Run post order traversal on partition_G
+        visited_nodes = set()
         for source in tqdm(source_nodes, total=len(source_nodes)):
-            _, _, partition_G = postorder_contract_nx(partition_G, partition_PKG, source, forbidden_list=self.forbidden_list, size_limit=800)
+            if source not in visited_nodes and source in partition_G.nodes:
+                _, _, partition_G = postorder_contract_nx(partition_G, partition_PKG, source, visited_nodes, forbidden_list=self.initial_forbidden_list, size_limit=800)
         for node_name in tqdm(partition_G.nodes()):
             if "+" in node_name:
                 # fused node, test if compilable
@@ -177,14 +162,8 @@ class _XLACostModel(_BaseCostModel):
                     G, new_node_name = contract_nodes_nx(G, ns)
                     PKG.contract_nodes_unsafe(ns)
                     self.parse_node_attr(G, new_node_name)
-                    ### fuse corresponding operators in other pid
-                    ns0s = [self.opt._debug_convert_to_the_other_machine(node) for node in ns]
-                    for idx in range(len(ns0s[0])):
-                        ns0 = [e[idx] for e in ns0s]
-                        G, new_node_name0 = contract_nodes_nx(G, ns0)
-                        PKG.contract_nodes_unsafe(ns0)
-                        self.parse_node_attr(G, new_node_name0)
                     initial_partitions_formed += 1
+
         return initial_partitions_formed
 
     def _get_original_name_pid_from_fused_node(self, u_):
@@ -216,8 +195,8 @@ class _XLACostModel(_BaseCostModel):
         else:
             return self.cost_models[pid].predict(nodes_to_fuse)
 
-    def _wrap_xla_need_fuse(self, pid, orig_name, cat):
-        return (args_.simulate or orig_name in self.cost_models[pid].graph_def_util.operation_names) and "Comm" not in cat
+    def _wrap_xla_need_fuse(self, pid, orig_name):
+        return (args_.simulate or orig_name in self.cost_models[pid].graph_def_util.operation_names) and orig_name not in self.forbidden_list
 
     def _query_cost_model(self, fused_u_):
         # query cost model for exec time of a fused node u
@@ -285,7 +264,7 @@ class _XLACostModel(_BaseCostModel):
             except (IndexError, KeyError):
                 continue
 
-            if not self._wrap_xla_need_fuse(n_pid, n_orig_name, cat):
+            if not self._wrap_xla_need_fuse(n_pid, n_orig_name):
                 continue
 
             for succ_ in _dag.successors(n):
@@ -298,17 +277,9 @@ class _XLACostModel(_BaseCostModel):
                     except (IndexError, KeyError):
                         continue
 
-                    if not self._wrap_xla_need_fuse(succ_pid, succ_orig_name, cat):
+                    if not self._wrap_xla_need_fuse(succ_pid, succ_orig_name):
                         continue
 
-                edge_data = _dag.get_edge_data(n, succ_)
-                if edge_data and "exec_edges" in edge_data and edge_data["exec_edges"]:
-                    print("IGNORED EXECUTION EDGE!!!!!!!!")
-                    continue
-                # else:
-                #     print(n, succ_)
-                #     print(edge_data)
-                #     print("==================")
                 _pid = parse_pid_from_name(succ_)
                 _cat = parse_cat_fine_grained(succ_)
                 if pid != _pid or cat != _cat:
@@ -437,16 +408,6 @@ class _XLACostModel(_BaseCostModel):
             self._fuse_pair(_dag, u_, v_)
             nodes_to_add.append(u_+"+"+v_)
             nodes_to_remove += [u_, v_]
-            u0_s = self.opt._debug_convert_to_the_other_machine(u_)
-            v0_s = self.opt._debug_convert_to_the_other_machine(v_)
-            for u0_, v0_ in zip(u0_s, v0_s):
-                if (u0_, v0_) not in _dag.edges or not _pkg.can_contract_edge(u0_, v0_):
-                    continue
-                _pkg.contract_edge(u0_, v0_)
-                self._fuse_pair(_dag, u0_, v0_)
-                nodes_to_add.append(u0_+"+"+v0_)
-                nodes_to_remove += [u0_, v0_]
-            # self._fuse_pair(_dag, self.convert_fw2bw(v_), self.convert_fw2bw(u_))
             return True, nodes_to_add, nodes_to_remove
         else:
             return False, None, None
@@ -503,25 +464,6 @@ class _XLACostModel(_BaseCostModel):
         _, new_node_names = self._defuse_node(_dag, _pkg, target, components)
         nodes2add += new_node_names
         nodes2rm.append(target)
-
-        target_list = self.opt._debug_convert_to_the_other_machine(target)
-        components_list = tuple([tuple([self.opt._debug_convert_to_the_other_machine(node) for node in comp]) for comp in components])
-        for idx in range(len(target_list)):
-            target0 = target_list[idx]
-            components0 = tuple([tuple([node_list[idx] for node_list in comp]) for comp in components_list])
-            if target0 not in _dag.nodes:
-                continue
-            _pkg.split_node(target0, components0)
-            _, new_node_names0 = self._defuse_node(_dag, _pkg, target0, components0)
-            nodes2add += new_node_names0
-            nodes2rm.append(target0)
-        # target = "BW".join(target.split("FW"))
-        # ns = target.split("+")
-        # ns.reverse()
-        # pos = len(ns) - pos - 2
-        # target = "+".join(ns)
-        # assert target in _dag.nodes
-        # self._defuse_pair(_dag, target, pos)
         return True, set(nodes2add), set(nodes2rm)
 
     def _defuse_node(self, _dag, _pkg, target, components):
@@ -706,29 +648,29 @@ class Optimizer:
     def _parse_index_from_name(self, name_):
         return int(name_.split("[")[1].split("]")[0])
     
-    def _debug_convert_to_the_other_machine(self, name_):
-        if not "+" in name_:
-            ret = []
-            if args_.relabel:
-                name, pid = self._get_original_name_pid_from_index(name_)
-                for other_pid in self.name2index[name]:
-                    if other_pid == pid:
-                        continue
-                    other_index = self.name2index[name][other_pid]
-                    ret.append(self.index2newname[other_index])
-            else:
-                pid, rawname, cat, suffix = parse_allinfo_from_name(name_)
-                for other_pid in self.clct.all_pid():
-                    if other_pid == pid:
-                        continue
-                    ret.append(gen_long_name(other_pid, rawname, suffix))
-            return ret
-        else:
-            new_names = []
-            for sub_name in name_.split("+"):
-                new_names.append(self._debug_convert_to_the_other_machine(sub_name))
-            new_names = list(np.array(new_names).T)
-            return ["+".join(ns) for ns in new_names]
+    # def _debug_convert_to_the_other_machine(self, name_):
+    #     if not "+" in name_:
+    #         ret = []
+    #         if args_.relabel:
+    #             name, pid = self._get_original_name_pid_from_index(name_)
+    #             for other_pid in self.name2index[name]:
+    #                 if other_pid == pid:
+    #                     continue
+    #                 other_index = self.name2index[name][other_pid]
+    #                 ret.append(self.index2newname[other_index])
+    #         else:
+    #             pid, rawname, cat, suffix = parse_allinfo_from_name(name_)
+    #             for other_pid in self.clct.all_pid():
+    #                 if other_pid == pid:
+    #                     continue
+    #                 ret.append(gen_long_name(other_pid, rawname, suffix))
+    #         return ret
+    #     else:
+    #         new_names = []
+    #         for sub_name in name_.split("+"):
+    #             new_names.append(self._debug_convert_to_the_other_machine(sub_name))
+    #         new_names = list(np.array(new_names).T)
+    #         return ["+".join(ns) for ns in new_names]
 
     def _get_original_name_pid_from_index(self, name_):
         if args_.relabel:
@@ -785,26 +727,11 @@ class Optimizer:
             critical_path = self.wrap_critical_path(exct_dag)
         else:
             new_dag = GS
-        
-        filtered_critical_path = critical_path
-        ### TODO (huhanpeng) -- delete
-        ### Repeated filtering, init_search space will call _wrap_xla_need_fuse again
-        ### Filtering here is dedicated for fusion, 
-        # for (node, length) in critical_path:
-        #     if "+" in node:
-        #         # fused node
-        #         filtered_critical_path.append((node, length))
-        #     elif "[" in node and "]" in node:
-        #         orig_name, pid = self._get_original_name_pid_from_index(node)
-        #         if self._wrap_xla_need_fuse(pid, orig_name):
-        #             filtered_critical_path.append((node, length))
 
         if topk is None:
-            # print(sorted(filtered_critical_path_orig_name, key=lambda x: x[1], reverse=True)[:20])
-            # input()
-            return filtered_critical_path, new_dag
+            return critical_path, new_dag
         else:
-            critical_path = sorted(filtered_critical_path, key=lambda x: x[1], reverse=True)
+            critical_path = sorted(critical_path, key=lambda x: x[1], reverse=True)
             return critical_path[:topk], new_dag
 
     def wrap_critical_path(self, _dag, verbose=False):
@@ -845,27 +772,6 @@ class Optimizer:
             ss_, wei_ = _cost_model.init_search_space(candidates, _dag, _pkg)
             search_space += ss_
             weights += wei_
-
-        # # time_spanning_trees = []
-        # # time_st = []
-        # for n, l in candidates:
-        #     # node heat
-        #     heat = self._get_heat_from_history(n)
-
-        #     # DEBUG_COMPARE:
-        #     # heat = 1
-        #     if  "+" not in n:
-
-        #         ### Nodes that have never been fused
-        #         cat = parse_cat_fine_grained(n)
-        #         pid = parse_pid_from_name(n)
-
-        #         ### check if mixed precision can be used for this node
-        #         ### TODO (huhanpeng) do not support quantizing fused nodes now
-        #         if self.amp_predictor.is_need_amp(_dag, n):
-        #             search_space.append((">", n, None))
-        #             weights.append(l)
-
         # SingleLogger().info("Init search space len={} from {} candidates, prune {}".format(len(search_space), len(candidates), prun_cnt))
         # SingleLogger().info("Time spent for spanning tree: {}".format(sum(time_spanning_trees)/ len(time_spanning_trees)))
         # SingleLogger().info("Time spent for source/sink: {}".format(sum(time_st)/ len(time_st)))
@@ -943,7 +849,17 @@ class MCMCOptimizer(Optimizer):
         else:
             self.heat_window_size = 5
 
-    def search(self, init_edges_to_contract = 0.3, graph_cache=os.path.join(ROOT_PATH, "graph_cache.pickle"), step_size=1):
+    def __dump_cluster_mapping(self, dag, output_path):
+        cluster_index = 0
+        with open(output_path, "w") as f:
+            for node in dag.nodes():
+                if "+" in node:
+                    orig_names, _ = self._get_original_name_pid_from_fused_node(node)
+                    for orig_node_name in orig_names:
+                        f.write("{} {}\n".format(orig_node_name, cluster_index))
+                    cluster_index += 1
+
+    def search(self, graph_cache=os.path.join(ROOT_PATH, "graph_cache.pickle"), step_size=1):
         ### TODO (huhanpeng): is shallow copy is enough ???
         if args_.ckpt and graph_cache is not None and os.path.isfile(graph_cache):
             with open(graph_cache, "rb") as f:
@@ -966,12 +882,20 @@ class MCMCOptimizer(Optimizer):
                 with open(graph_cache, "wb") as f:
                     pickle.dump([G, PKG, self.node_attr_cache, initial_partitions_formed], f)
                 SingleLogger().info("Graph cache dumped to {}.".format(graph_cache))
+        if "BPF_DUMP_INIT_CLUSTER_TO" in os.environ:
+            self.__dump_cluster_mapping(G, os.environ["BPF_DUMP_INIT_CLUSTER_TO"])
         # initialize heat history
         for node in G.nodes:
             self.heat_history[node] = [(0, 0)] * self.heat_window_size
         SingleLogger().info("="*20 + " Search Starts " + "="*20)
         SingleLogger().info("Successfully initialized {} partitions.".format(initial_partitions_formed))
-        cost, exct_dag, self.mem_usage = self.evaluate(G)
+
+        if "BPF_DUMP_INIT_GRAPH_TO" in os.environ:
+            bpf_dump_init_graph_to = os.environ["BPF_DUMP_INIT_GRAPH_TO"]
+        else:
+            bpf_dump_init_graph_to = None
+        cost, exct_dag, self.mem_usage = self.evaluate(G, _filename=bpf_dump_init_graph_to)
+
         trajectory = []
         candidates, _ = self.candidate_selection(G, topk=None, critical_path=self.wrap_critical_path(exct_dag))
         search_space, weights = self.init_search_space(candidates, G, PKG)
@@ -1224,6 +1148,8 @@ class MCTSOptimizer(Optimizer):
                 c = GS_c.quality + UCB_GAMMA * math.sqrt((2 * math.log(GS.visit_cnt)) / GS_c.visit_cnt)
             elif self.ucb_type == "AVG":
                 c = GS_c.quality / GS_c.visit_cnt + UCB_GAMMA * math.sqrt((2 * math.log(GS.visit_cnt)) / GS_c.visit_cnt)
+            else:
+                raise RuntimeError("Invalid UCB_type")
             if GS_opt is None or c > c_opt:
                 c_opt = c
                 GS_opt = GS_c

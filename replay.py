@@ -75,8 +75,11 @@ class Device:
         ### for debug
         debug_utils.DebugRecorder().debug_event_start()
 
+        # TODO(chenyu): what if self.infi_para?
         if not self.infi_para:
             start_t = self.real_start_t(_last_end_time)
+        else:
+            raise NotImplementedError("Infi para is not yet implemented.")
 
         if name == "END":
             #! No event is generated, but has successors
@@ -148,7 +151,8 @@ class Device:
                     if gap > 1000:
                         SingleLogger().debug("Large GAP detected: {}, key = {}, gap = {}".format(name, key, value))
         if gap < 0:
-            raise RuntimeError("Negative GAP detected: {}, key = {}, gap = {}".format(name, key, gap))
+            raise RuntimeError(
+                "Negative GAP detected: {}, gap = {}".format(name, gap))
         self.device_time = _end_time + gap
 
     def mark_as_exct(self, name, _start_t, _end_time):
@@ -599,7 +603,3 @@ class Replayer:
                 continue
             nx.set_node_attributes(_dag, {node_: self.dag.nodes[node_]})
         self.dag = _dag
-
-                        
-                
-

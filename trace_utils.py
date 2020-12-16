@@ -354,7 +354,7 @@ class TraceManager:
         for trace in traces:
             if trace.get("name", None) is None or trace.get("ts", None) is None:
                 print(trace)
-                raise
+                raise RuntimeError("Check trace failed.")
         return traces
         
     def _is_comm_trace(self, event):
@@ -609,6 +609,8 @@ class TraceManager:
             unique_name = gen_long_name(rank_prefix, name)
         elif self.dir_level == DirLevel.TRIAL:
             unique_name = gen_long_name("%s.%s"%(wk_prefix, rank_prefix), name)
+        else:
+            raise RuntimeError("Unsupported DirLevel.")
 
         if unique_name not in self.name2sta:
             # SingleLogger().warn("Fail to find the trace of %s" % unique_name)

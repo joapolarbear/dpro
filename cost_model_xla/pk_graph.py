@@ -344,21 +344,20 @@ class PKGraph(object):
         for i in range(len(L)):
             self.ord[L[i]] = all_orders[i]
 
-def postorder_contract_nx(_dag: nx.DiGraph, _pkg: PKGraph, source_node, forbidden_list = None, size_limit = None):
-    visited_successors = set()
+def postorder_contract_nx(_dag: nx.DiGraph, _pkg: PKGraph, source_node, visitied_nodes, forbidden_list = None, size_limit = None):
     graph_changed_outer = False
     while True:
         should_break = True
         for node in _dag.successors(source_node):
-            if node in forbidden_list:
+            if forbidden_list is not None and node in forbidden_list:
                 continue
-            if node in _dag.successors(source_node) and node not in visited_successors:
-                visited_successors.add(node)
-                new_node_name, graph_changed, _dag = postorder_contract_nx(_dag, _pkg, node, forbidden_list=forbidden_list, size_limit=size_limit)
+            if node in _dag.successors(source_node) and node not in visitied_nodes:
+                visitied_nodes.add(node)
+                new_node_name, graph_changed, _dag = postorder_contract_nx(_dag, _pkg, node, visitied_nodes, forbidden_list=forbidden_list, size_limit=size_limit)
                 if graph_changed:
                     should_break = False
                     graph_changed_outer = True
-                    visited_successors.add(new_node_name)
+                    visitied_nodes.add(new_node_name)
                     break
         if should_break:
             break

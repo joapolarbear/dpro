@@ -12,7 +12,7 @@ except:
 from tensorflow.python.client import timeline
 import json
 import networkx as nx
-import byteps as bps
+import byteps.tensorflow as bps
 
 class TimelineSession:
     def __init__(self, sess, tensor_shape_ops=None):
@@ -42,6 +42,7 @@ class TimelineSession:
         self.run_metadata = tf.RunMetadata()
         self.traces = {"traceEvents":[]}
         self.trace_meta = {}
+        self.next_unique_pid = 0
 
         self.dag = None
 
@@ -64,7 +65,10 @@ class TimelineSession:
                         if "args" in event:
                             pid_mapping_in_this_step[event["pid"]] = event["args"]["name"]
                             if event["args"]["name"] not in self.trace_meta:
-                                self.trace_meta[event["args"]["name"]] = event["pid"]
+                                self.trace_meta[event["args"]["name"]] = self.next_unique_pid
+                                event["pid"] = self.next_unique_pid
+                                self.traces["traceEvents"].append(event)
+                                self.next_unique_pid += 1
             for event in ctf["traceEvents"]:
                 if "ph" in event and event["ph"] != "M":
                     if "pid" in event:
