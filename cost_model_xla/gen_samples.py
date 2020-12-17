@@ -447,7 +447,7 @@ class SampleGenerator():
         return list(subgraph_nodes)
     
     def _max_cluster_sampler(self, forbidden_list, size_limit=800):
-        G: nx.DiGraph = self.nx_graph.copy()
+        G = self.nx_graph.copy()
         PKG = PKGraph(G)
 
         source_nodes = sorted(list(G.nodes), key=lambda x: G.in_degree(x))

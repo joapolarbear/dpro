@@ -762,7 +762,7 @@ class Collector(object):
         self.traceM = TraceManager(rst_traces, self.pm.dir_level, check=True)
 
     def collect_para_dict(self):
-        self.para_dict = ParameterDict(self.pm)
+        self.para_dict = ParameterDict(self.pm, self.platform)
 
     def _collect_rank_dag(self, gpu_path, worker_dag_list, critical_path, index):
         SingleLogger().info("- Collect DAG in %s ..." % (gpu_path))

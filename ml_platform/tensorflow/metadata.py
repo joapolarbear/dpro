@@ -257,3 +257,6 @@ class MetaInfo:
         rawname = rawname.split(".")[1]
         rawname = rawname.split(":")[0]
         return rawname, cat
+    
+    def in_metadata(self, raw_name):
+        return raw_name in self.tf_meta

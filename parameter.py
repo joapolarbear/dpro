@@ -3,26 +3,26 @@
 '''
 import re
 from trace_utils import *
-import arg_utils
-args_ = arg_utils.SingleArg().args
-if args_.platform == "MXNET":
-    from ml_platform.mxnet.metadata import MetaInfo
-    SingleLogger().info("Use MXNET metadata")
-elif args_.platform == "TENSORFLOW":
-    from ml_platform.tensorflow.metadata import MetaInfo
-    SingleLogger().info("Use TENSORFLOW metadata")
-else:
-    raise NotImplementedError()
 
 class ParameterDict:
-    def __init__(self, _pm):
+    def __init__(self, _pm, platform, metadata_path=None):
         ### collect metadata
-        if args_.metadata_path is None:
-            args_.metadata_path = os.path.dirname(_pm.search(FileName.METADATA))
-        if args_.metadata_path is None:
+        if metadata_path is None:
+            metadata_path = os.path.dirname(_pm.search(FileName.METADATA))
+        if metadata_path is None:
             SingleLogger().error(
                 "{} not found. Fail to load metadata".format(FileName.METADATA.value))
-        self.metainfo = MetaInfo(args_.metadata_path)
+        
+        if platform == "MXNET":
+            from ml_platform.mxnet.metadata import MetaInfo
+            SingleLogger().info("Use MXNET metadata")
+        elif platform == "TENSORFLOW":
+            from ml_platform.tensorflow.metadata import MetaInfo
+            SingleLogger().info("Use TENSORFLOW metadata")
+        else:
+            raise NotImplementedError()
+
+        self.metainfo = MetaInfo(metadata_path)
         self.cnt = len(self.metainfo.gradient_name_list)
 
     def gradient_name_list(self):
@@ -62,3 +62,6 @@ class ParameterDict:
     
     def ret_op_precision(self, *args, **kwargs):
         return self.metainfo.ret_op_precision(*args, **kwargs)
+    
+    def in_metadata(self, *args, **kwargs):
+        return self.metainfo.in_metadata(*args, **kwargs)
