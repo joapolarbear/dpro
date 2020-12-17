@@ -740,7 +740,7 @@ def gen_kernel_dataset(trace_dir, op_time_dict, result_dir, num_samples=2000, nu
                 # register TF Ops
                 import byteps.tensorflow as bps # type: ignore
                 ignored_node.add(node["name"])
-            elif node["name"].lower().startswith("save") or node["name"]+":0" not in shape_dict:
+            elif node["name"].lower().startswith("save") or node["name"] not in shape_dict:
                 pruned_node.add(node["name"])
         # while True:
         #     removed_sth = False
@@ -783,7 +783,7 @@ def gen_kernel_dataset(trace_dir, op_time_dict, result_dir, num_samples=2000, nu
                     # TODO: remove _ref dtypes
                     pass
                 if "shape" in node["attr"]:
-                    node["attr"]["shape"] = shape_as_list_to_pb_json(shape_dict[node["name"]+":0"])
+                    node["attr"]["shape"] = shape_as_list_to_pb_json(shape_dict[node["name"]])
         cleaned_graph_def_str = json.dumps(graph_def_as_json)
         with open(os.path.join(result_dir, "cleaned_graph.json"), "w") as f_cleaned:
             json.dump(graph_def_as_json, f_cleaned, indent=4)

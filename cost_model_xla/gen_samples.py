@@ -80,7 +80,7 @@ class GSDuplicateSubgraphError(GSInternalErrors):
 
 class GraphDefUtil(object):
     def __init__(self, graph_def, shape_dict_path=None):
-        import byteps.tensorflow as bps # type: ignore
+        # import byteps.tensorflow as bps # type: ignore
         super().__init__()
         self.graph_def = graph_def
         self.original_graph = tf.Graph()
@@ -105,6 +105,8 @@ class GraphDefUtil(object):
         #         og = self.original_graph
         #         code.interact(local=locals())
         #         exit(0)
+        print(graph_def)
+        raise
         self.operation_names = set([node.name for node in self.original_graph.get_operations()])
 
     def gen_shape_type_attr_value(self, shape, data_type):
@@ -539,6 +541,7 @@ class SampleGenerator():
                 try:
                     op = self.graph_def_util.original_graph.get_operation_by_name(op_name)
                 except Exception as e:
+                    print("{} is not found in graph_def_util".format(op_name))
                     continue
                 if op.type != "Placeholder" and op.type != "Const" and op.type != "Identity" and op.type != "VariableV2" and op.name not in self.ignored_nodes:
                     filtered_op.append(op)
