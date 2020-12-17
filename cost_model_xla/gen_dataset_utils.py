@@ -713,6 +713,17 @@ def shape_as_list_to_pb_json(shape):
         shape_dict["shape"]["dim"].append({"size": str(dim)})
     return shape_dict
 
+def try_import(graph_def_as_json):
+    cleaned_graph_def_str = json.dumps(graph_def_as_json)
+    from google.protobuf.json_format import Parse
+    import horovod.tensorflow as hvd
+    graph_def = Parse(cleaned_graph_def_str, tf.GraphDef())
+    ## collect graph info
+    original_graph = tf.Graph()
+    with original_graph.as_default():
+        tf.import_graph_def(graph_def, name="")
+    print(original_graph.get_operations())
+
 def gen_kernel_dataset(trace_dir, op_time_dict, result_dir, num_samples=2000, num_max_cluster_samples = 2000,
                 min_subgraph_level=5, max_subgraph_level=15):
     if not os.path.isdir(result_dir):
@@ -732,6 +743,7 @@ def gen_kernel_dataset(trace_dir, op_time_dict, result_dir, num_samples=2000, nu
         shape_dict = json.load(f)
     with open(os.path.join(trace_dir, "final_graph.json"), "r") as f:
         graph_def_as_json = json.load(f)
+
         # clean up communication nodes
         ignored_node = set()
         pruned_node = set()
@@ -742,6 +754,8 @@ def gen_kernel_dataset(trace_dir, op_time_dict, result_dir, num_samples=2000, nu
                 ignored_node.add(node["name"])
             elif node["name"].lower().startswith("save") or node["name"] not in shape_dict:
                 pruned_node.add(node["name"])
+            elif "Horovod" in node["op"]:
+                import horovod.tensorflow as hvd
         # while True:
         #     removed_sth = False
         #     for node in graph_def_as_json["node"]:
@@ -755,13 +769,13 @@ def gen_kernel_dataset(trace_dir, op_time_dict, result_dir, num_samples=2000, nu
         #     if not removed_sth:
         #         break
         
-        graph_nodes = graph_def_as_json["node"].copy()
-        graph_def_as_json["node"] = []
+        # graph_nodes = graph_def_as_json["node"].copy()
+        # graph_def_as_json["node"] = []
 
-        for node in graph_nodes:
-            if node["name"] not in pruned_node:
-                graph_def_as_json["node"].append(node)
-
+        # for node in graph_nodes:
+        #     if node["name"] not in pruned_node:
+        #         graph_def_as_json["node"].append(node)
+        
         for node in graph_def_as_json["node"]:
             if "input" in node:
                 cleaned_inputs = []
@@ -783,7 +797,12 @@ def gen_kernel_dataset(trace_dir, op_time_dict, result_dir, num_samples=2000, nu
                     # TODO: remove _ref dtypes
                     pass
                 if "shape" in node["attr"]:
-                    node["attr"]["shape"] = shape_as_list_to_pb_json(shape_dict[node["name"]])
+                    _shape = shape_dict[node["name"]]
+                    if len(_shape) > 0:
+                        node["attr"]["shape"] = shape_as_list_to_pb_json(_shape)
+        
+        # try_import(graph_def_as_json)
+
         cleaned_graph_def_str = json.dumps(graph_def_as_json)
         with open(os.path.join(result_dir, "cleaned_graph.json"), "w") as f_cleaned:
             json.dump(graph_def_as_json, f_cleaned, indent=4)

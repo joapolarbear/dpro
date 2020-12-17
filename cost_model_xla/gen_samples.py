@@ -23,6 +23,11 @@ from .p_dispersion import p_dispersion_local_search, p_dispersion_lp, parallel_p
 from .pk_graph import PKGraph, PKGraphCycleError, contract_nodes_nx, \
                         defuse_nodes_inplace_nx, postorder_contract_nx, subgraph_partition_connected_nx
 
+try:
+    from nx.algorithm import weisfeiler_lehman_graph_hash
+except:
+    from nx_graph_hashing import weisfeiler_lehman_graph_hash
+
 def format_feed(node_name, shape):
     feed_str = "feed {{\n\tid {{ node_name: \"{}\" }}\n\tshape {{\n".format(node_name)
     for dim in shape:
@@ -92,12 +97,15 @@ class GraphDefUtil(object):
             for op in self.original_graph.get_operations():
                 for output in op.outputs:
                     need_to_set_shape = False
-                    for dim in output.shape:
-                        if dim == -1 or dim is None:
-                            need_to_set_shape = True
-                            break
+                    try:
+                        for dim in output.shape:
+                            if dim == -1 or dim is None:
+                                need_to_set_shape = True
+                                break
+                    except:
+                        need_to_set_shape = True
                     if need_to_set_shape:
-                        op_shape_as_list = shape_dict[output.name]
+                        op_shape_as_list = shape_dict[output.name.split(":")[0]]
                         output.set_shape(op_shape_as_list)
         # for op in self.original_graph.get_operations():
         #     if not self.is_fixed_shape(op.outputs[0].shape):
@@ -105,8 +113,6 @@ class GraphDefUtil(object):
         #         og = self.original_graph
         #         code.interact(local=locals())
         #         exit(0)
-        print(graph_def)
-        raise
         self.operation_names = set([node.name for node in self.original_graph.get_operations()])
 
     def gen_shape_type_attr_value(self, shape, data_type):
@@ -524,7 +530,7 @@ class SampleGenerator():
         graph_def_path, graph_def_config_path = self.graph_def_util.get_subgraph_def_config_from_nodes(filtered_selected_node_names, output_dir, sample_id)
 
         sub_g = self.nx_graph.subgraph(filtered_selected_node_names)
-        g_hash = nx.algorithms.weisfeiler_lehman_graph_hash(sub_g, node_attr="hash_value")
+        g_hash = weisfeiler_lehman_graph_hash(sub_g, node_attr="hash_value")
         if g_hash in self.generated_graph_hashes:
             raise GSDuplicateSubgraphError
         else:

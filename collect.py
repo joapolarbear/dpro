@@ -15,7 +15,7 @@ import multiprocessing
 
 from trace_utils import *
 from dag_utils import * 
-from horovod.graph import *
+from hvd.graph import *
 from parameter import *
 from bps_helper.graph import *
 
