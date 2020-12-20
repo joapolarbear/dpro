@@ -24,9 +24,20 @@ from .pk_graph import PKGraph, PKGraphCycleError, contract_nodes_nx, \
                         defuse_nodes_inplace_nx, postorder_contract_nx, subgraph_partition_connected_nx
 
 try:
-    from nx.algorithm import weisfeiler_lehman_graph_hash
+    import nx.algorithms.weisfeiler_lehman_graph_hash as graph_hash
 except:
-    from nx_graph_hashing import weisfeiler_lehman_graph_hash
+    import hashlib
+    # https://stackoverflow.com/questions/20530455/isomorphic-comparison-of-networkx-graph-objects-instead-of-the-default-addres
+    def graph_hash(G, node_attr=None):
+        node_labels = dict()
+        for n in G.nodes():
+            if not node_attr:
+                node_labels[n] = str(G.degree(n))
+            else:
+                node_labels[n] = str(G.nodes[n][node_attr]) + "_" + str(G.degree(n))
+        _hash = hashlib.sha1(json.dumps(
+            node_labels, sort_keys=True).encode()).hexdigest()
+        return _hash
 
 def format_feed(node_name, shape):
     feed_str = "feed {{\n\tid {{ node_name: \"{}\" }}\n\tshape {{\n".format(node_name)
@@ -530,7 +541,7 @@ class SampleGenerator():
         graph_def_path, graph_def_config_path = self.graph_def_util.get_subgraph_def_config_from_nodes(filtered_selected_node_names, output_dir, sample_id)
 
         sub_g = self.nx_graph.subgraph(filtered_selected_node_names)
-        g_hash = weisfeiler_lehman_graph_hash(sub_g, node_attr="hash_value")
+        g_hash = graph_hash(sub_g, node_attr="hash_value")
         if g_hash in self.generated_graph_hashes:
             raise GSDuplicateSubgraphError
         else:

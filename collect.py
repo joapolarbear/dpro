@@ -15,11 +15,15 @@ import multiprocessing
 
 from trace_utils import *
 from dag_utils import * 
-from hvd.graph import *
 from parameter import *
-from bps_helper.graph import *
 
 args_ = arg_utils.SingleArg().args
+
+if args_.comm_backend == "NCCL":
+    from hvd.graph import *
+elif args_.comm_backend == "BYTEPS":
+    from bps_helper.graph import *
+
 
 GAP_THRESHOLD_COMP = 1000
 GAP_THRESHOLD_COMM = 50000

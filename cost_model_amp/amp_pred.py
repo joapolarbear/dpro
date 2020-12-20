@@ -194,7 +194,7 @@ class AMPPredictor:
 
     def is_need_amp(self, dag, op_name):
         ''' check whether an OP need be quantized, only those with fp32 and in the final white list need be quantized'''
-        if "Comm" in op_name or "AMPCastToFp16" in op_name:
+        if "Comm" in op_name or "AMPCastTo" in op_name:
             return False
         if not self.check_dtype_fp32(op_name):
             return False

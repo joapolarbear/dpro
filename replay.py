@@ -9,13 +9,18 @@ import re
 
 from dag_utils import QueueType
 from trace_utils import *
-from bps_helper.graph import *
 from progress_utils import progressBar
 import logger_utils
 import debug_utils
+import arg_utils
 
 FIXED_GAP_us = 5
-args = arg_utils.SingleArg().args
+args_ = arg_utils.SingleArg().args
+
+if args_.comm_backend == "NCCL":
+    from hvd.graph import *
+elif args_.comm_backend == "BYTEPS":
+    from bps_helper.graph import *
 
 def ret_priority(n_):
     ### The smaller the rank is, the higher priority the node has
@@ -114,7 +119,7 @@ class Device:
                         }
                     }
             ### Expose dependency info in trace["args"], time-consuming
-            if args.full_trace:
+            if args_.full_trace:
                 _id = 0
                 for prev, _ in self.replayer.dag.in_edges(name):
                     event["args"]["input%d"%_id] = prev

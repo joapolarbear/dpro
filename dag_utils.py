@@ -5,10 +5,12 @@ import matplotlib.pyplot as plt
 import logger_utils
 import arg_utils
 from trace_utils import *
-from hvd.graph import *
-from bps_helper.graph import *
 
 args_ = arg_utils.SingleArg().args
+if args_.comm_backend == "NCCL":
+    from hvd.graph import *
+elif args_.comm_backend == "BYTEPS":
+    from bps_helper.graph import *
 
 def visualize_gml(graph, layout="circular"):
     if layout == "spectral":

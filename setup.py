@@ -40,7 +40,9 @@ setup(name='byteprofile analysis',
           'pymc3',
           'tensorflow',
           'tqdm',
-          "cvxpy"
+          "cvxpy",
+          "python-igraph",
+          "cvxopt"
       ],
       # zip_safe=False
       )
