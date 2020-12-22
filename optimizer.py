@@ -35,6 +35,8 @@ MCMC_BETA = args_.mcmc_beta
 ROOT_PATH = args_.workerspace
 if not os.path.exists(ROOT_PATH):
     os.mkdir(ROOT_PATH)
+if not os.path.exists(os.path.join(ROOT_PATH, "searched_graph")):
+    os.mkdir(os.path.join(ROOT_PATH, "searched_graph"))
 
 class OptApplyStrategyError(Exception):
     pass
