@@ -11,6 +11,7 @@ import numpy as np
 import code
 import traceback
 import pickle
+import ujson as json
 
 from tqdm import tqdm, trange
 
@@ -31,7 +32,9 @@ MAX_TREE_DEPTH = 1000
 MAX_LOOP = 1000
 UCB_GAMMA = args_.ucb_gamma
 MCMC_BETA = args_.mcmc_beta
-ROOT_PATH = "/Users/bytedance/0/data"
+ROOT_PATH = args_.workerspace
+if not os.path.exists(ROOT_PATH):
+    os.mkdir(ROOT_PATH)
 
 class OptApplyStrategyError(Exception):
     pass
@@ -1026,6 +1029,8 @@ class MCMCOptimizer(Optimizer):
             SingleLogger().info("\033[94m" + "Best speedup: %d th acception, speed up to the origin: %6.4f %%"%(len(best_strategy), 100 * (self.base_cost - best_cost) / self.base_cost) + "'\033[0m'")
             with open(os.path.join(ROOT_PATH, "search_trajectory.txt"), "a") as f:
                 f.write(str(time.time()) + ": {}".format(100 * (self.base_cost - best_cost) / self.base_cost) + "\n")
+            with open(os.path.join(ROOT_PATH, "best_strategy.txt"), "w") as f:
+                json.dump({"best_strategy": best_strategy}, f)
  
     def accept_or_not(self, cost, new_cost):
         # prob = min(1, (math.exp(beta * (cost - new_cost))))
