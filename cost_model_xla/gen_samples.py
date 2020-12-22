@@ -102,6 +102,7 @@ class GraphDefUtil(object):
         self.original_graph = tf.Graph()
         with self.original_graph.as_default():
             tf.import_graph_def(graph_def, name="")
+            print("Successfully import graph_def")
         if shape_dict_path is not None:
             with open(shape_dict_path, "r") as f:
                 shape_dict = json.load(f)
@@ -200,9 +201,14 @@ class GraphDefUtil(object):
             raise GSSubgraphTooSmallError("Subgraph too small (# effective ops < 2).")
         for node in subgraph_nodes:
             # check fixed shape
-            if not self.is_fixed_shape(node.outputs[0].shape):
-                # print("[Cost Model] {} has non-fixed shape at compile time.".format(node.name))
-                raise GSNonFixedShapeError("{} has non-fixed shape at compile time.".format(node.name))
+            try:
+                if not self.is_fixed_shape(node.outputs[0].shape):
+                    # print("[Cost Model] {} has non-fixed shape at compile time.".format(node.name))
+                    raise GSNonFixedShapeError("{} has non-fixed shape at compile time.".format(node.name))
+            except:
+                print(node)
+                print(node.outputs)
+                raise
         subgraph_frontline_nodes = set()
         internal_subgraph_nodes = set()
         subgraph_input_nodes = set()
@@ -509,10 +515,11 @@ class SampleGenerator():
                 with open(cache_path, "rb") as f:
                     clusters = pickle.load(f)
                 compute_cluster = False
+                print("Load max_cluster.pickle use cache under {}".format(cache_dir))
             else:
                 compute_cluster = True
         else:
-            compute_cluster = True
+            compute_cluster = True       
         if compute_cluster:
             if forbidden_nodes is None or random_sample:
                 forbidden_nodes = random.sample(self.nx_graph.nodes, k=int(len(self.nx_graph.nodes) * forbidden_ratio))
@@ -558,7 +565,6 @@ class SampleGenerator():
                 try:
                     op = self.graph_def_util.original_graph.get_operation_by_name(op_name)
                 except Exception as e:
-                    print("{} is not found in graph_def_util".format(op_name))
                     continue
                 if op.type != "Placeholder" and op.type != "Const" and op.type != "Identity" and op.type != "VariableV2" and op.name not in self.ignored_nodes:
                     filtered_op.append(op)

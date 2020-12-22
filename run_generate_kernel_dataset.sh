@@ -1,5 +1,5 @@
 # where the modified tensorflow locates
-export BPF_TF_PATH="/opt/tiger/tensorflow"
+export BPF_TF_PATH="/root/tensorflow"
 # the GPU id to run profiling on (specify one GPU only)
 export BPF_COST_MODEL_PROFILE_GPU="0"
 

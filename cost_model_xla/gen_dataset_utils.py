@@ -502,13 +502,15 @@ def gen_max_cluster_kernel_samples_using_replay(sample_generator, op_time_dict, 
         opt_path = os.path.join(dataset_hlo_dir, "{}_opt_hlo.txt".format(sample_id))
         try:
             compile_to_hlo(def_path, config_path, unopt_path, opt_path)
+            # print("[INFO] Successfully compile to HLO code.")
         except:
             print("[WARNING] Failed to compile to HLO code.")
+            raise
             clean_up_dir(profile_dir)
             clean_up_dir(raw_subgraph_dir)
             continue
         if not os.path.exists(unopt_path):
-            print("[WARNING] Failed to compile to HLO code.")
+            print("[WARNING] Failed to compile to HLO code: {}.".format(unopt_path))
             clean_up_dir(profile_dir)
             clean_up_dir(raw_subgraph_dir)
             continue
@@ -571,6 +573,7 @@ def gen_kernel_sample_once_using_replay(sample_generator, op_time_dict, dataset_
         compile_to_hlo(def_path, config_path, unopt_path, opt_path)
     except:
         print("[WARNING] Failed to compile to HLO code.")
+        raise
         clean_up_dir(profile_dir)
         clean_up_dir(raw_subgraph_dir)
         return False, False, []
@@ -591,7 +594,7 @@ def gen_kernel_sample_once_using_replay(sample_generator, op_time_dict, dataset_
     try:
         replay_and_generate_kernel_sample(sample_id, unopt_path, profile_dir, dataset_dir)
     except:
-        print("[WARNING] Failed to replay HLO code and generate samples.")
+        print("[WARNING] Failed to compile to HLO code: {}.".format(unopt_path))
         clean_up_dir(profile_dir)
         clean_up_dir(raw_subgraph_dir)
         return False, False, []
@@ -747,34 +750,32 @@ def gen_kernel_dataset(trace_dir, op_time_dict, result_dir, num_samples=2000, nu
         # clean up communication nodes
         ignored_node = set()
         pruned_node = set()
+        IGNORE_OP_TYPES = ["Switch", "VarIsInitializedOp", "ReadVariableOp", "IsVariableInitialized", "Merge", "ShapeN"]
         for node in graph_def_as_json["node"]:
             if node["op"] == "BytepsPushPull":
                 # register TF Ops
                 import byteps.tensorflow as bps # type: ignore
                 ignored_node.add(node["name"])
-            elif node["name"].lower().startswith("save") or node["name"] not in shape_dict:
+            elif node["name"].lower().startswith("save") or node["name"].lower().startswith("gradientdescent") or node["name"] not in shape_dict:
                 pruned_node.add(node["name"])
             elif "Horovod" in node["op"]:
                 import horovod.tensorflow as hvd
-        # while True:
-        #     removed_sth = False
-        #     for node in graph_def_as_json["node"]:
-        #         if node["name"] in removed_node:
-        #             continue
-        #         if "input" in node:
-        #             for input_node in node["input"]:
-        #                 if input_node in removed_node and node["name"] not in removed_node:
-        #                     removed_sth = True
-        #                     removed_node.add(node["name"])
-        #     if not removed_sth:
-        #         break
+                ignored_node.add(node["name"])
+            else:
+                for ign_op_type in IGNORE_OP_TYPES:
+                    if ign_op_type in node["name"]:
+                        ignored_node.add(node["name"])
+                        break
         
-        # graph_nodes = graph_def_as_json["node"].copy()
-        # graph_def_as_json["node"] = []
+        ignored_node = ignored_node.union(pruned_node)
+    
+        graph_nodes = graph_def_as_json["node"].copy()
+        graph_def_as_json["node"] = []
 
-        # for node in graph_nodes:
-        #     if node["name"] not in pruned_node:
-        #         graph_def_as_json["node"].append(node)
+        for node in graph_nodes:
+            if node["name"] not in pruned_node:
+                graph_def_as_json["node"].append(node)
+        print("Prune graph from {} nodes to {} nodes".format(len(graph_nodes), len(graph_def_as_json["node"])))
         
         for node in graph_def_as_json["node"]:
             if "input" in node:
@@ -807,6 +808,7 @@ def gen_kernel_dataset(trace_dir, op_time_dict, result_dir, num_samples=2000, nu
         with open(os.path.join(result_dir, "cleaned_graph.json"), "w") as f_cleaned:
             json.dump(graph_def_as_json, f_cleaned, indent=4)
         graph_def = Parse(cleaned_graph_def_str, GraphDef())
+        print("Successfully load and parse final_graph.json")
     # sample_generator = SampleGenerator(graph_def=graph_def, shape_dict=shape_dict)
     sample_generator = SampleGenerator(graph_def=graph_def, shape_dict_path=os.path.join(trace_dir, "tensor_shapes.json"), ignored_nodes=ignored_node)
     shutil.copy(os.path.join(trace_dir, "tensor_shapes.json"), result_dir)
