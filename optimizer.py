@@ -32,7 +32,7 @@ MAX_TREE_DEPTH = 1000
 MAX_LOOP = 1000
 UCB_GAMMA = args_.ucb_gamma
 MCMC_BETA = args_.mcmc_beta
-ROOT_PATH = args_.workerspace
+ROOT_PATH = args_.workspace
 if not os.path.exists(ROOT_PATH):
     os.mkdir(ROOT_PATH)
 if not os.path.exists(os.path.join(ROOT_PATH, "searched_graph")):
