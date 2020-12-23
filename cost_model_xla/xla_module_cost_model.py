@@ -15,6 +15,7 @@ import scipy.optimize as scipy_optimize
 
 import os
 import pickle
+import json
 try:
     GraphDef = tf.GraphDef
 except:
@@ -22,7 +23,9 @@ except:
 from cost_model_xla.xlatools import compile_to_hlo, extract_kernel_features_from_hlo, replay_and_generate_kernel_sample, BPF_PROFILE_GPU
 from google.protobuf.json_format import Parse
 from cost_model_xla.gen_dataset_utils import XlaKernelDataset, XlaModuleTestSet
-from cost_model_xla.gen_samples import GSNotInGraphError, GSNonFixedShapeError, GSSubgraphTooSmallError, GraphDefUtil
+from cost_model_xla.gen_samples import GSNotInGraphError, GSNonFixedShapeError, \
+                                        GSSubgraphTooSmallError, GraphDefUtil
+from cost_model_xla.constant_utils import *
 from tqdm import tqdm, trange
 from collections import defaultdict
 import traceback
@@ -46,7 +49,7 @@ class ElementaryOpCache():
             if dataset_path is None:
                 raise RuntimeError("At least one of dataset_path and load_from must be set.")
             self._dataset_path = dataset_path
-            self._cache_path = os.path.join(dataset_path, "elementary_ops.txt")
+            self._cache_path = os.path.join(dataset_path, CMPaths.ELEMENTARY_OP_CACHE_FILE)
             self._load_cache()
     
     def _load_cache(self):
@@ -73,8 +76,10 @@ class ElementaryOpCache():
             if len(times) >= 1 and np.average(times) != 0:
                 psd.append(np.std(times) / np.average(times))
 
-        print("[OP Cache INFO] Total recorded elementary ops: {}, deduplicated size of elementary ops: {}, non_zero ops: {}".format(total_counter ,len(hash_dict), counter))
-        print("[OP Cache INFO] Mean PSD: {}, Max PSD: {}, Min PSD: {}, \n max collected len: {}, min collected len: {}, mean collected len: {}".format(np.average(psd), np.max(psd), np.min(psd), np.max(lens), np.min(lens), np.average(lens)))
+        print("[OP Cache INFO] Total recorded elementary ops: {}, deduplicated size of elementary ops: {}, non_zero ops: {}" \
+                .format(total_counter ,len(hash_dict), counter))
+        print("[OP Cache INFO] Mean PSD: {}, Max PSD: {}, Min PSD: {}, \n max collected len: {}, min collected len: {}, mean collected len: {}" \
+                .format(np.average(psd), np.max(psd), np.min(psd), np.max(lens), np.min(lens), np.average(lens)))
 
         elemophash2index = {}
         index2elemophash = {}
@@ -108,7 +113,9 @@ class ElementaryOpCache():
             self.elemophash2index, self.index2elemophash) = pickle.load(f)
 
 class XLAModuleOverheadModel():
-    def __init__(self, dataset_path = None, dataset=None, elem_op_cache=None, load_from=None, use_dual_model=True, split_threshold=10, regularization_lambda = 0.1):
+    def __init__(self, dataset_path = None, dataset=None, elem_op_cache=None, 
+                load_from=None, use_dual_model=True, split_threshold=10, 
+                regularization_lambda = 0.1):
         if load_from is not None:
             self.load(load_from)
         else:
@@ -135,7 +142,8 @@ class XLAModuleOverheadModel():
                 is_fused_op = bool(int(line.split(",")[0]))
                 if is_fused_op:
                     fused_op_hash = int(line.split(",")[1])
-                    kernel_path = os.path.join(self._features_dir_path, line.split(",")[-1].split("/")[-1].strip())
+                    kernel_path = os.path.join(self._features_dir_path, 
+                                    line.split(",")[-1].split("/")[-1].strip())
                     op_count = -1
                     with open(kernel_path, "r") as f_kernel:
                         for kernel_line in f_kernel:
@@ -171,18 +179,12 @@ class XLAModuleOverheadModel():
         return sample_id, sample_details, sample_times, abnormal, max_dim
 
     def _read_execution_times(self):
-        self._modules_dir_path = os.path.join(self._dataset_path, "modules")
-        self._features_dir_path = os.path.join(self._dataset_path, "features")
+        self._modules_dir_path = os.path.join(self._dataset_path, CMPaths.MODULES_DIR)
+        self._features_dir_path = os.path.join(self._dataset_path, CMPaths.FEATURE_DIR)
         sample_id_set = set()
         for fn in os.listdir(self._modules_dir_path):
             sample_id = int(fn.split(".txt")[0].split("_")[0])
             sample_id_set.add(sample_id)
-
-        # def add_config_suffix(sid):
-        #     return str(sid) + "_config.txt"
-
-        # def add_exec_suffix(sid):
-        #     return str(sid) + "_exec.txt"
 
         module_time_dict = {}
         module_details_dict = {}
@@ -193,7 +195,12 @@ class XLAModuleOverheadModel():
         chunk_size = int( np.ceil(len(sample_id_set) / num_cores / 2))
 
         with Pool(num_cores) as p:
-            sample_details = list(tqdm(p.imap_unordered(self._process_config_and_exec_file, sample_id_set, chunksize=chunk_size), total=len(sample_id_set), desc="Reading details", leave=False))
+            sample_details = list(tqdm(p.imap_unordered(self._process_config_and_exec_file, 
+                                                        sample_id_set, 
+                                                        chunksize=chunk_size), 
+                                    total=len(sample_id_set), 
+                                    desc="Reading details", 
+                                    leave=False))
         
         for (sample_id, sample_details, sample_times, abnormal, max_dim_in_sample) in sample_details:
             if sample_id not in module_details_dict:
@@ -205,52 +212,8 @@ class XLAModuleOverheadModel():
             module_details_dict[sample_id] = sample_details
             module_time_dict[sample_id] = sample_times
 
-        # for sample_id in tqdm(sample_id_set, desc="Reading details:"):
-        #     if sample_id not in module_details_dict:
-        #         module_details_dict[sample_id] = []
-        #     # read config.txt
-        #     config_path = os.path.join(self._modules_dir_path, add_config_suffix(sample_id))
-        #     subop_exec_time = 0
-        #     with open(config_path, "r") as f:
-        #         for line in f:
-        #             is_fused_op = bool(int(line.split(",")[0]))
-        #             if is_fused_op:
-        #                 fused_op_hash = int(line.split(",")[1])
-        #                 kernel_path = os.path.join(self._features_dir_path, line.split(",")[-1].split("/")[-1].strip())
-        #                 op_count = -1
-        #                 with open(kernel_path, "r") as f_kernel:
-        #                     for kernel_line in f_kernel:
-        #                         op_count += 1
-        #                 kernel_sid = int(line.split(",")[-1].split("/")[-1].split(".txt")[0])
-        #                 # get fusion execution time
-        #                 if kernel_sid in self.dataset.label_dict:
-        #                     exec_time = self.dataset.label_dict[kernel_sid]
-        #                 else:
-        #                     exec_time = self.dataset.label_dict[self.dataset.dedupedsid2finalsid[kernel_sid]]
-        #                 module_details_dict[sample_id].append(len(self.elem_op_cache.index2elemophash) -1 + op_count)
-        #                 max_dim = max(max_dim, len(self.elem_op_cache.index2elemophash) + op_count)
-        #             else:
-        #                 _, elem_op_hash, op_code = [v.strip() for v in line.split(",")]
-        #                 elem_op_hash = int(elem_op_hash)
-        #                 exec_time, _ = self.elem_op_cache.query(elem_op_hash, op_code=op_code)
-        #                 module_details_dict[sample_id].append(self.elem_op_cache.elemophash2index[elem_op_hash])
-        #             subop_exec_time += exec_time
-        #     # read exec.txt
-        #     exec_path = os.path.join(self._modules_dir_path, add_exec_suffix(sample_id))
-        #     exec_times = []
-        #     with open(exec_path, "r") as f: 
-        #         for line in f:
-        #             exec_times.append(float(line.strip()))
-        #     if len(exec_times) > 100:
-        #         module_avg_time = np.average(exec_times[-100:-10])
-        #     else:
-        #         module_avg_time = np.average(exec_times[10:-10])
-        #     if module_avg_time > subop_exec_time:
-        #         module_time_dict[sample_id] = (module_avg_time, subop_exec_time)
-        #     else:
-        #         abnormal_count += 1
-        #         module_details_dict.pop(sample_id)
-        print("Processed {} samples, with {} have module time <= subop exec time.".format(len(sample_id_set), abnormal_count))
+        print("Processed {} samples, with {} have module time <= subop exec time." \
+                                    .format(len(sample_id_set), abnormal_count))
         
         self.module_details_dict = module_details_dict
         self.module_time_dict = module_time_dict
@@ -302,20 +265,26 @@ class XLAModuleOverheadModel():
             reg_b = np.zeros(self.A_normed_large.shape[1])
             coeffs = None
             residual = None
-            coeffs_large, residual_large = scipy_optimize.nnls(np.concatenate((self.A_normed_large, reg_A), axis=0), np.concatenate((self.b_normed_large, reg_b), axis=0))
-            coeffs_small, residual_small = scipy_optimize.nnls(np.concatenate((self.A_normed_small, reg_A), axis=0), np.concatenate((self.b_normed_small, reg_b), axis=0))
+            coeffs_large, residual_large = scipy_optimize.nnls(
+                                            np.concatenate((self.A_normed_large, reg_A), axis=0),
+                                            np.concatenate((self.b_normed_large, reg_b), axis=0))
+            coeffs_small, residual_small = scipy_optimize.nnls(
+                                            np.concatenate((self.A_normed_small, reg_A), axis=0),
+                                            np.concatenate((self.b_normed_small, reg_b), axis=0))
             self.avg_elem_ovhd_large = np.average(coeffs_large[1:-1])
             self.avg_elem_ovhd_small = np.average(coeffs_small[1:-1])
             self.avg_elem_ovhd = None
         else:
             reg_A = self.regularization_lambda * np.eye(self.A_normed.shape[1])
             reg_b = np.zeros(self.A_normed.shape[1])
-            coeffs, residual = scipy_optimize.nnls(np.concatenate((self.A_normed, reg_A), axis=0), np.concatenate((self.b_normed, reg_b), axis=0))
+            coeffs, residual = scipy_optimize.nnls(
+                                np.concatenate((self.A_normed, reg_A), axis=0),
+                                np.concatenate((self.b_normed, reg_b), axis=0))
             self.avg_elem_ovhd_large = None
             self.avg_elem_ovhd_small = None
             self.avg_elem_ovhd = np.average(coeffs[1:-1])
             coeffs_large = residual_large = coeffs_small = residual_small = None
-        # print("Fitted model. Residual: {}".format(residual))
+
         self.coeffs = coeffs
         self.coeffs_large = coeffs_large
         self.coeffs_small = coeffs_small
@@ -392,23 +361,16 @@ class XLAModuleOverheadModel():
                         self.row_dim, self.column_dim], f)
     
     def load(self, file_path):
-        try:
-            with open(file_path, "rb") as f:
-                (self.max_dim, self.fusion_op_offset, self.regularization_lambda, self.use_dual_model, self.split_threshold,
-                self.coeffs, self.coeffs_large, self.coeffs_small, 
-                self.avg_elem_ovhd, self.avg_elem_ovhd_large, self.avg_elem_ovhd_small, 
-                self.A, self.A_normed, self.A_normed_large, self.A_normed_small, 
-                self.b, self.b_normed, self.b_normed_large, self.b_normed_small, 
-                self.elem_op_cache, self.dataset, self._dataset_path, 
-                self.module_details_dict, self.module_time_dict, 
-                self.row_dim, self.column_dim) = pickle.load(f)
-        except:
-            self.use_dual_model = False
-            self.split_threshold = -1
-            self.regularization_lambda = 0.1
-            with open(file_path, "rb") as f:
-                (self.coeffs, self.avg_elem_ovhd, self.A, self.A_normed, self.b, self.b_normed, self.avg_elem_ovhd, self.elem_op_cache,
-                self.dataset, self._dataset_path, self.module_details_dict, self.module_time_dict, self.row_dim, self.column_dim) = pickle.load(f)
+        with open(file_path, "rb") as f:
+            (self.max_dim, self.fusion_op_offset, 
+            self.regularization_lambda, self.use_dual_model, self.split_threshold,
+            self.coeffs, self.coeffs_large, self.coeffs_small, 
+            self.avg_elem_ovhd, self.avg_elem_ovhd_large, self.avg_elem_ovhd_small, 
+            self.A, self.A_normed, self.A_normed_large, self.A_normed_small, 
+            self.b, self.b_normed, self.b_normed_large, self.b_normed_small, 
+            self.elem_op_cache, self.dataset, self._dataset_path, 
+            self.module_details_dict, self.module_time_dict, 
+            self.row_dim, self.column_dim) = pickle.load(f)
 
 class FusionKernelModel(Model):
     def __init__(self, op_code_vocab_size, op_code_embed_dim, subop_vocab_size, 
@@ -465,7 +427,8 @@ class FusionKernelModel(Model):
         mean_sequence = tf.reduce_mean(output_sequence, axis=1)
 
         # shape=[batch_size, 6*lstm_output_dim]
-        final_embedding = layers.concatenate([fusion_types, sum_sequence, max_sequence, mean_sequence], axis=-1)
+        final_embedding = layers.concatenate([fusion_types, sum_sequence, 
+                                                max_sequence, mean_sequence], axis=-1)
 
         # shape = [batch_size, lstm_output_dim]
         if self.use_output_hidden_layers:
@@ -517,12 +480,16 @@ class BatchGenerator(BatchGeneratorBase):
         super().__init__(dataset, batch_size)
 
     def re_init_(self):
-        self.fusion_types_, self.op_codes_, self.op_hashes_, self.feature_vectors_, self.labels_ = self.shuffle_lists_(self.dataset_.get_training_set())
+        ( self.fusion_types_, self.op_codes_, self.op_hashes_, 
+            self.feature_vectors_, self.labels_ ) = self.shuffle_lists_(self.dataset_.get_training_set())
         self.current_iter_ = 0
 
     def next_batch(self):
         select_batch, epoch_end, effective_batch_size = self.get_batch_selector_()
-        fusion_types, op_codes, op_hashes, feature_vectors, labels = [select_batch(x) for x in [self.fusion_types_, self.op_codes_, self.op_hashes_, self.feature_vectors_, self.labels_]]
+        fusion_types, op_codes, op_hashes, feature_vectors, labels = \
+            [select_batch(x) for x in [self.fusion_types_, self.op_codes_, \
+                                        self.op_hashes_, self.feature_vectors_, \
+                                        self.labels_]]
         # append padding
         max_sequence_length = max([len(v) for v in op_codes])
         op_codes = keras.preprocessing.sequence.pad_sequences(op_codes, padding="post")
@@ -553,7 +520,7 @@ def train_kernel_model(dataset_path, save_dir, epochs=800, batch_size=64,
                         use_output_hidden=True, drop_out=0.2, learning_rate=5e-4,
                         early_stopping_patience=15, early_stopping_epsilon=1e-5):
     # load kernel dataset
-    dataset_save_path = os.path.join(save_dir, "dataset.pickle")
+    dataset_save_path = os.path.join(save_dir, CMPaths.DATASET_SAVE_FILE)
     if os.path.exists(dataset_save_path):
         print("Loading kernel dataset from cache.")
         dataset = XlaKernelDataset(dataset_save_path)
@@ -562,8 +529,8 @@ def train_kernel_model(dataset_path, save_dir, epochs=800, batch_size=64,
         dataset = XlaKernelDataset(dataset_path)
         dataset.dump_dataset(dataset_save_path)
 
-    elem_op_cache_save_path = os.path.join(save_dir, "elem_op_cache.picke")
-    ovhd_model_save_path = os.path.join(save_dir, "overhead.pickle")
+    elem_op_cache_save_path = os.path.join(save_dir, CMPaths.ELEMENTARY_OP_CACHE_SAVE_FILE)
+    ovhd_model_save_path = os.path.join(save_dir, CMPaths.OVERHEAD_MODEL_SAVE_FILE)
 
     if os.path.exists(elem_op_cache_save_path):
         if not os.path.exists(ovhd_model_save_path):
@@ -612,7 +579,7 @@ def train_kernel_model(dataset_path, save_dir, epochs=800, batch_size=64,
                     "use_output_hidden": use_output_hidden,
                     "drop_out": drop_out
                     }
-    with open(os.path.join(save_dir, "model_config.pickle"), "wb") as f:
+    with open(os.path.join(save_dir, CMPaths.MODEL_CONFIG_FILE), "wb") as f:
         pickle.dump(model_config, f)
     # training
     loss_history = []
@@ -625,8 +592,11 @@ def train_kernel_model(dataset_path, save_dir, epochs=800, batch_size=64,
     early_stopping_counter = 0
     for epoch_num in range(epochs):
         while True:
-            fusion_types, op_codes, op_hashes, padded_feature_vectors, labels, epoch_end = batch_generator.next_batch()
-            loss, metric = model.train_on_batch(x=[fusion_types, op_codes, op_hashes, padded_feature_vectors], y=labels)
+            (fusion_types, op_codes, op_hashes, 
+                padded_feature_vectors, labels, epoch_end ) = batch_generator.next_batch()
+            loss, metric = model.train_on_batch(x=[fusion_types, op_codes, op_hashes, \
+                                                            padded_feature_vectors], 
+                                                y=labels)
             epoch_loss_history.append(loss)
             epoch_mape_history.append(metric)
             pbar.update(1)
@@ -636,7 +606,8 @@ def train_kernel_model(dataset_path, save_dir, epochs=800, batch_size=64,
             # evaluate at the end of epoch
             predicted = []
             percentage_diff = []
-            fusion_types_test, op_codes_test, op_hashes_test, feature_vectors_test, labels_test = dataset.get_test_set()
+            ( fusion_types_test, op_codes_test, op_hashes_test, 
+                feature_vectors_test, labels_test ) = dataset.get_test_set()
             for i in range(len(op_codes_test)):
                 fusion_types = np.expand_dims(np.array(fusion_types_test[i], dtype=np.float32), 0)
                 op_codes = np.expand_dims(np.array(op_codes_test[i]), 0)
@@ -660,23 +631,25 @@ def train_kernel_model(dataset_path, save_dir, epochs=800, batch_size=64,
             avg_mse = np.average(epoch_loss_history)
             avg_mape = np.average(epoch_mape_history)
             avg_val_mape = np.average(mape_val_history[-2:])
-            tqdm.write("Epoch {}: MSE: {}, MAPE: {}, VAL MAPE:{}".format(epoch_num, avg_mse, avg_mape, avg_val_mape))
+            tqdm.write("Epoch {}: MSE: {}, MAPE: {}, VAL MAPE:{}" \
+                        .format(epoch_num, avg_mse, avg_mape, avg_val_mape))
             loss_history.append(avg_mse)
             mape_history.append(avg_mape)
             smoothed_val_history.append(avg_val_mape)
             epoch_loss_history = []
             epoch_mape_history = []
     
-            model_save_path = os.path.join(save_dir, "model_weights.h5")
+            model_save_path = os.path.join(save_dir, CMPaths.MODEL_WEIGHT_SAVE_FILE)
             model.save_weights(model_save_path)
     
-    model_save_path = os.path.join(save_dir, "model_weights.h5")
+    model_save_path = os.path.join(save_dir, CMPaths.MODEL_WEIGHT_SAVE_FILE)
     model.save_weights(model_save_path)
 
     # evaluation
     predicted = []
     percentage_diff = []
-    fusion_types_test, op_codes_test, op_hashes_test, feature_vectors_test, labels_test = dataset.get_test_set()
+    ( fusion_types_test, op_codes_test, op_hashes_test, 
+        feature_vectors_test, labels_test ) = dataset.get_test_set()
     for i in range(len(op_codes_test)):
         fusion_types = np.expand_dims(np.array(fusion_types_test[i], dtype=np.float32), 0)
         op_codes = np.expand_dims(np.array(op_codes_test[i]), 0)
@@ -694,54 +667,53 @@ def train_kernel_model(dataset_path, save_dir, epochs=800, batch_size=64,
 
 # returns a model object which have a predict method
 def load_kernel_model(model_save_dir):
-    print("\n============== PROGRAM STARTS ==============\n")
     # load model config
-    with open(os.path.join(model_save_dir, "model_config.pickle"), "rb") as f:
+    with open(os.path.join(model_save_dir, CMPaths.MODEL_CONFIG_FILE), "rb") as f:
         model_config = pickle.load(f)
     
-    dataset_save_path = os.path.join(model_save_dir, "dataset.pickle")
+    dataset_save_path = os.path.join(model_save_dir, CMPaths.DATASET_SAVE_FILE)
     training_dataset = XlaKernelDataset(dataset_save_path)
 
-    print("\n============== Loading Elementary Op Cache ==============\n")
-    elem_op_cache_save_path = os.path.join(model_save_dir, "elem_op_cache.picke")
+    elem_op_cache_save_path = os.path.join(model_save_dir, CMPaths.ELEMENTARY_OP_CACHE_SAVE_FILE)
     elem_op_cache = ElementaryOpCache(load_from=elem_op_cache_save_path)
 
-    print("\n============== Loading Module Lvl Model ==============\n")
-    overhead_model_save_path = os.path.join(model_save_dir, "overhead.pickle")
+    overhead_model_save_path = os.path.join(model_save_dir, CMPaths.OVERHEAD_MODEL_SAVE_FILE)
     ovhd_model = XLAModuleOverheadModel(load_from=overhead_model_save_path)
 
-    print("\n============== Loading Keras Kernel Model ==============\n")
     opcode_vocab_size = len(training_dataset.opcode2index) + 1
     ophash_vocab_size = len(training_dataset.ophash2index) + 1
-    model = FusionKernelModel(opcode_vocab_size, model_config["op_code_embed_dim"], 
-                        ophash_vocab_size, model_config["subop_embed_dim"], 
-                        model_config["node_embed_dim"], model_config["embedding_output_dim"],
-                        model_config["use_embed_hidden"], model_config["use_output_hidden"], model_config["drop_out"])
+    model = FusionKernelModel(opcode_vocab_size, 
+                        model_config["op_code_embed_dim"], 
+                        ophash_vocab_size, 
+                        model_config["subop_embed_dim"], 
+                        model_config["node_embed_dim"], 
+                        model_config["embedding_output_dim"],
+                        model_config["use_embed_hidden"], 
+                        model_config["use_output_hidden"], 
+                        model_config["drop_out"])
     dummy_fusion_types = np.ones(shape=(1, training_dataset.max_fusion_type), dtype=np.float32) 
     dummy_op_codes = np.ones(shape=(1, 1), dtype=np.int32)
     dummy_op_hashes = np.ones(shape=(1, 1), dtype=np.int32)
     dummy_feature_vectors = np.ones(shape=(1, 1, training_dataset.feature_dim), dtype=np.float32)
     model([dummy_fusion_types, dummy_op_codes, dummy_op_hashes, dummy_feature_vectors])
-    model_save_path = os.path.join(model_save_dir, "model_weights.h5")
+    model_save_path = os.path.join(model_save_dir, CMPaths.MODEL_WEIGHT_SAVE_FILE)
     model.load_weights(model_save_path)
     return elem_op_cache, ovhd_model, model
 
 class XLAModuleCostModel():
     def __init__(self, save_dir, tmp_dir = "./cost_model_tmp"):
         super().__init__()
-        dataset_path = os.path.join(save_dir, "dataset.pickle")
+        dataset_path = os.path.join(save_dir, CMPaths.DATASET_SAVE_FILE)
         self.training_dataset = XlaKernelDataset(dataset_path)
         self.elem_op_cache, self.ovhd_model, self.kernel_model = load_kernel_model(save_dir)
-        graph_def_path = os.path.join(save_dir, "graph_def.pickle")
+        graph_def_path = os.path.join(save_dir, CMPaths.GRAPH_DEF_PICKLE_FILE)
         with open(graph_def_path, "rb") as f:
             self.graph_def = pickle.load(f)
-        shape_dict_path = os.path.join(save_dir, "tensor_shapes.json")
-        if not os.path.exists(shape_dict_path):
-            shape_dict_path= None
-        self.graph_def_util = GraphDefUtil(self.graph_def, shape_dict_path=shape_dict_path)
+        with open(os.path.join(save_dir, CMPaths.METADATA_FILE), "r") as f:
+            metadata = json.load(f)
+        self.graph_def_util = GraphDefUtil(self.graph_def, metadata=metadata)
         self.computation_cache = {}
-        # gutil = self.graph_def_util
-        # code.interact(local=locals())
+
         self._tmp_dir = os.path.abspath(tmp_dir)
         if not os.path.isdir(self._tmp_dir):
             os.makedirs(self._tmp_dir)
@@ -750,19 +722,19 @@ class XLAModuleCostModel():
     def train_on_dataset(cls, dataset_path, save_dir):
         if not os.path.exists(save_dir):
             os.mkdir(save_dir)
-        shutil.copy(os.path.join(dataset_path, "tensor_shapes.json"), save_dir)
-        dataset_folder_path = os.path.join(dataset_path, "dataset")
+        dataset_folder_path = os.path.join(dataset_path, CMPaths.DATASET_DIR)
         train_kernel_model(dataset_folder_path, save_dir)
-        graph_def_path = os.path.join(dataset_path, "cleaned_graph.json")
+        graph_def_path = os.path.join(dataset_path, CMPaths.CLEANED_GRAPH_DEF_FILE)
         with open(graph_def_path, "r") as f:
             cleaned_graph_def_str = f.read()
         graph_def = Parse(cleaned_graph_def_str, GraphDef())
-        with open(os.path.join(save_dir, "graph_def.pickle"), "wb") as f:
+        with open(os.path.join(save_dir, CMPaths.GRAPH_DEF_PICKLE_FILE), "wb") as f:
             pickle.dump(graph_def, f)
 
     def predict(self, node_names):
         try:
-            graph_def_path, config_path = self.graph_def_util.get_subgraph_def_config_from_nodes(node_names, self._tmp_dir, 0)
+            graph_def_path, config_path = \
+                self.graph_def_util.get_subgraph_def_config_from_nodes(node_names, self._tmp_dir, 0)
         except (GSNotInGraphError, GSSubgraphTooSmallError, GSNonFixedShapeError) as e:
             print("[Cost Model] Failed to generate legal graph def for input nodes: {}".format(e))
             return -1, {}
@@ -779,12 +751,11 @@ class XLAModuleCostModel():
             return -1, {}
         unopt_hlo_path = os.path.join(self._tmp_dir, "unopt.txt")
         opt_hlo_path = os.path.join(self._tmp_dir, "opt.txt")
-        feature_vec_path = os.path.join(self._tmp_dir, "feature.txt")
         try:
             compile_to_hlo(graph_def_path, config_path, unopt_hlo_path, opt_hlo_path)
             extract_kernel_features_from_hlo(opt_hlo_path, self._tmp_dir)
 
-            config_path = os.path.join(self._tmp_dir, "module_config.txt")
+            config_path = os.path.join(self._tmp_dir, CMPaths.MODEL_CONFIG_FILE)
             elem_op_hashes = []
             fused_op_infos = []
             with open(config_path, "r") as f:
@@ -795,37 +766,43 @@ class XLAModuleCostModel():
                         kernel_path = os.path.join(self._tmp_dir, line.split(",")[-1].split("/")[-1].strip())
                         kernel_sid = int(line.split(",")[-1].split("/")[-1].split(".txt")[0])
                         with open(kernel_path, "r") as f_kernel:
-                            (adj, fusion_type, computation_hash, subop_infos) = self.training_dataset._parse_feature_file(f_kernel)
+                            (adj, fusion_type, computation_hash, subop_infos) = \
+                                self.training_dataset._parse_feature_file(f_kernel)
                         if (computation_hash != fused_op_hash):
                             print("Inconsistent hashes for kernel SID: {}".format(kernel_sid))
                             assert False
                         # generate representations
-                        fusion_type_one_hot, op_codes_in_sample, op_hashes_in_sample, feature_vectors_in_sample = self.training_dataset.gen_representation_for_sample(fusion_type, subop_infos)
-                        fused_op_infos.append((computation_hash, fusion_type_one_hot, op_codes_in_sample, op_hashes_in_sample, feature_vectors_in_sample))
+                        ( fusion_type_one_hot, op_codes_in_sample, 
+                            op_hashes_in_sample, feature_vectors_in_sample )= \
+                                self.training_dataset.gen_representation_for_sample(fusion_type, subop_infos)
+                        fused_op_infos.append((computation_hash, fusion_type_one_hot, 
+                                                op_codes_in_sample, op_hashes_in_sample, 
+                                                feature_vectors_in_sample))
                     else:
                         _, elem_op_hash, op_code = [v.strip() for v in line.split(",")]
                         elem_op_hashes.append((int(elem_op_hash), op_code))
 
             predicted_module_time = 0
-            fused_kernel_sizes = [len(op_codes_in_sample) for (_, _, op_codes_in_sample, _, _) in fused_op_infos]
+            fused_kernel_sizes = [len(op_codes_in_sample) for (_, _, op_codes_in_sample, _, _) \
+                                                            in fused_op_infos]
 
             breakdown_dict = {}
             breakdown_dict["elementary"] = {}
             breakdown_dict["fused"] = {}
-            # overhead = ovhd_model.get_overhead(elem_op_hashes, len(fused_op_infos))
+
             overhead = self.ovhd_model.get_overhead(elem_op_hashes, fused_kernel_sizes)
             predicted_module_time += overhead
             breakdown_dict["overhead"] = overhead
-            # print("[Cost Model] Predicted Overhead: {}".format(overhead))
+
             # look up elementary op cache
             for (hash_v, op_code) in elem_op_hashes:
                 predicted_time, cache_hit = self.elem_op_cache.query(hash_v, op_code=op_code)
                 predicted_module_time += predicted_time
                 breakdown_dict["elementary"][hash_v] = predicted_time
-                # print("[Cost Model] Predicted time for elem op hash {} (cache_hit: {} ,{}): {}".format(hash_v, cache_hit, op_code, predicted_time))
             
             # run model to predict fused kernel time
-            for (computation_hash, fusion_type_one_hot, op_codes_in_sample, op_hashes_in_sample, feature_vectors_in_sample) in fused_op_infos:
+            for (computation_hash, fusion_type_one_hot, op_codes_in_sample, 
+                    op_hashes_in_sample, feature_vectors_in_sample) in fused_op_infos:
                 if computation_hash in self.computation_cache:
                     predicted_time = self.computation_cache[computation_hash]
                 else:
@@ -833,11 +810,12 @@ class XLAModuleCostModel():
                     op_codes = np.expand_dims(np.array(op_codes_in_sample), 0)
                     op_hashes = np.expand_dims(op_hashes_in_sample, 0)
                     feature_vectors = np.expand_dims(np.array(feature_vectors_in_sample, dtype=np.float32), 0)
-                    predicted_time = self.kernel_model.predict(x=[fusion_types, op_codes, op_hashes, feature_vectors]).flatten()[0]
+                    predicted_time = self.kernel_model.predict(
+                                            x=[fusion_types, op_codes, op_hashes, feature_vectors]) \
+                                                                                        .flatten()[0]
                     self.computation_cache[computation_hash] = predicted_time
                 predicted_module_time += predicted_time
                 breakdown_dict["fused"][computation_hash] = predicted_time
-                # print("[Cost Model] Predicted time for fused kernel {}: {}".format(computation_hash, predicted_time))
 
         except Exception as e:
             traceback.print_exc()
@@ -855,7 +833,8 @@ class XLAModuleCostModel():
 
     def execute(self, node_names):
         try:
-            graph_def_path, config_path = self.graph_def_util.get_subgraph_def_config_from_nodes(node_names, self._tmp_dir, 0)
+            graph_def_path, config_path = \
+                self.graph_def_util.get_subgraph_def_config_from_nodes(node_names, self._tmp_dir, 0)
         except:
             traceback.print_exc()
             print("[Cost Model] Failed to generate legal graph def for input nodes. Possibly because an input node has non-fixed output shape.")
@@ -868,7 +847,7 @@ class XLAModuleCostModel():
             return -1, {}
         unopt_hlo_path = os.path.join(self._tmp_dir, "unopt.txt")
         opt_hlo_path = os.path.join(self._tmp_dir, "opt.txt")
-        feature_vec_path = os.path.join(self._tmp_dir, "feature.txt")
+
         try:
             compile_to_hlo(graph_def_path, config_path, unopt_hlo_path, opt_hlo_path)
             replay_and_generate_kernel_sample(0, unopt_hlo_path, self._tmp_dir, self._tmp_dir)
@@ -922,7 +901,8 @@ class XLAModuleCostModel():
         small_time_count = 0
         large_time_count = 0
         large_error_sids = []
-        for i in tqdm(random.sample(list(range(len(module_infos_as_list))), k=min(400, len(module_infos_as_list)))):
+        for i in tqdm(random.sample(list(range(len(module_infos_as_list))), 
+                                    k=min(400, len(module_infos_as_list)))):
             predicted_module_time = 0
             elem_op_hashes, fused_op_infos = module_infos_as_list[i]
 
@@ -937,20 +917,25 @@ class XLAModuleCostModel():
                 predicted_module_time += predicted_time
             
             # run model to predict fused kernel time
-            for (fusion_type_one_hot, op_codes_in_sample, op_hashes_in_sample, feature_vectors_in_sample) in fused_op_infos:
+            for (fusion_type_one_hot, op_codes_in_sample, 
+                    op_hashes_in_sample, feature_vectors_in_sample) in fused_op_infos:
                 fusion_types = np.expand_dims(np.array(fusion_type_one_hot, dtype=np.float32), 0)
                 op_codes = np.expand_dims(np.array(op_codes_in_sample), 0)
                 op_hashes = np.expand_dims(op_hashes_in_sample, 0)
                 feature_vectors = np.expand_dims(np.array(feature_vectors_in_sample, dtype=np.float32), 0)
-                predicted_time = model.predict(x=[fusion_types, op_codes, op_hashes, feature_vectors]).flatten()[0]
+                predicted_time = model.predict(
+                                    x=[fusion_types, op_codes, op_hashes, feature_vectors]) \
+                                                                                .flatten()[0]
                 predicted_module_time += predicted_time
             predicted.append(predicted_module_time)
             if labels_as_list[i] > 500:
-                percentage_diff_large.append(np.abs(predicted_module_time - labels_as_list[i]) / labels_as_list[i])
+                percentage_diff_large.append( \
+                    np.abs(predicted_module_time - labels_as_list[i]) / labels_as_list[i])
                 large_count += 1
                 large_time_count += labels_as_list[i]
             else:
-                percentage_diff_small.append(np.abs(predicted_module_time - labels_as_list[i]) / labels_as_list[i])
+                percentage_diff_small.append( \
+                    np.abs(predicted_module_time - labels_as_list[i]) / labels_as_list[i])
                 small_count += 1
                 small_time_count += labels_as_list[i]
             percentage_diff.append(np.abs(predicted_module_time - labels_as_list[i]) / labels_as_list[i])

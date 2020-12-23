@@ -4,20 +4,22 @@ import subprocess
 import os
 import re
 
-if "BPF_TF_PATH" in os.environ:
-    BPF_TF_PREFIX = os.environ["BPF_TF_PATH"]
+from cost_model_xla.constant_utils import *
+
+if CMEnvs.TF_PATH in os.environ:
+    BPF_TF_PREFIX = os.environ[CMEnvs.TF_PATH]
 else:
     BPF_TF_PREFIX = None
-    print("[WARNING] Environment BPF_TF_PATH not set. Guessing default TF location.")
+    print("[WARNING] Environment {} not set. Guessing default TF location.".format(CMEnvs.TF_PATH))
 
-if "BPF_COST_MODEL_PROFILE_GPU" in os.environ:
+if CMEnvs.CM_PROFILE_GPU in os.environ:
     try:
-        BPF_PROFILE_GPU = int(os.environ["BPF_COST_MODEL_PROFILE_GPU"])
+        BPF_PROFILE_GPU = int(os.environ[CMEnvs.CM_PROFILE_GPU])
     except:
-        print("[ERROR] Invalid BPF_COST_MODEL_PROFILE_GPU value (must be an integer).")
+        print("[ERROR] Invalid {} value (must be an integer).".format(CMEnvs.CM_PROFILE_GPU))
         exit(-1)
 else:
-    print("[ERROR] Required environment BPF_COST_MODEL_PROFILE_GPU value not set.")
+    print("[ERROR] Required environment {} value not set.".format(CMEnvs.CM_PROFILE_GPU))
     exit(-1)
 
 def _check_file_available_for_writing(path):
