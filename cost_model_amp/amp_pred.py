@@ -162,11 +162,21 @@ class AMPPredictor:
         dag.remove_edges_from(edges_to_rm)
         return [n for n, d in nodes_to_add]
 
+    def op_amp_color(self, op_name):
+        if op_name not in self.op_status:
+            self.op_status[op_name] = {"is_white": "none"}
+        if "color" not in self.op_status[op_name]:
+            rawname, _ = self.meta_info.standarize_name(op_name)
+            amp_color = self.meta_info.check_amp_lists(rawname)
+            self.op_status[op_name]["color"] = amp_color
+            return amp_color
+        else:
+            return self.op_status[op_name]["color"]
+
     def is_white_for_amp(self, dag, op_name):
         ''' check whether an OP is finally white or not, according the propogation rules in AMP of TensorFlow '''
         if self.op_status[op_name]["is_white"] == "none":
-            rawname, _ = self.meta_info.standarize_name(op_name)
-            amp_color = self.meta_info.check_amp_lists(rawname)
+            amp_color = self.op_amp_color(op_name)
             if amp_color == "white":
                 ### cache the intermediate result
                 self.op_status[op_name]["is_white"] = True
@@ -175,9 +185,6 @@ class AMPPredictor:
                 ### cache the intermediate result
                 self.op_status[op_name]["is_white"] = False
                 return False
-            ### TODO (huhanpeng) ignore grey and clear first
-            # print("name: {}, amp_color: {}".format(op_name, amp_color))
-            return False
             
             ### need to further check the parent nodes
             is_white = True

@@ -532,10 +532,7 @@ class _TensorFusionCM(_BaseCostModel):
     '''
     def __init__(self, opt):
         super().__init__(opt)
-        self.fusion_threshold_mb = 64 * 1024 * 1024
-        self.cycle_time_ms = 3.5
         self.token = ["o"]
-
         self.meta_info = self.opt.clct.para_dict
     
     def init_search_space(self, candidates, _dag: nx.DiGraph, _pkg: PKGraph):
@@ -914,7 +911,7 @@ class MCMCOptimizer(Optimizer):
         best_cost = cost
         best_strategy = trajectory.copy()
         self.step = 0
-        while True:
+        while len(search_space) > 0:
             invalid_strategies = set()
             while True and len(search_space) > 0:
                 G_star = G.copy()
@@ -1000,13 +997,6 @@ class MCMCOptimizer(Optimizer):
 
                 if self.accept_or_not(cost, cost_star):
                     invalid_strategies = set()
-                    # op, target, next_ = strategy
-                    # if op == "+":
-                    #     SingleLogger().info("Fuse %s and %s" % (target, next_))
-                    # elif op == "-":
-                    #     SingleLogger().info("De-fuse %s" % (target))
-                    # else:
-                    #     raise ValueError("Invalid graph transformation operation: {}".format(op))
 
                     ### generate history for new nodes
                     combined_history.insert(0, (cost - cost_star, self.step))
