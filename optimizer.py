@@ -493,6 +493,7 @@ class _AMPCostModel(_BaseCostModel):
         ### AMP predictor
         self.amp_predictor = AMPPredictor(self.opt.clct.para_dict)
         self.token = [">", "<"]
+        self.meta_info = self.opt.clct.para_dict
 
     def init_search_space(self, candidates, _dag: nx.DiGraph, _pkg: PKGraph):
         search_space = []
@@ -519,6 +520,11 @@ class _AMPCostModel(_BaseCostModel):
     def apply(self, s, __dag, __pkg):
         op, target, _ = s
         nodes_introduced = self.amp_predictor.quantize(__dag, target)
+        ### apply this strategy to other GPUs' corresponding operators
+        ### we assume data parallel, use the same model
+        on_other_ranks = self.opt._debug_convert_to_the_other_machine(target)
+        for target in on_other_ranks:
+            nodes_introduced += self.amp_predictor.quantize(__dag, target)
         return True, nodes_introduced, []
 
 class _TensorFusionCM(_BaseCostModel):
@@ -653,29 +659,29 @@ class Optimizer:
     def _parse_index_from_name(self, name_):
         return int(name_.split("[")[1].split("]")[0])
     
-    # def _debug_convert_to_the_other_machine(self, name_):
-    #     if not "+" in name_:
-    #         ret = []
-    #         if args_.relabel:
-    #             name, pid = self._get_original_name_pid_from_index(name_)
-    #             for other_pid in self.name2index[name]:
-    #                 if other_pid == pid:
-    #                     continue
-    #                 other_index = self.name2index[name][other_pid]
-    #                 ret.append(self.index2newname[other_index])
-    #         else:
-    #             pid, rawname, cat, suffix = parse_allinfo_from_name(name_)
-    #             for other_pid in self.clct.all_pid():
-    #                 if other_pid == pid:
-    #                     continue
-    #                 ret.append(gen_long_name(other_pid, rawname, suffix))
-    #         return ret
-    #     else:
-    #         new_names = []
-    #         for sub_name in name_.split("+"):
-    #             new_names.append(self._debug_convert_to_the_other_machine(sub_name))
-    #         new_names = list(np.array(new_names).T)
-    #         return ["+".join(ns) for ns in new_names]
+    def _debug_convert_to_the_other_machine(self, name_):
+        if not "+" in name_:
+            ret = []
+            if args_.relabel:
+                name, pid = self._get_original_name_pid_from_index(name_)
+                for other_pid in self.name2index[name]:
+                    if other_pid == pid:
+                        continue
+                    other_index = self.name2index[name][other_pid]
+                    ret.append(self.index2newname[other_index])
+            else:
+                pid, rawname, cat, suffix = parse_allinfo_from_name(name_)
+                for other_pid in self.clct.all_pid():
+                    if other_pid == pid:
+                        continue
+                    ret.append(gen_long_name(other_pid, rawname, suffix))
+            return ret
+        else:
+            new_names = []
+            for sub_name in name_.split("+"):
+                new_names.append(self._debug_convert_to_the_other_machine(sub_name))
+            new_names = list(np.array(new_names).T)
+            return ["+".join(ns) for ns in new_names]
 
     def _get_original_name_pid_from_index(self, name_):
         if args_.relabel:
