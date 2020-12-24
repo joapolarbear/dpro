@@ -108,17 +108,22 @@ class XlaKernelDataset(object):
                 op_code = int(splitted_line[2])
                 num_inputs = int(splitted_line[3])
                 input_names = []
+                input_types = []
                 input_shapes = []
                 for i in range(num_inputs):
                     input_name = splitted_line[4+2*i]
-                    input_shape = splitted_line[4+2*i+1]
+                    input_type = int(splitted_line[4+2*i+1])
+                    input_shape = splitted_line[4+2*i+2]
                     input_dims = [int(value.strip()) for value in input_shape.split(":")]
                     input_names.append(input_name)
+                    input_types.append(input_type)
                     input_shapes.append(input_dims)
                     dependency_edges.append((input_name, op_name))
+                output_type = int(splitted_line[-3])
                 output_shape = [int(value.strip()) for value in splitted_line[-2].split(":")]
                 op_hash = int(splitted_line[-1])
                 subop_info_dict[op_name] = (op_name, op_code_in_str, op_code, input_names, input_shapes, output_shape, op_hash)
+
         # topologically sort subop_infos
         # create dependency dags
         G = nx.DiGraph()
