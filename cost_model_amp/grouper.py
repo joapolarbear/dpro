@@ -214,7 +214,7 @@ class Grouper:
         else:
             rst = self.fitter_table[grp_id]["fitter"].predict(_xdata)
         rst = rst * self.max_of_each_dim[0]
-        print("MP cost model: {}(group {}) predicts {} ms".format(self.op_type, grp_id, rst))
+        # print("MP cost model: {}(group {}) predicts {} ms".format(self.op_type, grp_id, rst))
         return rst
 
     def _grp_id2list(self, grp_id):

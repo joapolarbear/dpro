@@ -102,7 +102,7 @@ class MetaInfo:
             return 1, 1, self.ret_output_size_inB(pre_node), 1, 1
         elif op_type == "Conv2DBackpropFilter":
             S_out = wei * np.prod(outputs[0]["shape"])
-            SingleLogger().warn("{}({}) not fully implemented".format(op_name, op_type))
+            SingleLogger().debug("{}({}) not fully implemented".format(op_name, op_type))
             S_in = wei * np.prod(inputs[-1]["shape"])
             S_wei = wei * np.prod(inputs[0]["shape"])
             return 1, 1, S_in, S_out, S_wei
@@ -114,9 +114,9 @@ class MetaInfo:
         else:
             ### Not cached operators
             if len(outputs) > 1:
-                SingleLogger().warn("{} has multiple outputs: {}".format(op_name, outputs)) 
+                SingleLogger().debug("{} has multiple outputs: {}".format(op_name, outputs)) 
             S_out = wei * np.prod(outputs[0]["shape"])
-            SingleLogger().warn("{} has not been fine-defined input/weight: {}".format(op_name, inputs))
+            SingleLogger().debug("{} has not been fine-defined input/weight: {}".format(op_name, inputs))
             S_in = wei * np.prod(inputs[0]["shape"])
             S_wei = wei * np.prod(inputs[1]["shape"]) if len(inputs) > 1 else 1
             return 0, 0, S_in, S_out, S_wei

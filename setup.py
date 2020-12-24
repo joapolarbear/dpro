@@ -33,16 +33,16 @@ setup(name='byteprofile analysis',
           'ujson', 
           'xlsxwriter', 
           'scapy',
-          'xgboost',
           'sklearn',
           'seaborn',
           'matplotlib',
-          'pymc3',
           'tensorflow',
           'tqdm',
           "cvxpy",
+          "cvxopt",
+        
           "python-igraph",
-          "cvxopt"
+          'pymc3',
       ],
       # zip_safe=False
       )

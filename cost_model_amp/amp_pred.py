@@ -33,6 +33,8 @@ class AMPPredictor:
             SingleLogger().warn("No AMP cost model at {}".format(cm_dir))
         self.meta_info = meta_info
         self.op_status = {}
+
+        self.cast_cnt = 0
         
     def pred_amp_avg(self, op_name, _avg=None):
         ''' Predict fp16 time of fp32 operators
@@ -41,7 +43,7 @@ class AMPPredictor:
         rawname, _ = self.meta_info.standarize_name(op_name)
         op_type = self.meta_info.parse_op_type(rawname)
         if op_type not in self.cost_model:
-            SingleLogger().warn("{}({}) is not supported for AMP now".format(op_name, op_type))
+            # SingleLogger().warn("{}({}) is not supported for AMP now".format(op_name, op_type))
             return _avg / 2.0
         S_mul, S_add, S_in, S_out, S_wei = self.meta_info.ret_metadata(rawname)
         raw_meta = self.meta_info.ret_rawmeta(rawname)
@@ -78,36 +80,49 @@ class AMPPredictor:
         return cast_time
 
     def quantize(self, dag, op_name):
-        assert dag.nodes[op_name].get("dtype", "fp32") == "fp32", op_name
+        if op_name not in self.op_status:
+            self.init_op_statu(op_name)
+        assert self.op_status[op_name]["dtype"] == "float32", (
+            op_name, self.op_status[op_name]["dtype"])
 
         edges_to_add = []
         edges_to_rm = []
         nodes_to_add = []
+        nodes_to_rm = []
 
-        def _add_cast_op(u, v, cast_op, cast_time):
+        def _add_cast_op(u, v, cast_time, to16=True):
+            if to16:
+                cast_op = "{}~>AMPCastToFp16_{}".format(u, self.cast_cnt)
+            else:
+                cast_op = "{}~>AMPCastToFp32_{}".format(u, self.cast_cnt)
+            self.cast_cnt += 1
             nodes_to_add.append((cast_op, {"avg": cast_time}))
             edges_to_add.append((u, cast_op))
             edges_to_add.append((cast_op, v))
             edges_to_rm.append((u, v))
+        
+        def _rm_cast_op(u, cast_op, v):
+            edges_to_add.append((u, v))
+            edges_to_rm.append((u, cast_op))
+            edges_to_rm.append((cast_op, v))
+            nodes_to_rm.append(cast_op)
 
         ### handle parent nodes
         for u, _ in dag.in_edges(op_name):
-            if "AMPCastToFp32" in u:
-                ### not MixedPrecision Boundary, remove the cast
-                prevs = list(dag.in_edges(u))
-                assert len(prevs) == 1, prevs
-                edges_to_add.append((prevs[0][0], op_name))
-                edges_to_rm.append((*prevs[0]))
-            else:
-                ### the boundary of mixed precision, add a cast op
-                cast_op = "%s~>AMPCastToFp16" % op_name
-                to_process = [u]
-                while len(to_process) > 0:
-                    _u = to_process.pop(0)
-                    if "ConstantFolding" in _u or "LayoutOptimizer" in _u:
-                        to_process += [x for x, _ in dag.in_edges(_u) if x != _u]
-                        continue
-                    _add_cast_op(_u, op_name, cast_op, self.output_cast_time(_u))
+            to_process = [u]
+            while len(to_process) > 0:
+                _u = to_process.pop(0)
+                if "ConstantFolding" in _u or "LayoutOptimizer" in _u:
+                    to_process += [x for x, _ in dag.in_edges(_u) if x != _u]
+                    continue
+                if "AMPCastToFp32" in _u:
+                    ### not MixedPrecision Boundary, remove the cast
+                    prevs = list(dag.in_edges(_u))
+                    assert len(prevs) == 1, prevs
+                    _rm_cast_op(prevs[0][0], _u, op_name)
+                else:
+                    ### the boundary of mixed precision, add a cast op
+                    _add_cast_op(_u, op_name, self.output_cast_time(_u), to16=True)
 
         ### handle successors
         out_cast_time = self.output_cast_time(op_name, tofp16=False)
@@ -115,15 +130,16 @@ class AMPPredictor:
             if "AMPCastToFp16" in succ:
                 ### not MixedPrecision Boundary, remove the Cast
                 _nexts = list(dag.successors(succ))
-                assert len(_nexts) == 1, _nexts
-                edges_to_add.append((op_name, _nexts[0]))
-                edges_to_rm.append((succ, _nexts[0]))
+                assert len(_nexts) == 1, (op_name, succ, _nexts)
+                _rm_cast_op(op_name, succ, _nexts[0])
             elif "Comm" in succ:
                 ### For BW->Comm edges, 
                 ### * Sync time, Memcopy time, Send/Recv becomes 1/2
                 ### * Add AMPCastToFp32 after the last memcpy and before update op
                 def recursive_convert_comm(_node):
-                    if dag.nodes[_node].get("dtype", "fp32") == "fp16":
+                    if _node not in self.op_status:
+                        self.op_status[_node] = {"dtype": "float32"}
+                    if self.op_status[_node]["dtype"] == "float16":
                         ### This comm and its downstream operators have been converted
                         return
 
@@ -136,48 +152,61 @@ class AMPPredictor:
                             break
                     if half_avg:
                         dag.nodes[_node]["avg"] = dag.nodes[_node]["avg"] / 2.0
-                    dag.nodes[_node]["dtype"] = "fp16"
+                    self.op_status[_node]["dtype"] = "float16"
 
                     for _succ in dag.successors(_node):
                         if "UPDATE_" in _succ:
                             ### Use UPDATE operator's name to let cast op run on computation device
-                            cast_op = "{}~>AMPCastToFp32".format(_succ)
-                            _add_cast_op(_node, _succ, cast_op, out_cast_time)
+                            _add_cast_op(_node, _succ, out_cast_time, to16=False)
                         else:
                             recursive_convert_comm(_succ)
                 recursive_convert_comm(succ)
             else:
-                cast_op = "%s~>AMPCastToFp32" % op_name
-                _add_cast_op(op_name, succ, cast_op, out_cast_time)
+                _add_cast_op(op_name, succ, out_cast_time, to16=False)
 
         ### update the meta info of current node
         prev_avg = dag.nodes[op_name]["avg"]
         dag.nodes[op_name]["avg"] = self.pred_amp_avg(op_name, _avg=prev_avg)
         self.op_status[op_name]["dtype"] = "float16"
-        SingleLogger().info("Convert {} from {} ms to {} ms".format(
-            op_name, prev_avg, dag.nodes[op_name]["avg"]))
+        # SingleLogger().info("Convert {} from {} ms to {} ms".format(op_name, prev_avg, dag.nodes[op_name]["avg"]))
 
         dag.add_nodes_from(nodes_to_add)
         dag.add_edges_from(edges_to_add)
         dag.remove_edges_from(edges_to_rm)
+        dag.remove_nodes_from(nodes_to_rm)
+
+        # if not self.check_dag(dag):
+        #     raise ValueError("Incorrect dag when quantizing {}".format(op_name))
+
         return [n for n, d in nodes_to_add]
+    
+    def check_dag(self, dag):
+        for n in dag.nodes():
+            if "AMPCastTo" in n:
+                succ_list = list(dag.successors(n))
+                if len(succ_list) != 1:
+                    print("{} has incorrect number of succs: {}".format(n, succ_list))
+                    return False
+        return True
+
+    def init_op_statu(self, op_name):
+        rawname, _ = self.meta_info.standarize_name(op_name)
+        dtype = self.meta_info.ret_op_precision(rawname)
+        amp_color = self.meta_info.check_amp_lists(rawname)
+        self.op_status[op_name] = {"dtype": dtype, "is_white": "none", "color": amp_color}
 
     def op_amp_color(self, op_name):
         if op_name not in self.op_status:
-            self.op_status[op_name] = {"is_white": "none"}
-        if "color" not in self.op_status[op_name]:
-            rawname, _ = self.meta_info.standarize_name(op_name)
-            amp_color = self.meta_info.check_amp_lists(rawname)
-            self.op_status[op_name]["color"] = amp_color
-            return amp_color
-        else:
-            return self.op_status[op_name]["color"]
+            self.init_op_statu(op_name)
+        return self.op_status[op_name]["color"]
 
     def is_white_for_amp(self, dag, op_name):
         ''' check whether an OP is finally white or not, according the propogation rules in AMP of TensorFlow '''
+        if op_name not in self.op_status:
+            self.init_op_statu(op_name)
         if self.op_status[op_name]["is_white"] == "none":
             amp_color = self.op_amp_color(op_name)
-            if amp_color == "white":
+            if amp_color == "white" or amp_color == "clear":
                 ### cache the intermediate result
                 self.op_status[op_name]["is_white"] = True
                 return True
@@ -201,7 +230,14 @@ class AMPPredictor:
 
     def is_need_amp(self, dag, op_name):
         ''' check whether an OP need be quantized, only those with fp32 and in the final white list need be quantized'''
-        if "Comm" in op_name or "AMPCastTo" in op_name:
+        if "Comm" in op_name or "AMPCastTo" in op_name or "UPDATE_" in op_name:
+            return False
+        try:
+            rawname, _ = self.meta_info.standarize_name(op_name)
+            op_type = self.meta_info.parse_op_type(rawname)
+            if op_type in ["ReadVariableOp", "Const", "VarHandleOp", "AssignVariableOp"]:
+                return False
+        except KeyError:
             return False
         if not self.check_dtype_fp32(op_name):
             return False
@@ -210,13 +246,8 @@ class AMPPredictor:
     def check_dtype_fp32(self, op_name):
         ''' Return true if this op is fp32 else False '''
         if op_name not in self.op_status:
-            self.op_status[op_name] = {"dtype": None, "is_white": "none"}
-            rawname, _ = self.meta_info.standarize_name(op_name)
-            dtype = self.meta_info.ret_op_precision(rawname)
-            self.op_status[op_name]["dtype"] = dtype
-            return dtype == "float32"
-        else:
-            return self.op_status[op_name]["dtype"] == "float32"
+            self.init_op_statu(op_name)
+        return self.op_status[op_name]["dtype"] == "float32"
 
 from cost_model_amp import dataloader, grouper
 

@@ -510,7 +510,7 @@ class _AMPCostModel(_BaseCostModel):
                 search_space.append((">", n, None))
                 weights.append(l)
         
-        # return [(">", "host1.rank6->FW.resnet50/conv1_conv/Conv2D", None)], [1]
+        # return [(">", "host1.rank0->BW.gradients/resnet50/conv2_block3_1_conv/Conv2D_grad/Conv2DBackpropFilter", None)], [1]
         SingleLogger().info("MP Cost Model init {} strategies.".format(len(search_space)))
         return search_space, weights
 
@@ -762,11 +762,8 @@ class Optimizer:
 
     def init_search_space(self, candidates, _dag: nx.DiGraph, _pkg: PKGraph):
         ### Based on the candidates, init the search space for the new dependency graph `_dag`
-        ### TODO (huhanpeng): currently only consider fusion
-        ###             Need to add quantization
         search_space = []
         weights = []
-
         ### OOM
         if self.mem_usage > self.memory_budget:
             for _cost_model in self.cst_md_mng.mem_model_list:
@@ -825,14 +822,18 @@ class Optimizer:
                 valid_weights = weights.copy()
         if not valid_search_space:
             raise OptNoValidStrategyError
+
         valid_weights = np.array(valid_weights)
         valid_weights = valid_weights - np.min(valid_weights)
         valid_weights = valid_weights / np.sum(valid_weights)
         if valid_weights is None:
             return random.choice(valid_search_space)
         else:
-            # return self.weighted_choice(valid_search_space, weights)
-            return random.choices(valid_search_space, weights=valid_weights, k=1)[0]
+            try:
+                return random.choices(valid_search_space, weights=valid_weights, k=1)[0]
+            except:
+                ### Adapt to python <3.6
+                return self.weighted_choice(valid_search_space, valid_weights)
 
     def search(self):
         raise NotImplementedError()
@@ -845,7 +846,8 @@ class Optimizer:
             if upto + weights[i] >= r:
                 return choices[i]
             upto += weights[i]
-        assert False, "Shouldn't get here"
+        # assert False, "Shouldn't get here"
+        return choices[0]
 
 class MCMCOptimizer(Optimizer):
     ''' Markov Chain Monte Carlo algorithm'''
@@ -907,7 +909,7 @@ class MCMCOptimizer(Optimizer):
         trajectory = []
         candidates, _ = self.candidate_selection(G, topk=None, critical_path=self.wrap_critical_path(exct_dag))
         search_space, weights = self.init_search_space(candidates, G, PKG)
-        SingleLogger().info("\033[94m # of candidates: {}\033[0m".format(len(candidates)))
+        SingleLogger().info("\033[94m # of candidates: {}, space: {}\033[0m".format(len(candidates), len(search_space)))
         best_cost = cost
         best_strategy = trajectory.copy()
         self.step = 0

@@ -1,5 +1,4 @@
 import numpy as np
-import tensorflow as tf
 from logger_utils import Singleton, SingleLogger
 
 def predict_error(_list, _list_pred):
@@ -13,6 +12,7 @@ def predict_error(_list, _list_pred):
 
 class DNNPredictor:
     def __init__(self, train_x, train_y, test_x, test_y, headers):
+        import tensorflow as tf
         self.headers = headers
         self.train_x = self.array2dict(train_x)
         self.train_y = train_y

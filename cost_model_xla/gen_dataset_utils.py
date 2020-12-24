@@ -750,7 +750,8 @@ def gen_kernel_dataset(trace_dir, op_time_dict, result_dir, num_samples=2000, nu
         # clean up communication nodes
         ignored_node = set()
         pruned_node = set()
-        IGNORE_OP_TYPES = ["Switch", "VarIsInitializedOp", "ReadVariableOp", "IsVariableInitialized", "Merge", "ShapeN"]
+        IGNORE_OP_TYPES = ["Switch", "VarIsInitializedOp", "ReadVariableOp",
+                           "IsVariableInitialized", "Merge", "ShapeN", "IteratorToStringHandle", "IteratorGetNext", "MakeIterator", "IteratorV2", "Assert"]
         for node in graph_def_as_json["node"]:
             if node["op"] == "BytepsPushPull":
                 # register TF Ops

@@ -57,9 +57,9 @@ def compile_to_hlo(graph_path, config_path, dump_path_unopt, dump_path_opt, comp
         BPF_PROFILE_GPU), compile_exec, graph_path, config_path, dump_path_unopt, dump_path_opt)
     if not os.path.exists(graph_path):
         raise ValueError("graph_path:{} do not exists".format(graph_path))
-    # subprocess.run(cmd, stdout=subprocess.DEVNULL,
-    #                stderr=subprocess.DEVNULL, check=True, shell=True)
-    subprocess.run(cmd, check=True, shell=True)
+    subprocess.run(cmd, stdout=subprocess.DEVNULL,
+                   stderr=subprocess.DEVNULL, check=True, shell=True)
+    # subprocess.run(cmd, check=True, shell=True)
 
 def replay_and_generate_kernel_sample(sample_id_start, hlo_path, tmp_dir, dataset_path, replay_exec=None):
     if replay_exec is None:
