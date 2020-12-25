@@ -103,6 +103,7 @@ class XlaKernelDataset(object):
                 first_line = False
             else:
                 splitted_line = [value.strip() for value in line.split(",")]
+                # print(splitted_line)
                 op_name = splitted_line[0]
                 op_code_in_str = splitted_line[1]
                 op_code = int(splitted_line[2])
@@ -111,9 +112,9 @@ class XlaKernelDataset(object):
                 input_types = []
                 input_shapes = []
                 for i in range(num_inputs):
-                    input_name = splitted_line[4+2*i]
-                    input_type = int(splitted_line[4+2*i+1])
-                    input_shape = splitted_line[4+2*i+2]
+                    input_name = splitted_line[4+3*i]
+                    input_type = int(splitted_line[4+3*i+1])
+                    input_shape = splitted_line[4+3*i+2]
                     input_dims = [int(value.strip()) for value in input_shape.split(":")]
                     input_names.append(input_name)
                     input_types.append(input_type)

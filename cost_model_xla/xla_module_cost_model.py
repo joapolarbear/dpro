@@ -196,8 +196,8 @@ class XLAModuleOverheadModel():
             sample_details = list(tqdm(p.imap_unordered(self._process_config_and_exec_file, sample_id_set, chunksize=chunk_size), total=len(sample_id_set), desc="Reading details", leave=False))
         
         for (sample_id, sample_details, sample_times, abnormal, max_dim_in_sample) in sample_details:
-            if sample_id not in module_details_dict:
-                module_details_dict[sample_id] = []
+            # if sample_id not in module_details_dict:
+            #     module_details_dict[sample_id] = []
             max_dim = max(max_dim, max_dim_in_sample)
             if abnormal:
                 abnormal_count += 1
