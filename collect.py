@@ -759,7 +759,9 @@ class Collector(object):
             assert raw_name2IDnum is not None
             self.nccl_graph.parse_traces(raw_name2IDnum)
         else:
-            host_ids = self.byteps_graph.time_drift.keys()
+            host_ids = [int(host_id_str.split(".rank")[0].split("_")[-1]) for _, _, host_id_str in arg_list]
+            for host_id in host_ids:
+                assert host_id in self.byteps_graph.time_drift
         ### align the time
         rst_traces = self.clock_align(traces_list, host_ids)
         self.single = (len(rst) == 1)
