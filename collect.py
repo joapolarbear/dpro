@@ -100,7 +100,7 @@ class Collector(object):
 
     def _collect_rank_traces(self, *args):
         tmp_pm, pid, host_id = args[0]
-        SingleLogger().info("Collec traces for {} ...".format(tmp_pm.path))
+        SingleLogger().info("Collect traces for {} ...".format(tmp_pm.path))
         self.rst_traces = []
         self.raw_name2IDnum = {}
         def add_trace_safe(ret):
@@ -164,6 +164,17 @@ class Collector(object):
         traces = []
         while index < len(raw_traces["traceEvents"]):
             if self.platform == "TENSORFLOW" and one_pid is None:
+                if isinstance(raw_traces["traceEvents"][0]["pid"], int):
+                    pid2name = {}
+                    new_trace = {"traceEvents": []}
+                    for trace in raw_traces["traceEvents"]:
+                        if trace["ph"] == "M" and trace["name"] == "process_name":
+                            pid2name[trace["pid"]] = trace["args"]["name"]
+                    for trace in raw_traces["traceEvents"]:
+                        if trace["ph"] == "X" and trace["pid"] in pid2name:
+                            trace["pid"] = pid2name[trace["pid"]]
+                            new_trace["traceEvents"].append(trace)
+                    raw_traces = new_trace
                 for trace in raw_traces["traceEvents"]:
                     if "device:GPU" in trace["pid"] and "Compute" in trace["pid"] and "replica" in trace["pid"]:
                         pass
@@ -787,7 +798,13 @@ class Collector(object):
             critical_path = [None] * self.nccl_graph.nrank
             worker_dag_list = [None] * self.nccl_graph.nrank
         else:
-            raise ValueError("Need to check whether byteps_graph has nrank member")
+            nrank = 0
+            for _dir in self.pm.dirs:
+                worker_path = os.path.join(self.pm.path, _dir)
+                worker_root, worker_dirs, _ = list(os.walk(worker_path))[0]
+                nrank += len(worker_dirs)
+            critical_path = [None] * nrank
+            worker_dag_list = [None] * nrank
         
         if self.dag is None:
             dag_path = self.pm.search(FileName.DAG)

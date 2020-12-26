@@ -64,14 +64,14 @@ def dag_longest_path(G, pathM=None, weight='weight', default_weight=0, _debug_le
     return list(zip(critical_path, len_list))
 
 def tf_relabel_func(_name, update_nodes_in_dag):
-    for prefix in ["Comm.", "Comp.", "BW.", "FW."]:
+    for prefix in ["Comm.", "Comp.", "BW.", "FW.", "UPDATE_."]:
         if _name.startswith(prefix):
             return _name
     if _name.startswith("^"):
         _name = _name[1:]
     if "BytePSPushPull" in _name and "tensor" not in _name:
         _name = "Comm." + _name
-    if "allreduce" in _name.lower():
+    elif "allreduce" in _name.lower():
         if "." in _name:
             _, tensor_name = _name.split(".")
             if "_" in tensor_name:
@@ -105,7 +105,7 @@ def wrap_read_gml(gml_path, platform="MXNET"):
                 update_nodes_in_dag.add(succ_)
                 recursive_add_succs(succ_)
         for node in mygraph.nodes:
-            if "allreduce" in node.lower():
+            if "allreduce" in node.lower() or "bytepspushpull" in node.lower():
                 recursive_add_succs(node)
             # if "apply" in node.lower() or ("gradientdescent" in node.lower() and "learning_rate" not in node.lower()):
             #     update_nodes_in_dag.add(node)
@@ -304,7 +304,7 @@ class DAGManager:
                                             self.add_update_downstream(graph, post_node, _prefix=next_rank_prefix)
                                     else:
                                         raise NotImplementedError()
-                ### end for loop         
+                ### end for loop
             elif self.nccl_graph is not None and self.nccl_graph.algo == NCCL_ALGO.TREE:
                 ### Combine chunkId, sliceId and channelId into the graph for Tree algorithm
                 ### TODO(huhanpeng): can we reduce the number of %d in the suffix
@@ -448,7 +448,7 @@ class DAGManager:
     def _process_edge_byteps(self, graph, queue_type_list, u, v):
         if "BytePSPushPull" in u and "tensor" not in u:
             ### BytePS traces
-            gra_name = u
+            gra_name = u.split("Comm.")[1]
             if self.byteps_graph is not None:
                 wk_rank = int(self.wk_prefix.split("_")[-1])
                 # add push request dependency
@@ -466,6 +466,7 @@ class DAGManager:
                 pull_res_nodes = self.byteps_graph.get_pull_res_node(wk_rank, gra_name)
                 for pull_res_node in pull_res_nodes:
                     self.wrap_add_dag(pull_res_node, self.add_prefix(standard_name(v, platform=self.platform)))
+                    print("adding edge {} -> {}".format(pull_res_node, self.add_prefix(standard_name(v, platform=self.platform))))
             else:
                 raise NotImplementedError("Tensorflow + NCCL not yet implemented.")
         elif "BytePSPushPull" in v and "tensor" not in v:
@@ -489,12 +490,12 @@ class DAGManager:
         '''
         ### Read the original dag for this gpu first
         mygraph = old_graph
-        queue_type_list = QueueType().ret_list()
+        queue_type_list = QueueType("NCCL").ret_list()
 
         done_comm = []
         for u, v in mygraph.edges:
             pre_nodes, post_nodes = [], []
-            if "Comm." in u:
+            if "Comm." in u and self.nccl_graph is not None:
                 ### Consider Tensor fusion, only those ready tensors are fused and are used to build a graph together
                 tensor_name = u.split("Comm.")[1]
                 if self.platform == "MXNET":
@@ -532,7 +533,7 @@ class DAGManager:
                 done_comm.append(u)
 
             if self.byteps_graph is not None:
-                self._process_edge_byteps(mygraph, queue_type_list, u, v, pre_nodes=pre_nodes)
+                self._process_edge_byteps(mygraph, queue_type_list, u, v)
             elif self.nccl_graph is not None:
                 self._process_edge_nccl(mygraph, queue_type_list, u, v, para_dict=para_dict, pre_nodes=pre_nodes, post_nodes=post_nodes)
 
@@ -677,7 +678,7 @@ class DAGManager:
 
         #！til now, all the edges for one GPU have been added.
         if not _pretty:
-            SingleLogger().info("Calculate critical path and check cycles. This process is time comsuming, set --pretty to disable")
+            SingleLogger().info("Calculate critical path and check cycles. This process is time consuming, set --pretty to disable")
             composed_dag = nx.DiGraph()
             composed_dag.add_edges_from(self.dag)
             try:
