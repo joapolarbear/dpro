@@ -1,6 +1,5 @@
-import pymc3 as pm
 import numpy as np
-import tensorflow as tf
+from logger_utils import Singleton, SingleLogger
 
 def predict_error(_list, _list_pred):
     _list_pred = np.array(_list_pred)
@@ -13,6 +12,7 @@ def predict_error(_list, _list_pred):
 
 class DNNPredictor:
     def __init__(self, train_x, train_y, test_x, test_y, headers):
+        import tensorflow as tf
         self.headers = headers
         self.train_x = self.array2dict(train_x)
         self.train_y = train_y
@@ -40,19 +40,20 @@ class DNNPredictor:
     def train(self):
         train_input_fn = self.make_dataset(self.batch_size, self.train_x, self.train_y, True, 1000)
         test_input_fn = self.make_dataset(len(self.test_y), self.test_x, self.test_y)
-    
-        # Hook to stop training if loss does not decrease in over 100000 steps.
-        hook = tf.estimator.experimental.stop_if_no_decrease_hook(self.model, "loss", 1000)
-        ops = tf.get_default_graph().get_operations()
-        logging_hook = tf.estimator.LoggingTensorHook({
-            "loss" : self.model['loss'], 
-            "prediction" : prediction}, every_n_iter=100)
-        train_spec = tf.estimator.TrainSpec(input_fn=train_input_fn, hooks=[hook, logging_hook])
-        eval_spec = tf.estimator.EvalSpec(input_fn=test_input_fn)
-        tf.estimator.train_and_evaluate(self.model, train_spec, eval_spec)
         # Train the model.
         # By default, the Estimators log output every 100 steps.
-        # self.model.train(input_fn=train_input_fn, steps=100000)
+        self.model.train(input_fn=train_input_fn, steps=100000)
+
+        # # Hook to stop training if loss does not decrease in over 100000 steps.
+        # hook = tf.estimator.experimental.stop_if_no_decrease_hook(self.model, "loss", 1000)
+        # ops = tf.get_default_graph().get_operations()
+        # logging_hook = tf.estimator.LoggingTensorHook({
+        #     "loss" : self.model['loss'], 
+        #     "prediction" : prediction}, every_n_iter=100)
+        # train_spec = tf.estimator.TrainSpec(input_fn=train_input_fn, hooks=[hook, logging_hook])
+        # eval_spec = tf.estimator.EvalSpec(input_fn=test_input_fn)
+        # tf.estimator.train_and_evaluate(self.model, train_spec, eval_spec)
+        
 
     def predict(self):
         test_input_fn = self.make_dataset(len(self.test_y), self.test_x, self.test_y)
@@ -98,7 +99,6 @@ class DNNPredictor:
 
         return input_fn
 
-
 class BayesPredictor:
     def __init__(self, train_x, train_y, test_x, test_y, headers):
         self.headers = headers
@@ -114,6 +114,7 @@ class BayesPredictor:
         return _dict
 
     def train(self):
+        import pymc3 as pm
         # Context for the model
         with pm.Model() as normal_model:
             
@@ -126,12 +127,10 @@ class BayesPredictor:
             # Perform Markov Chain Monte Carlo sampling letting PyMC3 choose the algorithm
             normal_trace = pm.sample(2000, cores=1)
 
-
 from scipy.optimize import curve_fit
 wei1, wei2 = 1, 1
 ADD_ADDITIONAL = True
 LINEARITY = 'linear' # \in ['linear', log', 'exp', sigmoid', 'piecewise', 'max_linear', 'max_exp'] or None
-
 
 # def cost_func(xs, a1, a2, a3, a4, a5, a6, a7, a8, a9, b1, b2, b3):
 #     '''
@@ -172,20 +171,25 @@ LINEARITY = 'linear' # \in ['linear', log', 'exp', sigmoid', 'piecewise', 'max_l
 #     # flops_ = G * (1 / (1 + np.exp(-S_mul)) - a6)
 #     # flops_ = G * np.log(a6 * S_mul + a7)
 
-FIT_FUNC = None
-
 class CurveFiter:
-    def __init__(self, train_x, train_y, test_x, test_y, headers, op_type="conv", E1_=None, E2_=None):
+    def __init__(self, headers, op_type="conv", E1_=None, E2_=None):
         self.headers = headers
-        self.train_x = train_x
-        self.train_y = train_y
-        self.test_x = test_x
-        self.test_y = test_y
+        self.popt = self.perr = None
+        self.op_type = op_type
+        self.Es = [E1_, E2_]
+        self.FIT_FUNC = None
+        self.load_fit_func()
 
-        E1 = 1 if E1_ is None else E1_
-        E2 = 2 if E2_ is None else E2_
+    def load_fit_func(self):
+        E1 = 1 if self.Es[0] is None else self.Es[0]
+        E2 = 2 if self.Es[1] is None else self.Es[1]
         E1 = E2 = 0
         
+        def cost_func_cast(xs, a1, b1):
+            _, _, _, S_in, _, _ = xs[0:6]
+            return a1 * S_in + b1
+        lower_bounds_cast = tuple([0]*1 + [-np.inf]*1)
+
         if LINEARITY == 'linear':
             def cost_func_conv2d(xs, a1, a2, a3, a4, a5, b1):
                 G, S_mul, S_add, S_in, S_out, S_wei = xs[0:6]
@@ -282,6 +286,7 @@ class CurveFiter:
                 return wei1 * ((S_mul + a2 * (addtional_term)) / (flops_)) + wei2 * (wei_S_all) / bandwidth + b1
 
             lower_bounds_conv = lower_bounds_dense = tuple([0]*9 + [-np.inf]*1)
+        
         elif LINEARITY == 'piecewise':
             def cost_func_conv2d(xs, a1, a2, a3, a4, a5, a6, a7, a8, b1):
                 G, S_mul, S_add, S_in, S_out, S_wei = xs[0:6]
@@ -411,21 +416,22 @@ class CurveFiter:
         else:
             raise
 
-        global FIT_FUNC
-        if op_type == "conv":
-            FIT_FUNC = cost_func_conv2d
+        if self.op_type == "conv" or self.op_type == "Conv2D":
+            self.fit_func = cost_func_conv2d
             self.lower_bounds = lower_bounds_conv
-        elif op_type == "dense":
-            FIT_FUNC = cost_func_dense
+        elif self.op_type == "dense" or self.op_type == "MatMul":
+            self.fit_func = cost_func_dense
             self.lower_bounds = lower_bounds_dense
+        elif self.op_type == "CastToFp16" or self.op_type == "CastToFp32":
+            self.fit_func = cost_func_cast
+            self.lower_bounds = lower_bounds_cast
         else:
-            raise ValueError(op_type)
+            raise ValueError(self.op_type)
         self.up_bounds = tuple(len(self.lower_bounds) * [np.inf])
         self.p0 = [1]*len(self.lower_bounds)
 
         # if LINEARITY == 'max':
         #     self.p0[21] = 0.0001
-
 
     def no_linear_label(self, data_):
         if LINEARITY == 'linear':
@@ -440,39 +446,37 @@ class CurveFiter:
         else:
             raise ValueError("LINEARITY should be log:{}".format(LINEARITY))
 
-    def train(self):
-        if len(self.train_x) == 0:
-            print("[Warning]: the size of training dataset is 0, skip...")
+    def train(self, train_x, train_y):
+        if len(train_x) == 0:
+            SingleLogger().warin("The size of training dataset is 0, skip...")
             self.popt = self.perr = None
         else:
-            _train_x = np.transpose(self.train_x)
-            _train_y = self.no_linear_label(np.transpose(self.train_y).flatten())
-            # FIT_FUNC(_train_x, *self.p0)
-            self.popt, pcov = curve_fit(FIT_FUNC, _train_x, _train_y, 
+            _train_x = np.transpose(train_x)
+            _train_y = self.no_linear_label(np.transpose(train_y).flatten())
+            # self.fit_func(_train_x, *self.p0)
+            self.popt, pcov = curve_fit(self.fit_func, _train_x, _train_y, 
                 bounds=(self.lower_bounds, self.up_bounds), p0=self.p0, maxfev=100000)
             self.perr = np.sqrt(np.diag(pcov))
         return self.popt, self.perr
 
-    def test(self, verbose=True, popt=None):
-        if len(self.test_x) == 0:
-            print("[Warning]: the size of test dataset is 0, skip...")
+    def test(self, test_x, test_y, verbose=True):
+        if len(test_x) == 0:
+            SingleLogger().warn("The size of test dataset is 0, skip...")
             return None
-        _test_x = np.transpose(self.test_x)
-        _test_y = self.no_linear_label(np.transpose(self.test_y).flatten())
-        if popt is not None:
-            avgs_pred = FIT_FUNC(_test_x, *popt)
-        elif self.popt is not None:
-            avgs_pred = FIT_FUNC(_test_x, *self.popt)
-        else:
-            return None
+        _test_x = np.transpose(test_x)
+        _test_y = self.no_linear_label(np.transpose(test_y).flatten())
+
+        if self.popt is None:
+            SingleLogger().error("Curvefitter is not trained")
+        avgs_pred = self.fit_func(_test_x, *self.popt)
         diff, ratio = predict_error(_test_y, avgs_pred)
         error = float(ratio.split("%")[0])
         if verbose:
-            print("average error: %f %%"%(error))
+            SingleLogger().info("average error: %f %%"%(error))
         return error
 
     def predict(self, xdata):
-        return FIT_FUNC(xdata, *self.popt)
+        return self.fit_func(xdata, *self.popt)
 
 
 

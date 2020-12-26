@@ -12,7 +12,14 @@ except:
 from tensorflow.python.client import timeline
 import json
 import networkx as nx
-import byteps.tensorflow as bps
+try:
+    import byteps.tensorflow as bps
+except:
+    pass
+try:
+    import horovod.tensorflow as hvd
+except:
+    pass
 
 class TimelineSession:
     def __init__(self, sess, tensor_shape_ops=None):
@@ -22,7 +29,7 @@ class TimelineSession:
         self.feed_dict_meta = {}
         self.tensor_shape_ops = tensor_shape_ops
 
-        self.trace_dir = os.path.join(os.environ.get("BYTEPS_TRACE_DIR", "."), str(bps.local_rank()))
+        self.trace_dir = os.path.join(os.environ.get("BYTEPS_TRACE_DIR", "."), str(hvd.local_rank()))
         if not os.path.exists(self.trace_dir):
             os.makedirs(self.trace_dir)
         if os.environ.get("BYTEPS_TRACE_ON", "") != '1':
@@ -152,8 +159,8 @@ class TimelineSession:
         with open(os.path.join(self.trace_dir, "variables_meta.json"), "w") as f:
             json.dump(var_shapes, f, indent=4)
 
-        with open(os.path.join(self.trace_dir, "temp.json"), "w") as f:
-            json.dump(self.traces, f, indent=4)
+        # with open(os.path.join(self.trace_dir, "temp.json"), "w") as f:
+        #     json.dump(self.traces, f, indent=4)
         
         with open(os.path.join(self.trace_dir, "tensor_shapes.json"), "w") as f:
             json.dump(self.tensor_shapes, f, indent=4)
@@ -167,8 +174,8 @@ class TimelineSession:
         with open(os.path.join(self.trace_dir, "final_graph.json"), "w") as f:
             json.dump(graph_str, f, indent=4)
 
-        nx.write_gml(self.dag, os.path.join(self.trace_dir, "dag.gml"), lambda x: str(x))
-        print("Stop tracing, output trace: %s" % self.trace_dir)
+        # nx.write_gml(self.dag, os.path.join(self.trace_dir, "dag.gml"), lambda x: str(x))
+        # print("Stop tracing, output trace: %s" % self.trace_dir)
 
     def should_stop(self):
         return self.sess.should_stop()

@@ -15,11 +15,15 @@ import multiprocessing
 
 from trace_utils import *
 from dag_utils import * 
-from horovod.graph import *
 from parameter import *
-from bps_helper.graph import *
 
 args_ = arg_utils.SingleArg().args
+
+if args_.comm_backend == "NCCL":
+    from hvd.graph import *
+elif args_.comm_backend == "BYTEPS":
+    from bps_helper.graph import *
+
 
 GAP_THRESHOLD_COMP = 1000
 GAP_THRESHOLD_COMM = 50000
@@ -81,11 +85,11 @@ class Collector(object):
 
         self.time_dict = None
         self.run_span = {}
-        self.para_dict = None
 
         ### TODO (huhanpeng): assume different host use the same dag, original dag
         self.dag = None
-        self.metadata = None
+        self.update_nodes_in_dag = None
+        self.para_dict = None
         self.trail_dag = None # global dag
         self.single = False # use to denote whether this is a single-GPU trial
         
@@ -106,8 +110,9 @@ class Collector(object):
         assert tmp_pm.dir_level == DirLevel.GPU
         add_trace_safe(self._collect_rank_comp(tmp_pm, pid, host_id))
         add_trace_safe(self._collect_rank_io(tmp_pm, pid, host_id))
-        add_trace_safe(self._collect_rank_comm_detail(tmp_pm, pid, host_id))
-        add_trace_safe(self._collect_rank_comm(tmp_pm, pid, host_id))
+        if not self.single:
+            add_trace_safe(self._collect_rank_comm_detail(tmp_pm, pid, host_id))
+            add_trace_safe(self._collect_rank_comm(tmp_pm, pid, host_id))
         return self.rst_traces, self.ref_name, self.ref_time, self.raw_name2IDnum
 
     def _collect_rank_comp(self, tmp_pm=None, pid=None, host_id=None):
@@ -132,16 +137,9 @@ class Collector(object):
             raw_traces = json.load(f)
         ### Consider mulptiprocessing, each GPU will read its own dag
         if self.dag is None:
-            dag_path = self.pm.search(FileName.DAG) if tmp_pm is None else tmp_pm.search(FileName.DAG)
-            # debug_utils.DebugRecorder().debug_event_start()
-            self.dag = nx.read_gml(dag_path)
-            # debug_utils.DebugRecorder().debug_event_end("collect_" + pid+"_comp.read_dag", "Collct", "0")
-
-        if self.platform == "MXNET":
-            dag_node_names_std = list(self.dag.nodes)
-        else:
-            dag_node_names_std = set([standard_name(n, platform=self.platform) for n in self.dag.nodes])
-
+            dag_path = self.pm.search(FileName.DAG)
+            self.dag, self.update_nodes_in_dag = wrap_read_gml(dag_path, platform=self.platform)
+        dag_node_names_std = list(self.dag.nodes)
         wk_prefix, _ = PathManager("/".join(comp_path.split('/')[:-1])).ret_prefix()
         if wk_prefix not in self.run_span:
             self.run_span[wk_prefix] = RunningSpan()
@@ -167,12 +165,13 @@ class Collector(object):
         while index < len(raw_traces["traceEvents"]):
             if self.platform == "TENSORFLOW" and one_pid is None:
                 for trace in raw_traces["traceEvents"]:
-                    if trace["ph"] == "M" and trace["name"] == "process_name":
-                        if "args" in trace and "name" in trace["args"]:
-                            if "device:GPU" in trace["args"]["name"] and "Compute" in trace["args"]["name"] and "replica" in trace["args"]["name"]:
-                                one_pid = trace["pid"]
-                            elif "device:GPU" in trace["args"]["name"] and "stream:all Compute" in trace["args"]["name"]:
-                                kernel_pid = trace["pid"]
+                    if "device:GPU" in trace["pid"] and "Compute" in trace["pid"] and "replica" in trace["pid"]:
+                        pass
+                        # one_pid = trace["pid"]
+                    elif "device:GPU" in trace["pid"] and "stream:all Compute" in trace["pid"]:
+                        # pass
+                        one_pid = trace["pid"]
+                assert one_pid is not None
 
             if "ts" not in raw_traces["traceEvents"][index]:
                 index += 1
@@ -194,7 +193,6 @@ class Collector(object):
                 index += 1  
 
         ### At this point, traces are unsorted
-
         # debug_utils.DebugRecorder().debug_event_start()
         traces = sorted(traces, key=lambda x: x["ts"], reverse=False)
         SingleLogger().debug("Original Comp traces length: {}.".format(len(traces)))
@@ -247,6 +245,7 @@ class Collector(object):
 
         index = 0
         rst_traces = []
+        pre_event = None
         while index < len(traces):
             trace = traces[index]
             index += 1
@@ -255,7 +254,7 @@ class Collector(object):
             elif self.platform == "TENSORFLOW":
                 raw_name = trace["args"]["name"]
 
-            name = standard_name(raw_name, platform=self.platform)
+            name = standard_name(raw_name, platform=self.platform, update_nodes_in_dag=self.update_nodes_in_dag)
 
             ### deduplication
             ### TODO (huhanpeng): should be careful, only choose one prosess here
@@ -269,7 +268,7 @@ class Collector(object):
             elif one_pid != trace["pid"]:
                 continue
 
-            if name not in dag_node_names_std:
+            if name not in dag_node_names_std or "Comm" in name:
                 ### Only collect nodes in the dag
                 ### TODO (huhanpeng): some trvial nodes may also be useful
                 if args_.trace_level == "trace":
@@ -280,19 +279,22 @@ class Collector(object):
                     rst_traces.append(trace)
                 # print(trace)
                 continue
-            innodes = [_n for _n, _ in self.dag.in_edges(name)]
-            _args = {"name": name}
-            for i, _n in enumerate(innodes):
-                _args["input%d"%i] = _n
-            trace["name"] = name
-            trace["args"] = _args
-            if pid is not None:
-                trace["pid"] = pid
-            trace["tid"] = _ret_operator_tid(trace["tid"])
-            rst_traces.append(trace)
-
-            ### Initialize the start time of the entire running span
-            self.run_span[wk_prefix].init_start(trace["ts"])
+            if pre_event is not None and "args" in pre_event and pre_event["args"]["name"] == name:
+                pre_event["dur"] = trace["ts"] + trace["dur"] - pre_event["ts"]
+            else:
+                innodes = [_n for _n, _ in self.dag.in_edges(name)]
+                _args = {"name": name}
+                for i, _n in enumerate(innodes):
+                    _args["input%d"%i] = _n
+                trace["name"] = name
+                trace["args"] = _args
+                if pid is not None:
+                    trace["pid"] = pid
+                trace["tid"] = _ret_operator_tid(trace["tid"])
+                rst_traces.append(trace)
+                ### Initialize the start time of the entire running span
+                self.run_span[wk_prefix].init_start(trace["ts"])
+                pre_event = trace
 
             ### Handle OUTPUT
             if self.platform == "MXNET":
@@ -382,28 +384,12 @@ class Collector(object):
                         ### Initialize the end time of the entire running span
                         self.run_span[wk_prefix].init_end(_update_ts + _duration)
             elif self.platform == "TENSORFLOW":
-                _trace = traces[index]
-                if "args" in _trace and "input0"in _trace["args"] and _trace["args"]["input0"] == "global_step":
-                    self.run_span[wk_prefix].init_end(_trace["ts"])
+                if index < len(traces):
+                    _trace = traces[index]
+                    if "args" in _trace and "input0"in _trace["args"] and _trace["args"]["input0"] == "global_step":
+                        self.run_span[wk_prefix].init_end(_trace["ts"])
             else:
                 raise NotImplementedError("Unsupported platform {}.".format(self.platform))
-
-        if self.platform == "TENSORFLOW":
-            occurence_counter = {}
-            for trace in rst_traces:
-                if "ph" in trace and trace["ph"] == "X":
-                    if trace["name"] in kernel_times:
-                        if trace["name"] not in occurence_counter:
-                            occurence_counter[trace["name"]] = 0
-                        try:
-                            kernel_ts, kernel_dur = kernel_times[trace["name"]][occurence_counter[trace["name"]]]
-                        except:
-                            # SingleLogger.warn("Length mismatch between kernel and op launch traces for op {}".format(trace["name"]))
-                            occurence_counter[trace["name"]] += 1
-                            continue
-                        trace["ts"] = kernel_ts
-                        trace["dur"] = kernel_dur
-                        occurence_counter[trace["name"]] += 1
         SingleLogger().debug("Comp traces length: {}.".format(len(rst_traces)))
         return rst_traces
 
@@ -500,18 +486,6 @@ class Collector(object):
             if args_.trace_level == "debug":
                 for _id, tensor_id in enumerate(tensor_list):
                     trace["args"]["tensor%d"%_id] = self.para_dict.tensor_id_to_name(tensor_id)
-
-            ### add dependency info the traces
-            # tensor_list = re.findall("[0-9]+", trace["name"].split(".")[1])     # a str list, each element is the index of tensor
-            # tensor_list = sorted([int(e) for e in tensor_list])
-            # sorted_name = "+".join([str(e) for e in tensor_list])
-            # if sorted_name not in self.groupname:
-            #     self.groupname.append(sorted_name)
-            # for tensor_id in tensor_list:
-            #     # tensor_name = self.metadata["gradient_name_list"][int(tensor_id)]
-            #     group_id = self.groupname.index(sorted_name)
-            #     # if group_id not in self.tensor2group[tensor_id]:
-            #     self.tensor2group[tensor_id].append(group_id)
 
             if pid is not None:
                 trace["tid"] = trace["pid"]
@@ -619,7 +593,7 @@ class Collector(object):
                         raw_name = ".".join(_split_name[1:])
                         prefix = _split_name[0]
                         ### For Horovod
-                        if "horovod_" not in prefix:
+                        if "horovod" not in prefix.lower():
                             raise ValueError("comm.json format error, "
                                 "trace args name should start with "
                                 "horovod_broadcast or horovod_allreduce: %s" % trace["args"]["name"])
@@ -654,10 +628,15 @@ class Collector(object):
                     tensor_id_str = op_name.split(".")[1]
                 else:
                     tensor_id_str = process_name.split(".")[1]
+                if self.platform == "TENSORFLOW" and "_" in tensor_id_str:
+                    tensor_id_str = tensor_id_str.split("_")[0]
 
                 input0 = None
                 if args_.trace_level == "debug" and tensor_id_str.isdigit():
-                    tensor_name = self.para_dict.tensor_id_to_name(int(tensor_id_str))
+                    if self.platform == "MXNET":
+                        tensor_name = self.para_dict.tensor_id_to_name(int(tensor_id_str))
+                    elif self.platform == "TENSORFLOW":
+                        raise NotImplementedError()
                     input_nodes = [u for u, _ in self.dag.in_edges(tensor_name)]
                     if len(input_nodes) == 1:
                         input0 = list(input_nodes)[0]
@@ -677,12 +656,13 @@ class Collector(object):
                     _append_trace(ret, "%s.%s"%(process_name, op_name), ts, dur, "Comm", "Comm", input0)
                     continue
                 elif op_name in QueueType().ret_list():
+                    if self.platform == "TENSORFLOW":
+                        process_name = "Comm." + tensor_id_str
                     _append_trace(ret, "%s.%s"%(process_name, op_name), ts, dur, "Comm", "Comm", input0)
                     continue
 
-                if args_.trace_level != "debug":
-                    continue
-                _append_trace(ret, "%s.%s"%(process_name, op_name), ts, dur, process_name, "debug", input0)
+                if args_.trace_level == "debug":
+                    _append_trace(ret, "%s.%s"%(process_name, op_name), ts, dur, process_name, "debug", input0)
             else:
                 pass
         return ret
@@ -702,6 +682,9 @@ class Collector(object):
 
     def clock_align(self, traces_list, host_ids):
         SingleLogger().info("Combine and align traces ...")
+        if self.single:
+            assert len(traces_list) == 1
+            return traces_list[0]
         if self.byteps_graph is not None:
             base_host_id = self.byteps_graph.master_host_id
         else:
@@ -730,24 +713,30 @@ class Collector(object):
         assert self.pm.dir_level == DirLevel.TRIAL
 
         arg_list = []
+        self.single = False
         if self.comm_backend == "NCCL":
             self.nccl_graph.map_host_prefix_id(self.pm.dirs)
         for _dir in self.pm.dirs:
             worker_path = os.path.join(self.pm.path, _dir)
             worker_root, worker_dirs, _ = list(os.walk(worker_path))[0]
             worker_dirs = sorted(worker_dirs)
+
+            if len(self.pm.dirs) * len(worker_dirs) == 1:
+                self.single = True
+
             for __dir in worker_dirs:
                 self.time_dict = {"traceEvents":[]} 
                 gpu_path = os.path.join(worker_root, __dir)
                 tmp_pm, pid, host_id_str = PathManager(gpu_path), str(_dir)+".rank%s"%__dir, _dir
                 arg_list.append([tmp_pm, pid, host_id_str])
-                if self.comm_backend == "NCCL":
+                if not self.single and self.comm_backend == "NCCL":
                     self._collect_nccl_graph(tmp_pm, pid, host_id_str)
         with multiprocessing.Pool(len(arg_list)) as p:
             rst = p.map(self._collect_rank_traces, arg_list)
         traces_list, ref_name_list, ref_time_list, raw_name2IDnum_list = zip(*rst)
 
-        if self.comm_backend == "NCCL":
+        host_ids = None
+        if not self.single and self.comm_backend == "NCCL":
             host_ids = [self.nccl_graph.host_prefix2id[host_id_str] for _, _, host_id_str in arg_list]
             self.nccl_graph.init_host_drift(zip(host_ids, ref_time_list))
             ### Since some GPU may have no comm detailed traces, select the first non-empty file to parse chunk num...
@@ -764,7 +753,7 @@ class Collector(object):
                 assert host_id in self.byteps_graph.time_drift
         ### align the time
         rst_traces = self.clock_align(traces_list, host_ids)
-        self.single = (len(rst) == 1)
+        # self.single = (len(rst) == 1)
 
         if self.comm_backend == "NCCL" and not args_.pretty:
             self.nccl_graph.print_graph()
@@ -772,30 +761,19 @@ class Collector(object):
             rst_traces += self.byteps_graph.gen_compatible_trace(dump_path=os.path.join(self.pm.path, FileName.BPS_ALIGNED_TRACE.value))
 
         SingleLogger().info("Take {} s to combine all traces of length {}".format(time.time() - ts_, len(rst_traces)))
+        # rst_traces = sorted(rst_traces, key=lambda x: (x["pid"], x["tid"]))
+        # with open(os.path.join(self.pm.path, FileName.TRACE.value), 'w') as f:
+        #     json.dump(rst_traces, f)
+        # raise
         self.traceM = TraceManager(rst_traces, self.pm.dir_level, check=True)
 
-    def collect_meta_data(self):
-        ### collect metadata
-        meta_path = self.pm.search(FileName.METADATA)
-        if meta_path is None:
-            SingleLogger().error("{} not found. Fail to map_tensors_to_update".format(FileName.METADATA.value))
-        else:
-            with open(meta_path, 'r') as fp:
-                self.metadata = json.load(fp)
-
-    def collect_update_dict(self):
-        ### Map tensor name to its update index
-        if "opt_aggregate_num" in self.metadata:
-            aggregate_num = self.metadata["opt_aggregate_num"]
-        else:
-            aggregate_num = 0
-        self.para_dict = ParameterDict(self.metadata["gradient_name_list"])
-        self.para_dict.map_tensors_to_update(aggregate_num)
+    def collect_para_dict(self):
+        self.para_dict = ParameterDict(self.pm, self.platform)
 
     def _collect_rank_dag(self, gpu_path, worker_dag_list, critical_path, index):
         SingleLogger().info("- Collect DAG in %s ..." % (gpu_path))
         dagmanager = DAGManager(gpu_path, self.traceM, self.nccl_graph, self.byteps_graph, platform=self.platform)
-        max_para_degree, _critical_path = dagmanager.gen_gpu_dag(_pretty=args_.pretty, para_dict=self.para_dict)
+        max_para_degree, _critical_path = dagmanager.gen_gpu_dag(self.dag, _pretty=args_.pretty, para_dict=self.para_dict)
         worker_dag_list[index] = dagmanager.dag
         critical_path[index] = _critical_path
 
@@ -808,11 +786,17 @@ class Collector(object):
             worker_dag_list = [None] * self.nccl_graph.nrank
         else:
             raise ValueError("Need to check whether byteps_graph has nrank member")
-
+        
+        if self.dag is None:
+            dag_path = self.pm.search(FileName.DAG)
+            self.dag, self.update_nodes_in_dag = wrap_read_gml(dag_path, platform=self.platform)
+            
         if self.single:
             worker_path = os.path.join(self.pm.path, self.pm.dirs[0])
             gpu_path = os.path.join(worker_path, first_valid_dir(worker_path))
-            dag, _critical_path = self._collect_rank_dag(gpu_path, worker_dag_list, critical_path, 0)
+            worker_dag_list = [None]
+            critical_path = [None]
+            self._collect_rank_dag(gpu_path, worker_dag_list, critical_path, 0)
         else:
             threads = []
             for _dir in self.pm.dirs:
@@ -820,6 +804,7 @@ class Collector(object):
                 worker_root, worker_dirs, _ = list(os.walk(worker_path))[0]
                 for worker_dir in sorted(worker_dirs):
                     gpu_path = os.path.join(worker_root, worker_dir)
+                    # self._collect_rank_dag(gpu_path, worker_dag_list, critical_path, len(threads))
                     t = threading.Thread(target=self._collect_rank_dag, args=(gpu_path, worker_dag_list, critical_path, len(threads)))
                     t.start()
                     threads.append(t)
@@ -922,15 +907,14 @@ class Collector(object):
                 self.byteps_graph.init(byteps_comm_detail_path, byteps_server_trace_path)
 
         ### TODO (huhanpeng) dump it or not
-        if self.platform == "MXNET":
-            self.collect_meta_data()
-            self.collect_update_dict()
+        self.collect_para_dict()
 
         trail_dag_path = self.pm.search(FileName.TRAIL_DAG)
         if force_ or trace_path is None or (self.comm_backend == "NCCL" and nccl_graph_path is None) or trail_dag_path is None:
             self.collect_traces()
-            iter_time, step_idx = self.iter_time()
-            self.nccl_graph.init_nccl_fusion(self.traceM, len(self.metadata["gradient_name_list"]))
+            iter_time, _ = self.iter_time()
+            if self.comm_backend == "NCCL":
+                self.nccl_graph.init_nccl_fusion(self.traceM, self.para_dict.gradient_num(), show=False)
             self.collect_trial_dag()
             self.fine_tune_trace_dag()
             ### Asynchonously cache these info
@@ -1230,13 +1214,15 @@ class Collector(object):
                 ### for Sync|Queue|MEMCPY_IN_FUSION_BUFFER|MEMCPY_OUT_FUSION_BUFFER sub operators
                 ### there are not corresponding fused traces, instead, each tensor has its own sub operator traces
                 ### when building the graph, use the average duration of corresponding tensor as the fused operator time 
-                prefix, rawname, _ = parse_allinfo_from_name(node_)
+                prefix, rawname, _, _ = parse_allinfo_from_name(node_)
                 op_type, op_name, sub_op = rawname.split(".")
 
                 tensor_list = re.findall("[0-9]+", op_name)
-                tensor_list = sorted([int(e) for e in tensor_list])
+                ### this tensor_list has been sorted
+                # tensor_list = sorted([int(e) for e in tensor_list])
                 avgs = []
-                for tensor_id in tensor_list:
+                for tensor_id_str in tensor_list:
+                    tensor_id = int(tensor_id_str)
                     org_name = gen_long_name(prefix, "{}.{}.{}".format(op_type, tensor_id, sub_op))
                     avgs.append(self.traceM.lookup_stat(None, None, org_name))
                 assert len(avgs) > 0
@@ -1386,6 +1372,8 @@ class Collector(object):
                 break
             print("Name: {}, min_gap: {} ({})".format(name, depend['min_gap'], depend['min_node']))
 
+    def all_pid(self):
+        return list(self.nccl_graph.prefix2rank.keys())
 
 
 

@@ -1,6 +1,7 @@
 import json
 import numpy as np
 import os, sys
+import re
 import networkx as nx
 
 # (TODO): delete, 20201026
@@ -31,23 +32,33 @@ GPUSINFO = {
     '1080Ti': GPUInfo(1, 2)
 }
 
+### TODO (urgent), replace this
+GFLOPS_FP32 = 1
+GFLOPS_FP16 = 2
+
+class Parameter:
+    def __init__(self, index, name, shape, dtype):
+        self.index = index
+        self.name = name
+        self.shape = shape
+        self.dtype = dtype
+
 class MetaInfo:
     def __init__(self, meta_dir, gpu_name=None):
         self.meta_dir = meta_dir
         with open(os.path.join(meta_dir, "metadata.json"), "r") as fp:
             self.mx_meta = json.load(fp)
-
-        self.gpu_name = gpu_name
-        self.gpu_info = GPUSINFO[self.gpu_name] if gpu_name is not None else None
-
-        self.cache_hyper_para = {}
-
-        ### dependency graph of this model
-        self.dag = self.gen_dag()
-
         all_output = self.mx_meta["outputs"]
         all_shape = self.mx_meta["out_shapes"]
         assert len(all_output) == len(all_shape)
+
+        self.gpu_name = gpu_name
+        self.gpu_info = GPUSINFO[self.gpu_name] if gpu_name is not None else None   
+
+        ### dependency graph of this model
+        self.dag = self.gen_dag()
+        nx.write_gml(self.dag, os.path.join(
+            "/Users/bytedance/0/data/20201126_01_2W2G_rdma_hvd_mx_bert_hvd_input_data_shape", "dag.gml"), lambda x: str(x))
 
         ### init name2shape dict, convert name to std. name
         self.name2shape = {}
@@ -66,7 +77,49 @@ class MetaInfo:
             else:
                 self.name2shape[std_name] = all_shape[idx]
 
-        # self.get_hyper_para()
+        self.cache_hyper_para = {}
+        self.get_hyper_para()
+        self.gen_grad()
+
+        ### Map tensor name to its update index
+        if "opt_aggregate_num" in self.mx_meta:
+            aggregate_num = self.mx_meta["opt_aggregate_num"]
+        else:
+            aggregate_num = 0
+        self.tensor2update = {}
+        self.map_tensors_to_update(aggregate_num)
+        
+    def map_tensors_to_update(self, aggregate_num=0):
+        ''' Map each tensor id to its corresponding update operation
+        For MXNet
+        '''
+        max_update_id = 0
+        grad_cnt = len(self.gradient_name_list)
+        for idx in range(grad_cnt):
+            gra_idx = grad_cnt - 1 - idx
+            self.tensor2update[gra_idx] = idx if aggregate_num == 0 else int(idx / aggregate_num)
+            max_update_id = max(max_update_id, self.tensor2update[gra_idx])
+        self.tensor2update["max"] = max_update_id
+
+    def gen_grad(self):
+        self.gradient_name_list = []
+        self.parameters = []
+        for idx, para_ in enumerate(self.mx_meta["gradient_name_list"]):
+            ### e.g., bertencoder0_position_weight;shape=(512, 1024);dtype=float16
+            if isinstance(para_, list):
+                para_split = para_
+            else:
+                para_split = para_.split(";")
+            name_ = para_split[0]
+            if len(para_split) == 1:
+                ### No shape and dtype info are provided
+                shape_ = None
+                dtype_ = None
+            else:
+                shape_ = [int(e) for e in re.findall(r"\d+", para_split[1])]
+                dtype_ = para_split[2].split("dtype=")[1]
+            self.gradient_name_list.append(name_)
+            self.parameters.append(Parameter(idx, name_, shape_, dtype_))
 
     def is_ignore(self, node):
         if "Comm" in node:
@@ -74,6 +127,23 @@ class MetaInfo:
         else:
             return False
 
+    def get_wei_shape(self, node):
+        ### weights
+        bp_node = "BW.".join(node.split("FW.")) if "FW" in node else node 
+        wei_node = bias_node = None
+        for succ_ in self.dag.successors(bp_node):
+            if "Comm." in succ_:
+                if "wei" in succ_:
+                    wei_node = succ_
+                elif "bias" in succ_:
+                    bias_node = succ_
+                else:
+                    raise ValueError(
+                        "Conv2D node {} has undefined parameter {}".format(node, succ_))
+        if wei_node is None:
+            raise ValueError("No variable/weights for {}".format(node))
+        return self.name2shape[wei_node]
+    
     def get_hyper_para(self):
         for node in self.name2shape:
             if self.is_ignore(node):
@@ -98,20 +168,7 @@ class MetaInfo:
                 H = W = input_shape[2]
                 C = input_shape[3] if input_shape[1] == H else input_shape[1]
 
-                ### weights
-                bp_node = "BW.".join(node.split("FW."))
-                wei_node = bias_node = None
-                for succ_ in self.dag.successors(bp_node):
-                    if "Comm." in succ_:
-                        if "wei" in succ_:
-                            wei_node = succ_
-                        elif "bias" in succ_:
-                            bias_node = succ_
-                        else:
-                            raise ValueError("Conv2D node {} has undefined parameter {}".format(node, succ_))
-                if wei_node is None:
-                    raise ValueError("No variable/weights for {}".format(node))
-                wei_shape = self.name2shape[wei_node]
+                wei_shape = self.get_wei_shape(node)
                 # TODO (huhanpeng): still assume the kernel is a square
                 if wei_shape[2] == wei_shape[3]:
                     R = S = wei_shape[2]
@@ -120,23 +177,32 @@ class MetaInfo:
                 self.cache_hyper_para[node] = [H, W, C, R, S, P, Q, K, N, 0 if bias_node is None else 1]
 
             elif op_type == "dense":
+                third_d = 1
                 B = output_shape[0]
                 C_out = output_shape[1]
                 ### prevs
                 prevs = self.dag.in_edges(node)
-                assert len(prevs) == 1, (node, prevs)
-                prev_, _ = list(prevs)[0]
-                input_shape = self.name2shape[prev_]
-                if len(input_shape) == 2 or len(input_shape) == 4:
-                    assert input_shape[0] == B, (node, input_shape, output_shape)
-                    C_in = input_shape[1]   
-                elif len(input_shape) == 3:
-                    assert input_shape[1] == B, (node, input_shape, output_shape)
-                    C_in = input_shape[0] * input_shape[2]
+                if len(prevs) == 1:
+                    prev_, _ = list(prevs)[0]
+                    input_shape = self.name2shape[prev_]
+                    if len(input_shape) == 2 or len(input_shape) == 4:
+                        assert input_shape[0] == B, (node, input_shape, output_shape)
+                        C_in = input_shape[1]   
+                    elif len(input_shape) == 3:
+                        C_in, C_out = self.get_wei_shape(node)
+                        if C_in == input_shape[0] * input_shape[2]:
+                            assert input_shape[1] == B, (node, input_shape, output_shape)
+                        elif C_in == input_shape[2]:
+                            third_d = input_shape[1]
+                            assert third_d == output_shape[1] and B == input_shape[0], (
+                                node, input_shape, output_shape)
+                    else:
+                        raise ValueError(node, input_shape, output_shape)
                 else:
-                    print(node, input_shape, output_shape)
+                    input_shapes = [self.name2shape[prev_] for prev_, _ in prevs]
+                    print(self.get_wei_shape(node), input_shapes)
                     raise
-                self.cache_hyper_para[node] = [C_in, C_out, B] 
+                self.cache_hyper_para[node] = [C_in, C_out, B, third_d] 
             elif op_type == 'lstm_param_concat':
                 pass
             elif op_type == 'lstm_rnn':
@@ -201,7 +267,7 @@ class MetaInfo:
                 ### (TODO) should raise error
                 pass
 
-    def ret_mx_metadata(self, node, batch_size=None):
+    def ret_metadata(self, node, batch_size=None):
         '''
         node: node name in the dag
         '''
@@ -217,14 +283,18 @@ class MetaInfo:
             return batch_size*K*P*Q*C*R*S, batch_size*K*P*Q*(C*R*S-1), batch_size*H*W*C, batch_size*P*Q*K, R*S*C*K
 
         elif op_type == "dense":
-            C_in, C_out, old_B = self.cache_hyper_para[node]
-            return batch_size*C_in*C_out, batch_size*(C_in-1)*C_out, batch_size*C_in, batch_size*C_out, C_in*C_out
+            C_in, C_out, old_B, third_d = self.cache_hyper_para[node]
+            return batch_size*C_in*C_out*third_d, batch_size*(C_in-1)*C_out*third_d, batch_size*C_in*third_d, batch_size*C_out*third_d, C_in*C_out
         else:
             raise NotImplementedError("Metadata for {} is not implemented yet.".format(node))
 
-    def ret_mx_rawmeta(self, node, batch_size):
+    def ret_rawmeta(self, node, batch_size):
         assert node in self.name2shape, "shape info for {} is not in the meta data".format(node)
-        return self.cache_hyper_para[node]
+        if op_type == "dense":
+            ### last dimension third_d, considering some special cases, 3-D matrix multiplication
+            return self.cache_hyper_para[node][:-1]
+        else:
+            return self.cache_hyper_para[node]
 
     def parse_op_type(self, op_name):
         op_name = op_name.lower()
@@ -272,14 +342,16 @@ class MetaInfo:
                 _dag.add_edge("FW." + output_node, "OUTPUT%d"%output_cnt)
                 _dag.add_edge("OUTPUT%d"%output_cnt, "BW." + output_node)
                 output_cnt += 1
-
+        all_tensor = set()
         for i in range(1, len(blocks)):
             prev_block = blocks[i-1]
             var = []
             prev_ls = prev_block.split('\n')
             for l in prev_ls:
                 if "Variable" in l:
-                    var.append(l.split('Variable:')[1])
+                    tensor_name = l.split('Variable:')[1]
+                    var.append(tensor_name)
+                    all_tensor.add(tensor_name)
             block = blocks[i]
             ls = block.split('\n')
             if 'Name' not in ls[0]:
@@ -290,8 +362,11 @@ class MetaInfo:
             for l in ls:
                 if "arg[" in l:
                     arg_name = l.split(']=')[1].split('(')[0]
-                    if arg_name not in var:
+                    if arg_name not in all_tensor:
                         args.append(arg_name)
+                    elif arg_name not in var:
+                        ### in cases on weight is used for multiple times
+                        var.append(arg_name)
             if "_fwd" in name:
                 name = name.split("_fwd")[0]
 
@@ -315,4 +390,29 @@ class MetaInfo:
                     _dag.add_edge("Comm." + _var, "UPDATE")
                     _dag.add_edge("BW." + name, "Comm." + _var)
         return _dag
-        
+    
+    def ret_tensor_size(self, tensor_id):
+        tensor_name = self.gradient_name_list[tensor_id]
+        shape_sum = np.prod(self.name2shape["Comm." + tensor_name])
+        dtype_size = self.dtype2size(self.parameters[tensor_id].dtype)
+        return shape_sum * dtype_size
+
+    def dtype2size(self, _dtype):
+        if _dtype == "float32":
+            return 4
+        elif _dtype == "int32":
+            return 4
+        elif _dtype == "float16":
+            return 2
+        elif _dtype == "int16":
+            return 2
+        elif _dtype == "int64":
+            return 8
+        elif _dtype == "float64":
+            return 8
+        elif _dtype == "bool":
+            return np.size(bool)
+        elif _dtype == "string":
+            return 1
+        else:
+            raise ValueError("{} not defined".format(_dtype))

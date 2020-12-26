@@ -5,7 +5,7 @@ export BPF_TF_PATH="/root/tensorflow"
 export BPF_COST_MODEL_PROFILE_GPU="0"
 
 # modify these
-DATASET_DIR="/PATH/TO/DATASET/DIR"
-OUTPUT_DIR="/PATH/TO/OUTPUT/COST/MODEL"
+DATASET_DIR="/opt/tiger/xla/kernel_dataset"
+OUTPUT_DIR="/opt/tiger/xla/cost_model"
 
 python3 train_module_cost_model.py --dataset_dir ${DATASET_DIR} --output_dir ${OUTPUT_DIR}

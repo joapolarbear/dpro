@@ -70,4 +70,17 @@ Contains:
 - `tensor2update`, which maps `tensor_id` to `update_id`
 
 
+## Rules of converting Framework traces
+### Tensorflow
+#### UPADATE operators
+1. Take all down stream operators of `Comm` as UPDATE operators
+2. There may be depedency between UPDATE operators
+#### FW and BW operators
+1. **Assumption**: in TensorFlow, some operators may have multiple traces with the same name in one step, which we call as sub_trace, we assume they are continuous and combine them into one single operator.
 
+#### Statistic the number of step
+1. pre_cat not in [io, fw], cur_cat in [io, fw], step cnt + 1
+
+### MXNET
+#### UPDATE operators
+1. We assume there is no dependency between UPDATE operators, except for `UPDATE_CAL`->`UPDATE_ID`

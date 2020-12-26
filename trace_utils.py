@@ -53,7 +53,7 @@ class FileName(Enum):
     TRACE="bps_trace_final.json"
     COMP="temp.json"
     SYMBOL="symbol_debug_str.txt"
-    TENSOR_NAME="gradient_name_list.txt"
+    TENSOR_NAME="gradient_name_list.json"
     COMM_DETAIL="comm_detail.json"
     INFO="info.json"
     NCCL_GRAPH="nccl_graph.txt"
@@ -184,20 +184,21 @@ def parse_allinfo_from_name(name):
     else:
         pid, raw_name = name.split(DEL)
 
+    suffix = None
     if DDEL in raw_name:
         raw_name, suffix = raw_name.split(DDEL)
 
     if "I/O" in raw_name:
-        return pid, raw_name, CatName.IO.value
+        cat = CatName.IO.value
     elif "Comm" in raw_name or "PUSH" in raw_name or "PULL" in raw_name:
-        return pid, raw_name, CatName.COMM.value
+        cat = CatName.COMM.value
     elif "FW" in raw_name or "BW" in raw_name or "COMP" in raw_name or "UPDATE" in raw_name or "OUTPUT" in raw_name or "COPY_FIRST" in raw_name or "SUM" in raw_name or "COPY_MERGED" in raw_name:
-        return pid, raw_name, CatName.OPERATOR.value
+        cat = CatName.OPERATOR.value
     elif raw_name == "END":
-        return pid, raw_name, CatName.DEBUG.value
+        cat = CatName.DEBUG.value
     else:
         raise ValueError("Can not decide the cat of %s" % name)
-
+    return pid, raw_name, cat, suffix
 
 def parse_pid_from_name(name):
     if DEL not in name:
@@ -241,6 +242,13 @@ def parse_cat_from_name(name):
     else:
         raise ValueError("Can not decide the cat of %s" % name)
 
+### CATs that will be affected if we change the GPU/CPU rate
+COMP_CAT = ["operator.FW", "operator.BW", "operator.UPDATE",
+    "operator.OUTPUT", "operator.SERVERCOMP"]
+### CATs that will be affected if we change the bandwidth
+### TODO (huhanpeng): check whether it is correct for BytePS
+COMM_CAT = ["Comm.SEND", "Comm.RECV", "Comm.PUSH_REQ",
+            "Comm.PUSH_RES", "Comm.PULL_REQ", "Comm.PULL_RES"]
 def parse_cat_fine_grained(name_):
     if "Comm" in name_:
         if "SEND" in name_:
@@ -388,7 +396,7 @@ class TraceManager:
                     "cat_cursor": None, 
                     "step_cnt": 0,
                     ### used for calculating iteration time, and fw time
-                    "step_start": None,
+                    "cur_step": None,
                     "fw_list": [],
                     "bw_list": [],
                     "iter_list": [],
@@ -426,41 +434,56 @@ class TraceManager:
                     }
             event["args"]["cnt"] = self.name2sta[unique_name]["cnt"] - 1
 
+            # if prefix == "host0.rank1":
+            #     print(event["name"])
+
             pid_info = prefix_dict[prefix]
             ### add step field
             if pid_info["cat_cursor"] is None:
                 pass
-            elif pid_info["cat_cursor"] not in AS_START_CAT and cat in AS_START_CAT:
+            elif pid_info["cat_cursor"] == "operator.UPDATE" and cat in AS_START_CAT:
+            # elif cat not in AS_START_CAT and cat in AS_START_CAT:
                 pid_info["step_cnt"] += 1
-            elif pid_info["cat_cursor"] in AS_START_CAT and cat == "operator.UPDATE":
+                # if prefix == "host0.rank1":
+                #     print("Add step to {} for {}, before: {}".format(
+                #         pid_info["step_cnt"], event, pid_info["cat_cursor"]))
+            elif (pid_info["cat_cursor"] in AS_START_CAT) and cat == "operator.UPDATE":
                 ### handle the overlapping cases between UPDATE and (IO, FW)
                 pid_info["step_cnt"] -= 1
+                # if prefix == "host0.rank1":
+                #     print("Minus step to {} for {}, before: {}".format(
+                #         pid_info["step_cnt"], event, pid_info["cat_cursor"]))
             event["args"]["step"] = pid_info["step_cnt"]
-            pid_info["cat_cursor"] = cat
+            if parse_cat_from_name(event["name"]) in [CatName.OPERATOR.value, CatName.IO.value]:
+                pid_info["cat_cursor"] = cat
             self.max_step = max(event["args"]["step"], self.max_step)
 
             ### calculate the iteration time
             if parse_cat_from_name(event["name"]) != CatName.OPERATOR.value:
                 continue    
-            if pid_info["step_start"] is None:
+            if pid_info["cur_step"] is None:
                 ### initialization
                 pid_info["step_start_ts"] = event['ts']
                 pid_info["cur_iter_time"] = event['ts'] + event['dur']
-                pid_info["step_start"] = event["args"]["step"]
-            elif pid_info["step_start"] != event["args"]["step"]:
+                pid_info["cur_step"] = event["args"]["step"]
+            elif pid_info["cur_step"] != event["args"]["step"]:
                 ### a new iteration
                 assert pid_info["step_start_ts"] is not None
-                if pid_info["step_start"] == -1:
+                if pid_info["cur_step"] == -1:
                     continue
-                assert event["args"]["step"] > pid_info["step_start"], (event)
+                assert event["args"]["step"] > pid_info["cur_step"], (event, pid_info)
                 pid_info["iter_list"].append((pid_info["cur_iter_time"] - pid_info["step_start_ts"]) / 1000.0)
-                pid_info["fw_list"].append((pid_info["fw_end"] - pid_info["step_start_ts"]) / 1000.0)
-                pid_info["bw_list"].append((pid_info["bw_end"] - pid_info["bw_start"]) / 1000.0)
+                try:
+                    pid_info["fw_list"].append((pid_info["fw_end"] - pid_info["step_start_ts"]) / 1000.0)
+                    pid_info["bw_list"].append((pid_info["bw_end"] - pid_info["bw_start"]) / 1000.0)
+                except:
+                    print(event, pid_info)
+                    raise
                 SingleLogger().debug("%s - the %d th iteration: FW: %f, BW: %f, Iteration time: %f" % (prefix, len(pid_info["iter_list"]), pid_info["fw_list"][-1], pid_info["bw_list"][-1], pid_info["iter_list"][-1]))
                 pid_info["step_start_ts"] = event['ts']
                 pid_info["bw_start"] = None
                 pid_info["cur_iter_time"] = event['ts'] + event['dur']
-                pid_info["step_start"] = event["args"]["step"]
+                pid_info["cur_step"] = event["args"]["step"]
             else:
                 ### during an iteration
                 pid_info["cur_iter_time"] = event['ts'] + event['dur']
@@ -657,30 +680,6 @@ class TraceManager:
         '''
         return self.iter_time, self.opt_step
 
-    def group_op_by_prefix(self, cat_name=None):
-        prefix2traces = {}
-        def _get_prefix(e):
-            prefix = e["pid"]
-            if prefix not in prefix2traces:
-                prefix2traces[prefix] = []
-            return prefix
-        for event in self.traces:
-            if (cat_name is None or parse_cat_from_name(event["name"]) == cat_name) and not self._is_ignore_for_sta(event):
-                prefix2traces[_get_prefix(event)].append(event)
-        return prefix2traces
-    
-    def group_op_by_prefix_and_cat(self):
-        prefix2traces = {}
-        def _get_prefix_and_cat(e):
-            prefix = e["pid"]
-            e_cat = parse_cat_from_name(e["name"])
-            if (prefix, e_cat) not in prefix2traces:
-                prefix2traces[(prefix, e_cat)] = []
-            return (prefix, e_cat)
-        for event in self.traces:
-            prefix2traces[_get_prefix_and_cat(event)].append(event)
-        return prefix2traces
-
     def map_name2idxlist(self, name):
         ''' map the trace name to the list of indexes in the traces
         Returns
@@ -757,7 +756,7 @@ class PathManager:
         ''' return the level of the current dir '''
         def recur_look_up(_d):
             root, dirs, files = list(os.walk(_d))[0]
-            if "dag.gml" in files:
+            if "temp.json" in files:
                 return 0
             else:
                 return 1 + recur_look_up(os.path.join(root, dirs[0]))

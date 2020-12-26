@@ -36,6 +36,8 @@ parser.add_argument("--nccl_algo", type=str, default=None, help="NCCL algorithm,
 parser.add_argument("--trace_level", type=str, choices=["debug", "info"], default="info", help="if set to debug, show some trival traces")
 parser.add_argument("--disable_revise", action="store_true", help="By default, revise traecs according to SEND-RECV dependency, set to disable this argument to disable")
 parser.add_argument("--force", action="store_true", help="Force to re-generate traces, graphs")
+parser.add_argument("--metadata_path", type=str, default=None,
+                    help="Paths to Model metadata")
 
 ### replay
 parser.add_argument("--update_barrier", type=bool, default=False, help="If true, add a barrier before all UPDATE ops.")
@@ -54,6 +56,9 @@ parser.add_argument("--mcmc_beta", type=float, default=100, help="Hyper Paramete
 parser.add_argument("--cost_model_tmp_dir", type=str, default="./", help="Tmp directory for cost model to store intermediate files.")
 parser.add_argument("--heat_window_size", type=int, default=5, help="Window size for the heat based search heuristic.")
 parser.add_argument("--simulate", action="store_true", help="If this arg is set, simulate the cost model, not use the real cost model.")
+parser.add_argument("--relabel", action="store_true", help="If this arg is set, relabel the dag with indexes.")
+parser.add_argument("--ckpt", action="store_true", help="If this arg is set, start from cached data")
+parser.add_argument("--workspace", type=str, default="/root/opt_workerspace", help="Workerspace of the optimizer")
 
 args = parser.parse_args()
 

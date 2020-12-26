@@ -20,6 +20,23 @@ from .pk_graph import PKGraph, PKGraphCycleError, contract_nodes_nx, \
                         defuse_nodes_inplace_nx, postorder_contract_nx, \
                         subgraph_partition_connected_nx
 from .constant_utils import *
+import networkx as nx
+
+try:
+    graph_hash = nx.algorithms.weisfeiler_lehman_graph_hash
+except:
+    import hashlib
+    # https://stackoverflow.com/questions/20530455/isomorphic-comparison-of-networkx-graph-objects-instead-of-the-default-addres
+    def graph_hash(G, node_attr=None):
+        node_labels = dict()
+        for n in G.nodes():
+            if not node_attr:
+                node_labels[n] = str(G.degree(n))
+            else:
+                node_labels[n] = str(G.nodes[n][node_attr]) + "_" + str(G.degree(n))
+        _hash = hashlib.sha1(json.dumps(
+            node_labels, sort_keys=True).encode()).hexdigest()
+        return _hash
 
 def format_feed(node_name, shape):
     feed_str = "feed {{\n\tid {{ node_name: \"{}\" }}\n\tshape {{\n".format(node_name)
@@ -75,7 +92,7 @@ class GraphDefUtil(object):
         """ graph_def: Tensorflow GraphDef
             metadata: python dict, generated when collecting trace 
         """
-        import byteps.tensorflow as bps # type: ignore
+        # import byteps.tensorflow as bps # type: ignore
         super().__init__()
         self.graph_def = graph_def
         self.original_graph = tf.Graph()
@@ -463,7 +480,7 @@ class SampleGenerator():
         return list(subgraph_nodes)
     
     def _max_cluster_sampler(self, forbidden_list, size_limit=800):
-        G: nx.DiGraph = self.nx_graph.copy()
+        G = self.nx_graph.copy()
         PKG = PKGraph(G)
 
         source_nodes = sorted(list(G.nodes), key=lambda x: G.in_degree(x))
@@ -509,10 +526,11 @@ class SampleGenerator():
                 with open(cache_path, "rb") as f:
                     clusters = pickle.load(f)
                 compute_cluster = False
+                print("Load max_cluster.pickle use cache under {}".format(cache_dir))
             else:
                 compute_cluster = True
         else:
-            compute_cluster = True
+            compute_cluster = True       
         if compute_cluster:
             if forbidden_nodes is None or random_sample:
                 forbidden_nodes = random.sample(self.nx_graph.nodes, 
@@ -548,7 +566,7 @@ class SampleGenerator():
                         filtered_selected_node_names, output_dir, sample_id)
 
         sub_g = self.nx_graph.subgraph(filtered_selected_node_names)
-        g_hash = nx.algorithms.weisfeiler_lehman_graph_hash(sub_g, node_attr="hash_value")
+        g_hash = graph_hash(sub_g, node_attr="hash_value")
         if g_hash in self.generated_graph_hashes:
             raise GSDuplicateSubgraphError
         else:

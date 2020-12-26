@@ -1,34 +1,33 @@
 import os 
 import ujson as json
-
 import networkx as nx
 import traceback
 import time
 import sys
 from pathlib import Path
 
-import logger_utils
-from trace_utils import *
-from dag_utils import *
-from collect import Collector
-from replay import Replayer
-from progress_utils import progressBar
 import arg_utils
-import debug_utils
-import optimizer
-
+import logger_utils
 args = arg_utils.SingleArg().args
-if args.option == "optimize" and not args.simulate:
-    from cost_model_xla import XlaDataset, FusionCostModel
-    from cost_model_xla.xla_module_cost_model import XLAModuleCostModel
-
-
-
 logger = logger_utils.SingleLogger(args.path.split(',')[0], 
     args.option, args.logging_level, 
     is_clean=args.clean, 
     show_progress=args.progress)
 logger.info(args)
+from trace_utils import *
+from dag_utils import *
+from collect import Collector
+from replay import Replayer
+from progress_utils import progressBar
+
+import debug_utils
+import optimizer
+
+if args.option == "optimize" and not args.simulate:
+    # from cost_model_xla import XlaDataset, FusionCostModel
+    # from cost_model_xla.xla_module_cost_model import XLAModuleCostModel
+    pass
+
 QueueType("NCCL")
 debug_utils.DebugRecorder(is_enable=args.debug_traces)
 
@@ -194,7 +193,6 @@ if __name__ == '__main__':
                 if args.progress:
                     pgsbar.showBar(idx)
                 idx += 10
-
         elif args.sub_option == "bottleneck":
             ''' Replay and add delays to some of the node on the critical path respectively.'''
             ### Get the execution graph first
@@ -238,6 +236,9 @@ if __name__ == '__main__':
             rst = sorted(rst, key=lambda x: (x["pid"], x["tid"]))
             with open(os.path.join(clct.pm.path, "replay_compare.json"), 'w') as f:
                 json.dump(rst, f)
+        elif args.sub_option == "theory":
+            replayer.daydream_dag(clct.para_dict)
+            replayer.replay()
 
     if args.option == "collect":
         if args.sub_option == "combine":
@@ -264,25 +265,23 @@ if __name__ == '__main__':
                     print("Average time: %f ms" % (avg))
         elif args.sub_option == "gap":
             clct.list_max_gap(args.head)
+        elif args.sub_option.startswith("amp_data_clct"):
+            from cost_model_amp import data_clct
+            ### E.g. args.sub_option = amp_data_clct,save_names=fp32,model=resnet,platform=tf
+            kvs = dict([tuple(kv.split("="))for kv in args.sub_option.split(",")[1:]])
+            trace_filter = data_clct.TraceFilter(**kvs)
+            trace_filter.dump_for_cost_model(clct.traceM.name2sta, clct.pm.path)
 
     if args.option == "optimize":
-        '''
-        from cost_model_amp.amp_pred import AMPPredictor, AMPTrainer
-        amp_pred = AMPTrainer(
-            os.path.join(path_list[0], "host0/0/metadata.json"),
-            path_list[0])
-        amp_pred.collect_raw_data(path_list[0])
-        amp_pred.gen_train_data(clct.trail_dag)
-        amp_pred.train(test=True)
-        '''
+        from cost_model_amp.amp_pred import AMPPredictor, train_amp_model
+        if args.sub_option == "train_amp":
+            train_amp_model()
+            raise
 
         if not args.simulate and len(path_list) < 2:
             raise RuntimeError("optimize requires positional path arguments: profile data path & cost model path.")
 
-        clct = Collector(path_list[0], comm_backend=args_.comm_backend)
-        clct.init(args.force)
         cost_models = {}
-
         if not args.simulate:
             models_dir = path_list[1]
             shape_dict_path = path_list[2]

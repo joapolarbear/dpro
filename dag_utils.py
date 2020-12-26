@@ -5,10 +5,12 @@ import matplotlib.pyplot as plt
 import logger_utils
 import arg_utils
 from trace_utils import *
-from horovod.graph import *
-from bps_helper.graph import *
 
 args_ = arg_utils.SingleArg().args
+if args_.comm_backend == "NCCL":
+    from hvd.graph import *
+elif args_.comm_backend == "BYTEPS":
+    from bps_helper.graph import *
 
 def visualize_gml(graph, layout="circular"):
     if layout == "spectral":
@@ -58,8 +60,63 @@ def dag_longest_path(G, pathM=None, weight='weight', default_weight=0, _debug_le
 
     return list(zip(critical_path, len_list))
 
-def standard_name(_name, platform="TENSORFLOW"):
+def tf_relabel_func(_name, update_nodes_in_dag):
+    for prefix in ["Comm.", "Comp.", "BW.", "FW."]:
+        if _name.startswith(prefix):
+            return _name
+    if _name.startswith("^"):
+        _name = _name[1:]
+    if "BytePSPushPull" in _name and "tensor" not in _name:
+        _name = "Comm." + _name
+    if "allreduce" in _name.lower():
+        if "." in _name:
+            _, tensor_name = _name.split(".")
+            if "_" in tensor_name:
+                tensor_name = tensor_name.split("_")[0]
+            _name = "Comm." + tensor_name
+        else:
+            _name = "UPDATE_." + _name
+    else:
+        if update_nodes_in_dag is not None and _name in update_nodes_in_dag:
+            _name = "UPDATE_." + _name
+        elif _name.startswith("gradients"):
+            _name = "BW." + _name
+        else:
+            _name = "FW." + _name
+    return _name
+
+def wrap_read_gml(gml_path, platform="MXNET"):
+    ''' The node name in Tensorflow is not standard, transfer it to standard form first
+        Tranverse the dag nodes twice
+    '''
+    mygraph = nx.read_gml(gml_path)
+    if not args_.pretty:
+        try:
+            SingleLogger().info(list(nx.find_cycle(composed_dag, orientation="original")))
+        except:
+            SingleLogger().info("No cycles found")
+    if platform == "TENSORFLOW":
+        update_nodes_in_dag = set()
+        def recursive_add_succs(_node):
+            for succ_ in mygraph.successors(_node):
+                update_nodes_in_dag.add(succ_)
+                recursive_add_succs(succ_)
+        for node in mygraph.nodes:
+            if "allreduce" in node.lower():
+                recursive_add_succs(node)
+            # if "apply" in node.lower() or ("gradientdescent" in node.lower() and "learning_rate" not in node.lower()):
+            #     update_nodes_in_dag.add(node)
+        new_graph = nx.DiGraph()
+        for u, v in mygraph.edges:
+            new_graph.add_edge(tf_relabel_func(u, update_nodes_in_dag), tf_relabel_func(v, update_nodes_in_dag))
+        mygraph = new_graph
+    else:
+        update_nodes_in_dag = None
+    return mygraph, update_nodes_in_dag
+
+def standard_name(_name, platform="TENSORFLOW", update_nodes_in_dag=None):
     '''Fetch and handle the trace name'''
+    ### TODO combine this function with wrap_read_gml, test MXNET
     if platform == "MXNET":
         #! add for mxnet-gluon case
         if "name=" in _name:
@@ -68,16 +125,7 @@ def standard_name(_name, platform="TENSORFLOW"):
         _name = "BW." + _name.split("_backward")[0] if "_backward" in _name else "FW." + _name
         _name = _name.split("_fwd")[0] if "_fwd" in _name else _name
     elif platform == "TENSORFLOW":
-        for prefix in ["Comm.", "Comp.", "BW.", "FW."]:
-            if _name.startswith(prefix):
-                return _name   
-        if "BytePSPushPull" in _name and "tensor" not in _name:
-            _name = "Comm." + _name
-        else:
-            if _name.startswith("gradients"):
-                _name = "BW." + _name
-            else:
-                _name = "FW." + _name
+        _name = tf_relabel_func(_name, update_nodes_in_dag)
     return _name
 
 class DAGManager:
@@ -136,14 +184,23 @@ class DAGManager:
 
     def wrap_in_dag(self, node):
         return node in self.nodes
-
+    
     def add_prefix(self, name, _prefix=None):
         if _prefix is None:
             return gen_long_name(self.prefix, name)
         else:
             return gen_long_name(_prefix, name)
 
-    def _process_edge_mxnet(self, graph, queue_type_list, u, v, para_dict=None, pre_nodes=[], update_ids=[]):
+    def add_update_downstream(self, graph, update_node, _prefix=None):
+        ''' Add UPDATE operators and its downstream operators to the final graph
+        '''
+        u = self.add_prefix(update_node, _prefix=_prefix)
+        for succ_ in graph.successors(update_node):
+            v = self.add_prefix(succ_, _prefix=_prefix)
+            self.wrap_add_dag(u, v)
+            self.add_update_downstream(graph, succ_, _prefix)
+
+    def _process_edge_nccl(self, graph, queue_type_list, u, v, para_dict=None, pre_nodes=[], post_nodes=[]):
         ''' Handel one edge in the original depedency graph
         Parameters
         ----------
@@ -170,8 +227,11 @@ class DAGManager:
                     if args_.update_barrier:
                         self.wrap_add_dag(pull_res_node, self.add_prefix("UPDATE_CAL"))
                     else:
-                        for update_id in update_ids:
-                            self.wrap_add_dag(pull_res_node, self.add_prefix("UPDATE_%d"%update_id))
+                        if self.platform == "MXNET":
+                            for update_id in post_nodes:
+                                self.wrap_add_dag(pull_res_node, self.add_prefix("UPDATE_%d"%update_id))
+                        else:
+                            raise NotImplementedError()
             elif self.nccl_graph is not None and self.nccl_graph.algo == NCCL_ALGO.RING:
                 ### Combine chunkId, sliceId and channelId into the graph for RING algorithm
                 chunkNum, sliceNum, channelNum, loopNum = self.nccl_graph.get_IDnum(u)
@@ -231,8 +291,16 @@ class DAGManager:
 
                                     ### MEMCPY_OUT_FUSION_BUFFER --> UPDATE_CAL
                                     prev_name = next_name
-                                    update_name = self.add_prefix("UPDATE_CAL", _prefix=next_rank_prefix)
-                                    self.wrap_add_dag(prev_name, update_name)
+                                    if self.platform == "MXNET":
+                                        update_name = self.add_prefix("UPDATE_CAL", _prefix=next_rank_prefix)
+                                        self.wrap_add_dag(prev_name, update_name)
+                                    elif self.platform == "TENSORFLOW":
+                                        for post_node in post_nodes:
+                                            update_name = self.add_prefix(post_node, _prefix=next_rank_prefix)
+                                            self.wrap_add_dag(prev_name, update_name)
+                                            self.add_update_downstream(graph, post_node, _prefix=next_rank_prefix)
+                                    else:
+                                        raise NotImplementedError()
                 ### end for loop         
             elif self.nccl_graph is not None and self.nccl_graph.algo == NCCL_ALGO.TREE:
                 ### Combine chunkId, sliceId and channelId into the graph for Tree algorithm
@@ -298,8 +366,16 @@ class DAGManager:
                                     
                                     ### -1): Add Recv to Step nodes, for Down process
                                     prev_rawname = gen_long_name(None, "%s.AGGR"%u, suffix="%d_%d_%d_%d_%d_%d"%(loopId, channelId, chunkId, sliceId, rank, 1))
-                                    update_name = self.add_prefix("UPDATE_CAL")
-                                    self.wrap_add_dag(self.add_prefix(prev_rawname), update_name)
+                                    if self.platform == "MXNET":
+                                        update_name = self.add_prefix("UPDATE_CAL")
+                                        self.wrap_add_dag(self.add_prefix(prev_rawname), update_name)
+                                    elif self.platform == "TENSORFLOW":
+                                        for post_node in post_nodes:
+                                            update_name = self.add_prefix(post_node)
+                                            self.wrap_add_dag(self.add_prefix(prev_rawname), update_name)
+                                            self.add_update_downstream(graph, post_node)
+                                    else:
+                                        raise NotImplementedError()
                                     # ### Connect all UPDATE nodes to an END node
                                     # self.wrap_add_dag(update_name, "END")
                                     for cld_rank in childs:
@@ -348,8 +424,11 @@ class DAGManager:
                     for pre_node in pre_nodes_:
                         self.wrap_add_dag(self.add_prefix(pre_node), self.add_prefix(cur_node))
                     pre_nodes_ = [cur_node]
-                for update_id in update_ids:
-                    self.wrap_add_dag(self.add_prefix(pre_nodes_[0]), self.add_prefix("UPDATE_%d"%update_id))
+                if self.platform == "MXNET":
+                    for update_id in post_nodes:
+                        self.wrap_add_dag(self.add_prefix(pre_nodes_[0]), self.add_prefix("UPDATE_%d"%update_id))
+                else:
+                    raise NotImplementedError()
         elif "BW" in u and "Comm" in v:
             if self.single:
                 self.wrap_add_dag(
@@ -363,9 +442,9 @@ class DAGManager:
         else:
             self.wrap_add_dag(self.add_prefix(u), self.add_prefix(v))
 
-    def _process_edge_tensorflow(self, graph, queue_type_list, u, v):
-        raise NotImplemented("Implement for single machine, remove comm ops")
+    def _process_edge_byteps(self, graph, queue_type_list, u, v):
         if "BytePSPushPull" in u and "tensor" not in u:
+            ### BytePS traces
             gra_name = u
             if self.byteps_graph is not None:
                 wk_rank = int(self.wk_prefix.split("_")[-1])
@@ -397,7 +476,7 @@ class DAGManager:
                 self.add_prefix(standard_name(u, platform=self.platform)), 
                 self.add_prefix(standard_name(v, platform=self.platform)))
 
-    def gen_dag_with_prefix_weight(self, para_dict=None):
+    def gen_dag_with_prefix_weight(self, old_graph, para_dict=None):
         ''' Gen a dag from the original graph with weighted edges.
         Return: A dag, which
             * is **weighted**;
@@ -406,38 +485,52 @@ class DAGManager:
             * partition Comm nodes into sub-task nodes if needed.
         '''
         ### Read the original dag for this gpu first
-        mygraph = nx.read_gml(self.pm.search(FileName.DAG))
+        mygraph = old_graph
         queue_type_list = QueueType().ret_list()
 
         done_comm = []
         for u, v in mygraph.edges:
-            pre_nodes, update_ids = [], []
+            pre_nodes, post_nodes = [], []
             if "Comm." in u:
                 ### Consider Tensor fusion, only those ready tensors are fused and are used to build a graph together
                 tensor_name = u.split("Comm.")[1]
-                tensor_id = para_dict.name_to_tensor_id(tensor_name)
+                if self.platform == "MXNET":
+                    tensor_id = para_dict.name_to_tensor_id(tensor_name)
+                elif self.platform == "TENSORFLOW":
+                    tensor_id = int(tensor_name)
                 nccl_grp_name = self.nccl_graph.tensor2group_name(tensor_id)
                 ### take the fused name as the node name, e.g., Comm.1+2+3
                 u = "Comm." + nccl_grp_name
                 if u in done_comm:
                     continue
+                _first = True
                 for _id in nccl_grp_name.split("+"):
-                    co_comm_op = "Comm." + para_dict.tensor_id_to_name(int(_id))   # e.g., Comm.bertmodel0_word_embed_embedding0_weight
+                    if self.platform == "MXNET":
+                        co_comm_op = "Comm." + para_dict.tensor_id_to_name(int(_id))   # e.g., Comm.bertmodel0_word_embed_embedding0_weight
+                    elif self.platform == "TENSORFLOW":
+                        co_comm_op = "Comm.{}".format(_id)
                     prev_bw_nodes = [_u for _u, _ in mygraph.in_edges(co_comm_op)]
-                    assert len(prev_bw_nodes) == 1
+                    # assert len(prev_bw_nodes) == 1, (co_comm_op, prev_bw_nodes)
                     prev_rawname = prev_bw_nodes[0]         # no prefix, start with BW.
                     pre_nodes.append(prev_rawname)
-                    update_id = para_dict.tensor2update[int(_id)]       # e.g., from tensor 256 to update 140
-                    update_ids.append(update_id)
+                    if self.platform == "MXNET":
+                        # e.g., from tensor 256 to update 140
+                        update_id = para_dict.tensor_id2update_id(int(_id))
+                        post_nodes.append(update_id)
+                    elif self.platform == "TENSORFLOW":
+                        if _first:
+                            post_update_nodes = list(mygraph.successors(co_comm_op))
+                            post_nodes += post_update_nodes
+                            _first = False
                 done_comm.append(u)
 
-            if self.platform == "TENSORFLOW":
-                self._process_edge_tensorflow(mygraph, queue_type_list, u, v, pre_nodes=pre_nodes)
-            elif self.platform == "MXNET":
-                self._process_edge_mxnet(mygraph, queue_type_list, u, v, para_dict=para_dict, pre_nodes=pre_nodes, update_ids=update_ids)
+            if self.byteps_graph is not None:
+                self._process_edge_byteps(mygraph, queue_type_list, u, v, pre_nodes=pre_nodes)
+            elif self.nccl_graph is not None:
+                self._process_edge_nccl(mygraph, queue_type_list, u, v, para_dict=para_dict, pre_nodes=pre_nodes, post_nodes=post_nodes)
 
         if self.byteps_graph is not None and self.platform == "MXNET":
-            for update_id in range(para_dict.tensor2update["max"] + 1):
+            for update_id in range(para_dict.tensor_id2update_id("max") + 1):
                 update_name = self.add_prefix("UPDATE_%d"%update_id)
                 if args_.update_barrier:
                     self.wrap_add_dag(self.add_prefix("UPDATE_CAL"), update_name)
@@ -447,19 +540,13 @@ class DAGManager:
             # TODO (huhanpeng): need further to unify the name rule, for NCCL case
             # 1) What if there is no barrier ??? 
             # 2) connect the UPDATE_CAL to the following update nodes
-            for update_id in range(para_dict.tensor2update["max"] + 1):
+            for update_id in range(para_dict.tensor_id2update_id("max") + 1):
                 update_name = self.add_prefix("UPDATE_%d"%update_id)
                 self.wrap_add_dag(self.add_prefix("UPDATE_CAL"), update_name)
                 ### Connect all UPDATE nodes to an END node
                 self.wrap_add_dag(update_name, "END")
 
         # visualize_gml(self.dag, layout="circular")
-
-        ### TODO (huhanpeng): since we do not explicitly construct the graph, do not check cycles here
-        ### check whether there exits cycle in the graph
-        # edges = list(nx.simple_cycles(self.dag))
-        # if len(edges) > 0:
-        #     raise ValueError("The depedency graph at {} has cycles".format(self.pm.path))
 
     def _add_new_edges_via_order(self):
         ''' Add new edges between FW+BW ops, according to their processing order
@@ -485,13 +572,14 @@ class DAGManager:
 
         def in_process_events2str():
             s = ''
-            for _event in in_process_events:
+            for _idx in in_process_events:
+                _event = self.traceM.traces[_idx]
                 _n, _ts, _te = _event["name"], _event["ts"], _event["ts"] + _event["dur"]
                 s += "\n\t\t\t\t%-60s: %s~%s (%-13.4f ~ %-13.4f)" % (_n, str(_ts), str(_te), relative_time(_ts), relative_time(_te))
             return s
 
         ### For FW and BW nodes, go through one step of traces
-        for event in self.traceM.traces:
+        for idx, event in enumerate(self.traceM.traces):
             if self.traceM._is_ignore_for_sta(event):
                 continue
             if event["args"]["step"] > (self.traceM.opt_step + 1):
@@ -513,20 +601,27 @@ class DAGManager:
 
             i = 0
             while i < len(in_process_events):
-                prev_event = in_process_events[i]
+                prev_event = self.traceM.traces[in_process_events[i]]
                 assert event["ts"] >= prev_event["ts"]
                 assert event["args"]["step"] == prev_event["args"]["step"]
                 if event["ts"] >= prev_event["ts"] + prev_event["dur"]:
                     ### prev event has ended, should be deleted from in_process_events
                     del in_process_events[i]
 
-                    ### TODO (huhanpeng) do not follow the dependency graph, ignore now
+                    ### TODO (huhanpeng) do not follow the dependency graph, may introduce cycle to the dependency graph
                     if "BW.bertencoder0_embedding0" in prev_event["name"] or "BW.bertencoder0_embedding0" in event["name"]:
                         continue
+
                     #! TODO: only add once, to verify
-                    self.wrap_add_dag(
-                        self.add_prefix(prev_event["name"]), 
-                        self.add_prefix(event["name"]))
+                    if prev_event["name"] != event["name"]:
+                        u = self.add_prefix(prev_event["name"])
+                        v = self.add_prefix(event["name"])
+                        # TODO (huhanpeng): if not check this, may introduce cycle for tensorflow bert traces
+                        # if not self.wrap_in_dag_edges((v, u)):
+                        self.wrap_add_dag(u, v)
+                        if "FW.bert/encoder/layer_0/attention/self/Softmax" in u and "FW.add_2" in v:
+                            print(prev_event, event)
+                            raise
                 else:
                     ### if prev event has not ended, current node should share 
                     ### the parent ops of the prev event
@@ -549,7 +644,7 @@ class DAGManager:
                         len(in_process_events)+1,
                         event["name"], 
                         in_process_events2str()))
-            in_process_events.append(event)
+            in_process_events.append(idx)
 
         SingleLogger().info("Maximum parallelism degree: %d" % (max_para_degree))
         return max_para_degree
@@ -557,7 +652,7 @@ class DAGManager:
     def is_fw_bw_node(self, name):
         return parse_cat_fine_grained(name) in ["operator.FW", "operator.BW"]
     
-    def gen_gpu_dag(self, _pretty=False, para_dict=None):
+    def gen_gpu_dag(self, old_graph, _pretty=False, para_dict=None):
         ''' Add edges according to the processing order of FW+BW ops 
             and construct a new graph running on GPU, which we call self.dag.
         Parameter
@@ -566,16 +661,24 @@ class DAGManager:
             A dict which contains the meta info of gradients/parameters
             and maps from each gradients to its UPDATE operation id
         '''
-        self.gen_dag_with_prefix_weight(para_dict)
+        self.gen_dag_with_prefix_weight(old_graph, para_dict)
 
         critical_path = None
         ### generate execution graph according to the execution order,
         # to make sure replayer acts in the same order
-        max_para_degree = self._add_new_edges_via_order()
+        # max_para_degree = self._add_new_edges_via_order()
 
         #！til now, all the edges for one GPU have been added.
-        # if not _pretty:
-        #     critical_path = dag_longest_path(self.dag, self.pm, weight="weight", default_weight=0)
+        if not _pretty:
+            SingleLogger().info("Calculate critical path and check cycles. This process is time comsuming, set --pretty to disable")
+            composed_dag = nx.DiGraph()
+            composed_dag.add_edges_from(self.dag)
+            try:
+                SingleLogger().info(list(nx.find_cycle(composed_dag, orientation="original")))
+            except:
+                SingleLogger().info("No cycle is found")
+            # visualize_gml(composed_dag)
+            critical_path = dag_longest_path(composed_dag, self.pm, weight="weight", default_weight=0)
 
         # return max_para_degree, critical_path
         return 1, critical_path

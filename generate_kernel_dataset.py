@@ -1,6 +1,6 @@
 import argparse
 
-from cost_model_xla import XlaKernelDataset
+from cost_model_xla.gen_dataset_utils import XlaKernelDataset
 
 parser = argparse.ArgumentParser(description="Script to launch the kernel dataset generator.",
 		formatter_class=argparse.ArgumentDefaultsHelpFormatter)
@@ -27,17 +27,17 @@ args.trace_dir, args.output_dir, args.num_samples,
 args.max_cluster_samples, args.min_cluster_size, args.max_cluster_size
 ))
 
-while True:
-    choice = input("Continue? [Y/n] ")
-    choice = choice.lower()
-    if choice in ["y", "n", ""]:
-        if choice == "y" or choice == "":
-            break
-        else:
-            print("Aborted.")
-            exit(0)
-    else:
-        print("Please enter y or n only.")
+# while True:
+#     choice = input("Continue? [Y/n] ")
+#     choice = choice.lower()
+#     if choice in ["y", "n", ""]:
+#         if choice == "y" or choice == "":
+#             break
+#         else:
+#             print("Aborted.")
+#             exit(0)
+#     else:
+#         print("Please enter y or n only.")
 
 XlaKernelDataset.construct_kernel_dataset(args.trace_dir , args.output_dir, 
                                             num_samples=args.num_samples, 

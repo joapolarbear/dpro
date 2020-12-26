@@ -444,6 +444,7 @@ class ncclGraph:
             elif event["args"]["step"] != traceM.opt_step or "Comm." not in event["name"]:
                 continue
             tensor_list = re.findall("[0-9]+", event["name"].split(".")[1])
+            ### assert tensor_list has been sorted
             # tensor_list = sorted([int(e) for e in tensor_list])
             sorted_name = "+".join([str(e) for e in tensor_list])
             if sorted_name not in self.nccl_fusion["grp_names"]:

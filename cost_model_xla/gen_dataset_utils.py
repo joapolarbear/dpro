@@ -105,19 +105,24 @@ class XlaKernelDataset(object):
                 first_line = False
             else:
                 splitted_line = [value.strip() for value in line.split(",")]
+                # print(splitted_line)
                 op_name = splitted_line[0]
                 op_code_in_str = splitted_line[1]
                 op_code = int(splitted_line[2])
                 num_inputs = int(splitted_line[3])
                 input_names = []
+                input_types = []
                 input_shapes = []
                 for i in range(num_inputs):
-                    input_name = splitted_line[4+2*i]
-                    input_shape = splitted_line[4+2*i+1]
+                    input_name = splitted_line[4+3*i]
+                    input_type = int(splitted_line[4+3*i+1])
+                    input_shape = splitted_line[4+3*i+2]
                     input_dims = [int(value.strip()) for value in input_shape.split(":")]
                     input_names.append(input_name)
+                    input_types.append(input_type)
                     input_shapes.append(input_dims)
                     dependency_edges.append((input_name, op_name))
+                output_type = int(splitted_line[-3])
                 output_shape = [int(value.strip()) for value in splitted_line[-2].split(":")]
                 op_hash = int(splitted_line[-1])
                 subop_info_dict[op_name] = (op_name, op_code_in_str, op_code, 
@@ -512,13 +517,15 @@ def gen_max_cluster_kernel_samples_using_replay(sample_generator, dataset_dir, d
         opt_path = os.path.join(dataset_hlo_dir, "{}_opt_hlo.txt".format(sample_id))
         try:
             compile_to_hlo(def_path, config_path, unopt_path, opt_path)
+            # print("[INFO] Successfully compile to HLO code.")
         except:
             print("[WARNING] Failed to compile to HLO code.")
+            raise
             clean_up_dir(profile_dir)
             clean_up_dir(raw_subgraph_dir)
             continue
         if not os.path.exists(unopt_path):
-            print("[WARNING] Failed to compile to HLO code.")
+            print("[WARNING] Failed to compile to HLO code: {}.".format(unopt_path))
             clean_up_dir(profile_dir)
             clean_up_dir(raw_subgraph_dir)
             continue
@@ -582,6 +589,7 @@ def gen_kernel_sample_once_using_replay(sample_generator, dataset_dir, dataset_h
         compile_to_hlo(def_path, config_path, unopt_path, opt_path)
     except:
         print("[WARNING] Failed to compile to HLO code.")
+        raise
         clean_up_dir(profile_dir)
         clean_up_dir(raw_subgraph_dir)
         return False, False, []
@@ -602,7 +610,7 @@ def gen_kernel_sample_once_using_replay(sample_generator, dataset_dir, dataset_h
     try:
         replay_and_generate_kernel_sample(sample_id, unopt_path, profile_dir, dataset_dir)
     except:
-        print("[WARNING] Failed to replay HLO code and generate samples.")
+        print("[WARNING] Failed to compile to HLO code: {}.".format(unopt_path))
         clean_up_dir(profile_dir)
         clean_up_dir(raw_subgraph_dir)
         return False, False, []
@@ -722,6 +730,8 @@ def gen_kernel_dataset(trace_dir, result_dir, num_samples=2000, num_max_cluster_
         # clean up nodes
         ignored_node = set()
         pruned_node = set()
+        IGNORE_OP_TYPES = ["Switch", "VarIsInitializedOp", "ReadVariableOp",
+                           "IsVariableInitialized", "Merge", "ShapeN", "IteratorToStringHandle", "IteratorGetNext", "MakeIterator", "IteratorV2", "Assert"]
         for node in graph_def_as_json["node"]:
             # register communication ops into TF, otherwise the GraphDef cannot
             # be recognized
@@ -752,7 +762,8 @@ def gen_kernel_dataset(trace_dir, result_dir, num_samples=2000, num_max_cluster_
         for node in graph_nodes:
             if node["name"] not in pruned_node:
                 graph_def_as_json["node"].append(node)
-
+        print("Prune graph from {} nodes to {} nodes".format(len(graph_nodes), len(graph_def_as_json["node"])))
+        
         for node in graph_def_as_json["node"]:
             if "input" in node:
                 cleaned_inputs = []

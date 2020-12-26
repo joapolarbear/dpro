@@ -2,141 +2,219 @@ import os, sys
 import math
 import ujson as json
 import numpy as np
-from scipy.optimize import curve_fit
 from trace_utils import *
-from ml_platform.tensorflow.metadata import MetaInfo
+from logger_utils import Singleton, SingleLogger
+import arg_utils
+args_ = arg_utils.SingleArg().args
 
-GFLOPS_FP32 = 1
-GFLOPS_FP16 = 2
-TRAIN_PERCENT = 0.99
-BATCH_LIST_VALUE = 0
-VAR_THREHOLD = 0.2
-
-
-def str2list(_list, dtype=str):
-    assert dtype in [int, float, str]
-    elems = _list.split("[")[1].split("]")[0].split(", ")
-
-    if dtype == str:
-        return [str(e.split("'")[1]) for e in elems]
-    else:
-        return [dtype(e) for e in elems]
-
-def predict_error(_list, _list_pred):
-    _list_pred = np.array(_list_pred)
-    _list = np.array(_list)
-    diff = np.abs(_list_pred - _list) / _list
-    return np.average(diff)
-
-### cost function
-LOWER_BOUNDS = tuple([0]*8 + [-np.inf]*3)
-UPPER_BOUNDS = tuple(len(LOWER_BOUNDS) * [np.inf])
-P0=[0]*len(LOWER_BOUNDS)
-def func_pred_time(xs, a1, a2, a3, a4, a5, a6, a7, a8, b1, b2, b3):
-    '''
-    gflops:
-        We only need a relative value of gflops, 
-        i.e., if we know fp32's is twice of fp16's, we can just fp32's = 2 and fp16's = 1,
-        the scale is hidden in the a2 
-        x[0]: relative gflops
-        x[1]: num of multiplication
-        x[2]: num of addition
-        x[3]: input size
-        x[4]: output size
-        x[5]: weight size
-    '''
-    gflops = xs[0]
-    S_mul = xs[1]
-    S_add = xs[2]
-    # intensity = S_mul / (xs[3] + xs[4] + xs[5])
-    intensity = 1
-    wei_S_all = a3 * xs[3] + a4 * xs[4] + a5 * xs[5]
-    wei_S_all2 = a6 * xs[3] + a7 * xs[4] + a8 * xs[5]
-    return intensity * (a1 * S_mul + b1) / (a2 * gflops + b2) + (wei_S_all / gflops + b3 + gflops * wei_S_all2) / intensity
+if args_.platform == "MXNET":
+    from ml_platform.mxnet.metadata import MetaInfo, FULL_HEADERS, OP_HYPER_PARAMETERS, BASE_HEADER_LEN
+    from ml_platform.mxnet.metadata import GFLOPS_FP32, GFLOPS_FP16
+elif args_.platform == "TENSORFLOW":
+    from ml_platform.tensorflow.metadata import MetaInfo, FULL_HEADERS, OP_HYPER_PARAMETERS, BASE_HEADER_LEN
+    from ml_platform.tensorflow.metadata import GFLOPS_FP32, GFLOPS_FP16
+else:
+    raise NotImplementedError()
 
 class AMPPredictor:
-    def __init__(self, meta_path, cost_model_path=None):
-        self.meta_info = MetaInfo(meta_path)
-        if cost_model_path is None:
-            return
-        with open(cost_model_path, 'r') as fp:
-            self.cost_model = json.load(cost_model_path)
+    def __init__(self, meta_info):
+        ### load AMP cost model
+        self.cost_model = {}
+        cm_dir = os.path.join(os.path.dirname(os.path.abspath(
+            __file__)), ".cost_model")
+        # cm_dir = "/Users/bytedance/0/git/byteprofile-analysis/cost_model_amp/.cost_model"
+        for file_ in os.listdir(cm_dir):
+            cm_path = os.path.join(cm_dir, file_)
+            assert os.path.isfile(cm_path)
+            grp = grouper.load_grouper(cm_path)
+            assert grp.op_type in file_
+            self.cost_model[grp.op_type] = grp
+        if len(self.cost_model) == 0:
+            SingleLogger().warn("No AMP cost model at {}".format(cm_dir))
+        self.meta_info = meta_info
+        self.op_status = {}
 
+        self.cast_cnt = 0
+        
     def pred_amp_avg(self, op_name, _avg=None):
-        op_type, S_mul, S_add, S_in, S_out, S_wei = self.meta_info.ret_tf_metadata(op_name)
-        try:
-            popt = self.cost_model[op_type]["popt"]
-        except KeyError as e:
-            SingleLogger().error("the AMP cost model for {} has not been built. OP: {}".format(op_type, op_name))
-            return
-        avg_fp32 = func_pred_time([GFLOPS_FP32, S_mul, S_add, S_in, S_out, S_wei], *popt)
-        avg_fp16 = func_pred_time([GFLOPS_FP16, S_mul, S_add, S_in, S_out, S_wei], *popt)
+        ''' Predict fp16 time of fp32 operators
+            If _avg is given, use the relative value
+        '''
+        rawname, _ = self.meta_info.standarize_name(op_name)
+        op_type = self.meta_info.parse_op_type(rawname)
+        if op_type not in self.cost_model:
+            # SingleLogger().warn("{}({}) is not supported for AMP now".format(op_name, op_type))
+            return _avg / 2.0
+        S_mul, S_add, S_in, S_out, S_wei = self.meta_info.ret_metadata(rawname)
+        raw_meta = self.meta_info.ret_rawmeta(rawname)
+        _xdata = [S_mul, S_add, S_in, S_out, S_wei] + raw_meta
+        _xdata32 = [GFLOPS_FP32] + _xdata
+        _xdata16 = [GFLOPS_FP16] + _xdata
+
+        avg_fp32 = self.cost_model[op_type].predict(_xdata32)
+        avg_fp16 = self.cost_model[op_type].predict(_xdata16)
+
         if _avg is not None:
             return _avg * avg_fp16 / avg_fp32
         else:
             return avg_fp16
 
-    def pre_cast_time(self, op_name):
-        op_type, S_mul, S_add, S_in, S_out, S_wei = self.meta_info.ret_tf_metadata(op_name)
+    def output_cast_time(self, op_name, tofp16=True):
+        ''' 
+        Parameters
+        ----------
+        op_name: str, long name
+            pid->op_type.name.sub_op~>suffix
+        '''
+        rawname, cat = self.meta_info.standarize_name(op_name)
+        assert cat != CatName.COMM.value
+        cm_name = "CastToFp16" if tofp16 else "CastToFp32"
+        if cm_name not in self.cost_model:
+            SingleLogger().error("({}) is not supported for AMP now".format(cm_name))
         try:
-            popt = self.cost_model["Cast"]["popt"]
-        except KeyError as e:
-            SingleLogger().error("the AMP cost model for {} has not been built. OP: {}".format("Cast", op_name))
-            return
-        in_cast = func_pred_time([0, 0, 0, S_in, S_in, 0], *popt)
-        out_cast = func_pred_time([0, 0, 0, S_out, S_out, 0], *popt)
-        wei_cast = func_pred_time([0, 0, 0, S_wei, S_wei, 0], *popt)
-        return in_cast, out_cast, wei_cast
+            _, _, S_in, S_out, S_wei = self.meta_info.ret_metadata(rawname)
+        except:
+            print(op_name)
+            raise
+        cast_time = self.cost_model[cm_name].predict([1, 1, 1, S_out, 1, 1])
+        return cast_time
 
     def quantize(self, dag, op_name):
-        in_cast, out_cast, wei_cast = self.pre_cast_time(op_name)
-        assert dag.nodes[op_name].get("dtype", "fp32") == "fp32", op_name
+        if op_name not in self.op_status:
+            self.init_op_statu(op_name)
+        assert self.op_status[op_name]["dtype"] == "float32", (
+            op_name, self.op_status[op_name]["dtype"])
+
+        edges_to_add = []
+        edges_to_rm = []
+        nodes_to_add = []
+        nodes_to_rm = []
+
+        def _add_cast_op(u, v, cast_time, to16=True):
+            if to16:
+                cast_op = "{}~>AMPCastToFp16_{}".format(u, self.cast_cnt)
+            else:
+                cast_op = "{}~>AMPCastToFp32_{}".format(u, self.cast_cnt)
+            self.cast_cnt += 1
+            nodes_to_add.append((cast_op, {"avg": cast_time}))
+            edges_to_add.append((u, cast_op))
+            edges_to_add.append((cast_op, v))
+            edges_to_rm.append((u, v))
+        
+        def _rm_cast_op(u, cast_op, v):
+            edges_to_add.append((u, v))
+            edges_to_rm.append((u, cast_op))
+            edges_to_rm.append((cast_op, v))
+            nodes_to_rm.append(cast_op)
 
         ### handle parent nodes
-        for u, v in dag.in_edges(op_name):
-            if "AMPCastToFp32" in u:
-                ### not the boundary of mixed precision, remove the cast
-                prevs = dag.in_edges(u)
-                assert len(prevs) == 1, prevs
-                dag.add_edge(prevs[0][0], op_name)
-                dag.remove_edge(*prevs[0])
-            else:
-                ### the boundary of mixed precision, add a cast op
-                dag.add_edge(u, "%s~>AMPCastToFp16"%op_name)
-                dag.add_edge("%s~>AMPCastToFp16"%op_name, op_name)
-                # TODO (huhanpeng): need verify
-                dag.nodes["%s~>AMPCastToFp16"%op_name]["avg"] = wei_cast if "weight" in u.lower else in_cast
+        for u, _ in dag.in_edges(op_name):
+            to_process = [u]
+            while len(to_process) > 0:
+                _u = to_process.pop(0)
+                if "ConstantFolding" in _u or "LayoutOptimizer" in _u:
+                    to_process += [x for x, _ in dag.in_edges(_u) if x != _u]
+                    continue
+                if "AMPCastToFp32" in _u:
+                    ### not MixedPrecision Boundary, remove the cast
+                    prevs = list(dag.in_edges(_u))
+                    assert len(prevs) == 1, prevs
+                    _rm_cast_op(prevs[0][0], _u, op_name)
+                else:
+                    ### the boundary of mixed precision, add a cast op
+                    _add_cast_op(_u, op_name, self.output_cast_time(_u), to16=True)
 
         ### handle successors
+        out_cast_time = self.output_cast_time(op_name, tofp16=False)
         for succ in dag.successors(op_name):
-            if "AMPCastToFp16" in u:
-                nnexts = dag.successors(succ)
-                assert len(nnexts) == 1, nnexts
-                dag.add_edge(op_name, nnexts[0])
-                self.remove_edge(succ, nnexts[0])
+            if "AMPCastToFp16" in succ:
+                ### not MixedPrecision Boundary, remove the Cast
+                _nexts = list(dag.successors(succ))
+                assert len(_nexts) == 1, (op_name, succ, _nexts)
+                _rm_cast_op(op_name, succ, _nexts[0])
+            elif "Comm" in succ:
+                ### For BW->Comm edges, 
+                ### * Sync time, Memcopy time, Send/Recv becomes 1/2
+                ### * Add AMPCastToFp32 after the last memcpy and before update op
+                def recursive_convert_comm(_node):
+                    if _node not in self.op_status:
+                        self.op_status[_node] = {"dtype": "float32"}
+                    if self.op_status[_node]["dtype"] == "float16":
+                        ### This comm and its downstream operators have been converted
+                        return
+
+                    ### Comm operators with sub op in ["Sync", "MEMCPY_IN_FUSION_BUFFER", "MEMCPY_OUT_FUSION_BUFFER", "SEND", "RECV"]:
+                    ### avg time = half
+                    half_avg = True
+                    for sub_op in ["QUEUE"]:
+                        if sub_op in _node:
+                            half_avg = False
+                            break
+                    if half_avg:
+                        dag.nodes[_node]["avg"] = dag.nodes[_node]["avg"] / 2.0
+                    self.op_status[_node]["dtype"] = "float16"
+
+                    for _succ in dag.successors(_node):
+                        if "UPDATE_" in _succ:
+                            ### Use UPDATE operator's name to let cast op run on computation device
+                            _add_cast_op(_node, _succ, out_cast_time, to16=False)
+                        else:
+                            recursive_convert_comm(_succ)
+                recursive_convert_comm(succ)
             else:
-                dag.add_edge(op_name, "%s~>AMPCastToFp32"%op_name)
-                dag.add_edge("%s~>AMPCastToFp32"%op_name, succ)
-                # TODO (huhanpeng): need verify
-                dag.nodes["%s~>AMPCastToFp32"%op_name]["avg"] = out_cast
+                _add_cast_op(op_name, succ, out_cast_time, to16=False)
 
         ### update the meta info of current node
-        dag.nodes[op_name]["avg"] = self.pred_amp_avg(op_name, _avg=dag.nodes[op_name]["avg"])
-        dag.nodes[op_name]["dtype"] = "fp16"
+        prev_avg = dag.nodes[op_name]["avg"]
+        dag.nodes[op_name]["avg"] = self.pred_amp_avg(op_name, _avg=prev_avg)
+        self.op_status[op_name]["dtype"] = "float16"
+        # SingleLogger().info("Convert {} from {} ms to {} ms".format(op_name, prev_avg, dag.nodes[op_name]["avg"]))
+
+        dag.add_nodes_from(nodes_to_add)
+        dag.add_edges_from(edges_to_add)
+        dag.remove_edges_from(edges_to_rm)
+        dag.remove_nodes_from(nodes_to_rm)
+
+        # if not self.check_dag(dag):
+        #     raise ValueError("Incorrect dag when quantizing {}".format(op_name))
+
+        return [n for n, d in nodes_to_add]
+    
+    def check_dag(self, dag):
+        for n in dag.nodes():
+            if "AMPCastTo" in n:
+                succ_list = list(dag.successors(n))
+                if len(succ_list) != 1:
+                    print("{} has incorrect number of succs: {}".format(n, succ_list))
+                    return False
+        return True
+
+    def init_op_statu(self, op_name):
+        rawname, _ = self.meta_info.standarize_name(op_name)
+        dtype = self.meta_info.ret_op_precision(rawname)
+        amp_color = self.meta_info.check_amp_lists(rawname)
+        self.op_status[op_name] = {"dtype": dtype, "is_white": "none", "color": amp_color}
+
+    def op_amp_color(self, op_name):
+        if op_name not in self.op_status:
+            self.init_op_statu(op_name)
+        return self.op_status[op_name]["color"]
 
     def is_white_for_amp(self, dag, op_name):
         ''' check whether an OP is finally white or not, according the propogation rules in AMP of TensorFlow '''
-        if dag.nodes[op_name].get("is_white", "none") == "none":
-            amp_color = self.meta_info.check_amp_lists(op_name)
-            if amp_color == "white":
+        if op_name not in self.op_status:
+            self.init_op_statu(op_name)
+        if self.op_status[op_name]["is_white"] == "none":
+            amp_color = self.op_amp_color(op_name)
+            if amp_color == "white" or amp_color == "clear":
                 ### cache the intermediate result
-                dag.nodes[op_name]["is_white"] = True
+                self.op_status[op_name]["is_white"] = True
                 return True
             if amp_color == "black":
                 ### cache the intermediate result
-                dag.nodes[op_name]["is_white"] = False
+                self.op_status[op_name]["is_white"] = False
                 return False
-
+            
             ### need to further check the parent nodes
             is_white = True
             for u, _ in dag.in_edges(op_name):
@@ -144,199 +222,74 @@ class AMPPredictor:
                 if not is_white:
                     break
             ### cache the intermediate result
-            dag.nodes[op_name]["is_white"] = is_white
+            self.op_status[op_name]["is_white"] = is_white
             return is_white
         else:
             ### return the cached results
-            return dag.nodes[op_name]["is_white"]
+            return self.op_status[op_name]["is_white"]
 
     def is_need_amp(self, dag, op_name):
         ''' check whether an OP need be quantized, only those with fp32 and in the final white list need be quantized'''
-        if dag.nodes[op_name].get("dtype", "fp32") != "fp32":
+        if "Comm" in op_name or "AMPCastTo" in op_name or "UPDATE_" in op_name:
             return False
-
-        # TODO (huhanpeng): not implemented
-        return False
-        ### TODO (huhanpeng) do not consider gradients/ nodes for mixed precision trainign
-        if "gradients/" in op_name:
-            return False
-
-        return self.is_white_for_amp(dag, op_name)
-
-class AMPTrainer:
-    def __init__(self, meta_path, cost_model_dir):
-        self.meta_info = MetaInfo(meta_path)
-        self.cost_model_path = os.path.join(cost_model_dir, 'cost_model.json')
-        if os.path.exists(self.cost_model_path):
-            with open(self.cost_model_path, 'r') as fp:
-                self.cost_model = json.load(cost_model_dir)
-        else:
-            self.cost_model = {}
-
-        self.all_data_dict = {}
-
-    def collect_raw_data(self, rst_dir):
-        ''' collect op names and batch sizes
-        '''
-        # rst_dir="/Users/hhp/0/traces/traces20200806/traces20200807_01_bytedance"
-        # rst_dir = "/Users/hhp/0/git/byteprofile-analysis/data/data_20200817_resnet50/v100"
-        self.NAMELIST_32 = None
-        self.NAMELIST_16 = None
-        self.DATA_32 = {}
-        self.DATA_16 = {}
-        self.VAR_32 = {}
-        self.VAR_16 = {}
-
-        self.BATCH_LIST_VALUE = []
-
-        with open(os.path.join(rst_dir, "name.txt"), 'r') as fp:
-            lines = fp.read().split("\n")
-            if lines[-1] == "":
-                lines = lines[:-1]
-            for line in lines:
-                if "fp32" in line:
-                    self.NAMELIST_32 = str2list(line.split(":")[1])
-                elif "fp16" in line:
-                    self.NAMELIST_16 = str2list(line.split(":")[1])
-                else:
-                    raise
-
-        with open(os.path.join(rst_dir, "avg.txt"), 'r') as fp:
-            lines = fp.read().split("\n")
-            idx = 0
-            while idx < len(lines):
-                if "huhanpeng" in lines[idx]:
-                    if idx+1 < len(lines) and ("huhanpeng" in lines[idx+1] or lines[idx+1]==""):
-                        ### avoid add addition batch size to BATCH_LIST_VALUE
-                        idx += 1
-                        continue
-                    batchsize = int(lines[idx].split("--batch_size")[1].split("--")[0])
-                    if "fp32" in lines[idx]:
-                        self.BATCH_LIST_VALUE.append(batchsize)
-                        _DATA = self.DATA_32
-                        _VAR = self.VAR_32
-                    elif "fp16" in lines[idx]:
-                        _DATA = self.DATA_16
-                        _VAR = self.VAR_16
-                    else:
-                        raise
-                    idx += 1
-                    if idx >= len(lines) or "huhanpeng" not in lines[idx]:
-                        _DATA["B=%d"%batchsize] = str2list(lines[idx+1], dtype=float)
-                    else:
-                        continue
-                    idx += 1
-                    if idx >= len(lines) or "huhanpeng" not in lines[idx]:
-                        _VAR["B=%d"%batchsize] = str2list(lines[idx+1], dtype=float)
-                    else:
-                        continue
-                idx += 1
-
-        self.BATCH_LIST_VALUE = [e for e in self.BATCH_LIST_VALUE if (e >= 0 and e <=1024)]
-        self.BATCH_LIST_VALUE = sorted(self.BATCH_LIST_VALUE)
-
-    def gen_train_data(self, dag):
-        ######################################################################
-        ### collect training data and test data for each op type
-        ######################################################################
-        def __record_xdata(S_mul, S_add, S_in, S_out, S_wei, gflops, avg, op_type):
-            if op_type not in self.all_data_dict:
-                self.all_data_dict[op_type] = [[], [], [], [], [], [], []]
-            self.all_data_dict[op_type][0].append(avg)
-            self.all_data_dict[op_type][1].append(gflops)
-            self.all_data_dict[op_type][2].append(S_mul)
-            self.all_data_dict[op_type][3].append(S_add)
-            self.all_data_dict[op_type][4].append(S_in)
-            self.all_data_dict[op_type][5].append(S_out)
-            self.all_data_dict[op_type][6].append(S_wei)
-
-        for op_name in dag.nodes:
-            op_name = parse_layer_name(op_name)
-            if op_name not in self.NAMELIST_32 or op_name not in self.NAMELIST_16:
-                continue
-            if "gradients/" in op_name:
-                continue
-            op_type = self.meta_info.ret_op_type(op_name)
-            if op_type not in [
-                                # "Conv2D",
-                                # "MatMul",
-                                "Cast",
-                                ]:
-                continue
-
-            print(op_name)
-            for b in self.BATCH_LIST_VALUE:
-                ### filter
-                if b <= BATCH_LIST_VALUE:
-                    continue
-
-                ### collect data
-                try:
-                    op_type, S_mul, S_add, S_in, S_out, S_wei = self.meta_info.ret_tf_metadata(op_name, batch_size=b)
-                except (NotImplementedError, KeyError) as e:
-                    break
-                idx_in_32 = NAMELIST_32.index(op_name)
-                avg_ = self.DATA_32["B=%d"%b][idx_in_32]
-                var_ = self.VAR_32["B=%d"%b][idx_in_32] if "B=%d"%b in VAR_32 else 0
-                if (var_ / avg_) <= VAR_THREHOLD:
-                    __record_xdata(S_mul, S_add, S_in, S_out, S_wei, GFLOPS_FP32, avg_, op_type)
-
-                idx_in_16 = NAMELIST_16.index(op_name)
-                avg_ = self.DATA_16["B=%d"%b][idx_in_16]
-                var_ = self.VAR_16["B=%d"%b][idx_in_16] if "B=%d"%b in VAR_16 else 0
-                if (var_ / avg_) <= VAR_THREHOLD:
-                    __record_xdata(S_mul, S_add, S_in, S_out, S_wei, GFLOPS_FP16, avg_, op_type)
-        
-        for op_type in self.all_data_dict.keys():   
-            ### all_data[S_mul, ...][# of nodes * # of batch size values]
-            all_data = np.array(self.all_data_dict[op_type])
-            ### all_data[# of nodes * # of batch size values][S_mul, ...]
-            all_data = np.transpose(all_data)
-            ### filter
-            # all_data = exct_filter(all_data)
-            arg_num = all_data.shape[1]
-            value_num = all_data.shape[0]
-            np.random.shuffle(all_data)
-
-            ### split data to training data and test data
-            mask = np.zeros(value_num, dtype=bool)
-            train_idx = np.random.choice(value_num, int(TRAIN_PERCENT * value_num), replace=False)
-            mask[train_idx] = True
-            train_data = np.split(all_data[mask, :], [1], axis=1)
-            if TRAIN_PERCENT >= 1:
-                test_data = train_data
-                SingleLogger().info("Since TRAIN_PERCENT is set to be >= 1, set test data equal to the training data")
-            else:
-                test_data = np.split(all_data[~mask, :], [1], axis=1)
-            test_data = np.split(all_data[~mask, :], [1], axis=1)
-            self.all_data_dict[op_type]["train_x"], self.all_data_dict[op_type]["train_y"] = train_data[1], train_data[0]
-            self.all_data_dict[op_type]["test_x"], self.all_data_dict[op_type]["test_y"] = test_data[1], test_data[0]
-            SingleLogger().info("OP {}: Collect training data - X:{}, Y:{}, test data - X:{}, Y:{}".format(
-                op_type, train_data[1].shape, train_data[0].shape, test_data[1].shape, test_data[0].shape))
-
-    def train_one_op(self, op_type, test=False):
-        train_x, train_y = self.all_data_dict[op_type]["train_x"], self.all_data_dict[op_type]["train_y"]
-        test_x, test_y = self.all_data_dict[op_type]["test_x"], self.all_data_dict[op_type]["test_y"]
-
-        _train_x = np.transpose(train_x)
-        _train_y = np.transpose(train_y).flatten()
-        popt, pcov = curve_fit(func_pred_time, _train_x, _train_y, bounds=(LOWER_BOUNDS, UPPER_BOUNDS), p0=P0, maxfev=10000)
         try:
-            self.cost_model["Conv2D"]["popt"] = popt
-        except KeyError as e:
-            self.cost_model["Conv2D"] = {"popt": popt}
-        if test:
-            _test_x = np.transpose(test_x)
-            _test_y = np.transpose(test_y).flatten()
-            avgs_pred = func_pred_time(_test_x, *popt)
-            error = predict_error(_test_y, avgs_pred)
-            SingleLogger().info("average error: %f %%"%(error * 100))
+            rawname, _ = self.meta_info.standarize_name(op_name)
+            op_type = self.meta_info.parse_op_type(rawname)
+            if op_type in ["ReadVariableOp", "Const", "VarHandleOp", "AssignVariableOp"]:
+                return False
+        except KeyError:
+            return False
+        if not self.check_dtype_fp32(op_name):
+            return False
+        return self.is_white_for_amp(dag, op_name)
+    
+    def check_dtype_fp32(self, op_name):
+        ''' Return true if this op is fp32 else False '''
+        if op_name not in self.op_status:
+            self.init_op_statu(op_name)
+        return self.op_status[op_name]["dtype"] == "float32"
 
-    def train(self, op_type=None, test=False):
-        if op_type is None:
-            for key in self.all_data_dict:
-                self.train_one_op(key, test)
+from cost_model_amp import dataloader, grouper
 
-    def dump_cost_model(self):
-        with open(self.cost_model_path, 'w') as fp:
-            json.dump(self.cost_model, fp)
+def train_amp_model():
+    OP_TYPES = {
+        # "Conv2D": {
+        #     "data_dir": "/Users/bytedance/0/data/20201209/20201209_03_tf_resnet_b=4~256",
+        #     "metadata_path": "/Users/bytedance/0/data/20201209/20201209_03_tf_resnet_b=4~256",
+        #     "del": [
+        #     grouper.Delimiter("R", td_len=0.1, fd_len=0., unit_len=0.1),
+        #     grouper.Delimiter("G", td_len=0.1, fd_len=0., unit_len=0.1)]
+        # },
+        "CastToFp16": {
+            "data_dir": "/Users/bytedance/0/data/20201209/20201209_03_tf_resnet_b=4~256",
+            "metadata_path": "/Users/bytedance/0/data/20201209/20201209_03_tf_resnet_b=4~256",
+            "del": []
+        },
+        "CastToFp32": {
+            "data_dir": "/Users/bytedance/0/data/20201209/20201209_03_tf_resnet_b=4~256",
+            "metadata_path": "/Users/bytedance/0/data/20201209/20201209_03_tf_resnet_b=4~256",
+            "del": []
+        }
+    }
+
+    grp_dict = {}
+    for target_optype in OP_TYPES.keys():
+        data_ld = dataloader.DataLoader(data_dir=OP_TYPES[target_optype]["data_dir"],
+                                        metadata_path=OP_TYPES[target_optype]["metadata_path"])
+        ### metadata name is raw name
+        op_names = data_ld.pick_some_ops(target_optype)
+        if len(op_names) == 0:
+            continue
+        
+        train_x, train_y, test_x, test_y = data_ld.collect_data(
+            op_names, target_optype, verbose=True)
+
+        dels = OP_TYPES[target_optype]["del"]
+        grp = grouper.Grouper(dels, headers=dataloader.FULL_HEADERS[target_optype],
+                            op_type=target_optype, max_of_each_dim=data_ld.max_of_each_dim)
+
+        grp.divide_by_len(train_x, train_y, test_x, test_y)
+        grp.train_all()
+        grp.test_all(visual=False)
+        grp_dict[target_optype] = grp
+        grp.dump()
