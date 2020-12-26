@@ -1,3 +1,4 @@
+from argparse import ArgumentError
 import os
 import re
 import networkx as nx
@@ -19,6 +20,8 @@ def visualize_gml(graph, layout="circular"):
         pos = nx.circular_layout(graph)
     elif layout == "random":
         pos = nx.random_layout(graph)
+    else:
+        raise ArgumentError("Layout must be one of [\"spectral\", \"circular\", \"random\"]")
     nx.draw(graph, pos, with_labels=True, font_size=6)
     plt.show()
     # import matplotlib.pyplot as plt; plt.ion()
@@ -92,7 +95,7 @@ def wrap_read_gml(gml_path, platform="MXNET"):
     mygraph = nx.read_gml(gml_path)
     if not args_.pretty:
         try:
-            SingleLogger().info(list(nx.find_cycle(composed_dag, orientation="original")))
+            SingleLogger().info(list(nx.find_cycle(mygraph, orientation="original")))
         except:
             SingleLogger().info("No cycles found")
     if platform == "TENSORFLOW":
@@ -498,6 +501,8 @@ class DAGManager:
                     tensor_id = para_dict.name_to_tensor_id(tensor_name)
                 elif self.platform == "TENSORFLOW":
                     tensor_id = int(tensor_name)
+                else:
+                    raise ArgumentError("Unsupported platform {}.".format(self.platform))
                 nccl_grp_name = self.nccl_graph.tensor2group_name(tensor_id)
                 ### take the fused name as the node name, e.g., Comm.1+2+3
                 u = "Comm." + nccl_grp_name
@@ -509,6 +514,8 @@ class DAGManager:
                         co_comm_op = "Comm." + para_dict.tensor_id_to_name(int(_id))   # e.g., Comm.bertmodel0_word_embed_embedding0_weight
                     elif self.platform == "TENSORFLOW":
                         co_comm_op = "Comm.{}".format(_id)
+                    else:
+                        raise ArgumentError("Unsupported platform {}.".format(self.platform))
                     prev_bw_nodes = [_u for _u, _ in mygraph.in_edges(co_comm_op)]
                     # assert len(prev_bw_nodes) == 1, (co_comm_op, prev_bw_nodes)
                     prev_rawname = prev_bw_nodes[0]         # no prefix, start with BW.
@@ -621,7 +628,7 @@ class DAGManager:
                         self.wrap_add_dag(u, v)
                         if "FW.bert/encoder/layer_0/attention/self/Softmax" in u and "FW.add_2" in v:
                             print(prev_event, event)
-                            raise
+                            raise RuntimeError
                 else:
                     ### if prev event has not ended, current node should share 
                     ### the parent ops of the prev event

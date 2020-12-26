@@ -138,7 +138,7 @@ for idx in clusters_to_ignore:
 # dump cluster mapping
 cluster_index = 0
 single_pid = -1
-with open(args_.output_path, "w") as f:
+with open("/root/partitions_spec.txt", "w") as f:
     for node in dag.nodes():
         if "+" in node:
             orig_names, pid = _get_original_name_pid_from_fused_node(node)

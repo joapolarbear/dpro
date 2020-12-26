@@ -23,11 +23,6 @@ from progress_utils import progressBar
 import debug_utils
 import optimizer
 
-if args.option == "optimize" and not args.simulate:
-    # from cost_model_xla import XlaDataset, FusionCostModel
-    # from cost_model_xla.xla_module_cost_model import XLAModuleCostModel
-    pass
-
 QueueType("NCCL")
 debug_utils.DebugRecorder(is_enable=args.debug_traces)
 
@@ -181,6 +176,8 @@ if __name__ == '__main__':
             step_end_time = replayer.replayAndDelay(delay_dict, _output=True)
         elif args.sub_option == "map_delay":
             ''' Replay and add delays to each node respectively.'''
+            raise NotImplementedError
+            # TODO(CY): What is wk_dag here?
             node_lists = list(wk_dag.nodes())
             total_len = len(node_lists)
             pgsbar = progressBar(start=0, end=total_len)
@@ -274,9 +271,10 @@ if __name__ == '__main__':
 
     if args.option == "optimize":
         from cost_model_amp.amp_pred import AMPPredictor, train_amp_model
+        from cost_model_xla.xla_module_cost_model import XLAModuleCostModel
         if args.sub_option == "train_amp":
             train_amp_model()
-            raise
+            raise NotImplementedError
 
         if not args.simulate and len(path_list) < 2:
             raise RuntimeError("optimize requires positional path arguments: profile data path & cost model path.")
@@ -301,6 +299,8 @@ if __name__ == '__main__':
             opt = optimizer.MCTSOptimizer(clct, cost_models=cost_models, ucb_type=args.ucb_type, no_mutation=args.no_mutation)
         elif args.optimizer == "MCMC":
             opt = optimizer.MCMCOptimizer(clct, cost_models=cost_models)
+        else:
+            raise ArgumentError("Unrecognized optimizer type {}.".format(args.optimizer))
         opt.search()
 
     ### below options use special --path
@@ -330,6 +330,7 @@ if __name__ == '__main__':
 
         name2sta.append(name2compare)
         if args.xlsx:
+            raise NotImplementedError
             def gen_sheet_name(l):
                 if len(l) >= 31:
                     l = l[-31:]
@@ -378,6 +379,7 @@ if __name__ == '__main__':
         dagmanager.gen_fw_bw_dag()
 
     if args.option == "graph":
+        raise NotImplementedError
         mygraph = nx.read_gml(pm.search(FileName.DAG))
         visualize_gml(mygraph)
 
@@ -387,6 +389,7 @@ if __name__ == '__main__':
             -- args.path: the dir of a worker, which contains multiple folders 
                             storing traces of GPUs of this worker
         '''
+        pm = PathManager(path_list[0])
         assert pm.dir_level == DirLevel.WORKER
         #! used to store all dags generated from GPUs
         graphs = []

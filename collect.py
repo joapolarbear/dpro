@@ -253,6 +253,8 @@ class Collector(object):
                 raw_name = trace["name"]
             elif self.platform == "TENSORFLOW":
                 raw_name = trace["args"]["name"]
+            else:
+                raise ArgumentError("Unsupported platform {}".format(self.platform))
 
             name = standard_name(raw_name, platform=self.platform, update_nodes_in_dag=self.update_nodes_in_dag)
 
@@ -298,7 +300,7 @@ class Collector(object):
 
             ### Handle OUTPUT
             if self.platform == "MXNET":
-                if name == last_fw:
+                if name == last_fw: # type: ignore
                     output_ts = None
                     output_dur = None
                     output_tid = None
@@ -308,7 +310,7 @@ class Collector(object):
                             index += 1
                         else:
                             name = standard_name(_trace["name"], platform=self.platform)
-                            if name == first_bw or name in self.dag.nodes:
+                            if name == first_bw or name in self.dag.nodes: # type: ignore
                                 break
                             output_ts = _trace["ts"] if output_ts is None else output_ts
                             output_dur = _trace["ts"] + _trace["dur"] - output_ts
@@ -330,7 +332,7 @@ class Collector(object):
 
                 ### if all UPDATE-dependent BW nodes have arrived, process traces til FW
                 # if len(last_bw_nodes) == 0:
-                elif name == last_bw:
+                elif name == last_bw: # type: ignore
                     _update_ts = None
                     _cal_ts = None
                     _cal_tid = None
@@ -345,12 +347,12 @@ class Collector(object):
                             if name in self.dag.nodes:
                                 break
                             index += 1
-                            if is_cal_op(_trace):
+                            if is_cal_op(_trace): # type: ignore
                                 if _cal_ts is None:
                                     _cal_ts = _trace["ts"]
                                     _cal_tid = _trace["tid"]
                                 _duration = _trace["ts"] + _trace["dur"] - _cal_ts
-                            if is_update_op(_trace):
+                            if is_update_op(_trace): # type: ignore
                                 if _update_ts is None:
                                     _update_ts = _trace["ts"]
                                     ### Add UPDATE_CAL node
@@ -637,7 +639,7 @@ class Collector(object):
                         tensor_name = self.para_dict.tensor_id_to_name(int(tensor_id_str))
                     elif self.platform == "TENSORFLOW":
                         raise NotImplementedError()
-                    input_nodes = [u for u, _ in self.dag.in_edges(tensor_name)]
+                    input_nodes = [u for u, _ in self.dag.in_edges(tensor_name)] # type: ignore
                     if len(input_nodes) == 1:
                         input0 = list(input_nodes)[0]
                     elif len(input_nodes) == 0:
