@@ -12,6 +12,7 @@ import code
 import traceback
 import pickle
 import ujson as json
+from pathlib import Path
 
 from tqdm import tqdm, trange
 
@@ -28,6 +29,9 @@ class GraphExpand(Enum):
     FULLY=2
 
 args_ = arg_utils.SingleArg().args
+if args_.option == "optimize" and not args_.simulate:
+    from cost_model_xla.xla_module_cost_model import XLAModuleCostModel
+
 MAX_TREE_DEPTH = 1000
 MAX_LOOP = 1000
 UCB_GAMMA = args_.ucb_gamma
@@ -116,13 +120,38 @@ class _BaseCostModel:
         return 0
 
 class _XLACostModel(_BaseCostModel):
-    def __init__(self, opt, xla_cost_model):
+    def __init__(self, opt):
         super().__init__(opt)
-        self.cost_models = xla_cost_model
+        self.cost_models = self.load_cm()
         self.forbidden_list = set()
         self.init_forbidden_list()
         self.token = ["+", "-"]
 
+    def load_cm(self):
+        cost_models = {}
+        if args_.simulate:
+            return cost_models
+        
+        models_dir = os.path.join(os.path.dirname(os.path.abspath(
+            __file__)), "cost_model_xla/.cost_model")
+        
+        cost_model_tmp_dir = os.path.join(ROOT_PATH, "cost_model_tmp")
+        if not os.path.exists(cost_model_tmp_dir):
+            os.mkdir(cost_model_tmp_dir)
+        SingleLogger().info("Searching for XLA Cost Model dumps in {}".format(models_dir))
+        cost_models["default"] = XLAModuleCostModel(models_dir, tmp_dir=os.path.join(cost_model_tmp_dir))
+        # for model_dump_dir in os.listdir(models_dir):
+        #     model_path = os.path.join(models_dir, model_dump_dir)
+        #     p = Path(model_path)
+        #     if p.is_dir():
+        #         node_name = p.name
+        #         cm = XLAModuleCostModel(model_path, tmp_dir=os.path.join(cost_model_tmp_dir, node_name))
+        #         cost_models[node_name] = cm
+        #         SingleLogger().info(" - Added cost model for {}".format(node_name))
+        #     else:
+        #         SingleLogger().warn(" - {} not a directory.".format(model_path))
+        return cost_models
+    
     def init_forbidden_list(self):
         self.initial_forbidden_list = set()
         # limit the range of nodes during search
@@ -139,7 +168,7 @@ class _XLACostModel(_BaseCostModel):
                 self.initial_forbidden_list.add(node)
                 continue
             cat = parse_cat_from_name(orig_name)
-            if orig_name not in self.cost_models[pid].graph_def_util.operation_names or "Assign" in orig_name or cat == CatName.COMM.value:
+            if orig_name not in self._wrap_xla_operation_names(pid) or "Assign" in orig_name or cat == CatName.COMM.value:
                 self.forbidden_list.add(node)
                 self.initial_forbidden_list.add(node)
 
@@ -199,11 +228,16 @@ class _XLACostModel(_BaseCostModel):
                 _sum += self.node_attr_cache[name_]["avg"]
             return _sum * 0.8, None
         else:
-            return self.cost_models[pid].predict(nodes_to_fuse)
+            # return self.cost_models[pid].predict(nodes_to_fuse)
+            return self.cost_models["default"].predict(nodes_to_fuse)
 
     def _wrap_xla_need_fuse(self, pid, orig_name):
-        return (args_.simulate or orig_name in self.cost_models[pid].graph_def_util.operation_names) and orig_name not in self.forbidden_list
+        return (args_.simulate or orig_name in self._wrap_xla_operation_names(pid)) and orig_name not in self.forbidden_list
 
+    def _wrap_xla_operation_names(self, pid):
+        # return self.cost_models[pid].graph_def_util.operation_names
+        return self.cost_models["default"].graph_def_util.operation_names
+    
     def _query_cost_model(self, fused_u_):
         # query cost model for exec time of a fused node u
         nodes_in_u, u_pid = self._get_original_name_pid_from_fused_node(fused_u_)
@@ -214,12 +248,8 @@ class _XLACostModel(_BaseCostModel):
             SingleLogger().info("[COST MODEL QUERY] {} Nodes to fuse ...".format(len(nodes_to_fuse)))
 
         predicted_time, _ = self._wrap_xla_predict(u_pid, nodes_to_fuse, fused_u_)
-
-        # executed_time, _ = self.cost_models[u_pid].execute(nodes_to_fuse)
         predicted_time /= 1000
-        # executed_time /= 1000
         SingleLogger().info("[COST MODEL QUERY] Exec time predicted: {}".format(predicted_time))
-        # SingleLogger().info("[COST MODEL QUERY] Actuall exec time: {}".format(executed_time))
         if predicted_time < 0:
             raise OptQueryCostModelError("Failed to query cost model.")
         else:
@@ -551,10 +581,10 @@ class _TensorFusionCM(_BaseCostModel):
         _, _fusion_threshold_mb, _cycle_time_ms = s
               
 class CostModelManager:
-    def __init__(self, opt, cost_models):
+    def __init__(self, opt):
         self.cost_model_list = [
-            # _XLACostModel(opt, cost_models),
-            _AMPCostModel(opt),
+            _XLACostModel(opt),
+            # _AMPCostModel(opt),
         ]
         self.mem_model_list = []
         self.strategy2model = {}
@@ -572,7 +602,7 @@ class CostModelManager:
                 self.strategy2model[_tok] = cm
     
 class Optimizer:
-    def __init__(self, collector, cost_models, memory_budget=None):
+    def __init__(self, collector, memory_budget=None):
         self.clct = collector
         self.platform = self.clct.platform
         self.comm_backend = self.clct.comm_backend
@@ -618,14 +648,14 @@ class Optimizer:
         ### DEBUG ONLY
         self.cost_model_error = []
 
-        self.cst_md_mng = CostModelManager(self, cost_models)
+        self.cst_md_mng = CostModelManager(self)
 
     def relabel_dag_node(self, _dag) -> nx.DiGraph:
         def relabel_func(old_label):
             if ("BW" in old_label or "FW" in old_label or "Comm" in old_label) and "^" not in old_label:
                 layer_name = parse_layer_name(old_label)
                 layer_pid = parse_pid_from_name(old_label)
-                # if layer_pid not in self.cost_models or layer_name not in self.cost_models[layer_pid].graph_def_util.operation_names:
+                # if layer_pid not in self.cost_models or layer_name not in self._wrap_xla_operation_names(layer_pid):
                 #     return "DEL~"+old_label
                 # TODO (huhanpeng): different pids share the same index
                 if "Comm" in old_label and layer_name in self.name2index and layer_pid in self.name2index[layer_name]:
@@ -1049,15 +1079,15 @@ class MCMCOptimizer(Optimizer):
 
 class MCTSOptimizer(Optimizer):
     ''' Monte Carlo Tree Search '''
-    def __init__(self, *args, ucb_type="AVG", no_mutation=False, **kwargs):
+    def __init__(self, *args, **kwargs):
         super(MCTSOptimizer, self).__init__(*args, **kwargs)
         self.loop_cnt = 0
         self.GS_root = None
         self.opt_GS = None
-        self.ucb_type = ucb_type
+        self.ucb_type = args_.ucb_type
         if self.ucb_type != "MAX" and self.ucb_type != "AVG":
             raise ValueError("UCB type should be MAX or AVG, but {} is given.".format(self.ucb_type))
-        self.no_mutation=no_mutation
+        self.no_mutation=args_.no_mutation
 
     def search(self):
         ### Initialize the root graph state

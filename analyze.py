@@ -4,7 +4,7 @@ import networkx as nx
 import traceback
 import time
 import sys
-from pathlib import Path
+# from pathlib import Path
 
 import arg_utils
 import logger_utils
@@ -22,11 +22,6 @@ from progress_utils import progressBar
 
 import debug_utils
 import optimizer
-
-if args.option == "optimize" and not args.simulate:
-    # from cost_model_xla import XlaDataset, FusionCostModel
-    # from cost_model_xla.xla_module_cost_model import XLAModuleCostModel
-    pass
 
 QueueType("NCCL")
 debug_utils.DebugRecorder(is_enable=args.debug_traces)
@@ -278,29 +273,29 @@ if __name__ == '__main__':
             train_amp_model()
             raise
 
-        if not args.simulate and len(path_list) < 2:
-            raise RuntimeError("optimize requires positional path arguments: profile data path & cost model path.")
+        # if not args.simulate and len(path_list) < 2:
+        #     raise RuntimeError("optimize requires positional path arguments: profile data path & cost model path.")
 
-        cost_models = {}
-        if not args.simulate:
-            models_dir = path_list[1]
-            shape_dict_path = path_list[2]
-            logger.info("Searching for model dumps in {}".format(models_dir))
-            for model_dump_dir in os.listdir(models_dir):
-                model_path = os.path.join(models_dir, model_dump_dir)
-                p = Path(model_path)
-                if p.is_dir():
-                    node_name = p.name
-                    cm = XLAModuleCostModel(model_path, tmp_dir=os.path.join(args.cost_model_tmp_dir, node_name))
-                    cost_models[node_name] = cm
-                    logger.info("Added cost model for {}".format(node_name))
-                else:
-                    logger.warn("{} not a directory.".format(model_path))
+        # cost_models = {}
+        # if not args.simulate:
+        #     models_dir = path_list[1]
+        #     shape_dict_path = path_list[2]
+        #     logger.info("Searching for model dumps in {}".format(models_dir))
+        #     for model_dump_dir in os.listdir(models_dir):
+        #         model_path = os.path.join(models_dir, model_dump_dir)
+        #         p = Path(model_path)
+        #         if p.is_dir():
+        #             node_name = p.name
+        #             cm = XLAModuleCostModel(model_path, tmp_dir=os.path.join(args.cost_model_tmp_dir, node_name))
+        #             cost_models[node_name] = cm
+        #             logger.info("Added cost model for {}".format(node_name))
+        #         else:
+        #             logger.warn("{} not a directory.".format(model_path))
 
         if args.optimizer == "MCTS":
-            opt = optimizer.MCTSOptimizer(clct, cost_models=cost_models, ucb_type=args.ucb_type, no_mutation=args.no_mutation)
+            opt = optimizer.MCTSOptimizer(clct)
         elif args.optimizer == "MCMC":
-            opt = optimizer.MCMCOptimizer(clct, cost_models=cost_models)
+            opt = optimizer.MCMCOptimizer(clct)
         opt.search()
 
     ### below options use special --path

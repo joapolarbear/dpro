@@ -73,7 +73,10 @@ def tf_relabel_func(_name, update_nodes_in_dag):
             _, tensor_name = _name.split(".")
             if "_" in tensor_name:
                 tensor_name = tensor_name.split("_")[0]
-            _name = "Comm." + tensor_name
+            if "Switch" in _name:
+                _name = "BW." + tensor_name + "_Switch"
+            else:
+                _name = "Comm." + tensor_name
         else:
             _name = "UPDATE_." + _name
     else:
@@ -102,13 +105,15 @@ def wrap_read_gml(gml_path, platform="MXNET"):
                 update_nodes_in_dag.add(succ_)
                 recursive_add_succs(succ_)
         for node in mygraph.nodes:
-            if "allreduce" in node.lower():
+            if "allreduce" in node.lower() and "switch" not in node.lower():
                 recursive_add_succs(node)
             # if "apply" in node.lower() or ("gradientdescent" in node.lower() and "learning_rate" not in node.lower()):
             #     update_nodes_in_dag.add(node)
         new_graph = nx.DiGraph()
         for u, v in mygraph.edges:
-            new_graph.add_edge(tf_relabel_func(u, update_nodes_in_dag), tf_relabel_func(v, update_nodes_in_dag))
+            nu, nv = tf_relabel_func(u, update_nodes_in_dag), tf_relabel_func(v, update_nodes_in_dag)
+            assert not (nu.startswith("Comm") and nv.startswith("Comm")), (u, v)
+            new_graph.add_edge(nu, nv)
         mygraph = new_graph
     else:
         update_nodes_in_dag = None
@@ -680,6 +685,7 @@ class DAGManager:
             # visualize_gml(composed_dag)
             critical_path = dag_longest_path(composed_dag, self.pm, weight="weight", default_weight=0)
 
+        SingleLogger().info("Generate a local dag with {} edges".format(len(self.dag)))
         # return max_para_degree, critical_path
         return 1, critical_path
 

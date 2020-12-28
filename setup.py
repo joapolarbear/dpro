@@ -35,14 +35,17 @@ setup(name='byteprofile analysis',
           'scapy',
           'sklearn',
           'seaborn',
-          'matplotlib',
-          'tensorflow',
+          'matplotlib', 
           'tqdm',
+
+          'tensorflow',
           "cvxpy",
           "cvxopt",
         
           "python-igraph",
           'pymc3',
+
+          "horovod", # only used to provide op type definination
       ],
       # zip_safe=False
       )

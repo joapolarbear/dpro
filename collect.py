@@ -539,23 +539,9 @@ class Collector(object):
         #! read communication traces offline
         # debug_utils.DebugRecorder().debug_event_start()
         with open(path, 'r') as f:
-            json_str = f.read()
+            comm_traces = json.load(f)
         # debug_utils.DebugRecorder().debug_event_end("collect_" + pid+"_comm.read_traces", "Collct", "0")
 
-        ### TODO (huhanpeng) delete
-        ''' Fix the json file
-            For Horovod, the timeline_ outputs traces as soon as a new trace is appended to the queue
-            Making the trace file ends abnormally.
-        '''
-        # debug_utils.DebugRecorder().debug_event_start()
-        if json_str[-1] != ']':
-            json_str_lines = json_str.split("\n")
-            if json_str_lines[-1] == '':
-                json_str_lines = json_str_lines[:-1]
-            if json_str_lines[-1][-1] == ',':
-                json_str_lines[-1] = json_str_lines[-1][:-1]+']'
-            json_str = "\n".join(json_str_lines)
-        comm_traces = json.loads(json_str)
         if isinstance(comm_traces, dict):
             comm_traces = comm_traces["traceEvents"]
         # debug_utils.DebugRecorder().debug_event_end("collect_" + pid+"_comm.load_string", "Collct", "0")
@@ -579,8 +565,9 @@ class Collector(object):
             if trace["ph"] == "M":
                 if trace["name"] == "process_name":
                     assert trace["pid"] not in self.gradient_name_table
-                    if trace["args"]["name"] == "":
+                    if "name" not in trace["args"] or trace["args"]["name"] == "":
                         continue
+
                     _split_name = trace["args"]["name"].split(".")
                     # ### Ignore the traces whose names end with purly digits
                     # if str.isdigit(_split_name[-1]):
@@ -803,17 +790,15 @@ class Collector(object):
                 for worker_dir in sorted(worker_dirs):
                     gpu_path = os.path.join(worker_root, worker_dir)
                     # self._collect_rank_dag(gpu_path, worker_dag_list, critical_path, len(threads))
+                    # threads.append(0)
                     t = threading.Thread(target=self._collect_rank_dag, args=(gpu_path, worker_dag_list, critical_path, len(threads)))
                     t.start()
                     threads.append(t)
             for t in threads:
                 t.join()
-            # with multiprocessing.Pool(len(arg_list)) as p:
-            #     rst = p.map(self._collect_rank_dag, arg_list)
-            # worker_dag_list, critical_path = zip(*rst)
 
         ### Combine all worker_dag_list on one worker, build the dependency
-        SingleLogger().info("Compose all gpu DAGs together ... ")
+        SingleLogger().info("Compose all {} gpu DAGs together ... ".format(len(worker_dag_list)))
         all_edges = []
         for _edges in worker_dag_list:
             all_edges += _edges
