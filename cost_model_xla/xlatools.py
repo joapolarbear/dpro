@@ -15,11 +15,11 @@ if "BPF_COST_MODEL_PROFILE_GPU" in os.environ:
         BPF_PROFILE_GPU = int(os.environ["BPF_COST_MODEL_PROFILE_GPU"])
     except:
         print("[WARNING] Invalid BPF_COST_MODEL_PROFILE_GPU value (must be an integer).")
-        # exit(-1)
+        exit(-1)
 else:
     print("[WARNING] Required environment BPF_COST_MODEL_PROFILE_GPU value not set.")
     BPF_PROFILE_GPU = None
-    # exit(-1)
+    exit(-1)
 
 def _check_file_available_for_writing(path):
     p = Path(path)

@@ -254,7 +254,8 @@ class _XLACostModel(_BaseCostModel):
                 self.initial_forbidden_list.add(node)
                 continue
             cat = parse_cat_from_name(node)
-            if orig_name not in self._wrap_xla_operation_names(pid) or "Assign" in orig_name or cat == CatName.COMM.value:
+            if orig_name not in self._wrap_xla_operation_names(pid) or "Assign" in orig_name or cat == CatName.COMM.value \
+                or "group_deps" in orig_name or "ConstantFolding" in orig_name or "LayoutOptimizer" in orig_name:
                 self.forbidden_list.add(node)
                 self.initial_forbidden_list.add(node)
  
@@ -597,8 +598,10 @@ class _XLACostModel(_BaseCostModel):
         nodes2rm.append(target)
         
         ### apply the same strategy to other GPUs
-        components_ = tuple([tuple([self.opt._debug_convert_to_the_other_machine(node) for node in comp]) for comp in components])
-        for target_ in self.opt._debug_convert_to_the_other_machine(target):
+        target_l = self.opt._debug_convert_to_the_other_machine(target)
+        components_l = [tuple([self.opt._debug_convert_to_the_other_machine(node) for node in comp]) for comp in components]
+        for idx, target_ in enumerate(target_l):
+            components_ = [tuple([node_l[idx] for node_l in comp]) for comp in components_l]
             _pkg.split_node(target_, components_)
             _, new_node_names_ = self._defuse_node(_dag, _pkg, target_, components_)
             nodes2add += new_node_names_
