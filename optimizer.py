@@ -31,6 +31,7 @@ class GraphExpand(Enum):
 args_ = arg_utils.SingleArg().args
 if args_.option == "optimize" and not args_.simulate:
     from cost_model_xla.xla_module_cost_model import XLAModuleCostModel
+    import horovod.tensorflow as hvd
 
 MAX_TREE_DEPTH = 1000
 MAX_LOOP = 1000
@@ -106,7 +107,6 @@ class _BaseCostModel:
     def __init__(self, opt):
         self.opt = opt
         self.dag = self.opt.dag
-        self.node_attr_cache = self.opt.node_attr_cache
         ### token is the indendifier of each optimization technique
         self.token = None
 
@@ -115,19 +115,58 @@ class _BaseCostModel:
 
     def apply(self, s, __dag, __pkg):
         raise NotImplementedError()
-
-    def init_partition(self, G, PKG, initial_partitions_formed) -> int:
-        return 0
+    
+    def load_ckpt(self):
+        raise NotImplementedError()
+    
+    def checkpoint(self):
+        raise NotImplementedError()
 
 class _XLACostModel(_BaseCostModel):
     def __init__(self, opt):
         super().__init__(opt)
-        self.cost_models = self.load_cm()
+        self.cost_models = self._load_cm()
         self.forbidden_list = set()
-        self.init_forbidden_list()
+        self._init_forbidden_list()
         self.token = ["+", "-"]
 
-    def load_cm(self):
+        ### Need to cache
+        self.ckpt_path = os.path.join(ROOT_PATH, "xla_ckpt.pickle")
+        ### Used to cache the node attribtue
+        self.node_attr_cache = AttrCache()
+    
+    def load_ckpt(self):
+        if args_.ckpt and os.path.isfile(self.ckpt_path):
+            with open(self.ckpt_path, "rb") as f:
+                G, PKG, node_attr_cache, initial_partitions_formed = pickle.load(f)
+                self.node_attr_cache = node_attr_cache
+            SingleLogger().info("Reading init graph from cache.")
+        else:
+            G = self.dag.copy()
+            PKG = PKGraph(G)
+            # # randomly contract edges if possible
+            # k = int(len(G.edges()) * init_edges_to_contract)
+            initial_partitions_formed = 0
+            for node in G.nodes():
+                if node not in self.node_attr_cache:
+                    self._cache_node_attr(node, G.nodes[node])
+
+            G, initial_partitions_formed = self._init_partition(G, PKG, initial_partitions_formed)
+            with open(self.ckpt_path, "wb") as f:
+                pickle.dump([G, PKG, self.node_attr_cache, initial_partitions_formed], f)
+            SingleLogger().info("Graph cache dumped to {}.".format(self.ckpt_path))
+        
+        if "BPF_DUMP_INIT_CLUSTER_TO" in os.environ:
+            self._dump_cluster_mapping(G, os.environ["BPF_DUMP_INIT_CLUSTER_TO"])
+        SingleLogger().info("Successfully initialized {} partitions.".format(initial_partitions_formed))
+        return G, PKG
+    
+    def checkpoint(self):
+        raise NotImplementedError()
+        with open(self.ckpt_path, "wb") as f:
+            pickle.dump([PKG, self.node_attr_cache], f)
+
+    def _load_cm(self):
         cost_models = {}
         if args_.simulate:
             return cost_models
@@ -152,7 +191,54 @@ class _XLACostModel(_BaseCostModel):
         #         SingleLogger().warn(" - {} not a directory.".format(model_path))
         return cost_models
     
-    def init_forbidden_list(self):
+    def _reduce_nx_size(self, G):
+        ret_G = nx.DiGraph()
+        edges_to_add = []
+        for u, v in G.edges:
+            if u.startswith("host0.rank0") and v.startswith("host0.rank0"):
+                edges_to_add.append((u, v))
+        ret_G.add_edges_from(edges_to_add)
+        return ret_G
+
+    def _init_partition(self, G, PKG, initial_partitions_formed):
+        # partition_G = G.copy()
+        partition_G = self._reduce_nx_size(G)
+        partition_PKG = PKGraph(partition_G)
+
+        source_nodes = sorted([node for node in partition_G.nodes if node not in self.initial_forbidden_list], key=lambda x: partition_G.in_degree(x))
+
+        # Run post order traversal on partition_G
+        visited_nodes = set()
+        SingleLogger().info("Start to postorder_contract_nx ... ")
+        for source in tqdm(source_nodes, total=len(source_nodes)):
+            if source not in visited_nodes and source in partition_G.nodes:
+                _, _, partition_G = postorder_contract_nx(partition_G, partition_PKG, source, visited_nodes, forbidden_list=self.initial_forbidden_list, size_limit=800)
+        
+        SingleLogger().info("Start to init partition graph ... ")
+        for node_name in tqdm(partition_G.nodes()):
+            if node_name in self.initial_forbidden_list:
+                continue
+            if "+" in node_name:
+                # fused node, test if compilable
+                try:
+                    self._parse_node_attr(partition_G, node_name)
+                    compilable=True
+                except OptQueryCostModelError:
+                    # traceback.print_exc()
+                    compilable=False
+                if compilable:
+                    avg = None
+                    for _node_name in [node_name] + self.opt._debug_convert_to_the_other_machine(node_name):
+                        ns = _node_name.split("+")
+                        G, new_node_name = contract_nodes_nx(G, ns)
+                        PKG.contract_nodes_unsafe(ns)
+                        ### TODO (huhanpeng): since we assume data parallel
+                        ### we directly use the fused time of the first GPU for all GPUs' fused nodes
+                        avg = self._parse_node_attr(G, new_node_name, avg=avg)
+                        initial_partitions_formed += 1
+        return G, initial_partitions_formed
+
+    def _init_forbidden_list(self):
         self.initial_forbidden_list = set()
         # limit the range of nodes during search
         for node in self.dag.nodes:
@@ -161,45 +247,36 @@ class _XLACostModel(_BaseCostModel):
                 self.initial_forbidden_list.add(node)
 
             try:
-                orig_name, pid = self._get_original_name_pid_from_index(node)
+                orig_name, pid = self.opt._get_original_name_pid_from_index(node)
             except:
                 # not standard nodes, ignore
                 self.forbidden_list.add(node)
                 self.initial_forbidden_list.add(node)
                 continue
-            cat = parse_cat_from_name(orig_name)
+            cat = parse_cat_from_name(node)
             if orig_name not in self._wrap_xla_operation_names(pid) or "Assign" in orig_name or cat == CatName.COMM.value:
                 self.forbidden_list.add(node)
                 self.initial_forbidden_list.add(node)
+ 
+    def _get_node_attr(self, n, attr_):
+        if attr_ in self.node_attr_cache[n]:
+            return self.node_attr_cache[n][attr_]
+        else:
+            return 0
 
-    def init_partition(self, G, PKG, initial_partitions_formed):
-        partition_G = G.copy()
-        partition_PKG = PKGraph(partition_G)
+    def _cache_node_attr(self, n, attrs):
+        ### TODO (huhanpeng): need .copy() ???
+        self.node_attr_cache[n] = attrs
 
-        source_nodes = sorted([node for node in partition_G.nodes if node not in self.initial_forbidden_list], key=lambda x: partition_G.in_degree(x))
-
-        # Run post order traversal on partition_G
-        visited_nodes = set()
-        for source in tqdm(source_nodes, total=len(source_nodes)):
-            if source not in visited_nodes and source in partition_G.nodes:
-                _, _, partition_G = postorder_contract_nx(partition_G, partition_PKG, source, visited_nodes, forbidden_list=self.initial_forbidden_list, size_limit=800)
-        for node_name in tqdm(partition_G.nodes()):
-            if "+" in node_name:
-                # fused node, test if compilable
-                try:
-                    self.parse_node_attr(partition_G, node_name)
-                    compilable=True
-                except OptQueryCostModelError:
-                    # traceback.print_exc()
-                    compilable=False
-                if compilable:
-                    ns = node_name.split("+")
-                    G, new_node_name = contract_nodes_nx(G, ns)
-                    PKG.contract_nodes_unsafe(ns)
-                    self.parse_node_attr(G, new_node_name)
-                    initial_partitions_formed += 1
-
-        return initial_partitions_formed
+    def _dump_cluster_mapping(self, dag, output_path):
+        cluster_index = 0
+        with open(output_path, "w") as f:
+            for node in dag.nodes():
+                if "+" in node:
+                    orig_names, _ = self._get_original_name_pid_from_fused_node(node)
+                    for orig_node_name in orig_names:
+                        f.write("{} {}\n".format(orig_node_name, cluster_index))
+                    cluster_index += 1
 
     def _get_original_name_pid_from_fused_node(self, u_):
         single_pid = None
@@ -231,8 +308,8 @@ class _XLACostModel(_BaseCostModel):
             # return self.cost_models[pid].predict(nodes_to_fuse)
             return self.cost_models["default"].predict(nodes_to_fuse)
 
-    def _wrap_xla_need_fuse(self, pid, orig_name):
-        return (args_.simulate or orig_name in self._wrap_xla_operation_names(pid)) and orig_name not in self.forbidden_list
+    def _wrap_xla_need_fuse(self, pid, orig_name, long_name):
+        return (args_.simulate or orig_name in self._wrap_xla_operation_names(pid)) and long_name not in self.forbidden_list
 
     def _wrap_xla_operation_names(self, pid):
         # return self.cost_models[pid].graph_def_util.operation_names
@@ -300,7 +377,7 @@ class _XLACostModel(_BaseCostModel):
             except (IndexError, KeyError):
                 continue
 
-            if not self._wrap_xla_need_fuse(n_pid, n_orig_name):
+            if not self._wrap_xla_need_fuse(n_pid, n_orig_name, n):
                 continue
 
             for succ_ in _dag.successors(n):
@@ -313,7 +390,7 @@ class _XLACostModel(_BaseCostModel):
                     except (IndexError, KeyError):
                         continue
 
-                    if not self._wrap_xla_need_fuse(succ_pid, succ_orig_name):
+                    if not self._wrap_xla_need_fuse(succ_pid, succ_orig_name, succ_):
                         continue
 
                 _pid = parse_pid_from_name(succ_)
@@ -321,16 +398,7 @@ class _XLACostModel(_BaseCostModel):
                 if pid != _pid or cat != _cat:
                     continue
 
-                ### Assumption 1: for edge a->b, only if the indegree of b is 1, the node can be fused
-                # bw_v = self.convert_fw2bw(n)
-                # if len(_dag.in_edges(succ_)) > 1 or len(_dag.in_edges(bw_v)) > 1:
-                # if len(_dag.in_edges(succ_)) > 1:
-                #     continue
-
-                # bw_u = self.convert_fw2bw(succ_)
-                # assert bw_u in _dag.nodes and bw_v in _dag.nodes
-
-                ### Assumption 2: for edge bw_u->bw_v, if comm_bw_u > bw_v, it can not bring any speedup if fusing u and v.
+                ### Assumption: for edge bw_u->bw_v, if comm_bw_u > bw_v, it can not bring any speedup if fusing u and v.
                 def ret_comm_time(_node):
                     __ret = _dag.nodes[_node]["avg"]
                     for __succ in _dag.successors(_node):
@@ -381,92 +449,118 @@ class _XLACostModel(_BaseCostModel):
         # SingleLogger().info("Time spent for source/sink: {}".format(sum(time_st)/ len(time_st)))
         return search_space, weights
 
-    def concat_name(self, u_, v_):
+    def _concat_name(self, u_, v_):
         return "%s+%s"%(u_, v_)
 
-    def combine_avg(self, u, v):
-        # call cost model to obtain the combined time
-        fused_name = self.concat_name(u, v)
+    def _combine_avg(self, u, v):
+        ### call cost model to obtain the combined time
+        fused_name = self._concat_name(u, v)
         return self._query_cost_model(fused_name)
 
-    def combine_gap(self, ug, vg):
+    def _combine_gap(self, ug, vg):
         ### TODO (huhanpeng): key component
         ### Use max to avoid one input is zero, 
         ### some how for the new gap x, ug < x < ug + vg, vg < x < ug + vg
         # return max(max((ug + vg) / 0.8, ug), vg)
         return max(ug, vg)
 
-    def combine_nodes_attr(self, _dag, target, u_, v_):
+    def _combine_nodes_attr(self, _dag, target, u_, v_, avg=None):
         ### In graph _dag, combine the attributes of u_ and v_, store the results in _dag as the attributes of target
-        _dag.nodes[target]["avg"] = self.combine_avg(u_, v_)
-        _dag.nodes[target][GAP_STR_OP2OP] = self.combine_gap(self.opt.get_node_attr(u_, GAP_STR_OP2OP), self.opt.get_node_attr(v_, GAP_STR_OP2OP))
-        _dag.nodes[target][GAP_STR_OP2COMM] = self.combine_gap(self.opt.get_node_attr(u_, GAP_STR_OP2COMM), self.opt.get_node_attr(v_, GAP_STR_OP2COMM))
+        _dag.nodes[target]["avg"] = self._combine_avg(u_, v_) if avg is None else avg
+        _dag.nodes[target][GAP_STR_OP2OP] = self._combine_gap(self._get_node_attr(u_, GAP_STR_OP2OP), self._get_node_attr(v_, GAP_STR_OP2OP))
+        _dag.nodes[target][GAP_STR_OP2COMM] = self._combine_gap(self._get_node_attr(u_, GAP_STR_OP2COMM), self._get_node_attr(v_, GAP_STR_OP2COMM))
 
-    def combine_attr_except_avg(self, target, attr1, attr2):
+    def _combine_attr_except_avg(self, target, attr1, attr2):
         ### In graph _dag, combine the attributes of u_ and v_, store the results in _dag as the attributes of target
-        # target["avg"] = self.combine_avg(attr1["avg"], attr2["avg"])
+        # target["avg"] = self._combine_avg(attr1["avg"], attr2["avg"])
 
         if GAP_STR_OP2OP in attr1 and GAP_STR_OP2OP in attr2:
-            target[GAP_STR_OP2OP] = self.combine_gap(attr1[GAP_STR_OP2OP], attr2[GAP_STR_OP2OP])
+            target[GAP_STR_OP2OP] = self._combine_gap(attr1[GAP_STR_OP2OP], attr2[GAP_STR_OP2OP])
         elif GAP_STR_OP2OP not in attr1 and GAP_STR_OP2OP in attr2:
-            target[GAP_STR_OP2OP] = self.combine_gap(0, attr2[GAP_STR_OP2OP])
+            target[GAP_STR_OP2OP] = self._combine_gap(0, attr2[GAP_STR_OP2OP])
         elif GAP_STR_OP2OP in attr1 and GAP_STR_OP2OP not in attr2:
-            target[GAP_STR_OP2OP] = self.combine_gap(attr1[GAP_STR_OP2OP], 0)
+            target[GAP_STR_OP2OP] = self._combine_gap(attr1[GAP_STR_OP2OP], 0)
 
         if GAP_STR_OP2COMM in attr1 and GAP_STR_OP2COMM in attr2:
-            target[GAP_STR_OP2COMM] = self.combine_gap(attr1[GAP_STR_OP2COMM], attr2[GAP_STR_OP2COMM])
+            target[GAP_STR_OP2COMM] = self._combine_gap(attr1[GAP_STR_OP2COMM], attr2[GAP_STR_OP2COMM])
         elif GAP_STR_OP2COMM not in attr1 and GAP_STR_OP2COMM in attr2:
-            target[GAP_STR_OP2COMM] = self.combine_gap(0, attr2[GAP_STR_OP2COMM])
+            target[GAP_STR_OP2COMM] = self._combine_gap(0, attr2[GAP_STR_OP2COMM])
         elif GAP_STR_OP2COMM in attr1 and GAP_STR_OP2COMM not in attr2:
-            target[GAP_STR_OP2COMM] = self.combine_gap(attr1[GAP_STR_OP2COMM], 0)
+            target[GAP_STR_OP2COMM] = self._combine_gap(attr1[GAP_STR_OP2COMM], 0)
 
-    def parse_node_attr(self, _dag, new_name):
+    def _parse_node_attr(self, _dag, new_name, avg=None):
+        ''' Parse the fused node attribute corresponding to `new_name` and set _dag
+        * If new_name has been cached, directly set _dag with the cached attributes
+        * Otherwise, combine the attribution of all original nodes
+            * If avg is not given, query the cost model
+            * Otherwize, use the given avg 
+        
+        Return
+        ------
+        avg: average time
+        '''
         if new_name in self.node_attr_cache:
             nx.set_node_attributes(_dag, {new_name:self.node_attr_cache[new_name]})
+            return self.node_attr_cache[new_name]["avg"]
             # _dag.add_node(new_name, **self.node_attr_cache[new_name])
         else:
             ns = new_name.split("+")
             attrs = self.node_attr_cache[ns[0]].copy()
             for idx in range(1, len(ns)):
-                self.combine_attr_except_avg(attrs, attrs, self.node_attr_cache[ns[idx]])
+                self._combine_attr_except_avg(attrs, attrs, self.node_attr_cache[ns[idx]])
             # combine attr avg
-            attrs["avg"] = self._query_cost_model(new_name)
+            attrs["avg"] = self._query_cost_model(new_name) if avg is None else avg
             ### set and cache the attribute
             nx.set_node_attributes(_dag, {new_name:attrs})
-            self.opt.cache_node_attr(new_name, _dag.nodes[new_name])
+            self._cache_node_attr(new_name, _dag.nodes[new_name])
+            return attrs["avg"]
 
-    def op_fusion(self, _dag, _pkg: PKGraph, u_, v_):
+    def _op_fusion(self, _dag, _pkg: PKGraph, u_, v_):
         # test if two nodes can be fused
         if _pkg.can_contract_edge(u_, v_):
             nodes_to_add = []
             nodes_to_remove = []
+
             _pkg.contract_edge(u_, v_)
-            self._fuse_pair(_dag, u_, v_)
+            avg = self._fuse_pair(_dag, u_, v_)
             nodes_to_add.append(u_+"+"+v_)
             nodes_to_remove += [u_, v_]
+
+            ### apply the same strategy to other GPUs
+            ul = self.opt._debug_convert_to_the_other_machine(u_)
+            vl = self.opt._debug_convert_to_the_other_machine(v_)
+            for u__, v__ in zip(ul, vl):
+                assert _pkg.can_contract_edge(u__, v__)
+                _pkg.contract_edge(u__, v__)
+                ### TODO (huhanpeng): since we assume data parallel
+                ### use the same avg for the fused operators
+                self._fuse_pair(_dag, u__, v__, avg=avg)
+                nodes_to_add.append(u__+"+"+v__)
+                nodes_to_remove += [u__, v__]
+            
             return True, nodes_to_add, nodes_to_remove
         else:
             return False, None, None
 
-    def _fuse_pair(self, _dag, u_, v_):
+    def _fuse_pair(self, _dag, u_, v_, avg=None):
         # print("fuse {} {}".format(u_, v_))
         ### Cache the node attributes in case they will be used when de-fuse
         # SingleLogger().info("\033[94m Fusing pair: {}, {}\033[0m".format(u_, v_))
         if u_ not in self.node_attr_cache:
-            self.opt.cache_node_attr(u_, _dag.nodes[u_])
+            self._cache_node_attr(u_, _dag.nodes[u_])
         if v_ not in self.node_attr_cache:
-            self.opt.cache_node_attr(v_, _dag.nodes[v_])
+            self._cache_node_attr(v_, _dag.nodes[v_])
 
-        new_name = self.concat_name(u_, v_)
+        new_name = self._concat_name(u_, v_)
         ### Add new nodes and get the attibute
         if new_name in self.node_attr_cache:
             _dag.add_node(new_name, **self.node_attr_cache[new_name])
         else:
             _dag.add_node(new_name)
             ### Calculate the new attribute
-            self.combine_nodes_attr(_dag, new_name, u_, v_)
+            self._combine_nodes_attr(_dag, new_name, u_, v_, avg=avg)
             ### cache the attribute
-            self.opt.cache_node_attr(new_name, _dag.nodes[new_name])
+            self._cache_node_attr(new_name, _dag.nodes[new_name])
 
         ### Update edges
         for in_, _ in _dag.in_edges(u_):
@@ -491,8 +585,9 @@ class _XLACostModel(_BaseCostModel):
         assert v_ not in _dag.nodes
         assert u_ in self.node_attr_cache and "avg" in self.node_attr_cache[u_]
         assert v_ in self.node_attr_cache and "avg" in self.node_attr_cache[v_]
+        return self.node_attr_cache[new_name]["avg"]
 
-    def op_defusion(self, _dag, _pkg: PKGraph, target, components):
+    def _op_defusion(self, _dag, _pkg: PKGraph, target, components):
         nodes2add = []
         nodes2rm = []
 
@@ -500,12 +595,21 @@ class _XLACostModel(_BaseCostModel):
         _, new_node_names = self._defuse_node(_dag, _pkg, target, components)
         nodes2add += new_node_names
         nodes2rm.append(target)
+        
+        ### apply the same strategy to other GPUs
+        components_ = tuple([tuple([self.opt._debug_convert_to_the_other_machine(node) for node in comp]) for comp in components])
+        for target_ in self.opt._debug_convert_to_the_other_machine(target):
+            _pkg.split_node(target_, components_)
+            _, new_node_names_ = self._defuse_node(_dag, _pkg, target_, components_)
+            nodes2add += new_node_names_
+            nodes2rm.append(target_)
+
         return True, set(nodes2add), set(nodes2rm)
 
     def _defuse_node(self, _dag, _pkg, target, components):
         component_names = defuse_nodes_inplace_nx(_dag, _pkg, target, components)
         for new_node_name in component_names:
-            self.parse_node_attr(_dag, new_node_name)
+            self._parse_node_attr(_dag, new_node_name)
         return True, component_names
 
     def apply(self, s, __dag, __pkg):
@@ -513,15 +617,15 @@ class _XLACostModel(_BaseCostModel):
         ### TODO (huhanpeng): need further add other optimization techiniques
         if op == "+":
             ### Fuse two nodes
-            return self.op_fusion(__dag, __pkg, target, next_)
+            return self._op_fusion(__dag, __pkg, target, next_)
         elif op == "-":
-            return self.op_defusion(__dag, __pkg, target, next_)
+            return self._op_defusion(__dag, __pkg, target, next_)
 
 class _AMPCostModel(_BaseCostModel):
     def __init__(self, opt):
         super().__init__(opt)
         ### AMP predictor
-        self.amp_predictor = AMPPredictor(self.opt.clct.para_dict)
+        self.amp_predictor = AMPPredictor(self.opt.clct.para_dict, ckpt=args_.ckpt)
         self.token = [">", "<"]
         self.meta_info = self.opt.clct.para_dict
 
@@ -544,9 +648,6 @@ class _AMPCostModel(_BaseCostModel):
         SingleLogger().info("MP Cost Model init {} strategies.".format(len(search_space)))
         return search_space, weights
 
-    def init_partition(self, G, PKG, initial_partitions_formed) -> int:
-        return initial_partitions_formed
-
     def apply(self, s, __dag, __pkg):
         op, target, _ = s
         nodes_introduced = self.amp_predictor.quantize(__dag, target)
@@ -556,6 +657,9 @@ class _AMPCostModel(_BaseCostModel):
         for target in on_other_ranks:
             nodes_introduced += self.amp_predictor.quantize(__dag, target)
         return True, nodes_introduced, []
+    
+    def checkpoint(self):
+        self.amp_predictor.checkpoint()
 
 class _TensorFusionCM(_BaseCostModel):
     ''' This is a cost model for HOROVOD tensor fusion
@@ -636,9 +740,6 @@ class Optimizer:
         self.base_cost, _, mem_usage = self.evaluate(self.dag)
         SingleLogger().info("Start to search, the original iteration time is %f" % self.base_cost)
 
-        ### Used to cache the node attribtue
-        self.node_attr_cache = AttrCache()
-
         ### Budget, in GB
         self.memory_budget = memory_budget if memory_budget is not None else 1
 
@@ -716,16 +817,6 @@ class Optimizer:
             return self.index2name[index], self.index2pid[index]
         else:
             return parse_layer_name(name_), parse_pid_from_name(name_)
-
-    def get_node_attr(self, n, attr_):
-        if attr_ in self.node_attr_cache[n]:
-            return self.node_attr_cache[n][attr_]
-        else:
-            return 0
-
-    def cache_node_attr(self, n, attrs):
-        ### TODO (huhanpeng): need .copy() ???
-        self.node_attr_cache[n] = attrs
 
     def evaluate(self, _dag, _filename=None):
         # t = time.time()
@@ -889,46 +980,37 @@ class MCMCOptimizer(Optimizer):
         else:
             self.heat_window_size = 5
 
-    def __dump_cluster_mapping(self, dag, output_path):
-        cluster_index = 0
-        with open(output_path, "w") as f:
-            for node in dag.nodes():
-                if "+" in node:
-                    orig_names, _ = self._get_original_name_pid_from_fused_node(node)
-                    for orig_node_name in orig_names:
-                        f.write("{} {}\n".format(orig_node_name, cluster_index))
-                    cluster_index += 1
-
     def search(self, graph_cache=os.path.join(ROOT_PATH, "graph_cache.pickle"), step_size=1):
-        ### TODO (huhanpeng): is shallow copy is enough ???
-        if args_.ckpt and graph_cache is not None and os.path.isfile(graph_cache):
-            with open(graph_cache, "rb") as f:
-                G, PKG, node_attr_cache, initial_partitions_formed = pickle.load(f)
-                self.node_attr_cache = node_attr_cache
-            SingleLogger().info("Reading init graph from cache.")
-        else:
-            G = self.dag.copy()
-            PKG = PKGraph(G)
-            # # randomly contract edges if possible
-            # k = int(len(G.edges()) * init_edges_to_contract)
-            initial_partitions_formed = 0
-            for node in G.nodes():
-                if node not in self.node_attr_cache:
-                    self.cache_node_attr(node, G.nodes[node])
+        
+        for _cost_model in self.cst_md_mng.cost_model_list:
+            G, PKG = _cost_model.load_ckpt()
 
-            for _cost_model in self.cst_md_mng.cost_model_list:
-                initial_partitions_formed = _cost_model.init_partition(G, PKG, initial_partitions_formed)
-            if graph_cache:
-                with open(graph_cache, "wb") as f:
-                    pickle.dump([G, PKG, self.node_attr_cache, initial_partitions_formed], f)
-                SingleLogger().info("Graph cache dumped to {}.".format(graph_cache))
-        if "BPF_DUMP_INIT_CLUSTER_TO" in os.environ:
-            self.__dump_cluster_mapping(G, os.environ["BPF_DUMP_INIT_CLUSTER_TO"])
+        # if args_.ckpt and graph_cache is not None and os.path.isfile(graph_cache):
+        #     with open(graph_cache, "rb") as f:
+        #         G, PKG, node_attr_cache, initial_partitions_formed = pickle.load(f)
+        #         self.node_attr_cache = node_attr_cache
+        #     SingleLogger().info("Reading init graph from cache.")
+        # else:
+        #     G = self.dag.copy()
+        #     PKG = PKGraph(G)
+        #     # # randomly contract edges if possible
+        #     # k = int(len(G.edges()) * init_edges_to_contract)
+        #     initial_partitions_formed = 0
+        #     for node in G.nodes():
+        #         if node not in self.node_attr_cache:
+        #             self._cache_node_attr(node, G.nodes[node])
+
+        #     for _cost_model in self.cst_md_mng.cost_model_list:
+        #         G, initial_partitions_formed = _cost_model._init_partition(G, PKG, initial_partitions_formed)
+        #     if graph_cache:
+        #         with open(graph_cache, "wb") as f:
+        #             pickle.dump([G, PKG, self.node_attr_cache, initial_partitions_formed], f)
+        #         SingleLogger().info("Graph cache dumped to {}.".format(graph_cache))
+        
         # initialize heat history
         for node in G.nodes:
             self.heat_history[node] = [(0, 0)] * self.heat_window_size
         SingleLogger().info("="*20 + " Search Starts " + "="*20)
-        SingleLogger().info("Successfully initialized {} partitions.".format(initial_partitions_formed))
 
         if "BPF_DUMP_INIT_GRAPH_TO" in os.environ:
             bpf_dump_init_graph_to = os.environ["BPF_DUMP_INIT_GRAPH_TO"]

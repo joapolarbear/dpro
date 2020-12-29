@@ -194,7 +194,7 @@ class GraphDefUtil(object):
             "Concat", "ConcatV2", "ConcatOffset", "Empty", "FFT", "FFT2D", "FFT3D",
             "Fill", "Gather", "Scatter", "ResizeNearestNeighbor", "ResizeBilinear",
             "ResizeBilinearGrad", "ListDiff", "Slice", "InvertPermutation", 
-            "Reshape", "Transpose", "ConjugateTranspose", "Range"]
+            "Reshape", "Transpose", "ConjugateTranspose", "Range", "Assert"]
             if potential_op.type not in require_const_op_types or potential_op.name in constant_nodes:
                 subgraph_nodes.add(potential_op)
         if len(subgraph_nodes) < 2:

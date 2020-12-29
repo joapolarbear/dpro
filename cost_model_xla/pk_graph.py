@@ -62,6 +62,7 @@ def defuse_nodes_inplace_nx(_dag: nx.DiGraph, pkg, target, components):
     return component_names
 
 def contract_nodes_nx(graph: nx.DiGraph, nodes_to_contract: list):
+    ### TODO (huhanpeng): change the function to inplace w.r.t. graph
     G = graph.copy()
     all_nodes = set(nodes_to_contract)
     all_predecessors, all_successors, new_node_name = get_all_pred_succ_nx(graph, nodes_to_contract)
@@ -146,6 +147,8 @@ class PKGraph(object):
             self._reorder(delta_f, delta_b)
 
     def can_contract_edge(self, u, v):
+        ''' Check if the graph has cycles after contracting u and v
+        '''
         if u not in self.nx_graph or v not in self.nx_graph:
             raise RuntimeError("u ({}) and v ({}) must in the original networkx graph.".format(u, v))
         self.nx_graph.remove_edge(u, v)
@@ -345,6 +348,7 @@ class PKGraph(object):
             self.ord[L[i]] = all_orders[i]
 
 def postorder_contract_nx(_dag: nx.DiGraph, _pkg: PKGraph, source_node, visitied_nodes, forbidden_list = None, size_limit = None):
+    # print("postorder_contract_nx for {}".format(source_node))
     graph_changed_outer = False
     while True:
         should_break = True

@@ -28,24 +28,26 @@ setup(name='byteprofile analysis',
       # license='xxx',
       packages=find_packages(),
       install_requires=[
-          'intervaltree', 
-          'networkx', 
-          'ujson', 
-          'xlsxwriter', 
-          'scapy',
-          'sklearn',
-          'seaborn',
-          'matplotlib', 
-          'tqdm',
+            'intervaltree', 
+            'networkx', 
+            'ujson', 
+            'xlsxwriter', 
+            'scapy',
+            'sklearn',
+            'seaborn',
+            'matplotlib', 
+            'tqdm',
 
-          'tensorflow',
-          "cvxpy",
-          "cvxopt",
+            
+            "cvxpy",
+            "cvxopt",
         
-          "python-igraph",
-          'pymc3',
+            "python-igraph",
+            'pymc3',
 
-          "horovod", # only used to provide op type definination
+            'tensorflow',
+            "horovod", # only used to provide op type definination
+            "h5py==2.10.0"
       ],
       # zip_safe=False
       )
