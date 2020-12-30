@@ -2,6 +2,7 @@ from collections import deque
 import tensorflow as tf
 from tensorflow.core.framework import types_pb2
 from google.protobuf import text_format
+from google.protobuf.json_format import MessageToJson
 import networkx as nx
 import random
 import traceback
@@ -88,9 +89,9 @@ class GSCannotDecideShapeError(GSInternalErrors):
 
 class GraphDefUtil(object):
     """ Utility module to process TensorFlow GraphDef. """
-    def __init__(self, graph_def, metadata):
+    def __init__(self, graph_def, shape_dict):
         """ graph_def: Tensorflow GraphDef
-            metadata: python dict, generated when collecting trace 
+            shape_dict: python dict, mapping tensor name to its shape
         """
         # import byteps.tensorflow as bps # type: ignore
         super().__init__()
@@ -98,13 +99,7 @@ class GraphDefUtil(object):
         self.original_graph = tf.Graph()
         with self.original_graph.as_default():
             tf.import_graph_def(graph_def, name="")
-        self.metadata = metadata
-        # preprocess metadata
-        self.shape_dict = {}
-
-        for op_name, op_meta in self.metadata:
-            for tensor_meta in op_meta["output"]:
-                self.shape_dict[tensor_meta["name"]] = tensor_meta["shape"]
+        self.shape_dict = shape_dict
 
         for op in self.original_graph.get_operations():
             for output in op.outputs:
@@ -116,10 +111,20 @@ class GraphDefUtil(object):
                         if dim == -1 or dim is None:
                             need_to_set_shape = True
                             break
-                if need_to_set_shape and output.name in self.shape_dict:
-                    op_shape_as_list = self.shape_dict[output.name]
+                if need_to_set_shape:
+                    if output.name in self.shape_dict:
+                        op_shape_as_list = self.shape_dict[output.name]
+                    elif "_" + output.name in self.shape_dict:
+                        op_shape_as_list = self.shape_dict["_" + output.name]
+                    else:
+                        print("Tensor: {}, shape: {}".format(output.name, output.shape))
+                        exit(-1)
                     output.set_shape(op_shape_as_list)
         self.operation_names = set([node.name for node in self.original_graph.get_operations()])
+        self.original_graph_def = self.original_graph.as_graph_def(add_shapes=True)
+        self.name2nodedef = {}
+        for node_def in self.original_graph_def.node:
+            self.name2nodedef[node_def.name] = node_def
 
     def gen_shape_type_attr_value(self, shape, data_type):
         shape_proto = shape.as_proto()
@@ -196,8 +201,8 @@ class GraphDefUtil(object):
         for node in subgraph_nodes:
             # check fixed shape
             for output_tensor in node.outputs:
-                if self.is_fixed_shape(output_tensor.shape):
-                    raise GSNonFixedShapeError("{} has non-fixed shape at compile time.".format(node.name))
+                if not self.is_fixed_shape(output_tensor.shape):
+                    raise GSNonFixedShapeError("{} has non-fixed shape at compile time. (Shape: {})".format(output_tensor.name, output_tensor.shape))
         subgraph_frontline_nodes = set()
         internal_subgraph_nodes = set()
         subgraph_input_nodes = set()
@@ -241,15 +246,14 @@ class GraphDefUtil(object):
                                                     .format(input_source_op.name))
                     if input_source_op in subgraph_input_nodes \
                             or input_source_op in internal_subgraph_nodes:
-                        node_def = input_source_op.node_def
+                        node_def = self.name2nodedef[input_source_op.name]
                     elif input_source_op.type == 'Const':
-                        node_def = input_source_op.node_def
+                        node_def = self.name2nodedef[input_source_op.name]
                         internal_subgraph_nodes.add(input_source_op)
                     elif input_source_op.type in ["Shape", "ShapeN"]:
                         # convert to constant nodes
                         if input_source_op.type == "ShapeN":
-                            input_index = op_input_tensor.name.split(":")[-1]
-                            
+                            input_index = int(op_input_tensor.name.split(":")[-1])
                         else:
                             input_index = 0
                         target_name = input_source_op.inputs[input_index].name
@@ -263,10 +267,13 @@ class GraphDefUtil(object):
                             raise GSCannotDecideShapeError("Failed to infer value for required constant {}." \
                                                             .format(op_input_tensor))
                     else:
-                        shape = op_input_tensor.shape
+                        if input_source_op.type == "VarHandleOp":
+                            shape = tf.TensorShape(self.shape_dict[op_input_tensor.name])
+                        else:
+                            shape = op_input_tensor.shape
                         dtype = op_input_tensor.dtype
                         shape_attv, dtype_attv = self.gen_shape_type_attr_value(shape, dtype)
-                        original_node_def = input_source_op.node_def
+                        original_node_def = self.name2nodedef[input_source_op.name]
                         node_def = tf.compat.v1.NodeDef()
                         node_def.name = "generated{}_".format(gen_placeholder_counter) + \
                                         original_node_def.name
@@ -278,7 +285,7 @@ class GraphDefUtil(object):
                         generated_subgraph_input_defs.append(node_def)
                     rewritten_input_nodes.append(node_def)
                 rewritten_node_def = tf.compat.v1.NodeDef()
-                orig_output_node_def = n.node_def
+                orig_output_node_def = self.name2nodedef[n.name]
                 rewritten_node_def.name = orig_output_node_def.name
                 rewritten_node_def.op = orig_output_node_def.op
                 rewritten_node_def.device = orig_output_node_def.device
@@ -290,11 +297,11 @@ class GraphDefUtil(object):
         # add all the defs into the out graph def
         out_graph_defs = []
         for n in internal_subgraph_nodes:
-            out_graph_defs.append(n.node_def)
+            out_graph_defs.append(self.name2nodedef[n.name])
         out_graph_defs += converted_frontline_node_defs
         out_input_defs = []
         for n in subgraph_input_nodes:
-            out_input_defs.append(n.node_def)
+            out_input_defs.append(self.name2nodedef[n.name])
         out_input_defs += generated_subgraph_input_defs
         out_graph_defs += out_input_defs
 
@@ -307,6 +314,10 @@ class GraphDefUtil(object):
             try:
                 tf.import_graph_def(out_graph_def_final, name="")
             except Exception as e:
+                debug_def = MessageToJson(out_graph_def_final)
+                debug_def_json = json.loads(debug_def)
+                with open("/root/debug_graph.json", "w") as f:
+                    json.dump(debug_def_json, f, indent=4)
                 traceback.print_exc()
                 raise RuntimeError()
         input_nodes = []
@@ -345,8 +356,8 @@ class GraphDefUtil(object):
         return os.path.join(output_dir, "{}.pbtxt".format(sample_index)), tf2xla_config_path
 
 class SampleGenerator():
-    def __init__(self, graph_def, metadata, ignored_nodes=None):
-        self.graph_def_util = GraphDefUtil(graph_def, metadata=metadata)
+    def __init__(self, graph_def, shape_dict, ignored_nodes=None):
+        self.graph_def_util = GraphDefUtil(graph_def, shape_dict=shape_dict)
         self.nx_graph = nx.DiGraph()
         self.node_sample_weights = {}
         self.edge_sample_weights = {}
@@ -373,6 +384,13 @@ class SampleGenerator():
             unique_op_types.add(op_type)
             op_info_dict[op_name]["type"] = op_type
             input_size = 0
+            # op_shapes = []
+            # for t in op.inputs:
+            #     try:
+            #         l = t.shape.as_list()
+            #         op_shapes.append(l)
+            #     except:
+            #         print("Tensor: {}, shape: {}".format(t, t.shape))
             op_shapes = [t.shape.as_list() for t in op.inputs]
             op_hash_str = op_type
             for input_shape in op_shapes:
@@ -537,8 +555,6 @@ class SampleGenerator():
                             k=int(len(self.nx_graph.nodes) * forbidden_ratio))
             clusters = self._max_cluster_sampler(forbidden_list=forbidden_nodes, 
                                                     size_limit=max_cluster_size)
-            print([len(cl) for cl in clusters])
-            input()
             if cache_dir is not None:
                 with open(os.path.join(cache_dir, CMPaths.MAX_CLUSTER_CACHE_FILE), "wb") as f:
                     pickle.dump(clusters, f)

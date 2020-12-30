@@ -25,6 +25,10 @@ class CMPaths:
     MODEL_CONFIG_FILE = "model_config.pickle"
     GRAPH_DEF_PICKLE_FILE = "graph_def.pickle"
 
+    AFTER_OPT_TF_DAG_FILE = "partition_def_0.json"
+    DEBUG_XLA_CANDIATES_FILE = "/root/xla_candidates_resnet.txt"
+    TENSOR_SHAPE_FILE = "tensor_shapes.json"
+
 class CMEnvs:
     WHITE_LIST_PATH = "BPF_XLA_OP_WHITE_LIST_PATH"
     TF_PATH = "BPF_TF_PATH"

@@ -1,10 +1,22 @@
 from cost_model_xla.process_trace import TRACE_SUFFIX
-import tqdm
+from tqdm import tqdm
 import networkx as nx
+import pickle
+import os
 
-from collect import Collector
+from google.protobuf.json_format import MessageToJson
+from google.protobuf.text_format import Parse
+import tensorflow as tf
+import json
+
+try:
+    GraphDef = tf.GraphDef
+except:
+    GraphDef = tf.compat.v1.GraphDef
+
+# from collect import Collector
 from cost_model_xla.pk_graph import PKGraph, postorder_contract_nx
-from trace_utils import *
+from trace_utils import parse_layer_name, parse_pid_from_name
 
 TRACE_PATH = "/root/capture_file/run_0_dec8"
 OUTPUT_PATH = "/root/cluster_spec_test.txt"
@@ -14,20 +26,77 @@ index2name = {}
 index2pid = {}
 index2newname = {}
 
-logger = SingleLogger("/root", "trash_logger", "info")
+# logger = SingleLogger("/root", "trash_logger", "info")
+
+def tf_relabel_func(_name, update_nodes_in_dag):
+    for prefix in ["Comm.", "Comp.", "BW.", "FW.", "UPDATE_."]:
+        if _name.startswith(prefix):
+            return _name
+    if _name.startswith("^"):
+        _name = _name[1:]
+    last_slash_pos = _name.rfind("/")
+    if last_slash_pos != -1 and last_slash_pos < len(_name)-1 and _name[last_slash_pos+1] == "_":
+        _name = _name[:last_slash_pos]
+    if "BytePSPushPull" in _name and "tensor" not in _name:
+        _name = "Comm." + _name
+    elif "allreduce" in _name.lower():
+        if "." in _name:
+            _, tensor_name = _name.split(".")
+            if "_" in tensor_name:
+                tensor_name = tensor_name.split("_")[0]
+            _name = "Comm." + tensor_name
+        else:
+            _name = "UPDATE_." + _name
+    else:
+        if update_nodes_in_dag is not None and _name in update_nodes_in_dag:
+            _name = "UPDATE_." + _name
+        elif _name.startswith("gradients"):
+            _name = "BW." + _name
+        else:
+            _name = "FW." + _name
+    return _name
+
+def wrap_read_graphdef(graphdef_path):
+    if graphdef_path.endswith("pbtxt"):
+        with open(graphdef_path, "r") as f:
+            pb = f.read()
+        graph_def = Parse(pb, GraphDef())
+        json_string = MessageToJson(graph_def)
+        graph_def = json.loads(json_string)
+    else:
+        with open(graphdef_path, "r") as f:
+            graph_def = json.load(f)
+    graph = nx.DiGraph()
+    for node in graph_def["node"]:
+        if "input" in node:
+            for input_tensor_name in node["input"]:
+                input_node_name = input_tensor_name.split(":")[0]
+                graph.add_edge(input_node_name, node["name"])
+    update_nodes_in_dag = set()
+    def recursive_add_succs(_node):
+        for succ_ in graph.successors(_node):
+            update_nodes_in_dag.add(succ_)
+            recursive_add_succs(succ_)
+    for node in graph.nodes:
+        if "allreduce" in node.lower() or "bytepspushpull" in node.lower():
+            recursive_add_succs(node)
+    new_graph = nx.DiGraph()
+    for u, v in graph.edges:
+        new_graph.add_edge(tf_relabel_func(u, update_nodes_in_dag), tf_relabel_func(v, update_nodes_in_dag))
+    return new_graph, update_nodes_in_dag
 
 def relabel_dag_node(_dag) -> nx.DiGraph:
     def relabel_func(old_label):
-        if ("BW" in old_label or "FW" in old_label or "Comm" in old_label) and "^" not in old_label:
-            layer_name = parse_layer_name(old_label)
+        if ("BW" in old_label or "FW" in old_label or "Comm" in old_label or "UPDATE" in old_label) and "^" not in old_label:
+            layer_name = parse_layer_name(old_label)     
             layer_pid = parse_pid_from_name(old_label)
             # if layer_pid not in self.cost_models or layer_name not in self.cost_models[layer_pid].graph_def_util.operation_names:
             #     return "DEL~"+old_label
             # TODO (huhanpeng): different pids share the same index
-            if "Comm" in old_label and layer_name in name2index and layer_pid in name2index[layer_name]:
-                layer_index = name2index[layer_name][layer_pid]
-                new_name = ("[%d]"%layer_index).join(old_label.split(layer_name))
-                return new_name
+            # if "Comm" in old_label and layer_name in name2index and layer_pid in name2index[layer_name]:
+            #     layer_index = name2index[layer_name][layer_pid]
+            #     new_name = ("[%d]"%layer_index).join(old_label.split(layer_name))
+            #     return new_name
 
             layer_index = len(index2name)
             new_name = ("[%d]"%layer_index).join(old_label.split(layer_name))
@@ -43,55 +112,104 @@ def relabel_dag_node(_dag) -> nx.DiGraph:
             return old_label
     return nx.relabel_nodes(_dag, relabel_func)
 
-clct = Collector(TRACE_PATH, comm_backend="BYTEPS")
-clct.init(False)
+# clct = Collector(TRACE_PATH, comm_backend="BYTEPS")
+# clct.init(False)
 
-dag = relabel_dag_node(clct.trail_dag)
+# if clct.simple_dag is not None:
+#     dag = relabel_dag_node(clct.simple_dag)
+# else:
+#     dag = relabel_dag_node(clct.dag)
 
-dag = clct.trail_dag
+# remove dependency from FW to UPDATE
+# for (u, v) in list(dag.edges):
+#     dag.remove_edge(u, v)
+xla_candidates = set()
+with open("/root/xla_candidates.txt", "r") as f:
+    for line in f:
+        xla_candidates.add(line.strip())
+
+dag = wrap_read_graphdef("/root/bert/traces/before_mark_for_compilation_5.pbtxt")
+
+dag = relabel_dag_node(dag)
+
 pkg = PKGraph(dag, dag)
 
 fw_nodes = []
 bw_nodes = []
+comm_nodes = []
+update_nodes = []
 
 for node in dag.nodes:
     if "FW" in node:
         fw_nodes.append(node)
     elif "BW" in node:
         bw_nodes.append(node)
+    elif "Comm" in node:
+        comm_nodes.append(node)
+    elif "UPDATE" in node:
+        update_nodes.append(node)
 
-print("Len FW nodes: {}, Len BW nodes: {}".format(len(fw_nodes), len(bw_nodes)))
+print("Len FW nodes: {}, Len BW nodes: {}, Len COMM nodes: {}, Len UPDATE nodes: {}" \
+    .format(len(fw_nodes), len(bw_nodes), len(comm_nodes), len(update_nodes)))
 
-# Cluster all FW
-source_nodes = sorted(list(dag.nodes), key=lambda x: dag.in_degree(x))
+BW_graph = dag.subgraph(bw_nodes)
+BW_sequence = list(nx.topological_sort(BW_graph))
 
-# Run post order traversal on G
-print("Finding maximal clusters in FW...")
-visited_nodes = set()
-for source in tqdm(source_nodes, total=len(source_nodes)):
-    if source not in visited_nodes and source in dag.nodes:
-        _, _, dag = postorder_contract_nx(dag, pkg, source, visited_nodes, forbidden_list= bw_nodes)
+num_forbidden = int(len(BW_sequence) / 2)
+forbidden_bw = BW_sequence[num_forbidden:]
 
-new_fw_nodes = [node for node in dag.nodes if "FW" in node]
 
-# all BW
-print("Finding maximal clusters in all BW...")
-source_nodes = sorted(list(dag.nodes), key=lambda x: dag.in_degree(x))
-visited_nodes = set()
-for source in tqdm(source_nodes, total=len(source_nodes)):
-    if source not in visited_nodes and source in dag.nodes:
-        _, _, dag = postorder_contract_nx(dag, pkg, source, visited_nodes, forbidden_list= new_fw_nodes)
 
-# all BW, size limit 1/2
-print("Finding maximal clusters in all BW...")
-source_nodes = sorted(list(dag.nodes), key=lambda x: dag.in_degree(x))
-visited_nodes = set()
-for source in tqdm(source_nodes, total=len(source_nodes)):
-    if source not in visited_nodes and source in dag.nodes:
-        _, _, dag = postorder_contract_nx(dag, pkg, source, visited_nodes, forbidden_list= new_fw_nodes, size_limit=int(len(bw_nodes)/2))
+filtered_nodes = []
+for node in dag.nodes:
+    index = int(node.split("[")[1].split("]")[0])
+    orig_name = index2name[index]
+    if orig_name.split(".")[1] not in xla_candidates:
+        filtered_nodes.append(node)
+
+if not os.path.exists("/root/alter_cluster_spec.pickle"):
+    # Cluster all FW
+    source_nodes = sorted(list(dag.nodes), key=lambda x: dag.in_degree(x))
+
+    # Run post order traversal on G
+    print("Finding maximal clusters in FW...")
+    visited_nodes = set()
+    for source in tqdm(source_nodes, total=len(source_nodes)):
+        if source not in visited_nodes and source in dag.nodes:
+            _, _, dag = postorder_contract_nx(dag, pkg, source, visited_nodes, forbidden_list= filtered_nodes + comm_nodes + bw_nodes)
+
+    with open("/root/alter_cluster_spec.pickle", "wb") as f:
+        pickle.dump([fw_nodes, bw_nodes, comm_nodes, update_nodes, 
+                    filtered_nodes, index2name, index2pid, dag, pkg], f)
+else:
+    with open("/root/alter_cluster_spec.pickle", "rb") as f:
+        ( fw_nodes, bw_nodes, comm_nodes, update_nodes, filtered_nodes,
+        index2name, index2pid, dag, pkg )= pickle.load(f)
+
+# new_fw_nodes = [node for node in dag.nodes if "FW" in node]
+
+# # all BW
+# print("Finding maximal clusters in all BW...")
+# source_nodes = sorted(list(dag.nodes), key=lambda x: dag.in_degree(x))
+# visited_nodes = set()
+# for source in tqdm(source_nodes, total=len(source_nodes)):
+#     if source not in visited_nodes and source in dag.nodes:
+#         _, _, dag = postorder_contract_nx(dag, pkg, source, visited_nodes, forbidden_list= filtered_nodes + comm_nodes + new_fw_nodes)
+
+# # all BW, size limit 1/2
+# print("Finding maximal clusters in all BW...")
+# source_nodes = sorted(list(dag.nodes), key=lambda x: dag.in_degree(x))
+# visited_nodes = set()
+# for source in tqdm(source_nodes, total=len(source_nodes)):
+#     if source not in visited_nodes and source in dag.nodes:
+#         _, _, dag = postorder_contract_nx(dag, pkg, source, visited_nodes, forbidden_list= filtered_nodes + comm_nodes + new_fw_nodes, size_limit=int(len(bw_nodes)/2))
 
 def _get_original_name_pid_from_index(name_):
-    index = int(name_.split("[")[1].split("]")[0])
+    try:
+        index = int(name_.split("[")[1].split("]")[0])
+    except:
+        print(name_)
+        input()
     return index2name[index], index2pid[index]
 
 def _get_original_name_pid_from_fused_node(u_):
@@ -109,8 +227,15 @@ def _get_original_name_pid_from_fused_node(u_):
 
 bw_cluster_sizes = []
 bw_cluster_nodes = []
+single_pid = -1
 for node in dag.nodes:
     if "+" in node and "BW" in node:
+        orig_names, pid = _get_original_name_pid_from_fused_node(node)
+        if single_pid == -1:
+            single_pid = pid
+        else:
+            if single_pid != pid:
+                continue
         bw_cluster_sizes.append(len(node.split("+")))
         bw_cluster_nodes.append(node)
 
@@ -137,16 +262,12 @@ for idx in clusters_to_ignore:
 
 # dump cluster mapping
 cluster_index = 0
-single_pid = -1
 with open("/root/partitions_spec.txt", "w") as f:
     for node in dag.nodes():
         if "+" in node:
             orig_names, pid = _get_original_name_pid_from_fused_node(node)
-            if single_pid == -1:
-                single_pid = pid
-            else:
-                if single_pid != pid:
-                    continue
+            if pid != single_pid:
+                continue
             if node not in nodes_to_ignore:
                 for orig_node_name in orig_names:
                     f.write("{} {}\n".format(orig_node_name, cluster_index))

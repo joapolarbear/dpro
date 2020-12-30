@@ -27,7 +27,9 @@ try:
     import_graph_def = tf.graph_util.import_graph_def
 except:
     import_graph_def = tf.compat.v1.graph_util.import_graph_def
-from google.protobuf.json_format import Parse
+from google.protobuf.json_format import Parse as ParseJSON
+from google.protobuf.text_format import Parse as ParseText
+from google.protobuf.json_format import MessageToJson
 
 from tqdm import trange, tqdm
 from sklearn.model_selection import train_test_split
@@ -526,6 +528,7 @@ def gen_max_cluster_kernel_samples_using_replay(sample_generator, dataset_dir, d
             continue
         if not os.path.exists(unopt_path):
             print("[WARNING] Failed to compile to HLO code: {}.".format(unopt_path))
+            os.abort()
             clean_up_dir(profile_dir)
             clean_up_dir(raw_subgraph_dir)
             continue
@@ -698,6 +701,13 @@ def parse_white_list():
                     white_list.add(op_type)
     return white_list
 
+def parse_xla_candidate_ops():
+    candidate_path = CMPaths.DEBUG_XLA_CANDIATES_FILE
+    candidates = set()
+    with open(candidate_path, "r") as f:
+        for line in f:
+            candidates.add(line.strip())
+    return candidates
 
 def gen_kernel_dataset(trace_dir, result_dir, num_samples=2000, num_max_cluster_samples = 5,
                 min_subgraph_level=4, max_subgraph_level=800):
@@ -716,45 +726,91 @@ def gen_kernel_dataset(trace_dir, result_dir, num_samples=2000, num_max_cluster_
 
     # load data from trace dir
     # metadata
-    with open(os.path.join(trace_dir, CMPaths.METADATA_FILE), "r") as f:
-        metadata = json.load(f)
+    # with open(os.path.join(trace_dir, CMPaths.METADATA_FILE), "r") as f:
+    #     metadata = json.load(f)
+    with open(os.path.join(trace_dir, CMPaths.TENSOR_SHAPE_FILE), "r") as f:
+        shape_dict_raw = json.load(f)
     shape_dict = {}
-    for _, op_meta in metadata:
-        for tensor_meta in op_meta["output"]:
-            shape_dict[tensor_meta["name"]] = tensor_meta["shape"]
+    for tensor_name, shape_detail in shape_dict_raw.items():
+        shape_dict[tensor_name] = shape_detail["shape"]
     # TF2XLA supported ops
-    white_list_ops = parse_white_list()
+    # white_list_ops = parse_white_list()
+    candidate_ops = parse_xla_candidate_ops()
     # GraphDef
-    with open(os.path.join(trace_dir, CMPaths.RAW_GRAPH_DEF_FILE), "r") as f:
-        graph_def_as_json = json.load(f)
+    # with open(os.path.join(trace_dir, CMPaths.RAW_GRAPH_DEF_FILE), "r") as f:
+    graph_def_path = os.path.join(trace_dir, CMPaths.AFTER_OPT_TF_DAG_FILE)
+    with open(graph_def_path, "r") as f:
+        if graph_def_path.endswith("pbtxt"):
+            pb = f.read()
+            graph_def = ParseText(pb, GraphDef())
+            json_string = MessageToJson(graph_def)
+            graph_def_as_json = json.loads(json_string)
+        else:
+            graph_def_as_json = json.load(f)
+        # graph_def_as_json = json.load(f)
         # clean up nodes
         ignored_node = set()
         pruned_node = set()
-        IGNORE_OP_TYPES = ["Switch", "VarIsInitializedOp", "ReadVariableOp",
-                           "IsVariableInitialized", "Merge", "ShapeN", "IteratorToStringHandle", "IteratorGetNext", "MakeIterator", "IteratorV2", "Assert"]
-        for node in graph_def_as_json["node"]:
-            # register communication ops into TF, otherwise the GraphDef cannot
-            # be recognized
-            if node["op"] == "BytepsPushPull":
-                import byteps.tensorflow as bps # type: ignore
-                ignored_node.add(node["name"])
-                continue
-            elif node["op"] == "HorovodBroadcast" or node["op"] == "HorovodAllreduce":
-                import horovod.tensorflow as hvd # type: ignore
-                ignored_node.add(node["name"])
-                continue
+        IGNORE_OP_TYPES = ["ShapeN", "_Arg", "VarIsInitializedOp", "ReadVariableOp", "VarHandleOp",
+                           "IsVariableInitialized", "ResourceApplyGradientDescent",
+                            "IteratorToStringHandle", "IteratorGetNext", "MakeIterator", "IteratorV2"]
+        # for node in graph_def_as_json["node"]:
+            # if node["op"] == "VarHandleOp":
+            #     if "attr" in node and "shape" in node["attr"]:
+            #         if node["name"] not in shape_dict or not shape_dict[node["name"]]:
+            #             shape_as_list = []
+            #             for dim in node["attr"]["shape"]["shape"]["dim"]:
+            #                 shape_as_list.append(int(dim["size"]))
+            #             shape_dict[node["name"]+":0"] = shape_as_list
+                        # print("Added shape {} for {}".format(shape_as_list, node["name"]))
+        #     # register communication ops into TF, otherwise the GraphDef cannot
+        #     # be recognized
+        #     if node["op"] == "BytepsPushPull":
+        #         import byteps.tensorflow as bps # type: ignore
+        #         ignored_node.add(node["name"])
+        #         continue
+        #     elif node["op"] == "HorovodBroadcast" or node["op"] == "HorovodAllreduce":
+        #         import horovod.tensorflow as hvd # type: ignore
+        #         ignored_node.add(node["name"])
+        #         continue
 
-            # remove misc nodes and mark unsupported ones
-            if (node["op"] not in white_list_ops and node["op"] not in ["Switch", "While", "Cond"]) \
-                                            or node["op"] in ["ReadVariableOp", "Shape", "ShapeN"]:
+        #     # remove misc nodes and mark unsupported ones
+        #     if (node["op"] not in white_list_ops and node["op"] not in ["Switch", "While", "Cond"]) \
+        #                                     or node["op"] in ["ReadVariableOp", "Shape", "ShapeN"]:
+        #         ignored_node.add(node["name"])
+        #     if node["name"].lower().startswith("save") or node["name"].lower().startswith("final_shape"):
+        #         pruned_node.add(node["name"])
+        #     # TODO(CY): do we need this line?
+        #     if node["name"]+":0" not in shape_dict or not shape_dict[node["name"]+":0"]:
+        #         ignored_node.add(node["name"])
+        # ignored_node = ignored_node.union(pruned_node)
+        all_node_names = set([node["name"] if node["name"][0] != "_" else node["name"][1:] \
+                            for node in graph_def_as_json["node"]])
+        for node in graph_def_as_json["node"]:
+            if node["name"][0] == "_":
+                node["name"] = node["name"][1:]
+            last_slash_pos = node["name"].rfind("/")
+            if last_slash_pos != -1 and last_slash_pos < len(node["name"])-1 \
+                                    and node["name"][last_slash_pos+1] == "_":
+                if node["name"][:last_slash_pos] in all_node_names:
+                    pruned_node.add(node["name"])
+                else:
+                    node["name"] = node["name"][:last_slash_pos]
+                continue
+            if "input" in node:
+                for idx, input_node in enumerate(node["input"]):
+                    if input_node[0] == "_":
+                        node["input"][idx] = input_node[1:]
+                        input_node = input_node[1:]
+                    last_slash_pos = input_node.rfind("/")
+                    if last_slash_pos != -1 and last_slash_pos < len(input_node)-1 \
+                                            and input_node[last_slash_pos+1] == "_":
+                        node["input"][idx] = input_node[:last_slash_pos]
+            if node["name"] not in candidate_ops:
                 ignored_node.add(node["name"])
-            if node["name"].lower().startswith("save") or node["name"].lower().startswith("final_shape"):
-                pruned_node.add(node["name"])
-            # TODO(CY): do we need this line?
-            if node["name"]+":0" not in shape_dict or not shape_dict[node["name"]+":0"]:
+            if node["op"] in IGNORE_OP_TYPES:
                 ignored_node.add(node["name"])
-        ignored_node = ignored_node.union(pruned_node)
-        
+
         # generate cleaned GraphDef
         graph_nodes = graph_def_as_json["node"].copy()
         graph_def_as_json["node"] = []
@@ -762,7 +818,7 @@ def gen_kernel_dataset(trace_dir, result_dir, num_samples=2000, num_max_cluster_
         for node in graph_nodes:
             if node["name"] not in pruned_node:
                 graph_def_as_json["node"].append(node)
-        print("Prune graph from {} nodes to {} nodes".format(len(graph_nodes), len(graph_def_as_json["node"])))
+        # print("Prune graph from {} nodes to {} nodes".format(len(graph_nodes), len(graph_def_as_json["node"])))
         
         for node in graph_def_as_json["node"]:
             if "input" in node:
@@ -793,7 +849,7 @@ def gen_kernel_dataset(trace_dir, result_dir, num_samples=2000, num_max_cluster_
                     should_override = False
                     while node["name"]+":{}".format(i) in shape_dict:
                         shape = shape_dict[node["name"]+":{}".format(i)]
-                        if shape: 
+                        if shape:
                             should_override = True
                         shapes.append(shape)
                         i += 1
@@ -802,12 +858,12 @@ def gen_kernel_dataset(trace_dir, result_dir, num_samples=2000, num_max_cluster_
         cleaned_graph_def_str = json.dumps(graph_def_as_json)
         with open(os.path.join(result_dir, CMPaths.CLEANED_GRAPH_DEF_FILE), "w") as f_cleaned:
             json.dump(graph_def_as_json, f_cleaned, indent=4)
-        graph_def = Parse(cleaned_graph_def_str, GraphDef())
+        graph_def = ParseJSON(cleaned_graph_def_str, GraphDef())
 
     # initialize sample generator
     sample_generator = SampleGenerator(graph_def=graph_def, \
-                            metadata=metadata, ignored_nodes=ignored_node)
-    shutil.copy(os.path.join(trace_dir, CMPaths.METADATA_FILE), result_dir)
+                            shape_dict=shape_dict, ignored_nodes=ignored_node)
+    shutil.copy(os.path.join(trace_dir, CMPaths.TENSOR_SHAPE_FILE), result_dir)
     print("Start generation.")
     completed_samples = 0
     op_hash_set = set()

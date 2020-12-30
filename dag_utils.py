@@ -69,6 +69,9 @@ def tf_relabel_func(_name, update_nodes_in_dag):
             return _name
     if _name.startswith("^"):
         _name = _name[1:]
+    last_slash_pos = _name.rfind("/")
+    if last_slash_pos != -1 and last_slash_pos < len(_name)-1 and _name[last_slash_pos+1] == "_":
+        _name = _name[:last_slash_pos]
     if "BytePSPushPull" in _name and "tensor" not in _name:
         _name = "Comm." + _name
     elif "allreduce" in _name.lower():
@@ -116,6 +119,28 @@ def wrap_read_gml(gml_path, platform="MXNET"):
     else:
         update_nodes_in_dag = None
     return mygraph, update_nodes_in_dag
+
+def wrap_read_graphdef(graphdef_path):
+    with open(graphdef_path, "r") as f:
+        graph_def = json.load(f)
+    graph = nx.DiGraph()
+    for node in graph_def["node"]:
+        if "input" in node:
+            for input_tensor_name in node["input"]:
+                input_node_name = input_tensor_name.split(":")[0]
+                graph.add_edge(input_node_name, node["name"])
+    update_nodes_in_dag = set()
+    def recursive_add_succs(_node):
+        for succ_ in graph.successors(_node):
+            update_nodes_in_dag.add(succ_)
+            recursive_add_succs(succ_)
+    for node in graph.nodes:
+        if "allreduce" in node.lower() or "bytepspushpull" in node.lower():
+            recursive_add_succs(node)
+    new_graph = nx.DiGraph()
+    for u, v in graph.edges:
+        new_graph.add_edge(tf_relabel_func(u, update_nodes_in_dag), tf_relabel_func(v, update_nodes_in_dag))
+    return new_graph, update_nodes_in_dag
 
 def standard_name(_name, platform="TENSORFLOW", update_nodes_in_dag=None):
     '''Fetch and handle the trace name'''

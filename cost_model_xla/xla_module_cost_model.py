@@ -709,9 +709,12 @@ class XLAModuleCostModel():
         graph_def_path = os.path.join(save_dir, CMPaths.GRAPH_DEF_PICKLE_FILE)
         with open(graph_def_path, "rb") as f:
             self.graph_def = pickle.load(f)
-        with open(os.path.join(save_dir, CMPaths.METADATA_FILE), "r") as f:
-            metadata = json.load(f)
-        self.graph_def_util = GraphDefUtil(self.graph_def, metadata=metadata)
+        with open(os.path.join(save_dir, CMPaths.TENSOR_SHAPE_FILE), "r") as f:
+            shape_dict_raw = json.load(f)
+        shape_dict = {}
+        for tensor_name, shape_detail in shape_dict_raw.items():
+            shape_dict[tensor_name] = shape_detail["shape"]
+        self.graph_def_util = GraphDefUtil(self.graph_def, shape_dict=shape_dict)
         self.computation_cache = {}
 
         self._tmp_dir = os.path.abspath(tmp_dir)
