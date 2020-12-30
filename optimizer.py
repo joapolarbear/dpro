@@ -116,10 +116,13 @@ class _BaseCostModel:
     def apply(self, s, __dag, __pkg):
         raise NotImplementedError()
     
+    def load_init_ckpt(self):
+        raise NotImplementedError()
+    
     def load_ckpt(self):
         raise NotImplementedError()
     
-    def checkpoint(self):
+    def checkpoint(self, *args):
         raise NotImplementedError()
 
 class _XLACostModel(_BaseCostModel):
@@ -134,10 +137,13 @@ class _XLACostModel(_BaseCostModel):
         self.ckpt_path = os.path.join(ROOT_PATH, "xla_ckpt.pickle")
         ### Used to cache the node attribtue
         self.node_attr_cache = AttrCache()
+
+        self.load_init_ckpt()
     
-    def load_ckpt(self):
-        if args_.ckpt and os.path.isfile(self.ckpt_path):
-            with open(self.ckpt_path, "rb") as f:
+    def load_init_ckpt(self):
+        init_ckpt_path = os.path.join(ROOT_PATH, "xla_init_ckpt.pickle")
+        if args_.ckpt and os.path.isfile(init_ckpt_path):
+            with open(init_ckpt_path, "rb") as f:
                 G, PKG, node_attr_cache, initial_partitions_formed = pickle.load(f)
                 self.node_attr_cache = node_attr_cache
             SingleLogger().info("Reading init graph from cache.")
@@ -152,19 +158,26 @@ class _XLACostModel(_BaseCostModel):
                     self._cache_node_attr(node, G.nodes[node])
 
             G, initial_partitions_formed = self._init_partition(G, PKG, initial_partitions_formed)
-            with open(self.ckpt_path, "wb") as f:
+            with open(init_ckpt_path, "wb") as f:
                 pickle.dump([G, PKG, self.node_attr_cache, initial_partitions_formed], f)
-            SingleLogger().info("Graph cache dumped to {}.".format(self.ckpt_path))
+            SingleLogger().info("Graph cache dumped to {}.".format(init_ckpt_path))
         
         if "BPF_DUMP_INIT_CLUSTER_TO" in os.environ:
             self._dump_cluster_mapping(G, os.environ["BPF_DUMP_INIT_CLUSTER_TO"])
         SingleLogger().info("Successfully initialized {} partitions.".format(initial_partitions_formed))
         return G, PKG
     
-    def checkpoint(self):
-        raise NotImplementedError()
+    def load_ckpt(self):
+        if args_.ckpt and os.path.isfile(self.ckpt_path):
+            with open(self.ckpt_path, "rb") as f:
+                G, PKG, node_attr_cache = pickle.load(f)
+                self.node_attr_cache = node_attr_cache
+            return G, PKG
+        return None, None
+    
+    def checkpoint(self, G, PKG):
         with open(self.ckpt_path, "wb") as f:
-            pickle.dump([PKG, self.node_attr_cache], f)
+            pickle.dump([G, PKG, self.node_attr_cache], f)
 
     def _load_cm(self):
         cost_models = {}
@@ -494,7 +507,7 @@ class _XLACostModel(_BaseCostModel):
         * If new_name has been cached, directly set _dag with the cached attributes
         * Otherwise, combine the attribution of all original nodes
             * If avg is not given, query the cost model
-            * Otherwize, use the given avg 
+            * Otherwize, use the given avg (TODO Disabled, since we have cached attr in self.node_attr_cache)
         
         Return
         ------
@@ -502,7 +515,6 @@ class _XLACostModel(_BaseCostModel):
         '''
         if new_name in self.node_attr_cache:
             nx.set_node_attributes(_dag, {new_name:self.node_attr_cache[new_name]})
-            return self.node_attr_cache[new_name]["avg"]
             # _dag.add_node(new_name, **self.node_attr_cache[new_name])
         else:
             ns = new_name.split("+")
@@ -514,8 +526,15 @@ class _XLACostModel(_BaseCostModel):
             ### set and cache the attribute
             nx.set_node_attributes(_dag, {new_name:attrs})
             self._cache_node_attr(new_name, _dag.nodes[new_name])
-            return attrs["avg"]
+        
+        ### TODO (huhanpeng): apply to other GPUs, cache the same attribute for corresponding operators on other GPUs
+        for other_name in self.opt._debug_convert_to_the_other_machine(new_name):
+            if other_name in self.node_attr_cache:
+                continue
+            self._cache_node_attr(other_name, _dag.nodes[new_name])
 
+        return self.node_attr_cache[new_name]["avg"]
+    
     def _op_fusion(self, _dag, _pkg: PKGraph, u_, v_):
         # test if two nodes can be fused
         if _pkg.can_contract_edge(u_, v_):
@@ -740,7 +759,11 @@ class Optimizer:
         
         self.forbidden_list = []
 
-        self.base_cost, _, mem_usage = self.evaluate(self.dag)
+        if "BPF_DUMP_INIT_GRAPH_TO" in os.environ:
+            bpf_dump_init_graph_to = os.environ["BPF_DUMP_INIT_GRAPH_TO"]
+        else:
+            bpf_dump_init_graph_to = None
+        self.base_cost, self.exct_dag, self.base_mem_usage = self.evaluate(G, _filename=bpf_dump_init_graph_to)
         SingleLogger().info("Start to search, the original iteration time is %f" % self.base_cost)
 
         ### Budget, in GB
@@ -840,6 +863,7 @@ class Optimizer:
         ### Select nodes on the critical path of the execution graph as the candidates
         ### Return the candidates and the revised dependency graph
         if critical_path is None:
+            raise ValueError("critical_path must be given to select candidates")
             if isinstance(GS, GraphState):
                 new_dag = self.apply_strategies(self.dag, GS.strategy)
             elif isinstance(GS, nx.DiGraph):
@@ -984,50 +1008,39 @@ class MCMCOptimizer(Optimizer):
             self.heat_window_size = 5
 
     def search(self, graph_cache=os.path.join(ROOT_PATH, "graph_cache.pickle"), step_size=1):
-        
+        G = PKG = None
         for _cost_model in self.cst_md_mng.cost_model_list:
-            G, PKG = _cost_model.load_ckpt()
-
-        # if args_.ckpt and graph_cache is not None and os.path.isfile(graph_cache):
-        #     with open(graph_cache, "rb") as f:
-        #         G, PKG, node_attr_cache, initial_partitions_formed = pickle.load(f)
-        #         self.node_attr_cache = node_attr_cache
-        #     SingleLogger().info("Reading init graph from cache.")
-        # else:
-        #     G = self.dag.copy()
-        #     PKG = PKGraph(G)
-        #     # # randomly contract edges if possible
-        #     # k = int(len(G.edges()) * init_edges_to_contract)
-        #     initial_partitions_formed = 0
-        #     for node in G.nodes():
-        #         if node not in self.node_attr_cache:
-        #             self._cache_node_attr(node, G.nodes[node])
-
-        #     for _cost_model in self.cst_md_mng.cost_model_list:
-        #         G, initial_partitions_formed = _cost_model._init_partition(G, PKG, initial_partitions_formed)
-        #     if graph_cache:
-        #         with open(graph_cache, "wb") as f:
-        #             pickle.dump([G, PKG, self.node_attr_cache, initial_partitions_formed], f)
-        #         SingleLogger().info("Graph cache dumped to {}.".format(graph_cache))
+            _G, _PKG = _cost_model.load_init_ckpt()
+            if _G is not None:
+                G, PKG = _G, _PKG
         
-        # initialize heat history
-        for node in G.nodes:
-            self.heat_history[node] = [(0, 0)] * self.heat_window_size
-        SingleLogger().info("="*20 + " Search Starts " + "="*20)
+        if args_.ckpt and graph_cache is not None and os.path.isfile(graph_cache):
+            for _cost_model in self.cst_md_mng.cost_model_list:
+                _G, _PKG = _cost_model.load_ckpt()
+                if _G is not None:
+                    G, PKG = _G, _PKG
+            
+            with open(graph_cache, "rb") as f:
+                self.heat_window_size, self.heat_history, self.best_cost, self.best_strategy, self.step, self.trajectory = pickle.load(f)
 
-        if "BPF_DUMP_INIT_GRAPH_TO" in os.environ:
-            bpf_dump_init_graph_to = os.environ["BPF_DUMP_INIT_GRAPH_TO"]
+            self.cur_cost, self.exct_dag, self.mem_usage = self.evaluate(G)
+            self.cost_star = self.mem_usage_star = None
+            SingleLogger().info("Loading checkpoint of step {}".format{self.step})
         else:
-            bpf_dump_init_graph_to = None
-        cost, exct_dag, self.mem_usage = self.evaluate(G, _filename=bpf_dump_init_graph_to)
+            for node in G.nodes:
+                self.heat_history[node] = [(0, 0)] * self.heat_window_size
+            self.best_cost = self.base_cost
+            self.best_strategy = []
+            self.step = 0
+            self.cur_cost, self.mem_usage = self.base_cost, self.base_mem_usage
+            self.cost_star = self.mem_usage_star = None 
+            self.trajectory = []
 
-        trajectory = []
-        candidates, _ = self.candidate_selection(G, topk=None, critical_path=self.wrap_critical_path(exct_dag))
+        SingleLogger().info("="*20 + " Search Starts " + "="*20)
+        candidates, _ = self.candidate_selection(G, topk=None, critical_path=self.wrap_critical_path(self.exct_dag))
         search_space, weights = self.init_search_space(candidates, G, PKG)
         SingleLogger().info("\033[94m # of candidates: {}, space: {}\033[0m".format(len(candidates), len(search_space)))
-        best_cost = cost
-        best_strategy = trajectory.copy()
-        self.step = 0
+       
         while len(search_space) > 0:
             invalid_strategies = set()
             while True and len(search_space) > 0:
@@ -1047,7 +1060,7 @@ class MCMCOptimizer(Optimizer):
                     except OptNoValidStrategyError:
                         # no valid strategies available, refresh search space
                         SingleLogger().info("\033[94m Search space exhausted. \033[0m")
-                        candidates, _ = self.candidate_selection(G_star, topk=None)
+                        candidates, _ = self.candidate_selection(G_star, topk=None, critical_path=None)
                         search_space, weights = self.init_search_space(candidates, G_star, PKG_star)
                         invalid_strategies = set()
                         continue
@@ -1067,24 +1080,28 @@ class MCMCOptimizer(Optimizer):
                     strategy_history_in_step.append(strategy)
                     strategy_introduced_nodes.update(nodes_introduced)
                     strategy_removed_nodes.update(nodes_removed)
+
+                    self.cost_star, self.exct_dag, self.mem_usage_star = self.evaluate(G_star)
                     if successful_strategies < step_size:
-                        candidates, _ = self.candidate_selection(G_star, topk=None)
+                        candidates, _ = self.candidate_selection(G_star, topk=None, critical_path=self.wrap_critical_path(self.exct_dag))
                         search_space, weights = self.init_search_space(candidates, G_star, PKG_star)
                     invalid_strategies = set()
                     msg = "\033[94m" + "Strategy ({}, {}, {}) successfully applied.".format(*strategy)
                     if len(msg) > 200:
                         msg = msg[:200] + "... successfully applied."
                     SingleLogger().info(msg + "\033[0m")
-                ### Start to replay
-                if self.step % 20 == 0:
-                    cost_star, exct_dag, mem_usage = self.evaluate(G_star, _filename=os.path.join(ROOT_PATH, "searched_graph/{}.json".format(self.step)))
-                else:
-                    cost_star, exct_dag, mem_usage = self.evaluate(G_star)
+                
+                # ### Start to replay
+                # if self.step % 20 == 0:
+                #     cost_star, self.exct_dag, mem_usage = self.evaluate(G_star, _filename=os.path.join(ROOT_PATH, "searched_graph/{}.json".format(self.step)))
+                # else:
+                #     cost_star, self.exct_dag, mem_usage = self.evaluate(G_star)
+
                 # if step < 200:
                 #     MCMC_BETA = 1
                 # else:
                 #     MCMC_BETA = args.mcmc_beta
-                SingleLogger().info("\033[94m Step: {}, Orig cost: {}, New cost: {} \033[0m".format(self.step, cost, cost_star))
+                SingleLogger().info("\033[94m Step: {}, Orig cost: {}, New cost: {} \033[0m".format(self.step, self.cur_cost, self.cost_star))
                 self.step += 1
 
                 ### Update heat history
@@ -1099,7 +1116,7 @@ class MCMCOptimizer(Optimizer):
                                 continue
                             else:
                                 combined_history_list[idx].append(h)
-                        node_history.insert(0, (cost - cost_star, self.step))
+                        node_history.insert(0, (self.cur_cost - self.cost_star, self.step))
                         node_history.pop()
                         # print("node: {}".format(node))
                         # print("node_history: {}".format(node_history))
@@ -1112,20 +1129,20 @@ class MCMCOptimizer(Optimizer):
                     else:
                         combined_history.append((None, None))
 
-                if self.accept_or_not(cost, cost_star):
+                if self.accept_or_not(self.cur_cost, self.cost_star):
                     invalid_strategies = set()
 
                     ### generate history for new nodes
-                    combined_history.insert(0, (cost - cost_star, self.step))
+                    combined_history.insert(0, (self.cur_cost - self.cost_star, self.step))
                     combined_history.pop()
                     for node in strategy_introduced_nodes:
                         self.heat_history[node] = combined_history.copy()
 
                     G = G_star
                     PKG = PKG_star
-                    cost = cost_star
-                    trajectory += strategy_history_in_step
-                    self.mem_usage = mem_usage
+                    self.trajectory += strategy_history_in_step
+                    self.cur_cost = cost_star
+                    self.mem_usage = mem_usage_star
 
                     ### clean up heat history for removed nodes
                     for node in strategy_removed_nodes:
@@ -1133,20 +1150,29 @@ class MCMCOptimizer(Optimizer):
                             self.heat_history.pop(node)
 
                     ### Cache the best strategy
-                    if cost < best_cost:
-                        best_cost = cost
-                        best_strategy = trajectory.copy()
+                    if self.cur_cost < self.best_cost:
+                        self.best_cost = self.cur_cost
+                        self.best_strategy = self.trajectory.copy()
                     ### Init new search space
-                    candidates, _ = self.candidate_selection(G, topk=None, critical_path=self.wrap_critical_path(exct_dag))
+                    candidates, _ = self.candidate_selection(G, topk=None, critical_path=self.wrap_critical_path(self.exct_dag))
                     search_space, weights = self.init_search_space(candidates, G, PKG)
                     break
-            SingleLogger().info("\033[94m" + "Speedup to the origin: %6.4f %%"%(100 * (self.base_cost - cost) / self.base_cost) + "'\033[0m'")
-            SingleLogger().info("\033[94m" + "Best speedup: %d th acception, speed up to the origin: %6.4f %%"%(len(best_strategy), 100 * (self.base_cost - best_cost) / self.base_cost) + "'\033[0m'")
+            SingleLogger().info("\033[94m" + "Speedup to the origin: %6.4f %%"%(100 * (self.base_cost - self.cur_cost) / self.base_cost) + "'\033[0m'")
+            SingleLogger().info("\033[94m" + "Best speedup: %d th acception, speed up to the origin: %6.4f %%"%(len(self.best_strategy), 100 * (self.base_cost - self.best_cost) / self.base_cost) + "'\033[0m'")
             with open(os.path.join(ROOT_PATH, "search_trajectory.txt"), "a") as f:
-                f.write(str(time.time()) + ": {}".format(100 * (self.base_cost - best_cost) / self.base_cost) + "\n")
+                f.write(str(time.time()) + ": {},{},{}".format(
+                    self.step,
+                    100 * (self.base_cost - self.cur_cost) / self.base_cost,
+                    100 * (self.base_cost - self.best_cost) / self.base_cost) + "\n")
             with open(os.path.join(ROOT_PATH, "best_strategy.txt"), "w") as f:
-                json.dump({"best_strategy": best_strategy}, f)
- 
+                json.dump({"best_strategy": self.best_strategy}, f)
+            
+            ### checkpints
+            for _cost_model in self.cst_md_mng.cost_model_list:
+                _cost_model.checkpoint()
+            with open(graph_cache, "wb") as f:
+                pickle.dump([self.heat_window_size, self.heat_history, self.best_cost, self.best_strategy, self.step, self.trajectory], f)
+    
     def accept_or_not(self, cost, new_cost):
         # prob = min(1, (math.exp(beta * (cost - new_cost))))
         if cost > new_cost:
@@ -1156,10 +1182,10 @@ class MCMCOptimizer(Optimizer):
             prob = math.exp(MCMC_BETA * (cost - new_cost))
             r = random.random()
             if r < prob:
-                SingleLogger().info("\033[92m" + "Accept a worse action with {} < {} ".format(r, prob) + "\033[0m")
+                SingleLogger().info("\033[92m" + "Accept a worse action with random value: {} < {} ".format(r, prob) + "\033[0m")
                 return True
             else:
-                SingleLogger().info("\033[93m" + "Rejected a worse action with {} >= {} ".format(r, prob) + "\033[0m")
+                SingleLogger().info("\033[93m" + "Rejected a worse action with random value: {} >= {} ".format(r, prob) + "\033[0m")
                 return False
 
 class MCTSOptimizer(Optimizer):
