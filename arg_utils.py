@@ -58,7 +58,7 @@ parser.add_argument("--heat_window_size", type=int, default=5, help="Window size
 parser.add_argument("--simulate", action="store_true", help="If this arg is set, simulate the cost model, not use the real cost model.")
 parser.add_argument("--relabel", action="store_true", help="If this arg is set, relabel the dag with indexes.")
 parser.add_argument("--ckpt", action="store_true", help="If this arg is set, start from cached data")
-parser.add_argument("--workspace", type=str, default="/root/opt_workerspace", help="Workerspace of the optimizer")
+parser.add_argument("--workspace", type=str, default="/root/opt_workspace", help="Workerspace of the optimizer")
 
 args = parser.parse_args()
 

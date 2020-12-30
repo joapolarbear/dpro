@@ -125,7 +125,7 @@ class AMPPredictor:
             to_process = [u]
             while len(to_process) > 0:
                 _u = to_process.pop(0)
-                if "ConstantFolding" in _u or "LayoutOptimizer" in _u:
+                if "ConstantFolding" in _u or "LayoutOptimizer" in _u or "group_deps" in _u:
                     to_process += [x for x, _ in dag.in_edges(_u) if x != _u]
                     continue
                 if "AMPCastToFp32" in _u:
@@ -134,8 +134,13 @@ class AMPPredictor:
                     assert len(prevs) == 1, prevs
                     _rm_cast_op(prevs[0][0], _u, op_name)
                 else:
+                    try:
+                        cast_time = self.output_cast_time(_u)
+                    except KeyError:
+                        to_process += [x for x, _ in dag.in_edges(_u) if x != _u]
+                        continue
                     ### the boundary of mixed precision, add a cast op
-                    _add_cast_op(_u, op_name, self.output_cast_time(_u), to16=True)
+                    _add_cast_op(_u, op_name, cast_time, to16=True)
 
         ### handle successors
         out_cast_time = self.output_cast_time(op_name, tofp16=False)

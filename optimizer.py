@@ -117,9 +117,11 @@ class _BaseCostModel:
         raise NotImplementedError()
     
     def load_init_ckpt(self):
+        ''' Load the init states BEFORE the search process, reduce the preprocessing time, e.g., XLA cost model need to init partition'''
         raise NotImplementedError()
     
     def load_ckpt(self):
+        ''' Load checkponits during the search process '''
         raise NotImplementedError()
     
     def checkpoint(self, *args):
@@ -137,8 +139,6 @@ class _XLACostModel(_BaseCostModel):
         self.ckpt_path = os.path.join(ROOT_PATH, "xla_ckpt.pickle")
         ### Used to cache the node attribtue
         self.node_attr_cache = AttrCache()
-
-        self.load_init_ckpt()
     
     def load_init_ckpt(self):
         init_ckpt_path = os.path.join(ROOT_PATH, "xla_init_ckpt.pickle")
@@ -763,8 +763,7 @@ class Optimizer:
             bpf_dump_init_graph_to = os.environ["BPF_DUMP_INIT_GRAPH_TO"]
         else:
             bpf_dump_init_graph_to = None
-        self.base_cost, self.exct_dag, self.base_mem_usage = self.evaluate(G, _filename=bpf_dump_init_graph_to)
-        SingleLogger().info("Start to search, the original iteration time is %f" % self.base_cost)
+        self.base_cost, self.exct_dag, self.base_mem_usage = self.evaluate(self.dag, _filename=bpf_dump_init_graph_to)
 
         ### Budget, in GB
         self.memory_budget = memory_budget if memory_budget is not None else 1
@@ -1008,7 +1007,8 @@ class MCMCOptimizer(Optimizer):
             self.heat_window_size = 5
 
     def search(self, graph_cache=os.path.join(ROOT_PATH, "graph_cache.pickle"), step_size=1):
-        G = PKG = None
+        G = self.dag.copy()
+        PKG = PKGraph(G)
         for _cost_model in self.cst_md_mng.cost_model_list:
             _G, _PKG = _cost_model.load_init_ckpt()
             if _G is not None:
@@ -1022,21 +1022,21 @@ class MCMCOptimizer(Optimizer):
             
             with open(graph_cache, "rb") as f:
                 self.heat_window_size, self.heat_history, self.best_cost, self.best_strategy, self.step, self.trajectory = pickle.load(f)
-
-            self.cur_cost, self.exct_dag, self.mem_usage = self.evaluate(G)
-            self.cost_star = self.mem_usage_star = None
-            SingleLogger().info("Loading checkpoint of step {}".format{self.step})
+            SingleLogger().info("Loading checkpoint of step {}".format(self.step))
         else:
             for node in G.nodes:
                 self.heat_history[node] = [(0, 0)] * self.heat_window_size
             self.best_cost = self.base_cost
             self.best_strategy = []
             self.step = 0
-            self.cur_cost, self.mem_usage = self.base_cost, self.base_mem_usage
-            self.cost_star = self.mem_usage_star = None 
             self.trajectory = []
+            
+            SingleLogger().info("No checkpoint found, search from scratch")
 
         SingleLogger().info("="*20 + " Search Starts " + "="*20)
+        SingleLogger().info("\033[92m" + "Start to search, the original iteration time is %f" % self.base_cost + "\033[0m")
+        self.cur_cost, self.exct_dag, self.mem_usage = self.evaluate(G)
+        self.cost_star = self.mem_usage_star = None
         candidates, _ = self.candidate_selection(G, topk=None, critical_path=self.wrap_critical_path(self.exct_dag))
         search_space, weights = self.init_search_space(candidates, G, PKG)
         SingleLogger().info("\033[94m # of candidates: {}, space: {}\033[0m".format(len(candidates), len(search_space)))
@@ -1141,8 +1141,8 @@ class MCMCOptimizer(Optimizer):
                     G = G_star
                     PKG = PKG_star
                     self.trajectory += strategy_history_in_step
-                    self.cur_cost = cost_star
-                    self.mem_usage = mem_usage_star
+                    self.cur_cost = self.cost_star
+                    self.mem_usage = self.mem_usage_star
 
                     ### clean up heat history for removed nodes
                     for node in strategy_removed_nodes:
@@ -1169,7 +1169,7 @@ class MCMCOptimizer(Optimizer):
             
             ### checkpints
             for _cost_model in self.cst_md_mng.cost_model_list:
-                _cost_model.checkpoint()
+                _cost_model.checkpoint(G, PKG)
             with open(graph_cache, "wb") as f:
                 pickle.dump([self.heat_window_size, self.heat_history, self.best_cost, self.best_strategy, self.step, self.trajectory], f)
     
