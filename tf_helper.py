@@ -376,7 +376,7 @@ class TimelineHook(tf.train.ProfilerHook):
                             if last_slash_pos != -1 and last_slash_pos < len(input_node)-1 \
                                                     and input_node[last_slash_pos+1] == "_":
                                 node["input"][idx] = input_node[:last_slash_pos]
-                            self.partition_dag.add_edge(node["input"][idx], node["name"])
+                            self.partition_dag.add_edge(node["input"][idx].split(":")[0], node["name"])
         
         with open(os.path.join(self.trace_dir, "tensor_shapes.json"), "w") as f:
                 json.dump(self.shape_dict, f, indent=4)
