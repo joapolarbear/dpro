@@ -16,10 +16,11 @@ if CMEnvs.CM_PROFILE_GPU in os.environ:
     try:
         BPF_PROFILE_GPU = int(os.environ[CMEnvs.CM_PROFILE_GPU])
     except:
-        print("[ERROR] Invalid {} value (must be an integer).".format(CMEnvs.CM_PROFILE_GPU))
+        print("[WARNING] Invalid BPF_COST_MODEL_PROFILE_GPU value (must be an integer).")
         exit(-1)
 else:
-    print("[ERROR] Required environment {} value not set.".format(CMEnvs.CM_PROFILE_GPU))
+    print("[WARNING] Required environment BPF_COST_MODEL_PROFILE_GPU value not set.")
+    BPF_PROFILE_GPU = None
     exit(-1)
 
 def _check_file_available_for_writing(path):

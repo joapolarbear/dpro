@@ -5,6 +5,7 @@ import numpy as np
 from trace_utils import *
 from logger_utils import Singleton, SingleLogger
 import arg_utils
+import pickle
 args_ = arg_utils.SingleArg().args
 
 if args_.platform == "MXNET":
@@ -17,7 +18,7 @@ else:
     raise NotImplementedError()
 
 class AMPPredictor:
-    def __init__(self, meta_info):
+    def __init__(self, meta_info, ckpt=True):
         ### load AMP cost model
         self.cost_model = {}
         cm_dir = os.path.join(os.path.dirname(os.path.abspath(
@@ -31,11 +32,23 @@ class AMPPredictor:
             self.cost_model[grp.op_type] = grp
         if len(self.cost_model) == 0:
             SingleLogger().warn("No AMP cost model at {}".format(cm_dir))
-        self.meta_info = meta_info
-        self.op_status = {}
-
-        self.cast_cnt = 0
         
+        self.meta_info = meta_info
+
+        ### load checkpoint
+        self.ckpt_path = os.path.join(os.path.dirname(os.path.abspath(
+            __file__)), ".ckpt_amp.pickle")
+        if ckpt and os.path.isfile(self.ckpt_path):
+            with open(self.ckpt_path, "rb") as f:
+                self.cast_cnt, self.op_status = pickle.load(f)
+        else:
+            self.cast_cnt = 0
+            self.op_status = {} 
+    
+    def checkpoint(self):
+        with open(self.ckpt_path, "wb") as f:
+            pickle.dump([self.cast_cnt, self.op_status], f)
+
     def pred_amp_avg(self, op_name, _avg=None):
         ''' Predict fp16 time of fp32 operators
             If _avg is given, use the relative value
@@ -112,7 +125,7 @@ class AMPPredictor:
             to_process = [u]
             while len(to_process) > 0:
                 _u = to_process.pop(0)
-                if "ConstantFolding" in _u or "LayoutOptimizer" in _u:
+                if "ConstantFolding" in _u or "LayoutOptimizer" in _u or "group_deps" in _u:
                     to_process += [x for x, _ in dag.in_edges(_u) if x != _u]
                     continue
                 if "AMPCastToFp32" in _u:
@@ -121,8 +134,13 @@ class AMPPredictor:
                     assert len(prevs) == 1, prevs
                     _rm_cast_op(prevs[0][0], _u, op_name)
                 else:
+                    try:
+                        cast_time = self.output_cast_time(_u)
+                    except KeyError:
+                        to_process += [x for x, _ in dag.in_edges(_u) if x != _u]
+                        continue
                     ### the boundary of mixed precision, add a cast op
-                    _add_cast_op(_u, op_name, self.output_cast_time(_u), to16=True)
+                    _add_cast_op(_u, op_name, cast_time, to16=True)
 
         ### handle successors
         out_cast_time = self.output_cast_time(op_name, tofp16=False)
