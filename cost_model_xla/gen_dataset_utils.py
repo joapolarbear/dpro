@@ -79,7 +79,9 @@ class XlaKernelDataset(object):
 
     def _validate_dataset(self):
         files = os.listdir(self._dataset_path)
-        for fname in [CMPaths.FEATURE_DIR, CMPaths.LABEL_FILE]:
+        for fname in [CMPaths.FEATURE_DIR, CMPaths.LABEL_FILE, 
+                        CMPaths.CLEANED_GRAPH_DEF_FILE, 
+                        CMPaths.TENSOR_SHAPE_FILE]:
             if fname not in files:
                 raise RuntimeError("Cannot find {} in {}.".format(fname, self._dataset_path))
         self._label_file_path = os.path.join(self._dataset_path, CMPaths.LABEL_FILE)
@@ -522,13 +524,14 @@ def gen_max_cluster_kernel_samples_using_replay(sample_generator, dataset_dir, d
             # print("[INFO] Successfully compile to HLO code.")
         except:
             print("[WARNING] Failed to compile to HLO code.")
-            raise
+            # raise
             clean_up_dir(profile_dir)
             clean_up_dir(raw_subgraph_dir)
             continue
         if not os.path.exists(unopt_path):
             print("[WARNING] Failed to compile to HLO code: {}.".format(unopt_path))
-            os.abort()
+            # print(def_path)
+            # os.abort()
             clean_up_dir(profile_dir)
             clean_up_dir(raw_subgraph_dir)
             continue
@@ -751,7 +754,7 @@ def gen_kernel_dataset(trace_dir, result_dir, num_samples=2000, num_max_cluster_
         # clean up nodes
         ignored_node = set()
         pruned_node = set()
-        IGNORE_OP_TYPES = ["ShapeN", "_Arg", "VarIsInitializedOp", "ReadVariableOp", "VarHandleOp",
+        IGNORE_OP_TYPES = ["ShapeN", "_Arg", "_Send", "_Recv", "VarIsInitializedOp", "ReadVariableOp", "VarHandleOp",
                            "IsVariableInitialized", "ResourceApplyGradientDescent",
                             "IteratorToStringHandle", "IteratorGetNext", "MakeIterator", "IteratorV2"]
         # for node in graph_def_as_json["node"]:
@@ -794,9 +797,9 @@ def gen_kernel_dataset(trace_dir, result_dir, num_samples=2000, num_max_cluster_
                                     and node["name"][last_slash_pos+1] == "_":
                 if node["name"][:last_slash_pos] in all_node_names:
                     pruned_node.add(node["name"])
+                    continue
                 else:
                     node["name"] = node["name"][:last_slash_pos]
-                continue
             if "input" in node:
                 for idx, input_node in enumerate(node["input"]):
                     if input_node[0] == "_":

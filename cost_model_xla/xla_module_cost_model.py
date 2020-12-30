@@ -726,13 +726,17 @@ class XLAModuleCostModel():
         if not os.path.exists(save_dir):
             os.mkdir(save_dir)
         dataset_folder_path = os.path.join(dataset_path, CMPaths.DATASET_DIR)
+        # start training
         train_kernel_model(dataset_folder_path, save_dir)
+        # transfer graph def into save_dir 
         graph_def_path = os.path.join(dataset_path, CMPaths.CLEANED_GRAPH_DEF_FILE)
         with open(graph_def_path, "r") as f:
             cleaned_graph_def_str = f.read()
         graph_def = Parse(cleaned_graph_def_str, GraphDef())
         with open(os.path.join(save_dir, CMPaths.GRAPH_DEF_PICKLE_FILE), "wb") as f:
             pickle.dump(graph_def, f)
+        # transfer tensor shapes into save_dir
+        shutil.copy(os.path.join(dataset_path, CMPaths.TENSOR_SHAPE_FILE), save_dir)
 
     def predict(self, node_names):
         try:

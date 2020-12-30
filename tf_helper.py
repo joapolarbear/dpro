@@ -244,6 +244,8 @@ class TimelineHook(tf.train.ProfilerHook):
         self.has_data = False
 
         self.shape_dict = {}
+        self.run_metadata = None
+        self.partition_dag = None
 
         self._output_file = os.path.join(self.trace_dir, "timeline-{}.json")
         self._file_writer = tf.summary.FileWriterCache.get(self.trace_dir) if _summary else None
@@ -266,8 +268,11 @@ class TimelineHook(tf.train.ProfilerHook):
             if self.has_data and not self._request_summary:
                 ### the step after the last trace step, output data
                 self._end_trace = True
-                graphdef = tf.get_default_graph().as_graph_def(add_shapes=True)
-                _t = threading.Thread(target=self.output_traces, args=(tf.get_default_graph().get_operations(), graphdef))
+                partition_graphs = []
+                for idx in range(len(self.run_metadata.partition_graphs)):
+                    graph_def = self.run_metadata.partition_graphs[idx]
+                    partition_graphs.append(graph_def)
+                _t = threading.Thread(target=self.output_traces, args=(tf.get_default_graph().get_operations(), partition_graphs))
                 _t.start()
         else:
             self._request_summary = False
@@ -286,11 +291,7 @@ class TimelineHook(tf.train.ProfilerHook):
             self._timer.update_last_triggered_step(stale_global_step)
         global_step = stale_global_step + 1
         if self._request_summary:
-            for idx in range(len(run_values.run_metadata.partition_graphs)):
-                graph_def = run_values.run_metadata.partition_graphs[idx]
-                graph_str = json.loads(MessageToJson(graph_def))
-                with open(os.path.join(self.trace_dir, "partition_def_{}.json".format(idx)), "w") as f:
-                    json.dump(graph_str, f, indent=4)
+            self.run_metadata = run_values.run_metadata
             global_step = run_context.session.run(self._global_step_tensor)
             self._timer.update_last_triggered_step(global_step)
             self._save(global_step, self._output_file.format(global_step),
@@ -316,7 +317,7 @@ class TimelineHook(tf.train.ProfilerHook):
                                          "step_%d" % global_step)
         self._next_step = global_step + 1
 
-    def output_traces(self, ops, graphdef):
+    def output_traces(self, ops, partition_graphs):
         self.traces = {"traceEvents":[]}
         ### the ProfilerHook of tensorflow will output the timeline to self.trace_dir/timeline-{global_step}.json
         for file in sorted(os.listdir(self.trace_dir)):
@@ -342,9 +343,43 @@ class TimelineHook(tf.train.ProfilerHook):
                 "shape": _shape,
                 "dtype": t.dtype.name
             }
-        graph_str = json.loads(MessageToJson(graphdef))
-        with open(os.path.join(self.trace_dir, "final_graph.json"), "w") as f:
-            json.dump(graph_str, f, indent=4)
+
+        for idx, graph_def in enumerate(partition_graphs):
+            graph_json = json.loads(MessageToJson(graph_def))
+            with open(os.path.join(self.trace_dir, "partition_def_{}.json".format(idx)), "w") as f:
+                json.dump(graph_json, f, indent=4)
+            
+            if idx == 0:
+                # generate dag
+                self.partition_dag = nx.DiGraph()
+                # clean node names in graph def
+                pruned_node = set()
+                all_node_names = set([node["name"] if node["name"][0] != "_" else node["name"][1:] \
+                                                                    for node in graph_json["node"]])
+                for node in graph_json["node"]:
+                    if node["name"][0] == "_":
+                        node["name"] = node["name"][1:]
+                    last_slash_pos = node["name"].rfind("/")
+                    if last_slash_pos != -1 and last_slash_pos < len(node["name"])-1 \
+                                            and node["name"][last_slash_pos+1] == "_":
+                        if node["name"][:last_slash_pos] in all_node_names:
+                            pruned_node.add(node["name"])
+                            continue
+                        else:
+                            node["name"] = node["name"][:last_slash_pos]
+                    if "input" in node:
+                        for idx, input_node in enumerate(node["input"]):
+                            if input_node[0] == "_":
+                                node["input"][idx] = input_node[1:]
+                                input_node = input_node[1:]
+                            last_slash_pos = input_node.rfind("/")
+                            if last_slash_pos != -1 and last_slash_pos < len(input_node)-1 \
+                                                    and input_node[last_slash_pos+1] == "_":
+                                node["input"][idx] = input_node[:last_slash_pos]
+                            self.partition_dag.add_edge(node["input"][idx], node["name"])
+        
+        with open(os.path.join(self.trace_dir, "tensor_shapes.json"), "w") as f:
+                json.dump(self.shape_dict, f, indent=4)
 
         if bps.rank() == 0:
             ### Only dump these info for rank 0   
@@ -357,12 +392,9 @@ class TimelineHook(tf.train.ProfilerHook):
                 }
             with open(os.path.join(self.trace_dir, "metadata.json"), "w") as f:
                 json.dump(op_dict, f, indent=4)
-            
-            with open(os.path.join(self.trace_dir, "tensor_shapes.json"), "w") as f:
-                json.dump(self.shape_dict, f, indent=4)
 
-            if self.dag is not None:
-                nx.write_gml(self.dag, os.path.join(self.trace_dir, "dag.gml"), lambda x: str(x))
+            if self.partition_dag is not None:
+                nx.write_gml(self.partition_dag, os.path.join(self.trace_dir, "dag.gml"), lambda x: str(x))
 
         print("Stop tracing, output trace at %s" % self.trace_dir)
 

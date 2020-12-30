@@ -117,7 +117,9 @@ class _BaseCostModel:
         raise NotImplementedError()
     
     def load_init_ckpt(self):
-        ''' Load the init states BEFORE the search process, reduce the preprocessing time, e.g., XLA cost model need to init partition'''
+        ''' Load the init states BEFORE the search process, 
+            reduce the preprocessing time, 
+            e.g., XLA cost model need to init partition'''
         raise NotImplementedError()
     
     def load_ckpt(self):
