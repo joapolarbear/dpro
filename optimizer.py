@@ -124,7 +124,7 @@ class _BaseCostModel:
         ''' Load checkponits during the search process '''
         raise NotImplementedError()
     
-    def checkpoint(self, *args):
+    def checkpoint(self):
         raise NotImplementedError()
 
 class _XLACostModel(_BaseCostModel):
@@ -142,7 +142,7 @@ class _XLACostModel(_BaseCostModel):
     
     def load_init_ckpt(self):
         init_ckpt_path = os.path.join(ROOT_PATH, "xla_init_ckpt.pickle")
-        if args_.ckpt and os.path.isfile(init_ckpt_path):
+        if os.path.isfile(init_ckpt_path):
             with open(init_ckpt_path, "rb") as f:
                 G, PKG, node_attr_cache, initial_partitions_formed = pickle.load(f)
                 self.node_attr_cache = node_attr_cache
@@ -168,16 +168,14 @@ class _XLACostModel(_BaseCostModel):
         return G, PKG
     
     def load_ckpt(self):
-        if args_.ckpt and os.path.isfile(self.ckpt_path):
+        if os.path.isfile(self.ckpt_path):
             with open(self.ckpt_path, "rb") as f:
-                G, PKG, node_attr_cache = pickle.load(f)
+                node_attr_cache = pickle.load(f)
                 self.node_attr_cache = node_attr_cache
-            return G, PKG
-        return None, None
     
-    def checkpoint(self, G, PKG):
+    def checkpoint(self):
         with open(self.ckpt_path, "wb") as f:
-            pickle.dump([G, PKG, self.node_attr_cache], f)
+            pickle.dump([self.node_attr_cache], f)
 
     def _load_cm(self):
         cost_models = {}
@@ -647,7 +645,7 @@ class _AMPCostModel(_BaseCostModel):
     def __init__(self, opt):
         super().__init__(opt)
         ### AMP predictor
-        self.amp_predictor = AMPPredictor(self.opt.clct.para_dict, ckpt=args_.ckpt)
+        self.amp_predictor = AMPPredictor(self.opt.clct.para_dict)
         self.token = [">", "<"]
         self.meta_info = self.opt.clct.para_dict
 
@@ -680,8 +678,11 @@ class _AMPCostModel(_BaseCostModel):
             nodes_introduced += self.amp_predictor.quantize(__dag, target)
         return True, nodes_introduced, []
     
-    def checkpoint(self):
+    def checkpoint(self, G, PKG):
         self.amp_predictor.checkpoint()
+    
+    def load_ckpt(self):
+        self.amp_predictor.load_ckpt()
 
 class _TensorFusionCM(_BaseCostModel):
     ''' This is a cost model for HOROVOD tensor fusion
@@ -1009,19 +1010,20 @@ class MCMCOptimizer(Optimizer):
     def search(self, graph_cache=os.path.join(ROOT_PATH, "graph_cache.pickle"), step_size=1):
         G = self.dag.copy()
         PKG = PKGraph(G)
-        for _cost_model in self.cst_md_mng.cost_model_list:
-            _G, _PKG = _cost_model.load_init_ckpt()
-            if _G is not None:
-                G, PKG = _G, _PKG
-        
-        if args_.ckpt and graph_cache is not None and os.path.isfile(graph_cache):
+
+        ### load init checkpoint
+        if args_.ckpt:
             for _cost_model in self.cst_md_mng.cost_model_list:
-                _G, _PKG = _cost_model.load_ckpt()
+                _G, _PKG = _cost_model.load_init_ckpt()
                 if _G is not None:
                     G, PKG = _G, _PKG
-            
+        
+        ### load checkpoint
+        if args_.ckpt and graph_cache is not None and os.path.isfile(graph_cache):
+            for _cost_model in self.cst_md_mng.cost_model_list:
+                _cost_model.load_ckpt()
             with open(graph_cache, "rb") as f:
-                self.heat_window_size, self.heat_history, self.best_cost, self.best_strategy, self.step, self.trajectory = pickle.load(f)
+                G, PKG, self.heat_window_size, self.heat_history, self.best_cost, self.best_strategy, self.step, self.trajectory = pickle.load(f)
             SingleLogger().info("Loading checkpoint of step {}".format(self.step))
         else:
             for node in G.nodes:
@@ -1168,10 +1170,11 @@ class MCMCOptimizer(Optimizer):
                 json.dump({"best_strategy": self.best_strategy}, f)
             
             ### checkpints
-            for _cost_model in self.cst_md_mng.cost_model_list:
-                _cost_model.checkpoint(G, PKG)
-            with open(graph_cache, "wb") as f:
-                pickle.dump([self.heat_window_size, self.heat_history, self.best_cost, self.best_strategy, self.step, self.trajectory], f)
+            if args_.ckpt:
+                for _cost_model in self.cst_md_mng.cost_model_list:
+                    _cost_model.checkpoint()
+                with open(graph_cache, "wb") as f:
+                    pickle.dump([G, PKG, self.heat_window_size, self.heat_history, self.best_cost, self.best_strategy, self.step, self.trajectory], f)
     
     def accept_or_not(self, cost, new_cost):
         # prob = min(1, (math.exp(beta * (cost - new_cost))))

@@ -18,7 +18,7 @@ else:
     raise NotImplementedError()
 
 class AMPPredictor:
-    def __init__(self, meta_info, ckpt=True):
+    def __init__(self, meta_info):
         ### load AMP cost model
         self.cost_model = {}
         cm_dir = os.path.join(os.path.dirname(os.path.abspath(
@@ -36,18 +36,18 @@ class AMPPredictor:
         self.meta_info = meta_info
 
         ### load checkpoint
-        self.ckpt_path = os.path.join(os.path.dirname(os.path.abspath(
-            __file__)), ".ckpt_amp.pickle")
-        if ckpt and os.path.isfile(self.ckpt_path):
-            with open(self.ckpt_path, "rb") as f:
-                self.cast_cnt, self.op_status = pickle.load(f)
-        else:
-            self.cast_cnt = 0
-            self.op_status = {} 
+        self.ckpt_path = os.path.join(args_.workspace, "ckpt_amp.pickle")
+        self.cast_cnt = 0
+        self.op_status = {}
     
     def checkpoint(self):
         with open(self.ckpt_path, "wb") as f:
             pickle.dump([self.cast_cnt, self.op_status], f)
+    
+    def load_ckpt(self):
+        assert os.path.isfile(self.ckpt_path)
+        with open(self.ckpt_path, "rb") as f:
+            self.cast_cnt, self.op_status = pickle.load(f)
 
     def pred_amp_avg(self, op_name, _avg=None):
         ''' Predict fp16 time of fp32 operators
@@ -136,7 +136,7 @@ class AMPPredictor:
                 else:
                     try:
                         cast_time = self.output_cast_time(_u)
-                    except KeyError:
+                    except KeyError, IndexError:
                         to_process += [x for x, _ in dag.in_edges(_u) if x != _u]
                         continue
                     ### the boundary of mixed precision, add a cast op
