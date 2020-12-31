@@ -107,7 +107,9 @@ class AMPPredictor:
         def _add_cast_op(u, v, cast_time, to16=True):
             if to16:
                 cast_op = "{}~>AMPCastToFp16_{}".format(u, self.cast_cnt)
-                if not self.isConstant(u) and not self.isVariable(u):
+
+                raw_u, _ = self.meta_info.standarize_name(u)
+                if not self.meta_info.is_const(raw_u) and not self.meta_info.is_variable(raw_u):
                     self.num_nonvar_casts_to_fp16 += 1
             else:
                 cast_op = "{}~>AMPCastToFp32_{}".format(u, self.cast_cnt)

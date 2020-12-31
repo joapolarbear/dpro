@@ -260,3 +260,11 @@ class MetaInfo:
     
     def in_metadata(self, raw_name):
         return raw_name in self.tf_meta
+
+    def is_const(self, raw_name):
+        return self.parse_op_type(raw_name) == "Const"
+    
+    def is_variable(self, raw_name):
+        return self.parse_op_type(raw_name) in ["Variable", "VariableV2", "AutoReloadVariable",
+            "VarHandleOp", "ReadVariableOp",
+            "_VarHandlesOp", "_ReadVariablesOp"]
