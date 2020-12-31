@@ -142,6 +142,7 @@ class _XLACostModel(_BaseCostModel):
     
     def load_init_ckpt(self):
         init_ckpt_path = os.path.join(ROOT_PATH, "xla_init_ckpt.pickle")
+        trajectory = []
         if os.path.isfile(init_ckpt_path):
             with open(init_ckpt_path, "rb") as f:
                 G, PKG, node_attr_cache, initial_partitions_formed = pickle.load(f)
@@ -165,7 +166,7 @@ class _XLACostModel(_BaseCostModel):
         if "BPF_DUMP_INIT_CLUSTER_TO" in os.environ:
             self._dump_cluster_mapping(G, os.environ["BPF_DUMP_INIT_CLUSTER_TO"])
         SingleLogger().info("Successfully initialized {} partitions.".format(initial_partitions_formed))
-        return G, PKG
+        return G, PKG, trajectory
     
     def load_ckpt(self):
         if os.path.isfile(self.ckpt_path):
@@ -691,28 +692,28 @@ class _AMPCostModel(_BaseCostModel):
         init_ckpt_path = os.path.join(ROOT_PATH, "amp_init_ckpt.pickle")
         if os.path.isfile(init_ckpt_path):
             with open(init_ckpt_path, "rb") as f:
-                G, PKG, node_attr_cache, initial_partitions_formed = pickle.load(f)
-                self.node_attr_cache = node_attr_cache
+                G, PKG, trajectory, _cast_cnt, _op_status = pickle.load(f)
+                self.amp_predictor.cast_cnt = _cast_cnt
+                self.amp_predictor.op_status = _op_status
             SingleLogger().info("Reading init graph from cache.")
         else:
             G = self.dag.copy()
             PKG = PKGraph(G)
-            # # randomly contract edges if possible
-            # k = int(len(G.edges()) * init_edges_to_contract)
-            initial_partitions_formed = 0
-            for node in G.nodes():
-                if node not in self.node_attr_cache:
-                    self._cache_node_attr(node, G.nodes[node])
 
-            G, initial_partitions_formed = self._init_partition(G, PKG, initial_partitions_formed)
+            source_nodes = [n for n in G.nodes() if "host0.rank0" in n]
+            trajectory = []
+            for n in tqdm(source_nodes, total=len(source_nodes)):
+                if self.amp_predictor.is_need_amp(G, n):
+                    s = (">", n, None)
+                    trajectory.append(s)
+                    self.apply(s, G, PKG)
+
             with open(init_ckpt_path, "wb") as f:
-                pickle.dump([G, PKG, self.node_attr_cache, initial_partitions_formed], f)
+                pickle.dump([G, PKG, trajectory, self.amp_predictor.cast_cnt, self.amp_predictor.op_status], f)
             SingleLogger().info("Graph cache dumped to {}.".format(init_ckpt_path))
         
-        if "BPF_DUMP_INIT_CLUSTER_TO" in os.environ:
-            self._dump_cluster_mapping(G, os.environ["BPF_DUMP_INIT_CLUSTER_TO"])
-        SingleLogger().info("Successfully initialized {} partitions.".format(initial_partitions_formed))
-        return G, PKG
+        SingleLogger().info("Successfully initialized mixed precision strategy with {} cast(s).".format(self.amp_predictor.cast_cnt))
+        return G, PKG, trajectory
 
 class _TensorFusionCM(_BaseCostModel):
     ''' This is a cost model for HOROVOD tensor fusion
@@ -1044,9 +1045,9 @@ class MCMCOptimizer(Optimizer):
         ### load init checkpoint
         if args_.ckpt:
             for _cost_model in self.cst_md_mng.cost_model_list:
-                _G, _PKG = _cost_model.load_init_ckpt()
+                _G, _PKG, _trajectory = _cost_model.load_init_ckpt()
                 if _G is not None:
-                    G, PKG = _G, _PKG
+                    G, PKG, self.trajectory = _G, _PKG, _trajectory
         
         ### load checkpoint
         if args_.ckpt and graph_cache is not None and os.path.isfile(graph_cache):
@@ -1061,8 +1062,7 @@ class MCMCOptimizer(Optimizer):
             self.best_cost = self.base_cost
             self.best_strategy = []
             self.step = 0
-            self.trajectory = []
-            
+            self.trajectory = []  
             SingleLogger().info("No checkpoint found, search from scratch")
 
         SingleLogger().info("="*20 + " Search Starts " + "="*20)
