@@ -29,7 +29,7 @@ class GraphExpand(Enum):
     FULLY=2
 
 args_ = arg_utils.SingleArg().args
-if args_.option == "optimize":
+if args_.option == "optimize" and args_.sub_option != "amp":
     from cost_model_xla.xla_module_cost_model import XLAModuleCostModel
     import horovod.tensorflow as hvd
 
@@ -753,10 +753,13 @@ class _TensorFusionCM(_BaseCostModel):
               
 class CostModelManager:
     def __init__(self, opt):
-        self.cost_model_list = [
-            _XLACostModel(opt),
-            # _AMPCostModel(opt),
-        ]
+        if args_.sub_option == "amp":
+            self.cost_model_list = [_AMPCostModel(opt)]
+        else:
+            self.cost_model_list = [
+                _XLACostModel(opt),
+                # _AMPCostModel(opt),
+            ]
         self.mem_model_list = []
         self.strategy2model = {}
 
@@ -1082,7 +1085,26 @@ class MCMCOptimizer(Optimizer):
         candidates, _ = self.candidate_selection(G, topk=None, critical_path=self.wrap_critical_path(self.exct_dag))
         search_space, weights = self.init_search_space(candidates, G, PKG)
         SingleLogger().info("\033[94m # of candidates: {}, space: {}\033[0m".format(len(candidates), len(search_space)))
-       
+
+        def display_and_ckpt():
+            SingleLogger().info("\033[94m" + "Speedup to the origin: %6.4f %%"%(100 * (self.base_cost - self.cur_cost) / self.base_cost) + "'\033[0m'")
+            SingleLogger().info("\033[94m" + "Best speedup: %d th acception, speed up to the origin: %6.4f %%"%(len(self.best_strategy), 100 * (self.base_cost - self.best_cost) / self.base_cost) + "'\033[0m'")
+            with open(os.path.join(ROOT_PATH, "search_trajectory.txt"), "a") as f:
+                f.write(str(time.time()) + ": {},{},{}".format(
+                    self.step,
+                    100 * (self.base_cost - self.cur_cost) / self.base_cost,
+                    100 * (self.base_cost - self.best_cost) / self.base_cost) + "\n")
+
+            with open(os.path.join(ROOT_PATH, "best_strategy.txt"), "w") as f:
+                json.dump({"best_strategy": self.best_strategy}, f)
+            
+            ### checkpints
+            if args_.ckpt:
+                for _cost_model in self.cst_md_mng.cost_model_list:
+                    _cost_model.checkpoint()
+                with open(graph_cache, "wb") as f:
+                    pickle.dump([G, PKG, self.heat_window_size, self.heat_history, self.best_cost, self.best_strategy, self.step, self.trajectory], f)
+
         while len(search_space) > 0:
             invalid_strategies = set()
             while True and len(search_space) > 0:
@@ -1199,22 +1221,8 @@ class MCMCOptimizer(Optimizer):
                     candidates, _ = self.candidate_selection(G, topk=None, critical_path=self.wrap_critical_path(self.exct_dag))
                     search_space, weights = self.init_search_space(candidates, G, PKG)
                     break
-            SingleLogger().info("\033[94m" + "Speedup to the origin: %6.4f %%"%(100 * (self.base_cost - self.cur_cost) / self.base_cost) + "'\033[0m'")
-            SingleLogger().info("\033[94m" + "Best speedup: %d th acception, speed up to the origin: %6.4f %%"%(len(self.best_strategy), 100 * (self.base_cost - self.best_cost) / self.base_cost) + "'\033[0m'")
-            with open(os.path.join(ROOT_PATH, "search_trajectory.txt"), "a") as f:
-                f.write(str(time.time()) + ": {},{},{}".format(
-                    self.step,
-                    100 * (self.base_cost - self.cur_cost) / self.base_cost,
-                    100 * (self.base_cost - self.best_cost) / self.base_cost) + "\n")
-            with open(os.path.join(ROOT_PATH, "best_strategy.txt"), "w") as f:
-                json.dump({"best_strategy": self.best_strategy}, f)
-            
-            ### checkpints
-            if args_.ckpt:
-                for _cost_model in self.cst_md_mng.cost_model_list:
-                    _cost_model.checkpoint()
-                with open(graph_cache, "wb") as f:
-                    pickle.dump([G, PKG, self.heat_window_size, self.heat_history, self.best_cost, self.best_strategy, self.step, self.trajectory], f)
+            display_and_ckpt()
+        display_and_ckpt()
     
     def accept_or_not(self, cost, new_cost):
         # prob = min(1, (math.exp(beta * (cost - new_cost))))
