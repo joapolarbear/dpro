@@ -224,7 +224,7 @@ class _XLACostModel(_BaseCostModel):
         for source in tqdm(source_nodes, total=len(source_nodes)):
             if source not in visited_nodes and source in partition_G.nodes:
                 _, _, partition_G = postorder_contract_nx(partition_G, partition_PKG, source, visited_nodes, forbidden_list=self.initial_forbidden_list, size_limit=800)
-        
+
         SingleLogger().info("Start to init partition graph ... ")
         for node_name in tqdm(partition_G.nodes()):
             if node_name in self.initial_forbidden_list:
@@ -265,7 +265,7 @@ class _XLACostModel(_BaseCostModel):
                 self.initial_forbidden_list.add(node)
                 continue
             cat = parse_cat_from_name(node)
-            if orig_name not in self._wrap_xla_operation_names(pid) or "Assign" in orig_name or cat == CatName.COMM.value \
+            if (not args_.simulate and orig_name not in self._wrap_xla_operation_names(pid)) or "Assign" in orig_name or cat == CatName.COMM.value \
                 or "group_deps" in orig_name or "ConstantFolding" in orig_name or "LayoutOptimizer" in orig_name:
                 self.forbidden_list.add(node)
                 self.initial_forbidden_list.add(node)

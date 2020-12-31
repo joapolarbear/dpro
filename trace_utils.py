@@ -757,7 +757,7 @@ class PathManager:
         def recur_look_up(_d):
             root, dirs, files = list(os.walk(_d))[0]
             
-            if "temp.json" in files:
+            if FileName.COMP.value in files:
                 return 0
             else:
                 target_dir = None
