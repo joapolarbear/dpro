@@ -37,7 +37,7 @@ MAX_TREE_DEPTH = 1000
 MAX_LOOP = 1000
 UCB_GAMMA = args_.ucb_gamma
 MCMC_BETA = args_.mcmc_beta
-ROOT_PATH = args_.workspace
+ROOT_PATH = os.path.join(args_.workspace, ".opt_ws")
 if not os.path.exists(ROOT_PATH):
     os.mkdir(ROOT_PATH)
 if not os.path.exists(os.path.join(ROOT_PATH, "searched_graph")):
@@ -678,11 +678,41 @@ class _AMPCostModel(_BaseCostModel):
             nodes_introduced += self.amp_predictor.quantize(__dag, target)
         return True, nodes_introduced, []
     
-    def checkpoint(self, G, PKG):
+    def checkpoint(self):
         self.amp_predictor.checkpoint()
     
     def load_ckpt(self):
         self.amp_predictor.load_ckpt()
+    
+    def load_init_ckpt(self):
+        return None, None
+
+    def load_init_ckpt(self):
+        init_ckpt_path = os.path.join(ROOT_PATH, "amp_init_ckpt.pickle")
+        if os.path.isfile(init_ckpt_path):
+            with open(init_ckpt_path, "rb") as f:
+                G, PKG, node_attr_cache, initial_partitions_formed = pickle.load(f)
+                self.node_attr_cache = node_attr_cache
+            SingleLogger().info("Reading init graph from cache.")
+        else:
+            G = self.dag.copy()
+            PKG = PKGraph(G)
+            # # randomly contract edges if possible
+            # k = int(len(G.edges()) * init_edges_to_contract)
+            initial_partitions_formed = 0
+            for node in G.nodes():
+                if node not in self.node_attr_cache:
+                    self._cache_node_attr(node, G.nodes[node])
+
+            G, initial_partitions_formed = self._init_partition(G, PKG, initial_partitions_formed)
+            with open(init_ckpt_path, "wb") as f:
+                pickle.dump([G, PKG, self.node_attr_cache, initial_partitions_formed], f)
+            SingleLogger().info("Graph cache dumped to {}.".format(init_ckpt_path))
+        
+        if "BPF_DUMP_INIT_CLUSTER_TO" in os.environ:
+            self._dump_cluster_mapping(G, os.environ["BPF_DUMP_INIT_CLUSTER_TO"])
+        SingleLogger().info("Successfully initialized {} partitions.".format(initial_partitions_formed))
+        return G, PKG
 
 class _TensorFusionCM(_BaseCostModel):
     ''' This is a cost model for HOROVOD tensor fusion

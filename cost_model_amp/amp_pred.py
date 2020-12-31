@@ -136,7 +136,7 @@ class AMPPredictor:
                 else:
                     try:
                         cast_time = self.output_cast_time(_u)
-                    except KeyError, IndexError:
+                    except (KeyError, IndexError):
                         to_process += [x for x, _ in dag.in_edges(_u) if x != _u]
                         continue
                     ### the boundary of mixed precision, add a cast op
