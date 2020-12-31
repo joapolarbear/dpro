@@ -497,7 +497,7 @@ class DAGManager:
                 pull_res_nodes = self.byteps_graph.get_pull_res_node(wk_rank, gra_name)
                 for pull_res_node in pull_res_nodes:
                     self.wrap_add_dag(pull_res_node, self.add_prefix(standard_name(v, platform=self.platform)))
-                    print("adding edge {} -> {}".format(pull_res_node, self.add_prefix(standard_name(v, platform=self.platform))))
+                    # print("adding edge {} -> {}".format(pull_res_node, self.add_prefix(standard_name(v, platform=self.platform))))
             else:
                 raise NotImplementedError("Tensorflow + NCCL not yet implemented.")
         elif "BytePSPushPull" in v and "tensor" not in v:
