@@ -692,8 +692,9 @@ class _AMPCostModel(_BaseCostModel):
         init_ckpt_path = os.path.join(ROOT_PATH, "amp_init_ckpt.pickle")
         if os.path.isfile(init_ckpt_path):
             with open(init_ckpt_path, "rb") as f:
-                G, PKG, trajectory, _cast_cnt, _op_status = pickle.load(f)
+                G, PKG, trajectory, _cast_cnt, _num_nonvar_casts_to_fp16, _op_status = pickle.load(f)
                 self.amp_predictor.cast_cnt = _cast_cnt
+                self.amp_predictor.num_nonvar_casts_to_fp16 = _num_nonvar_casts_to_fp16
                 self.amp_predictor.op_status = _op_status
             SingleLogger().info("Reading init graph from cache.")
         else:
@@ -709,10 +710,10 @@ class _AMPCostModel(_BaseCostModel):
                     self.apply(s, G, PKG)
 
             with open(init_ckpt_path, "wb") as f:
-                pickle.dump([G, PKG, trajectory, self.amp_predictor.cast_cnt, self.amp_predictor.op_status], f)
+                pickle.dump([G, PKG, trajectory, self.amp_predictor.cast_cnt, self.amp_predictor.num_nonvar_casts_to_fp16, self.amp_predictor.op_status], f)
             SingleLogger().info("Graph cache dumped to {}.".format(init_ckpt_path))
         
-        SingleLogger().info("Successfully initialized mixed precision strategy with {} cast(s).".format(self.amp_predictor.cast_cnt))
+        SingleLogger().info("Successfully initialized mixed precision strategy with {} cast(s).".format(self.amp_predictor.num_nonvar_casts_to_fp16))
         return G, PKG, trajectory
 
 class _TensorFusionCM(_BaseCostModel):
