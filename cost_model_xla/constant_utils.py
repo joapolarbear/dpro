@@ -26,7 +26,7 @@ class CMPaths:
     GRAPH_DEF_PICKLE_FILE = "graph_def.pickle"
 
     AFTER_OPT_TF_DAG_FILE = "partition_def_0.json"
-    DEBUG_XLA_CANDIATES_FILE = "/root/xla_candidates_resnet.txt"
+    DEBUG_XLA_CANDIATES_FILE = "PLEASE SPECIFY CANDIDATE FILE PATH"
     TENSOR_SHAPE_FILE = "tensor_shapes.json"
 
 class CMEnvs:
