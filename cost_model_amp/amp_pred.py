@@ -18,7 +18,7 @@ else:
     raise NotImplementedError()
 
 class AMPPredictor:
-    def __init__(self, meta_info, ckpt=True):
+    def __init__(self, meta_info):
         ### load AMP cost model
         self.cost_model = {}
         cm_dir = os.path.join(os.path.dirname(os.path.abspath(
@@ -36,18 +36,19 @@ class AMPPredictor:
         self.meta_info = meta_info
 
         ### load checkpoint
-        self.ckpt_path = os.path.join(os.path.dirname(os.path.abspath(
-            __file__)), ".ckpt_amp.pickle")
-        if ckpt and os.path.isfile(self.ckpt_path):
-            with open(self.ckpt_path, "rb") as f:
-                self.cast_cnt, self.op_status = pickle.load(f)
-        else:
-            self.cast_cnt = 0
-            self.op_status = {} 
+        self.ckpt_path = os.path.join(args_.workspace, "ckpt_amp.pickle")
+        self.cast_cnt = 0
+        self.num_nonvar_casts_to_fp16 = 0
+        self.op_status = {}
     
     def checkpoint(self):
         with open(self.ckpt_path, "wb") as f:
-            pickle.dump([self.cast_cnt, self.op_status], f)
+            pickle.dump([self.cast_cnt, self.num_nonvar_casts_to_fp16, self.op_status], f)
+    
+    def load_ckpt(self):
+        assert os.path.isfile(self.ckpt_path)
+        with open(self.ckpt_path, "rb") as f:
+            self.cast_cnt, self.num_nonvar_casts_to_fp16, self.op_status = pickle.load(f)
 
     def pred_amp_avg(self, op_name, _avg=None):
         ''' Predict fp16 time of fp32 operators
@@ -106,6 +107,10 @@ class AMPPredictor:
         def _add_cast_op(u, v, cast_time, to16=True):
             if to16:
                 cast_op = "{}~>AMPCastToFp16_{}".format(u, self.cast_cnt)
+
+                raw_u, _ = self.meta_info.standarize_name(u)
+                if not self.meta_info.is_const(raw_u) and not self.meta_info.is_variable(raw_u):
+                    self.num_nonvar_casts_to_fp16 += 1
             else:
                 cast_op = "{}~>AMPCastToFp32_{}".format(u, self.cast_cnt)
             self.cast_cnt += 1
@@ -136,7 +141,7 @@ class AMPPredictor:
                 else:
                     try:
                         cast_time = self.output_cast_time(_u)
-                    except KeyError:
+                    except (KeyError, IndexError):
                         to_process += [x for x, _ in dag.in_edges(_u) if x != _u]
                         continue
                     ### the boundary of mixed precision, add a cast op
@@ -150,6 +155,7 @@ class AMPPredictor:
                 _nexts = list(dag.successors(succ))
                 assert len(_nexts) == 1, (op_name, succ, _nexts)
                 _rm_cast_op(op_name, succ, _nexts[0])
+                self.num_nonvar_casts_to_fp16 -= 1
             elif "Comm" in succ:
                 ### For BW->Comm edges, 
                 ### * Sync time, Memcopy time, Send/Recv becomes 1/2

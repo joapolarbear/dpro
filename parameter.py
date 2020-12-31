@@ -65,3 +65,9 @@ class ParameterDict:
     
     def in_metadata(self, *args, **kwargs):
         return self.metainfo.in_metadata(*args, **kwargs)
+    
+    def is_const(self, *args, **kwargs):
+        return self.metainfo.in_const(*args, **kwargs)
+    
+    def is_variable(self, *args, **kwargs):
+        return self.metainfo.is_variable(*args, **kwargs)

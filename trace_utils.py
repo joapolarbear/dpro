@@ -757,10 +757,17 @@ class PathManager:
         ''' return the level of the current dir '''
         def recur_look_up(_d):
             root, dirs, files = list(os.walk(_d))[0]
-            if "temp.json" in files:
+            
+            if FileName.COMP.value in files:
                 return 0
             else:
-                return 1 + recur_look_up(os.path.join(root, dirs[0]))
+                target_dir = None
+                for _d in dirs:
+                    if not _d.startswith("."):
+                        target_dir = _d
+                        break
+                assert target_dir is not None, "No explicit directory found under {}".format(root)
+                return 1 + recur_look_up(os.path.join(root, target_dir))
         try:
             level = recur_look_up(_dir)
         except:
