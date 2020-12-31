@@ -55,7 +55,8 @@ parser.add_argument("--ucb_visual", action="store_true", help="If this arg is se
 parser.add_argument("--mcmc_beta", type=float, default=100, help="Hyper Parameter used in MCMC/SA to control the exploration rate")
 parser.add_argument("--cost_model_tmp_dir", type=str, default="./", help="Tmp directory for cost model to store intermediate files.")
 parser.add_argument("--heat_window_size", type=int, default=5, help="Window size for the heat based search heuristic.")
-parser.add_argument("--simulate", action="store_true", help="If this arg is set, simulate the cost model, not use the real cost model.")
+parser.add_argument("--simulate", action="store_true", help="If this arg is set, simulate the XLA cost model,"
+						" but still use its rule to determine which operators to fuse.")
 parser.add_argument("--relabel", action="store_true", help="If this arg is set, relabel the dag with indexes.")
 parser.add_argument("--ckpt", action="store_true", help="If this arg is set, start from cached data")
 parser.add_argument("--workspace", type=str, default="/root/opt_workspace", help="Workerspace of the optimizer")

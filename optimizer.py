@@ -29,7 +29,7 @@ class GraphExpand(Enum):
     FULLY=2
 
 args_ = arg_utils.SingleArg().args
-if args_.option == "optimize" and not args_.simulate:
+if args_.option == "optimize":
     from cost_model_xla.xla_module_cost_model import XLAModuleCostModel
     import horovod.tensorflow as hvd
 
@@ -166,6 +166,9 @@ class _XLACostModel(_BaseCostModel):
         if "BPF_DUMP_INIT_CLUSTER_TO" in os.environ:
             self._dump_cluster_mapping(G, os.environ["BPF_DUMP_INIT_CLUSTER_TO"])
         SingleLogger().info("Successfully initialized {} partitions.".format(initial_partitions_formed))
+
+        # self._check_dag_avg(G)
+
         return G, PKG, trajectory
     
     def load_ckpt(self):
@@ -179,10 +182,7 @@ class _XLACostModel(_BaseCostModel):
             pickle.dump([self.node_attr_cache], f)
 
     def _load_cm(self):
-        cost_models = {}
-        if args_.simulate:
-            return cost_models
-        
+        cost_models = {}        
         models_dir = os.path.join(os.path.dirname(os.path.abspath(
             __file__)), "cost_model_xla/.cost_model")
         
@@ -266,7 +266,7 @@ class _XLACostModel(_BaseCostModel):
                 self.initial_forbidden_list.add(node)
                 continue
             cat = parse_cat_from_name(node)
-            if (not args_.simulate and orig_name not in self._wrap_xla_operation_names(pid)) or "Assign" in orig_name or cat == CatName.COMM.value \
+            if (orig_name not in self._wrap_xla_operation_names(pid)) or "Assign" in orig_name or cat == CatName.COMM.value \
                 or "group_deps" in orig_name or "ConstantFolding" in orig_name or "LayoutOptimizer" in orig_name:
                 self.forbidden_list.add(node)
                 self.initial_forbidden_list.add(node)
@@ -319,10 +319,11 @@ class _XLACostModel(_BaseCostModel):
             return _sum * 0.8, None
         else:
             # return self.cost_models[pid].predict(nodes_to_fuse)
-            return self.cost_models["default"].predict(nodes_to_fuse)
+            predict_time_in_us = self.cost_models["default"].predict(nodes_to_fuse)
+            return  predict_time_in_us / 1000.0
 
     def _wrap_xla_need_fuse(self, pid, orig_name, long_name):
-        return (args_.simulate or orig_name in self._wrap_xla_operation_names(pid)) and long_name not in self.forbidden_list
+        return (orig_name in self._wrap_xla_operation_names(pid)) and long_name not in self.forbidden_list
 
     def _wrap_xla_operation_names(self, pid):
         # return self.cost_models[pid].graph_def_util.operation_names
@@ -338,7 +339,6 @@ class _XLACostModel(_BaseCostModel):
             SingleLogger().info("[COST MODEL QUERY] {} Nodes to fuse ...".format(len(nodes_to_fuse)))
 
         predicted_time, _ = self._wrap_xla_predict(u_pid, nodes_to_fuse, fused_u_)
-        predicted_time /= 1000
         SingleLogger().info("[COST MODEL QUERY] Exec time predicted: {}".format(predicted_time))
         if predicted_time < 0:
             raise OptQueryCostModelError("Failed to query cost model.")
@@ -641,6 +641,20 @@ class _XLACostModel(_BaseCostModel):
             return self._op_fusion(__dag, __pkg, target, next_)
         elif op == "-":
             return self._op_defusion(__dag, __pkg, target, next_)
+        
+    def _check_dag_avg(self, G: nx.DiGraph):
+        for n in G.nodes():
+            if "Comm" in n or "host0.rank0" not in n:
+                continue
+            if "+" not in n:
+                continue
+            fused_avg = self.node_attr_cache[n]["avg"]
+            avg_sum = 0
+            all_fuse_nodes = n.split("+")
+            for _n in all_fuse_nodes:
+                avg_sum += self.node_attr_cache[_n]["avg"]
+            print("Fuse {} nodes, predicted avg: {}, fused nodes avg sum: {}".format(len(all_fuse_nodes), fused_avg, avg_sum))
+        raise
 
 class _AMPCostModel(_BaseCostModel):
     def __init__(self, opt):
