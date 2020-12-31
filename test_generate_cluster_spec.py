@@ -115,11 +115,6 @@ def relabel_dag_node(_dag) -> nx.DiGraph:
 # clct = Collector(TRACE_PATH, comm_backend="BYTEPS")
 # clct.init(False)
 
-# if clct.simple_dag is not None:
-#     dag = relabel_dag_node(clct.simple_dag)
-# else:
-#     dag = relabel_dag_node(clct.dag)
-
 # remove dependency from FW to UPDATE
 # for (u, v) in list(dag.edges):
 #     dag.remove_edge(u, v)

@@ -88,7 +88,6 @@ class Collector(object):
 
         ### TODO (huhanpeng): assume different host use the same dag, original dag
         self.dag = None
-        self.simple_dag = None
         self.update_nodes_in_dag = None
         self.para_dict = None
         self.trail_dag = None # global dag
@@ -732,9 +731,6 @@ class Collector(object):
                 arg_list.append([tmp_pm, pid, host_id_str])
                 if not self.single and self.comm_backend == "NCCL":
                     self._collect_nccl_graph(tmp_pm, pid, host_id_str)
-                if self.simple_dag is None and self.platform == "TENSORFLOW":
-                    def_path = self.pm.search(FileName.GRAPHDEF)
-                    self.simple_dag, _ = wrap_read_graphdef(def_path)
         with multiprocessing.Pool(len(arg_list)) as p:
             rst = p.map(self._collect_rank_traces, arg_list)
         traces_list, ref_name_list, ref_time_list, raw_name2IDnum_list = zip(*rst)
@@ -918,8 +914,7 @@ class Collector(object):
         self.collect_para_dict()
 
         trail_dag_path = self.pm.search(FileName.TRAIL_DAG)
-        simple_dag_path = self.pm.search(FileName.SIMPLE_DAG)
-        if force_ or trace_path is None or (self.comm_backend == "NCCL" and nccl_graph_path is None) or trail_dag_path is None or simple_dag_path is None:
+        if force_ or trace_path is None or (self.comm_backend == "NCCL" and nccl_graph_path is None) or trail_dag_path is None:
             self.collect_traces()
             iter_time, _ = self.iter_time()
             if self.comm_backend == "NCCL":
@@ -930,14 +925,7 @@ class Collector(object):
             self.traceM.dump(self.pm.path)
             graph_thread = threading.Thread(target=nx.write_gml, 
                 args=(self.trail_dag, os.path.join(self.pm.path, FileName.TRAIL_DAG.value), lambda x: str(x)))
-            if self.simple_dag is not None:
-                simple_dag = self.simple_dag
-            else:
-                simple_dag = self.dag
-            simple_graph_thread = threading.Thread(target=nx.write_gml, 
-                args=(simple_dag, os.path.join(self.pm.path, FileName.SIMPLE_DAG.value), lambda x: str(x)))
             graph_thread.start()
-            simple_graph_thread.start()
             if self.comm_backend == "NCCL":
                 self.nccl_graph.dump(os.path.join(self.pm.path, FileName.NCCL_GRAPH.value))
         else:
@@ -947,7 +935,6 @@ class Collector(object):
             if self.comm_backend == "NCCL":
                 self.nccl_graph.load(nccl_graph_path)
             self.trail_dag = nx.read_gml(trail_dag_path)
-            self.simple_dag = nx.read_gml(simple_dag_path)
 
         return iter_time
         

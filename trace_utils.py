@@ -60,7 +60,6 @@ class FileName(Enum):
     NCCL_GRAPH="nccl_graph.txt"
     NCCL_RANK_GRAPH="nccl_rank_graph.json"
     TRAIL_DAG="trail_dag.gml"
-    SIMPLE_DAG = "simple_dag.gml"
     STATISTIC="statistic.txt"
     BPS_COMM_DETAIL="comm_timeline.json"
     BPS_SERVER_TRACE="server_timeline.json"
