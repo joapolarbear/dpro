@@ -13,7 +13,7 @@ parser.add_argument("--cmd", type=str, default=None, help="command.")
 parser.add_argument("--amp_rst_path", type=str, default=None, help="amp_rst_path.")
 parser.add_argument("--search_rst_path", type=str, default=None, help="amp_rst_path.")
 parser.add_argument("--timeline_path", type=str, default=None, help="timeline_path.")
-parser.add_argument("--paint_rst_path", type=str, default=None, help="paint_rst_path.")
+parser.add_argument("--target_path", type=str, default=None, help="target_path.")
 
 args = parser.parse_args()
 
@@ -107,10 +107,13 @@ elif args.option == "paint":
                     "float16" if is_fp16[0] else "float32",
                     "float16" if is_fp16[1] else "float32"))
 
-    with open(args.paint_rst_path, "w") as f:
+    with open(args.target_path, "w") as f:
         json.dump(rst_traces, f)
     
 elif args.option == "show":
+    if (args.amp_rst_path is not None and args.search_rst_path is not None) or (args.amp_rst_path is None and args.search_rst_path is None):
+        raise ValueError("Please input one and only one path")
+
     if args.amp_rst_path is not None:
         fp16_ops = read_amp_fp16_ops(args.amp_rst_path)
         print("TF AMP: ", ",".join(fp16_ops))
@@ -119,5 +122,9 @@ elif args.option == "show":
         fp16_ops = read_search_fp16_ops(args.search_rst_path)
         print("Search Results: ", ",".join(fp16_ops))
 
+    if args.target_path is not None:
+        with open(args.target_path, 'w') as f:
+            for op in fp16_ops:
+                f.write(op + "\n")
 
 
