@@ -38,16 +38,17 @@ class AMPPredictor:
         ### load checkpoint
         self.ckpt_path = os.path.join(args_.workspace, "ckpt_amp.pickle")
         self.cast_cnt = 0
+        self.num_nonvar_casts_to_fp16 = 0
         self.op_status = {}
     
     def checkpoint(self):
         with open(self.ckpt_path, "wb") as f:
-            pickle.dump([self.cast_cnt, self.op_status], f)
+            pickle.dump([self.cast_cnt, self.num_nonvar_casts_to_fp16, self.op_status], f)
     
     def load_ckpt(self):
         assert os.path.isfile(self.ckpt_path)
         with open(self.ckpt_path, "rb") as f:
-            self.cast_cnt, self.op_status = pickle.load(f)
+            self.cast_cnt, self.num_nonvar_casts_to_fp16, self.op_status = pickle.load(f)
 
     def pred_amp_avg(self, op_name, _avg=None):
         ''' Predict fp16 time of fp32 operators
@@ -106,6 +107,8 @@ class AMPPredictor:
         def _add_cast_op(u, v, cast_time, to16=True):
             if to16:
                 cast_op = "{}~>AMPCastToFp16_{}".format(u, self.cast_cnt)
+                if not self.isConstant(u) and not self.isVariable(u):
+                    self.num_nonvar_casts_to_fp16 += 1
             else:
                 cast_op = "{}~>AMPCastToFp32_{}".format(u, self.cast_cnt)
             self.cast_cnt += 1
@@ -150,6 +153,7 @@ class AMPPredictor:
                 _nexts = list(dag.successors(succ))
                 assert len(_nexts) == 1, (op_name, succ, _nexts)
                 _rm_cast_op(op_name, succ, _nexts[0])
+                self.num_nonvar_casts_to_fp16 -= 1
             elif "Comm" in succ:
                 ### For BW->Comm edges, 
                 ### * Sync time, Memcopy time, Send/Recv becomes 1/2
