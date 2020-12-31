@@ -38,10 +38,6 @@ MAX_LOOP = 1000
 UCB_GAMMA = args_.ucb_gamma
 MCMC_BETA = args_.mcmc_beta
 ROOT_PATH = os.path.join(args_.workspace, ".opt_ws")
-if not os.path.exists(ROOT_PATH):
-    os.mkdir(ROOT_PATH)
-if not os.path.exists(os.path.join(ROOT_PATH, "searched_graph")):
-    os.mkdir(os.path.join(ROOT_PATH, "searched_graph"))
 
 class OptApplyStrategyError(Exception):
     pass
@@ -285,7 +281,7 @@ class _XLACostModel(_BaseCostModel):
         cluster_index = 0
         with open(output_path, "w") as f:
             for node in dag.nodes():
-                if "+" in node:
+                if "+" in node and "Comm" not in node:
                     orig_names, _ = self._get_original_name_pid_from_fused_node(node)
                     for orig_node_name in orig_names:
                         f.write("{} {}\n".format(orig_node_name, cluster_index))
@@ -696,9 +692,6 @@ class _AMPCostModel(_BaseCostModel):
     
     def load_ckpt(self):
         self.amp_predictor.load_ckpt()
-    
-    def load_init_ckpt(self):
-        return None, None
 
     def load_init_ckpt(self):
         init_ckpt_path = os.path.join(ROOT_PATH, "amp_init_ckpt.pickle")
@@ -823,6 +816,11 @@ class Optimizer:
         self.cost_model_error = []
 
         self.cst_md_mng = CostModelManager(self)
+
+        if not os.path.exists(ROOT_PATH):
+            os.mkdir(ROOT_PATH)
+        if not os.path.exists(os.path.join(ROOT_PATH, "searched_graph")):
+            os.mkdir(os.path.join(ROOT_PATH, "searched_graph"))
 
     def relabel_dag_node(self, _dag) -> nx.DiGraph:
         def relabel_func(old_label):
@@ -1217,6 +1215,8 @@ class MCMCOptimizer(Optimizer):
                     if self.cur_cost < self.best_cost:
                         self.best_cost = self.cur_cost
                         self.best_strategy = self.trajectory.copy()
+                        if "+" in self.cst_md_mng.strategy2model:
+                            self.cst_md_mng.strategy2model["+"]._dump_cluster_mapping(G, os.path.join(ROOT_PATH, "cluster_mapping.txt"))
                     ### Init new search space
                     candidates, _ = self.candidate_selection(G, topk=None, critical_path=self.wrap_critical_path(self.exct_dag))
                     search_space, weights = self.init_search_space(candidates, G, PKG)
