@@ -242,7 +242,7 @@ class _XLACostModel(_BaseCostModel):
                     avg = None
                     for _node_name in [node_name] + self.opt._debug_convert_to_the_other_machine(node_name):
                         ns = _node_name.split("+")
-                        G, new_node_name = contract_nodes_nx(G, ns)
+                        new_node_name = contract_nodes_nx(G, ns)
                         PKG.contract_nodes_unsafe(ns)
                         ### TODO (huhanpeng): since we assume data parallel
                         ### we directly use the fused time of the first GPU for all GPUs' fused nodes
@@ -433,8 +433,6 @@ class _XLACostModel(_BaseCostModel):
                 # if comm_t >= _dag.nodes[bw_v]["avg"]:
                 if comm_t >= _dag.nodes[succ_]["avg"]:
                     prun_cnt += 1
-                    # G_star = self.apply_strategies(self.dag, ("+", n, succ_))
-                    # iter_time, _ = self.evaluate(G_star)
                     SingleLogger().debug("Prune fusing {} and {} with comm time {}".format(n, succ_, comm_t))
                     continue
 
@@ -978,27 +976,22 @@ class Optimizer:
 
     def apply_strategies(self, _dag, _pkg: PKGraph, strategy):
         # print(strategy)
-
-        ### TODO (huhanpeng): is shallow copy is enough ???
-        __dag = _dag.copy()
-        __pkg = _pkg.copy()
-
         if isinstance(strategy, list):
             nodes_introduced = set()
             nodes_removed = set()
             for s in strategy:
                 op, target, next_ = s
-                success, n_introduced, n_removed = self.cst_md_mng.strategy2model[op].apply(s, __dag, __pkg)
+                success, n_introduced, n_removed = self.cst_md_mng.strategy2model[op].apply(s, _dag, _pkg)
                 if not success:
                     raise OptApplyStrategyError
                 nodes_introduced.update(n_introduced)
                 nodes_removed.update(n_removed)
         else:
             op, target, next_ = strategy
-            success, nodes_introduced, nodes_removed = self.cst_md_mng.strategy2model[op].apply(strategy, __dag, __pkg)
+            success, nodes_introduced, nodes_removed = self.cst_md_mng.strategy2model[op].apply(strategy, _dag, _pkg)
             if not success:
                 raise OptApplyStrategyError
-        return __dag, __pkg, nodes_introduced, nodes_removed
+        return nodes_introduced, nodes_removed
 
     def pick_strategy(self, search_space, weights=None, invalid_strategies=None):
         ### TODO (huhanpeng): need some priority/heuristic
@@ -1057,6 +1050,7 @@ class MCMCOptimizer(Optimizer):
         G = self.dag.copy()
         PKG = PKGraph(G)
 
+        self.trajectory = []
         ### load init checkpoint
         if args_.ckpt:
             for _cost_model in self.cst_md_mng.cost_model_list:
@@ -1071,19 +1065,20 @@ class MCMCOptimizer(Optimizer):
             with open(graph_cache, "rb") as f:
                 G, PKG, self.heat_window_size, self.heat_history, self.best_cost, self.best_strategy, self.step, self.trajectory = pickle.load(f)
             SingleLogger().info("Loading checkpoint of step {}".format(self.step))
+            self.cur_cost, self.exct_dag, self.mem_usage = self.evaluate(G)
+            self.cost_star = self.mem_usage_star = None
         else:
             for node in G.nodes:
                 self.heat_history[node] = [(0, 0)] * self.heat_window_size
-            self.best_cost = self.base_cost
-            self.best_strategy = []
+            self.cur_cost, self.exct_dag, self.mem_usage = self.evaluate(G)
+            self.cost_star = self.mem_usage_star = None
+            self.best_cost = self.cur_cost
+            self.best_strategy = self.trajectory
             self.step = 0
-            self.trajectory = []  
             SingleLogger().info("No checkpoint found, search from scratch")
 
         SingleLogger().info("="*20 + " Search Starts " + "="*20)
         SingleLogger().info("\033[92m" + "Start to search, the original iteration time is %f" % self.base_cost + "\033[0m")
-        self.cur_cost, self.exct_dag, self.mem_usage = self.evaluate(G)
-        self.cost_star = self.mem_usage_star = None
         candidates, _ = self.candidate_selection(G, topk=None, critical_path=self.wrap_critical_path(self.exct_dag))
         search_space, weights = self.init_search_space(candidates, G, PKG)
         SingleLogger().info("\033[94m # of candidates: {}, space: {}\033[0m".format(len(candidates), len(search_space)))
@@ -1112,7 +1107,7 @@ class MCMCOptimizer(Optimizer):
                         invalid_strategies = set()
                         continue
                     try:
-                        G_star, PKG_star, nodes_introduced, nodes_removed = self.apply_strategies(G_star, PKG_star, strategy)
+                        nodes_introduced, nodes_removed = self.apply_strategies(G_star, PKG_star, strategy)
                     except OptApplyStrategyError:
                         # strategy invalid
                         # traceback.print_exc()

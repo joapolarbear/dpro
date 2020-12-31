@@ -62,8 +62,7 @@ def defuse_nodes_inplace_nx(_dag: nx.DiGraph, pkg, target, components):
     return component_names
 
 def contract_nodes_nx(graph: nx.DiGraph, nodes_to_contract: list):
-    ### TODO (huhanpeng): change the function to inplace w.r.t. graph
-    G = graph.copy()
+    G = graph
     all_nodes = set(nodes_to_contract)
     all_predecessors, all_successors, new_node_name = get_all_pred_succ_nx(graph, nodes_to_contract)
     for node in nodes_to_contract:
@@ -73,7 +72,7 @@ def contract_nodes_nx(graph: nx.DiGraph, nodes_to_contract: list):
         G.add_edge(pred, new_node_name)
     for succ in all_successors:
         G.add_edge(new_node_name, succ)
-    return G, new_node_name
+    return new_node_name
 
 def subgraph_partition_connected_nx(subgraph, size_limit=10):
     split_plans = []
@@ -375,7 +374,7 @@ def postorder_contract_nx(_dag: nx.DiGraph, _pkg: PKGraph, source_node, visitied
             if size_limit and self_size + succ_size > size_limit:
                 continue
             _pkg.contract_edge(source_node, succ)
-            _dag, new_node_name = contract_nodes_nx(_dag, [source_node, succ])
+            new_node_name = contract_nodes_nx(_dag, [source_node, succ])
             source_node = new_node_name
             self_size = self_size + succ_size
             graph_changed_outer = True
