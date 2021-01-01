@@ -50,6 +50,7 @@ class FileName(Enum):
     COMM="comm.json"
     IO="io.json"
     DAG="dag.gml"
+    GRAPHDEF = "final_graph.json"
     TRACE="bps_trace_final.json"
     COMP="temp.json"
     SYMBOL="symbol_debug_str.txt"

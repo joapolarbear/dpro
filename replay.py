@@ -473,6 +473,7 @@ class Replayer:
             elif "Sync" in n:
                 device_id = gen_long_name(pid, cat, "Sync")
             else:
+                device_id = None
                 in_queue_type = False
                 for sub_op in QueueType().ret_list():
                     if sub_op in n:
@@ -563,7 +564,7 @@ class Replayer:
         SingleLogger().info("Convert dag to dagdream_dag ...")
         if metadata.metainfo is None:
             raise ValueError(
-                "meta info is None, --metadata_path should be set: {} is given".format(args.metadata_path))
+                "meta info is None, --metadata_path should be set: {} is given".format(args_.metadata_path))
         _dag = nx.DiGraph()
         def wrap_add_edge(u, v):
             _dag.add_edge(u, v)

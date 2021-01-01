@@ -1,3 +1,4 @@
+from argparse import ArgumentError
 import os
 import re
 import networkx as nx
@@ -19,6 +20,8 @@ def visualize_gml(graph, layout="circular"):
         pos = nx.circular_layout(graph)
     elif layout == "random":
         pos = nx.random_layout(graph)
+    else:
+        raise ArgumentError("Layout must be one of [\"spectral\", \"circular\", \"random\"]")
     nx.draw(graph, pos, with_labels=True, font_size=6)
     plt.show()
     # import matplotlib.pyplot as plt; plt.ion()
@@ -61,14 +64,17 @@ def dag_longest_path(G, pathM=None, weight='weight', default_weight=0, _debug_le
     return list(zip(critical_path, len_list))
 
 def tf_relabel_func(_name, update_nodes_in_dag):
-    for prefix in ["Comm.", "Comp.", "BW.", "FW."]:
+    for prefix in ["Comm.", "Comp.", "BW.", "FW.", "UPDATE_."]:
         if _name.startswith(prefix):
             return _name
     if _name.startswith("^"):
         _name = _name[1:]
+    last_slash_pos = _name.rfind("/")
+    if last_slash_pos != -1 and last_slash_pos < len(_name)-1 and _name[last_slash_pos+1] == "_":
+        _name = _name[:last_slash_pos]
     if "BytePSPushPull" in _name and "tensor" not in _name:
         _name = "Comm." + _name
-    if "allreduce" in _name.lower():
+    elif "allreduce" in _name.lower():
         if "." in _name:
             _, tensor_name = _name.split(".")
             if "_" in tensor_name:
@@ -95,7 +101,7 @@ def wrap_read_gml(gml_path, platform="MXNET"):
     mygraph = nx.read_gml(gml_path)
     if not args_.pretty:
         try:
-            SingleLogger().info(list(nx.find_cycle(composed_dag, orientation="original")))
+            SingleLogger().info(list(nx.find_cycle(mygraph, orientation="original")))
         except:
             SingleLogger().info("No cycles found")
     if platform == "TENSORFLOW":
@@ -105,7 +111,8 @@ def wrap_read_gml(gml_path, platform="MXNET"):
                 update_nodes_in_dag.add(succ_)
                 recursive_add_succs(succ_)
         for node in mygraph.nodes:
-            if "allreduce" in node.lower() and "switch" not in node.lower():
+            if "allreduce" in node.lower() or "bytepspushpull" in node.lower() \
+                                            and "switch" not in node.lower():
                 recursive_add_succs(node)
             # if "apply" in node.lower() or ("gradientdescent" in node.lower() and "learning_rate" not in node.lower()):
             #     update_nodes_in_dag.add(node)
@@ -118,6 +125,28 @@ def wrap_read_gml(gml_path, platform="MXNET"):
     else:
         update_nodes_in_dag = None
     return mygraph, update_nodes_in_dag
+
+def wrap_read_graphdef(graphdef_path):
+    with open(graphdef_path, "r") as f:
+        graph_def = json.load(f)
+    graph = nx.DiGraph()
+    for node in graph_def["node"]:
+        if "input" in node:
+            for input_tensor_name in node["input"]:
+                input_node_name = input_tensor_name.split(":")[0]
+                graph.add_edge(input_node_name, node["name"])
+    update_nodes_in_dag = set()
+    def recursive_add_succs(_node):
+        for succ_ in graph.successors(_node):
+            update_nodes_in_dag.add(succ_)
+            recursive_add_succs(succ_)
+    for node in graph.nodes:
+        if "allreduce" in node.lower() or "bytepspushpull" in node.lower():
+            recursive_add_succs(node)
+    new_graph = nx.DiGraph()
+    for u, v in graph.edges:
+        new_graph.add_edge(tf_relabel_func(u, update_nodes_in_dag), tf_relabel_func(v, update_nodes_in_dag))
+    return new_graph, update_nodes_in_dag
 
 def standard_name(_name, platform="TENSORFLOW", update_nodes_in_dag=None):
     '''Fetch and handle the trace name'''
@@ -306,7 +335,7 @@ class DAGManager:
                                             self.add_update_downstream(graph, post_node, _prefix=next_rank_prefix)
                                     else:
                                         raise NotImplementedError()
-                ### end for loop         
+                ### end for loop
             elif self.nccl_graph is not None and self.nccl_graph.algo == NCCL_ALGO.TREE:
                 ### Combine chunkId, sliceId and channelId into the graph for Tree algorithm
                 ### TODO(huhanpeng): can we reduce the number of %d in the suffix
@@ -450,7 +479,7 @@ class DAGManager:
     def _process_edge_byteps(self, graph, queue_type_list, u, v):
         if "BytePSPushPull" in u and "tensor" not in u:
             ### BytePS traces
-            gra_name = u
+            gra_name = u.split("Comm.")[1]
             if self.byteps_graph is not None:
                 wk_rank = int(self.wk_prefix.split("_")[-1])
                 # add push request dependency
@@ -468,6 +497,7 @@ class DAGManager:
                 pull_res_nodes = self.byteps_graph.get_pull_res_node(wk_rank, gra_name)
                 for pull_res_node in pull_res_nodes:
                     self.wrap_add_dag(pull_res_node, self.add_prefix(standard_name(v, platform=self.platform)))
+                    # print("adding edge {} -> {}".format(pull_res_node, self.add_prefix(standard_name(v, platform=self.platform))))
             else:
                 raise NotImplementedError("Tensorflow + NCCL not yet implemented.")
         elif "BytePSPushPull" in v and "tensor" not in v:
@@ -491,18 +521,20 @@ class DAGManager:
         '''
         ### Read the original dag for this gpu first
         mygraph = old_graph
-        queue_type_list = QueueType().ret_list()
+        queue_type_list = QueueType("NCCL").ret_list()
 
         done_comm = []
         for u, v in mygraph.edges:
             pre_nodes, post_nodes = [], []
-            if "Comm." in u:
+            if "Comm." in u and self.nccl_graph is not None:
                 ### Consider Tensor fusion, only those ready tensors are fused and are used to build a graph together
                 tensor_name = u.split("Comm.")[1]
                 if self.platform == "MXNET":
                     tensor_id = para_dict.name_to_tensor_id(tensor_name)
                 elif self.platform == "TENSORFLOW":
                     tensor_id = int(tensor_name)
+                else:
+                    raise ArgumentError("Unsupported platform {}.".format(self.platform))
                 nccl_grp_name = self.nccl_graph.tensor2group_name(tensor_id)
                 ### take the fused name as the node name, e.g., Comm.1+2+3
                 u = "Comm." + nccl_grp_name
@@ -514,6 +546,8 @@ class DAGManager:
                         co_comm_op = "Comm." + para_dict.tensor_id_to_name(int(_id))   # e.g., Comm.bertmodel0_word_embed_embedding0_weight
                     elif self.platform == "TENSORFLOW":
                         co_comm_op = "Comm.{}".format(_id)
+                    else:
+                        raise ArgumentError("Unsupported platform {}.".format(self.platform))
                     prev_bw_nodes = [_u for _u, _ in mygraph.in_edges(co_comm_op)]
                     # assert len(prev_bw_nodes) == 1, (co_comm_op, prev_bw_nodes)
                     prev_rawname = prev_bw_nodes[0]         # no prefix, start with BW.
@@ -530,7 +564,7 @@ class DAGManager:
                 done_comm.append(u)
 
             if self.byteps_graph is not None:
-                self._process_edge_byteps(mygraph, queue_type_list, u, v, pre_nodes=pre_nodes)
+                self._process_edge_byteps(mygraph, queue_type_list, u, v)
             elif self.nccl_graph is not None:
                 self._process_edge_nccl(mygraph, queue_type_list, u, v, para_dict=para_dict, pre_nodes=pre_nodes, post_nodes=post_nodes)
 
@@ -626,7 +660,7 @@ class DAGManager:
                         self.wrap_add_dag(u, v)
                         if "FW.bert/encoder/layer_0/attention/self/Softmax" in u and "FW.add_2" in v:
                             print(prev_event, event)
-                            raise
+                            raise RuntimeError
                 else:
                     ### if prev event has not ended, current node should share 
                     ### the parent ops of the prev event
@@ -675,7 +709,7 @@ class DAGManager:
 
         #！til now, all the edges for one GPU have been added.
         if not _pretty:
-            SingleLogger().info("Calculate critical path and check cycles. This process is time comsuming, set --pretty to disable")
+            SingleLogger().info("Calculate critical path and check cycles. This process is time consuming, set --pretty to disable")
             composed_dag = nx.DiGraph()
             composed_dag.add_edges_from(self.dag)
             try:

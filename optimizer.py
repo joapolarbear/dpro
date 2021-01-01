@@ -22,6 +22,7 @@ from dag_utils import *
 from cost_model_amp.amp_pred import AMPPredictor
 from cost_model_xla.pk_graph import PKGraph, PKGraphCycleError, contract_nodes_nx, \
                     defuse_nodes_inplace_nx, postorder_contract_nx, subgraph_partition_connected_nx
+from cost_model_xla.gen_dataset_utils import parse_xla_candidate_ops
 
 class GraphExpand(Enum):
     NOT=0
@@ -113,7 +114,9 @@ class _BaseCostModel:
         raise NotImplementedError()
     
     def load_init_ckpt(self):
-        ''' Load the init states BEFORE the search process, reduce the preprocessing time, e.g., XLA cost model need to init partition'''
+        ''' Load the init states BEFORE the search process, 
+            reduce the preprocessing time, 
+            e.g., XLA cost model need to init partition'''
         raise NotImplementedError()
     
     def load_ckpt(self):
@@ -248,6 +251,7 @@ class _XLACostModel(_BaseCostModel):
 
     def _init_forbidden_list(self):
         self.initial_forbidden_list = set()
+        xla_candidates = parse_xla_candidate_ops()
         # limit the range of nodes during search
         for node in self.dag.nodes:
             # ignore BW nodes and communication nodes
@@ -262,8 +266,11 @@ class _XLACostModel(_BaseCostModel):
                 self.initial_forbidden_list.add(node)
                 continue
             cat = parse_cat_from_name(node)
-            if (orig_name not in self._wrap_xla_operation_names(pid)) or "Assign" in orig_name or cat == CatName.COMM.value \
-                or "group_deps" in orig_name or "ConstantFolding" in orig_name or "LayoutOptimizer" in orig_name:
+            if (not args_.simulate and orig_name not in self._wrap_xla_operation_names(pid)) \
+                    or "Assign" in orig_name or cat == CatName.COMM.value \
+                    or "group_deps" in orig_name or "ConstantFolding" in orig_name \
+                    or "LayoutOptimizer" in orig_name \
+                    or orig_name not in xla_candidates:
                 self.forbidden_list.add(node)
                 self.initial_forbidden_list.add(node)
  

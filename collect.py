@@ -100,7 +100,7 @@ class Collector(object):
 
     def _collect_rank_traces(self, *args):
         tmp_pm, pid, host_id = args[0]
-        SingleLogger().info("Collec traces for {} ...".format(tmp_pm.path))
+        SingleLogger().info("Collect traces for {} ...".format(tmp_pm.path))
         self.rst_traces = []
         self.raw_name2IDnum = {}
         def add_trace_safe(ret):
@@ -164,6 +164,17 @@ class Collector(object):
         traces = []
         while index < len(raw_traces["traceEvents"]):
             if self.platform == "TENSORFLOW" and one_pid is None:
+                if isinstance(raw_traces["traceEvents"][0]["pid"], int):
+                    pid2name = {}
+                    new_trace = {"traceEvents": []}
+                    for trace in raw_traces["traceEvents"]:
+                        if trace["ph"] == "M" and trace["name"] == "process_name":
+                            pid2name[trace["pid"]] = trace["args"]["name"]
+                    for trace in raw_traces["traceEvents"]:
+                        if trace["ph"] == "X" and trace["pid"] in pid2name:
+                            trace["pid"] = pid2name[trace["pid"]]
+                            new_trace["traceEvents"].append(trace)
+                    raw_traces = new_trace
                 for trace in raw_traces["traceEvents"]:
                     if "device:GPU" in trace["pid"] and "Compute" in trace["pid"] and "replica" in trace["pid"]:
                         pass
@@ -253,6 +264,8 @@ class Collector(object):
                 raw_name = trace["name"]
             elif self.platform == "TENSORFLOW":
                 raw_name = trace["args"]["name"]
+            else:
+                raise ArgumentError("Unsupported platform {}".format(self.platform))
 
             name = standard_name(raw_name, platform=self.platform, update_nodes_in_dag=self.update_nodes_in_dag)
 
@@ -298,7 +311,7 @@ class Collector(object):
 
             ### Handle OUTPUT
             if self.platform == "MXNET":
-                if name == last_fw:
+                if name == last_fw: # type: ignore
                     output_ts = None
                     output_dur = None
                     output_tid = None
@@ -308,7 +321,7 @@ class Collector(object):
                             index += 1
                         else:
                             name = standard_name(_trace["name"], platform=self.platform)
-                            if name == first_bw or name in self.dag.nodes:
+                            if name == first_bw or name in self.dag.nodes: # type: ignore
                                 break
                             output_ts = _trace["ts"] if output_ts is None else output_ts
                             output_dur = _trace["ts"] + _trace["dur"] - output_ts
@@ -330,7 +343,7 @@ class Collector(object):
 
                 ### if all UPDATE-dependent BW nodes have arrived, process traces til FW
                 # if len(last_bw_nodes) == 0:
-                elif name == last_bw:
+                elif name == last_bw: # type: ignore
                     _update_ts = None
                     _cal_ts = None
                     _cal_tid = None
@@ -345,12 +358,12 @@ class Collector(object):
                             if name in self.dag.nodes:
                                 break
                             index += 1
-                            if is_cal_op(_trace):
+                            if is_cal_op(_trace): # type: ignore
                                 if _cal_ts is None:
                                     _cal_ts = _trace["ts"]
                                     _cal_tid = _trace["tid"]
                                 _duration = _trace["ts"] + _trace["dur"] - _cal_ts
-                            if is_update_op(_trace):
+                            if is_update_op(_trace): # type: ignore
                                 if _update_ts is None:
                                     _update_ts = _trace["ts"]
                                     ### Add UPDATE_CAL node
@@ -624,7 +637,7 @@ class Collector(object):
                         tensor_name = self.para_dict.tensor_id_to_name(int(tensor_id_str))
                     elif self.platform == "TENSORFLOW":
                         raise NotImplementedError()
-                    input_nodes = [u for u, _ in self.dag.in_edges(tensor_name)]
+                    input_nodes = [u for u, _ in self.dag.in_edges(tensor_name)] # type: ignore
                     if len(input_nodes) == 1:
                         input0 = list(input_nodes)[0]
                     elif len(input_nodes) == 0:
@@ -735,7 +748,9 @@ class Collector(object):
             assert raw_name2IDnum is not None
             self.nccl_graph.parse_traces(raw_name2IDnum)
         else:
-            host_ids = self.byteps_graph.time_drift.keys()
+            host_ids = [int(host_id_str.split(".rank")[0].split("_")[-1]) for _, _, host_id_str in arg_list]
+            for host_id in host_ids:
+                assert host_id in self.byteps_graph.time_drift
         ### align the time
         rst_traces = self.clock_align(traces_list, host_ids)
         # self.single = (len(rst) == 1)
@@ -770,7 +785,13 @@ class Collector(object):
             critical_path = [None] * self.nccl_graph.nrank
             worker_dag_list = [None] * self.nccl_graph.nrank
         else:
-            raise ValueError("Need to check whether byteps_graph has nrank member")
+            nrank = 0
+            for _dir in self.pm.dirs:
+                worker_path = os.path.join(self.pm.path, _dir)
+                worker_root, worker_dirs, _ = list(os.walk(worker_path))[0]
+                nrank += len(worker_dirs)
+            critical_path = [None] * nrank
+            worker_dag_list = [None] * nrank
         
         if self.dag is None:
             dag_path = self.pm.search(FileName.DAG)
@@ -1357,9 +1378,3 @@ class Collector(object):
 
     def all_pid(self):
         return list(self.nccl_graph.prefix2rank.keys())
-
-
-
-
-
-
