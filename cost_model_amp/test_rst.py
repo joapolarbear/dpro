@@ -21,7 +21,8 @@ def read_amp_fp16_ops(_path):
     with open(_path, "r") as f:
         fp16_ops = json.load(f)
         fp16_ops = fp16_ops['names']
-        fp16_ops = [l.split("node ")[1].split(" to DT_HALF")[0] for l in fp16_ops]
+        if "DT_HALF" in fp16_ops:
+            fp16_ops = [l.split("node ")[1].split(" to DT_HALF")[0] for l in fp16_ops]
         return fp16_ops
 
 def read_search_fp16_ops(_path):
@@ -40,7 +41,10 @@ if args.option == "parse":
         cmd = "python3 /opt/tiger/horovod_examples/tensorflow_synthetic_benchmark.py --num-warmup-batches 1 --num-batches-per-iter 1 --num-iters 1 --amp"
     else:
         cmd = args.cmd
-    os.system(env + "TF_CPP_MIN_LOG_LEVEL=0 TF_CPP_MIN_VLOG_LEVEL=2 nohup {}".format(cmd))
+    
+    print(env + " TF_CPP_MIN_LOG_LEVEL=0 TF_CPP_MIN_VLOG_LEVEL=2 nohup {}".format(cmd))
+    os.system(env + " TF_CPP_MIN_LOG_LEVEL=0 TF_CPP_MIN_VLOG_LEVEL=2 nohup {}".format(cmd))
+    
     with open("nohup.out", 'r') as f:
         result = f.read()
 
@@ -48,8 +52,9 @@ if args.option == "parse":
     lines = re.findall("Converted [0-9]+/[0-9]+ nodes to "
         "float16 precision using [0-9]+ cast\(s\) to "
         "float16 \(excluding Const and Variable casts\)", result)
-    print(lines[0])
-    ret["info"] = lines[0]
+    if len(lines) > 0:
+        print(lines[0])
+        ret["info"] = lines[0]
 
     lines = re.findall("Changing type .+ of "
                     ".+ node .+ to DT_HALF", result)
