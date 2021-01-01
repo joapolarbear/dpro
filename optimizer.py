@@ -733,7 +733,7 @@ class _TensorFusionCM(_BaseCostModel):
         search_space = []
         weights = []
         
-        for node in _dag.nodes():
+        for n, l in candidates:
             if "Comm" in node and "Sync" in node:
                 pass
 
@@ -742,7 +742,48 @@ class _TensorFusionCM(_BaseCostModel):
         return search_space, weights
     
     def apply(self, s, __dag, __pkg):
-        _, _fusion_threshold_mb, _cycle_time_ms = s
+        op, target, next_ = s
+        if op == "++":
+            ### Fuse two nodes
+            return self._op_fusion(__dag, __pkg, target, next_)
+        elif op == "--":
+            return self._op_defusion(__dag, __pkg, target, next_)
+    
+    def _op_fusion(self, _dag, _pkg: PKGraph, u_, v_):
+        pid_u, raw_name_u, cat_u, suffix_u = parse_allinfo_from_name(u_)
+        pid_v, raw_name_v, cat_v, suffix_v = parse_allinfo_from_name(v_)
+        assert pid_u == pid_v
+        one_pid = pid_u
+
+        edges_to_add = []
+        prev_names = [u_, v_]
+        assert "BW" in u_
+        for cu, cv in zip(_dag.successors(u_), _dag.successors(v_)):
+            pid_u, raw_name_u, cat_u, suffix_u = parse_allinfo_from_name(cu)
+            pid_v, raw_name_v, cat_v, suffix_v = parse_allinfo_from_name(cv)
+            if cat_u != CatName.COMM.value:
+                break
+            if pid_u != one_pid:
+                continue
+            assert pid_u == pid_v
+            raw_name_u_split = raw_name_u.split(".")
+            raw_name_v_split = raw_name_v.split(".")
+            assert raw_name_u_split[-1] == raw_name_v_split[-1]
+
+            new_name = self._concat_name(one_pid, raw_name_u_split[1], raw_name_v_split[1], suffix_u)
+            new_time = self._concat_avg(one_pid, raw_name_u_split[1], raw_name_v_split[1], suffix_u)
+
+            for prev_ in prev_names:
+                edges_to_add.append((prev_, new_name, {"avg": new_time}))
+            nodes_to_rm += [cu, cv]
+            prev_names = new_name
+
+    
+    def _concat_name(self, pid, rawname1, rawname2, suffix):
+        raise NotImplementedError()
+    
+    def _concat_avg(self, ):
+        raise NotImplementedError()
               
 class CostModelManager:
     def __init__(self, opt):
