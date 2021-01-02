@@ -190,6 +190,7 @@ class _XLACostModel(_BaseCostModel):
             os.mkdir(cost_model_tmp_dir)
         SingleLogger().info("Searching for XLA Cost Model dumps in {}".format(models_dir))
         cost_models["default"] = XLAModuleCostModel(models_dir, tmp_dir=os.path.join(cost_model_tmp_dir))
+        
         # for model_dump_dir in os.listdir(models_dir):
         #     model_path = os.path.join(models_dir, model_dump_dir)
         #     p = Path(model_path)
@@ -224,6 +225,10 @@ class _XLACostModel(_BaseCostModel):
         for source in tqdm(source_nodes, total=len(source_nodes)):
             if source not in visited_nodes and source in partition_G.nodes:
                 _, _, partition_G = postorder_contract_nx(partition_G, partition_PKG, source, visited_nodes, forbidden_list=self.initial_forbidden_list, size_limit=800)
+
+        self._dump_cluster_mapping(partition_G, os.path.join(ROOT_PATH, "cluster_mapping.txt"))
+        print("hhhh")
+        raise
 
         SingleLogger().info("Start to init partition graph ... ")
         for node_name in tqdm(partition_G.nodes()):

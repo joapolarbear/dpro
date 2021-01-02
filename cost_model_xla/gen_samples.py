@@ -24,6 +24,11 @@ from .constant_utils import *
 import networkx as nx
 
 try:
+    import horovod.tensorflow as hvd
+except:
+    pass
+
+try:
     graph_hash = nx.algorithms.weisfeiler_lehman_graph_hash
 except:
     import hashlib
