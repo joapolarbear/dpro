@@ -26,9 +26,9 @@ class MetaInfo:
         with open(os.path.join(meta_dir, FileName.METADATA.value), 'r') as fp:
             self.tf_meta = json.load(fp)
 
-        with open(os.path.join(meta_dir, FileName.TENSOR_NAME.value), 'r') as fp:
-            self.gradient_name_list = json.load(fp)["gradient_name_list"]
-
+        # with open(os.path.join(meta_dir, FileName.TENSOR_NAME.value), 'r') as fp:
+            # self.gradient_name_list = json.load(fp)["gradient_name_list"]
+        self.gradient_name_list = []
         ### Batch size used for this meta data file
         self.old_B = None
         self.cache_hyper_para = {}

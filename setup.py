@@ -45,7 +45,7 @@ setup(name='byteprofile analysis',
             "python-igraph",
             'pymc3',
 
-            'tensorflow',
+            'tensorflow-gpu==1.15',
             "horovod", # only used to provide op type definination
             "h5py==2.10.0"
       ],

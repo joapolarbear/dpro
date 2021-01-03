@@ -23,6 +23,7 @@ from cost_model_amp.amp_pred import AMPPredictor
 from cost_model_xla.pk_graph import PKGraph, PKGraphCycleError, contract_nodes_nx, \
                     defuse_nodes_inplace_nx, postorder_contract_nx, subgraph_partition_connected_nx
 from cost_model_xla.gen_dataset_utils import parse_xla_candidate_ops
+from memory import MemoryEstimator
 
 class GraphExpand(Enum):
     NOT=0
@@ -803,7 +804,7 @@ class CostModelManager:
             self.cost_model_list = [_AMPCostModel(opt)]
         else:
             self.cost_model_list = [
-                _XLACostModel(opt),
+                # _XLACostModel(opt),
                 # _AMPCostModel(opt),
             ]
         self.mem_model_list = []
@@ -826,6 +827,7 @@ class Optimizer:
         self.clct = collector
         self.platform = self.clct.platform
         self.comm_backend = self.clct.comm_backend
+        self.memory_estimator = MemoryEstimator(self.platform)
 
         self.step = 0
         if args_.relabel:
@@ -954,8 +956,10 @@ class Optimizer:
                 byteps_graph=self.clct.byteps_graph)
         step_end_time_ms = [t / 1000 for t in replayer.replayAndDelay(None, _ouput=_output, _filename=_filename).values()]
         # print("Evaluate time {}".format(time.time() - t))
+        
+        estimated_memory_usage = self.memory_estimator.estimate(_dag, self.clct.para_dict)
 
-        return max(step_end_time_ms), replayer.exct_dag, 0
+        return max(step_end_time_ms), replayer.exct_dag, estimated_memory_usage
 
     def candidate_selection(self, GS, topk=None, critical_path=None):
         ### Select nodes on the critical path of the execution graph as the candidates
