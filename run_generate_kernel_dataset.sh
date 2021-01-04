@@ -57,6 +57,9 @@ python3 generate_kernel_dataset.py --trace_dir ${TRACE_DIR} \
 DATASET_DIR="/opt/tiger/xla/kernel_dataset"
 OUTPUT_DIR="/opt/tiger/xla/cost_model"
 
+cp /opt/tiger/xla/kernel_dataset/cleaned_graph.json /opt/tiger/xla/kernel_dataset/dataset/
+cp /opt/tiger/xla/kernel_dataset/tensor_shapes.json /opt/tiger/xla/kernel_dataset/dataset/
+
 cd /opt/tiger/byteprofile-analysis
 python3 train_module_cost_model.py --dataset_dir ${DATASET_DIR} --output_dir ${OUTPUT_DIR}
 

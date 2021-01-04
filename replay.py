@@ -370,7 +370,7 @@ class Replayer:
                 try:
                     assert CatName.COMM.value not in n
                 except:
-                    raise RuntimeError(n)
+                    raise RuntimeError("Invalid nodes {} with in_degree=0".format(n))
                 pid = parse_pid_from_name(n)
                 _last_end = self.step_end_time[pid] if _status["ready"] is None else _status["ready"]
                 self.insert_next_node(n, _last_end)
