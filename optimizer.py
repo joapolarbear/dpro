@@ -21,16 +21,19 @@ from trace_utils import *
 from dag_utils import *
 from cost_model_amp.amp_pred import AMPPredictor
 from cost_model_xla.pk_graph import PKGraph, PKGraphCycleError, contract_nodes_nx, \
-                    defuse_nodes_inplace_nx, postorder_contract_nx, subgraph_partition_connected_nx
+    defuse_nodes_inplace_nx, postorder_contract_nx, subgraph_partition_connected_nx
 from cost_model_xla.gen_dataset_utils import parse_xla_candidate_ops
 
+from cost_model.base import _BaseCostModel
+from cost_model.tensor_fusion import _TensorFusionCM
+
 class GraphExpand(Enum):
-    NOT=0
-    PARTIAL=1
-    FULLY=2
+    NOT = 0
+    PARTIAL = 1
+    FULLY = 2
 
 args_ = arg_utils.SingleArg().args
-if args_.option == "optimize" and args_.sub_option != "amp":
+if args_.option == "optimize" and args_.sub_option not in ["amp", "tensor_fusion"]:
     from cost_model_xla.xla_module_cost_model import XLAModuleCostModel
     import horovod.tensorflow as hvd
 
@@ -40,40 +43,45 @@ UCB_GAMMA = args_.ucb_gamma
 MCMC_BETA = args_.mcmc_beta
 ROOT_PATH = os.path.join(args_.workspace, ".opt_ws")
 
+
 class OptApplyStrategyError(Exception):
     pass
+
 
 class OptNoValidStrategyError(Exception):
     pass
 
+
 class OptQueryCostModelError(Exception):
     pass
+
 
 class AttrCache():
     def __init__(self):
         self._cache = {}
-    
+
     def _parse_key(self, node_name):
         if "+" in node_name:
             key = tuple(sorted(node_name.split("+")))
         else:
             key = node_name
         return key
-    
+
     def __contains__(self, node_name):
         key = self._parse_key(node_name)
         return key in self._cache
-    
+
     def __getitem__(self, node_name):
         key = self._parse_key(node_name)
         return self._cache[key]
-    
+
     def __setitem__(self, node_name, value):
         key = self._parse_key(node_name)
         self._cache[key] = value
 
     def __len__(self):
         return len(self._cache)
+
 
 class GraphState:
     def __init__(self, depth):
@@ -85,7 +93,8 @@ class GraphState:
         self.parent = None
         self.depth = depth
 
-        self.state = GraphExpand.NOT  ### Whether the actions have been tranversed, not, partial or fully
+        # Whether the actions have been tranversed, not, partial or fully
+        self.state = GraphExpand.NOT
 
         self.strategy = None
         self.iter_time = None
@@ -100,32 +109,6 @@ class GraphState:
         else:
             self.state = GraphExpand.PARTIAL
 
-class _BaseCostModel:
-    def __init__(self, opt):
-        self.opt = opt
-        self.dag = self.opt.dag
-        ### token is the indendifier of each optimization technique
-        self.token = None
-
-    def init_search_space(self, candidates, _dag: nx.DiGraph, _pkg: PKGraph):
-        raise NotImplementedError()
-
-    def apply(self, s, __dag, __pkg):
-        raise NotImplementedError()
-    
-    def load_init_ckpt(self):
-        ''' Load the init states BEFORE the search process, 
-            reduce the preprocessing time, 
-            e.g., XLA cost model need to init partition'''
-        raise NotImplementedError()
-    
-    def load_ckpt(self):
-        ''' Load checkponits during the search process '''
-        raise NotImplementedError()
-    
-    def checkpoint(self):
-        raise NotImplementedError()
-
 class _XLACostModel(_BaseCostModel):
     def __init__(self, opt):
         super().__init__(opt)
@@ -138,7 +121,7 @@ class _XLACostModel(_BaseCostModel):
         self.ckpt_path = os.path.join(ROOT_PATH, "xla_ckpt.pickle")
         ### Used to cache the node attribtue
         self.node_attr_cache = AttrCache()
-    
+
     def load_init_ckpt(self):
         init_ckpt_path = os.path.join(ROOT_PATH, "xla_init_ckpt.pickle")
         trajectory = []
@@ -161,7 +144,7 @@ class _XLACostModel(_BaseCostModel):
             with open(init_ckpt_path, "wb") as f:
                 pickle.dump([G, PKG, self.node_attr_cache, initial_partitions_formed], f)
             SingleLogger().info("Graph cache dumped to {}.".format(init_ckpt_path))
-        
+
         if "BPF_DUMP_INIT_CLUSTER_TO" in os.environ:
             self._dump_cluster_mapping(G, os.environ["BPF_DUMP_INIT_CLUSTER_TO"])
         SingleLogger().info("Successfully initialized {} partitions.".format(initial_partitions_formed))
@@ -169,27 +152,28 @@ class _XLACostModel(_BaseCostModel):
         # self._check_dag_avg(G)
 
         return G, PKG, trajectory
-    
+
     def load_ckpt(self):
         if os.path.isfile(self.ckpt_path):
             with open(self.ckpt_path, "rb") as f:
                 node_attr_cache = pickle.load(f)
                 self.node_attr_cache = node_attr_cache
-    
+
     def checkpoint(self):
         with open(self.ckpt_path, "wb") as f:
             pickle.dump([self.node_attr_cache], f)
 
     def _load_cm(self):
-        cost_models = {}        
+        cost_models = {}
         models_dir = os.path.join(os.path.dirname(os.path.abspath(
             __file__)), "cost_model_xla/.cost_model")
-        
+
         cost_model_tmp_dir = os.path.join(ROOT_PATH, "cost_model_tmp")
         if not os.path.exists(cost_model_tmp_dir):
             os.mkdir(cost_model_tmp_dir)
         SingleLogger().info("Searching for XLA Cost Model dumps in {}".format(models_dir))
         cost_models["default"] = XLAModuleCostModel(models_dir, tmp_dir=os.path.join(cost_model_tmp_dir))
+
         # for model_dump_dir in os.listdir(models_dir):
         #     model_path = os.path.join(models_dir, model_dump_dir)
         #     p = Path(model_path)
@@ -201,7 +185,7 @@ class _XLACostModel(_BaseCostModel):
         #     else:
         #         SingleLogger().warn(" - {} not a directory.".format(model_path))
         return cost_models
-    
+
     def _reduce_nx_size(self, G):
         ret_G = nx.DiGraph()
         edges_to_add = []
@@ -223,7 +207,13 @@ class _XLACostModel(_BaseCostModel):
         SingleLogger().info("Start to postorder_contract_nx ... ")
         for source in tqdm(source_nodes, total=len(source_nodes)):
             if source not in visited_nodes and source in partition_G.nodes:
-                _, _, partition_G = postorder_contract_nx(partition_G, partition_PKG, source, visited_nodes, forbidden_list=self.initial_forbidden_list, size_limit=800)
+                _, _, partition_G = postorder_contract_nx(
+                    partition_G, partition_PKG, source, visited_nodes, forbidden_list=self.initial_forbidden_list, size_limit=800)
+
+        self._dump_cluster_mapping(partition_G, os.path.join(
+            ROOT_PATH, "cluster_mapping.txt"))
+        print("hhhh")
+        raise
 
         SingleLogger().info("Start to init partition graph ... ")
         for node_name in tqdm(partition_G.nodes()):
@@ -233,10 +223,10 @@ class _XLACostModel(_BaseCostModel):
                 # fused node, test if compilable
                 try:
                     self._parse_node_attr(partition_G, node_name)
-                    compilable=True
+                    compilable = True
                 except OptQueryCostModelError:
                     # traceback.print_exc()
-                    compilable=False
+                    compilable = False
                 if compilable:
                     avg = None
                     for _node_name in [node_name] + self.opt._debug_convert_to_the_other_machine(node_name):
@@ -273,7 +263,7 @@ class _XLACostModel(_BaseCostModel):
                     or orig_name not in xla_candidates:
                 self.forbidden_list.add(node)
                 self.initial_forbidden_list.add(node)
- 
+
     def _get_node_attr(self, n, attr_):
         if attr_ in self.node_attr_cache[n]:
             return self.node_attr_cache[n][attr_]
@@ -304,7 +294,8 @@ class _XLACostModel(_BaseCostModel):
                 single_pid = pid
             else:
                 if single_pid != pid:
-                    raise RuntimeError("Fused DAG node {} contains ops from different machines.".format(u_))
+                    raise RuntimeError(
+                        "Fused DAG node {} contains ops from different machines.".format(u_))
         return orig_names, single_pid
 
     def _get_defused_node_names(self, fused_node_):
@@ -323,7 +314,7 @@ class _XLACostModel(_BaseCostModel):
         else:
             # return self.cost_models[pid].predict(nodes_to_fuse)
             predict_time_in_us = self.cost_models["default"].predict(nodes_to_fuse)
-            return  predict_time_in_us / 1000.0
+            return predict_time_in_us / 1000.0
 
     def _wrap_xla_need_fuse(self, pid, orig_name, long_name):
         return (orig_name in self._wrap_xla_operation_names(pid)) and long_name not in self.forbidden_list
@@ -331,25 +322,28 @@ class _XLACostModel(_BaseCostModel):
     def _wrap_xla_operation_names(self, pid):
         # return self.cost_models[pid].graph_def_util.operation_names
         return self.cost_models["default"].graph_def_util.operation_names
-    
+
     def _query_cost_model(self, fused_u_):
         # query cost model for exec time of a fused node u
         nodes_in_u, u_pid = self._get_original_name_pid_from_fused_node(fused_u_)
         nodes_to_fuse = set(nodes_in_u)
         if len(nodes_to_fuse) < 10:
-            SingleLogger().info("[COST MODEL QUERY] {} Nodes to fuse: {}".format(len(nodes_to_fuse), nodes_to_fuse))
+            SingleLogger().info("[COST MODEL QUERY] {} Nodes to fuse: {}".format(
+                len(nodes_to_fuse), nodes_to_fuse))
         else:
-            SingleLogger().info("[COST MODEL QUERY] {} Nodes to fuse ...".format(len(nodes_to_fuse)))
+            SingleLogger().info(
+                "[COST MODEL QUERY] {} Nodes to fuse ...".format(len(nodes_to_fuse)))
 
         predicted_time, _ = self._wrap_xla_predict(u_pid, nodes_to_fuse, fused_u_)
-        SingleLogger().info("[COST MODEL QUERY] Exec time predicted: {}".format(predicted_time))
+        SingleLogger().info(
+            "[COST MODEL QUERY] Exec time predicted: {}".format(predicted_time))
         if predicted_time < 0:
             raise OptQueryCostModelError("Failed to query cost model.")
         else:
             # self.cost_model_error.append(np.abs(predicted_time - executed_time) / executed_time)
             # SingleLogger().info("[COST MODEL QUERY] Average prediction accuracy: {}".format(np.average(self.cost_model_error)))
             # if len(self.cost_model_error) > 20:
-                # self.cost_model_error = []
+            # self.cost_model_error = []
             pass
         return predicted_time
 
@@ -383,7 +377,7 @@ class _XLACostModel(_BaseCostModel):
                 split_weights = np.exp(5e-4*(len(ns) - 80)) * (np.array(split_weights) / np.sum(split_weights))
                 for split_index, splits in enumerate(valid_split_plans):
                     search_space.append(("-", n, splits))
-                    weights.append(self.opt._combine_weight(l, heat) * split_weights[split_index] )
+                    weights.append(self.opt._combine_weight(l, heat) * split_weights[split_index])
             else:
                 ### Nodes that have never been fused
                 cat = parse_cat_fine_grained(n)
@@ -432,7 +426,7 @@ class _XLACostModel(_BaseCostModel):
                         else:
                             ### TODO (huhanpeng): is there only one comm sub operator ???
                             comm_t += _dag.nodes[bw_u_succ]["avg"]
-                
+
                 # if comm_t >= _dag.nodes[bw_v]["avg"]:
                 if comm_t >= _dag.nodes[succ_]["avg"]:
                     prun_cnt += 1
@@ -448,7 +442,7 @@ class _XLACostModel(_BaseCostModel):
                 #     print("Heat for (traces_0.rank0->BW.[2654], {}):".format(succ_))
                 #     print(heat_combined)
                 #     input()
-                
+
                 # if heat_combined > 0:
                 #     print("Heat for ({}, {}): {}".format(n, succ_, heat_combined))
                 #     input()
@@ -458,13 +452,14 @@ class _XLACostModel(_BaseCostModel):
 
                 search_space.append(("+", n, succ_))
                 weights.append(self.opt._combine_weight(l, heat_combined))
-        SingleLogger().info("Init search space len={} from {} candidates, prune {}".format(len(search_space), len(candidates), prun_cnt))
+        SingleLogger().info("Init search space len={} from {} candidates, prune {}".format(
+            len(search_space), len(candidates), prun_cnt))
         # SingleLogger().info("Time spent for spanning tree: {}".format(sum(time_spanning_trees)/ len(time_spanning_trees)))
         # SingleLogger().info("Time spent for source/sink: {}".format(sum(time_st)/ len(time_st)))
         return search_space, weights
 
     def _concat_name(self, u_, v_):
-        return "%s+%s"%(u_, v_)
+        return "%s+%s" % (u_, v_)
 
     def _combine_avg(self, u, v):
         ### call cost model to obtain the combined time
@@ -473,7 +468,7 @@ class _XLACostModel(_BaseCostModel):
 
     def _combine_gap(self, ug, vg):
         ### TODO (huhanpeng): key component
-        ### Use max to avoid one input is zero, 
+        ### Use max to avoid one input is zero,
         ### some how for the new gap x, ug < x < ug + vg, vg < x < ug + vg
         # return max(max((ug + vg) / 0.8, ug), vg)
         return max(ug, vg)
@@ -481,8 +476,10 @@ class _XLACostModel(_BaseCostModel):
     def _combine_nodes_attr(self, _dag, target, u_, v_, avg=None):
         ### In graph _dag, combine the attributes of u_ and v_, store the results in _dag as the attributes of target
         _dag.nodes[target]["avg"] = self._combine_avg(u_, v_) if avg is None else avg
-        _dag.nodes[target][GAP_STR_OP2OP] = self._combine_gap(self._get_node_attr(u_, GAP_STR_OP2OP), self._get_node_attr(v_, GAP_STR_OP2OP))
-        _dag.nodes[target][GAP_STR_OP2COMM] = self._combine_gap(self._get_node_attr(u_, GAP_STR_OP2COMM), self._get_node_attr(v_, GAP_STR_OP2COMM))
+        _dag.nodes[target][GAP_STR_OP2OP] = self._combine_gap(
+            self._get_node_attr(u_, GAP_STR_OP2OP), self._get_node_attr(v_, GAP_STR_OP2OP))
+        _dag.nodes[target][GAP_STR_OP2COMM] = self._combine_gap(self._get_node_attr(
+            u_, GAP_STR_OP2COMM), self._get_node_attr(v_, GAP_STR_OP2COMM))
 
     def _combine_attr_except_avg(self, target, attr1, attr2):
         ### In graph _dag, combine the attributes of u_ and v_, store the results in _dag as the attributes of target
@@ -514,7 +511,7 @@ class _XLACostModel(_BaseCostModel):
         avg: average time
         '''
         if new_name in self.node_attr_cache:
-            nx.set_node_attributes(_dag, {new_name:self.node_attr_cache[new_name]})
+            nx.set_node_attributes(_dag, {new_name: self.node_attr_cache[new_name]})
             # _dag.add_node(new_name, **self.node_attr_cache[new_name])
         else:
             ns = new_name.split("+")
@@ -524,9 +521,9 @@ class _XLACostModel(_BaseCostModel):
             # combine attr avg
             attrs["avg"] = self._query_cost_model(new_name) if avg is None else avg
             ### set and cache the attribute
-            nx.set_node_attributes(_dag, {new_name:attrs})
+            nx.set_node_attributes(_dag, {new_name: attrs})
             self._cache_node_attr(new_name, _dag.nodes[new_name])
-        
+
         ### TODO (huhanpeng): apply to other GPUs, cache the same attribute for corresponding operators on other GPUs
         for other_name in self.opt._debug_convert_to_the_other_machine(new_name):
             if other_name in self.node_attr_cache:
@@ -534,7 +531,7 @@ class _XLACostModel(_BaseCostModel):
             self._cache_node_attr(other_name, _dag.nodes[new_name])
 
         return self.node_attr_cache[new_name]["avg"]
-    
+
     def _op_fusion(self, _dag, _pkg: PKGraph, u_, v_):
         # test if two nodes can be fused
         if _pkg.can_contract_edge(u_, v_):
@@ -557,7 +554,7 @@ class _XLACostModel(_BaseCostModel):
                 self._fuse_pair(_dag, u__, v__, avg=avg)
                 nodes_to_add.append(u__+"+"+v__)
                 nodes_to_remove += [u__, v__]
-            
+
             return True, nodes_to_add, nodes_to_remove
         else:
             return False, None, None
@@ -601,7 +598,7 @@ class _XLACostModel(_BaseCostModel):
         _dag.remove_node(u_)
         _dag.remove_node(v_)
 
-        assert u_ not in _dag.nodes 
+        assert u_ not in _dag.nodes
         assert v_ not in _dag.nodes
         assert u_ in self.node_attr_cache and "avg" in self.node_attr_cache[u_]
         assert v_ in self.node_attr_cache and "avg" in self.node_attr_cache[v_]
@@ -615,7 +612,7 @@ class _XLACostModel(_BaseCostModel):
         _, new_node_names = self._defuse_node(_dag, _pkg, target, components)
         nodes2add += new_node_names
         nodes2rm.append(target)
-        
+
         ### apply the same strategy to other GPUs
         target_l = self.opt._debug_convert_to_the_other_machine(target)
         components_l = [tuple([self.opt._debug_convert_to_the_other_machine(node) for node in comp]) for comp in components]
@@ -642,7 +639,7 @@ class _XLACostModel(_BaseCostModel):
             return self._op_fusion(__dag, __pkg, target, next_)
         elif op == "-":
             return self._op_defusion(__dag, __pkg, target, next_)
-        
+
     def _check_dag_avg(self, G: nx.DiGraph):
         for n in G.nodes():
             if "Comm" in n or "host0.rank0" not in n:
@@ -654,8 +651,10 @@ class _XLACostModel(_BaseCostModel):
             all_fuse_nodes = n.split("+")
             for _n in all_fuse_nodes:
                 avg_sum += self.node_attr_cache[_n]["avg"]
-            print("Fuse {} nodes, predicted avg: {}, fused nodes avg sum: {}".format(len(all_fuse_nodes), fused_avg, avg_sum))
+            print("Fuse {} nodes, predicted avg: {}, fused nodes avg sum: {}".format(
+                len(all_fuse_nodes), fused_avg, avg_sum))
         raise
+
 
 class _AMPCostModel(_BaseCostModel):
     def __init__(self, opt):
@@ -679,7 +678,7 @@ class _AMPCostModel(_BaseCostModel):
             if self.amp_predictor.is_need_amp(_dag, n):
                 search_space.append((">", n, None))
                 weights.append(l)
-        
+
         # return [(">", "host1.rank0->BW.gradients/resnet50/conv2_block3_1_conv/Conv2D_grad/Conv2DBackpropFilter", None)], [1]
         SingleLogger().info("MP Cost Model init {} strategies.".format(len(search_space)))
         return search_space, weights
@@ -693,10 +692,10 @@ class _AMPCostModel(_BaseCostModel):
         for target in on_other_ranks:
             nodes_introduced += self.amp_predictor.quantize(__dag, target)
         return True, nodes_introduced, []
-    
+
     def checkpoint(self):
         self.amp_predictor.checkpoint()
-    
+
     def load_ckpt(self):
         self.amp_predictor.load_ckpt()
 
@@ -722,80 +721,21 @@ class _AMPCostModel(_BaseCostModel):
                     self.apply(s, G, PKG)
 
             with open(init_ckpt_path, "wb") as f:
-                pickle.dump([G, PKG, trajectory, self.amp_predictor.cast_cnt, self.amp_predictor.num_nonvar_casts_to_fp16, self.amp_predictor.op_status], f)
+                pickle.dump([G, PKG, trajectory, self.amp_predictor.cast_cnt,
+                             self.amp_predictor.num_nonvar_casts_to_fp16, self.amp_predictor.op_status], f)
             SingleLogger().info("Graph cache dumped to {}.".format(init_ckpt_path))
-        
-        SingleLogger().info("Successfully initialized mixed precision strategy with {} cast(s).".format(self.amp_predictor.num_nonvar_casts_to_fp16))
+
+        SingleLogger().info("Successfully initialized mixed precision strategy with {} cast(s).".format(
+            self.amp_predictor.num_nonvar_casts_to_fp16))
         return G, PKG, trajectory
 
-class _TensorFusionCM(_BaseCostModel):
-    ''' This is a cost model for HOROVOD tensor fusion
-    '''
-    def __init__(self, opt):
-        super().__init__(opt)
-        self.token = ["o"]
-        self.meta_info = self.opt.clct.para_dict
-    
-    def init_search_space(self, candidates, _dag: nx.DiGraph, _pkg: PKGraph):
-        search_space = []
-        weights = []
-        
-        for n, l in candidates:
-            if "Comm" in node and "Sync" in node:
-                pass
 
-        self.meta_info.standarize_name()
-
-        return search_space, weights
-    
-    def apply(self, s, __dag, __pkg):
-        op, target, next_ = s
-        if op == "++":
-            ### Fuse two nodes
-            return self._op_fusion(__dag, __pkg, target, next_)
-        elif op == "--":
-            return self._op_defusion(__dag, __pkg, target, next_)
-    
-    def _op_fusion(self, _dag, _pkg: PKGraph, u_, v_):
-        pid_u, raw_name_u, cat_u, suffix_u = parse_allinfo_from_name(u_)
-        pid_v, raw_name_v, cat_v, suffix_v = parse_allinfo_from_name(v_)
-        assert pid_u == pid_v
-        one_pid = pid_u
-
-        edges_to_add = []
-        prev_names = [u_, v_]
-        assert "BW" in u_
-        for cu, cv in zip(_dag.successors(u_), _dag.successors(v_)):
-            pid_u, raw_name_u, cat_u, suffix_u = parse_allinfo_from_name(cu)
-            pid_v, raw_name_v, cat_v, suffix_v = parse_allinfo_from_name(cv)
-            if cat_u != CatName.COMM.value:
-                break
-            if pid_u != one_pid:
-                continue
-            assert pid_u == pid_v
-            raw_name_u_split = raw_name_u.split(".")
-            raw_name_v_split = raw_name_v.split(".")
-            assert raw_name_u_split[-1] == raw_name_v_split[-1]
-
-            new_name = self._concat_name(one_pid, raw_name_u_split[1], raw_name_v_split[1], suffix_u)
-            new_time = self._concat_avg(one_pid, raw_name_u_split[1], raw_name_v_split[1], suffix_u)
-
-            for prev_ in prev_names:
-                edges_to_add.append((prev_, new_name, {"avg": new_time}))
-            nodes_to_rm += [cu, cv]
-            prev_names = new_name
-
-    
-    def _concat_name(self, pid, rawname1, rawname2, suffix):
-        raise NotImplementedError()
-    
-    def _concat_avg(self, ):
-        raise NotImplementedError()
-              
 class CostModelManager:
     def __init__(self, opt):
         if args_.sub_option == "amp":
             self.cost_model_list = [_AMPCostModel(opt)]
+        elif args_.sub_option == "tensor_fusion":
+            self.cost_model_list = [_TensorFusionCM(opt)]
         else:
             self.cost_model_list = [
                 _XLACostModel(opt),
@@ -815,7 +755,8 @@ class CostModelManager:
             for _tok in cm.token:
                 assert _tok not in self.strategy2model
                 self.strategy2model[_tok] = cm
-    
+
+
 class Optimizer:
     def __init__(self, collector, memory_budget=None):
         self.clct = collector
@@ -827,14 +768,14 @@ class Optimizer:
             ### To simplify the DAG representation, relabel dag with indexes
             ### index2name: index to the layer name, i.e., which is substituted by the index
             self.index2name = {}
-            ### index2pid: index to the pid which this index belongs to, 
+            ### index2pid: index to the pid which this index belongs to,
             # i.e., the same op in different pid use different index
             self.index2pid = {}
             ### name2index: given the layer name, store the index in each pid
             self.name2index = {}
-            ### index2newname: index to new label in DAG 
+            ### index2newname: index to new label in DAG
             self.index2newname = {}
-            
+
             ## Get the dependency graph
             self.dag = self.relabel_dag_node(self.clct.trail_dag)
             with open(os.path.join(ROOT_PATH, "index2name.txt"), "w") as f:
@@ -845,14 +786,15 @@ class Optimizer:
                     f.write("\n")
         else:
             self.dag = self.clct.trail_dag
-        
+
         self.forbidden_list = []
 
         if "BPF_DUMP_INIT_GRAPH_TO" in os.environ:
             bpf_dump_init_graph_to = os.environ["BPF_DUMP_INIT_GRAPH_TO"]
         else:
             bpf_dump_init_graph_to = None
-        self.base_cost, self.exct_dag, self.base_mem_usage = self.evaluate(self.dag, _filename=bpf_dump_init_graph_to)
+        self.base_cost, self.exct_dag, self.base_mem_usage = self.evaluate(
+            self.dag, _filename=bpf_dump_init_graph_to)
 
         ### Budget, in GB
         self.memory_budget = memory_budget if memory_budget is not None else 1
@@ -880,7 +822,7 @@ class Optimizer:
                 # TODO (huhanpeng): different pids share the same index
                 if "Comm" in old_label and layer_name in self.name2index and layer_pid in self.name2index[layer_name]:
                     layer_index = self.name2index[layer_name][layer_pid]
-                    new_label = ("[%d]"%layer_index).join(old_label.split(layer_name))
+                    new_label = ("[%d]" % layer_index).join(old_label.split(layer_name))
                     return new_label
 
                 layer_index = len(self.index2name)
@@ -889,7 +831,7 @@ class Optimizer:
                 if layer_name not in self.name2index:
                     self.name2index[layer_name] = {}
                 self.name2index[layer_name][layer_pid] = layer_index
-                new_label = ("[%d]"%layer_index).join(old_label.split(layer_name))
+                new_label = ("[%d]" % layer_index).join(old_label.split(layer_name))
                 self.index2newname[layer_index] = new_label
                 return new_label
             else:
@@ -902,10 +844,10 @@ class Optimizer:
         # for node in nodes_to_remove:
         #     new_dag.remove_node(node)
         return nx.relabel_nodes(_dag, relabel_func)
-    
+
     def _parse_index_from_name(self, name_):
         return int(name_.split("[")[1].split("]")[0])
-    
+
     def _debug_convert_to_the_other_machine(self, name_):
         if not "+" in name_:
             ret = []
@@ -942,12 +884,13 @@ class Optimizer:
         ### input _dag is a dependency graph, using the replayer to get the simulated traces and execution graph
         ### Return the iteration time and the execution graph
         _output = False if _filename is None else True
-        replayer = Replayer(dag=_dag, _step_num=1, 
-                leaf_dirs=self.clct.all_prefix_list(), 
-                dump_path=self.clct.pm.path,
-                comm_backend=self.clct.comm_backend,
-                byteps_graph=self.clct.byteps_graph)
-        step_end_time_ms = [t / 1000 for t in replayer.replayAndDelay(None, _ouput=_output, _filename=_filename).values()]
+        replayer = Replayer(dag=_dag, _step_num=1,
+                            leaf_dirs=self.clct.all_prefix_list(),
+                            dump_path=self.clct.pm.path,
+                            comm_backend=self.clct.comm_backend,
+                            byteps_graph=self.clct.byteps_graph)
+        step_end_time_ms = [t / 1000 for t in replayer.replayAndDelay(
+            None, _ouput=_output, _filename=_filename).values()]
         # print("Evaluate time {}".format(time.time() - t))
 
         return max(step_end_time_ms), replayer.exct_dag, 0
@@ -989,7 +932,7 @@ class Optimizer:
         ret = dag_longest_path(_dag, None, weight="cost", default_weight=0, _debug_level=(1 if verbose else 0))
         # print("critical path time {}".format(time.time() - t))
         return ret
-    
+
     def _combine_weight(self, l: float, heat: float) -> float:
         # return l * (0.05 + heat)
         return heat + 0.01
@@ -1012,7 +955,8 @@ class Optimizer:
                 search_space += ss_
                 weights += wei_
             if len(search_space) == 0:
-                SingleLogger().WARN("No optimization strategy to reduce memory usage: {} > {}".format(self.mem_usage, self.memory_budget))
+                SingleLogger().WARN("No optimization strategy to reduce memory usage: {} > {}".format(
+                    self.mem_usage, self.memory_budget))
 
         for _cost_model in self.cst_md_mng.cost_model_list:
             ss_, wei_ = _cost_model.init_search_space(candidates, _dag, _pkg)
@@ -1085,8 +1029,10 @@ class Optimizer:
         # assert False, "Shouldn't get here"
         return choices[0]
 
+
 class MCMCOptimizer(Optimizer):
     ''' Markov Chain Monte Carlo algorithm'''
+
     def __init__(self, *args, **kwargs):
         super(MCMCOptimizer, self).__init__(*args, **kwargs)
         self.heat_history = {}
@@ -1106,7 +1052,7 @@ class MCMCOptimizer(Optimizer):
                 _G, _PKG, _trajectory = _cost_model.load_init_ckpt()
                 if _G is not None:
                     G, PKG, self.trajectory = _G, _PKG, _trajectory
-        
+
         ### load checkpoint
         if args_.ckpt and graph_cache is not None and os.path.isfile(graph_cache):
             for _cost_model in self.cst_md_mng.cost_model_list:
@@ -1127,14 +1073,19 @@ class MCMCOptimizer(Optimizer):
             SingleLogger().info("No checkpoint found, search from scratch")
 
         SingleLogger().info("="*20 + " Search Starts " + "="*20)
-        SingleLogger().info("\033[92m" + "Start to search, the original iteration time is %f" % self.base_cost + "\033[0m")
-        candidates, _ = self.candidate_selection(G, topk=None, critical_path=self.wrap_critical_path(self.exct_dag))
+        SingleLogger().info(
+            "\033[92m" + "Start to search, the original iteration time is %f" % self.base_cost + "\033[0m")
+        candidates, _ = self.candidate_selection(
+            G, topk=None, critical_path=self.wrap_critical_path(self.exct_dag))
         search_space, weights = self.init_search_space(candidates, G, PKG)
-        SingleLogger().info("\033[94m # of candidates: {}, space: {}\033[0m".format(len(candidates), len(search_space)))
+        SingleLogger().info("\033[94m # of candidates: {}, space: {}\033[0m".format(
+            len(candidates), len(search_space)))
 
         def display_and_ckpt():
-            SingleLogger().info("\033[94m" + "Speedup to the origin: %6.4f %%"%(100 * (self.base_cost - self.cur_cost) / self.base_cost) + "'\033[0m'")
-            SingleLogger().info("\033[94m" + "Best speedup: %d th acception, speed up to the origin: %6.4f %%"%(len(self.best_strategy), 100 * (self.base_cost - self.best_cost) / self.base_cost) + "'\033[0m'")
+            SingleLogger().info("\033[94m" + "Speedup to the origin: %6.4f %%" % (
+                100 * (self.base_cost - self.cur_cost) / self.base_cost) + "'\033[0m'")
+            SingleLogger().info("\033[94m" + "Best speedup: %d th acception, speed up to the origin: %6.4f %%" % (
+                len(self.best_strategy), 100 * (self.base_cost - self.best_cost) / self.base_cost) + "'\033[0m'")
             with open(os.path.join(ROOT_PATH, "search_trajectory.txt"), "a") as f:
                 f.write(str(time.time()) + ": {},{},{}".format(
                     self.step,
@@ -1143,13 +1094,14 @@ class MCMCOptimizer(Optimizer):
 
             with open(os.path.join(ROOT_PATH, "best_strategy.txt"), "w") as f:
                 json.dump({"best_strategy": self.best_strategy}, f)
-            
+
             ### checkpints
             if args_.ckpt:
                 for _cost_model in self.cst_md_mng.cost_model_list:
                     _cost_model.checkpoint()
                 with open(graph_cache, "wb") as f:
-                    pickle.dump([G, PKG, self.heat_window_size, self.heat_history, self.best_cost, self.best_strategy, self.step, self.trajectory], f)
+                    pickle.dump([G, PKG, self.heat_window_size, self.heat_history,
+                                 self.best_cost, self.best_strategy, self.step, self.trajectory], f)
 
         while len(search_space) > 0:
             invalid_strategies = set()
@@ -1193,14 +1145,16 @@ class MCMCOptimizer(Optimizer):
 
                     self.cost_star, self.exct_dag, self.mem_usage_star = self.evaluate(G_star)
                     if successful_strategies < step_size:
-                        candidates, _ = self.candidate_selection(G_star, topk=None, critical_path=self.wrap_critical_path(self.exct_dag))
-                        search_space, weights = self.init_search_space(candidates, G_star, PKG_star)
+                        candidates, _ = self.candidate_selection(
+                            G_star, topk=None, critical_path=self.wrap_critical_path(self.exct_dag))
+                        search_space, weights = self.init_search_space(
+                            candidates, G_star, PKG_star)
                     invalid_strategies = set()
                     msg = "\033[94m" + "Strategy ({}, {}, {}) successfully applied.".format(*strategy)
                     if len(msg) > 200:
                         msg = msg[:200] + "... successfully applied."
                     SingleLogger().info(msg + "\033[0m")
-                
+
                 # ### Start to replay
                 # if self.step % 20 == 0:
                 #     cost_star, self.exct_dag, mem_usage = self.evaluate(G_star, _filename=os.path.join(ROOT_PATH, "searched_graph/{}.json".format(self.step)))
@@ -1211,7 +1165,8 @@ class MCMCOptimizer(Optimizer):
                 #     MCMC_BETA = 1
                 # else:
                 #     MCMC_BETA = args.mcmc_beta
-                SingleLogger().info("\033[94m Step: {}, Orig cost: {}, New cost: {} \033[0m".format(self.step, self.cur_cost, self.cost_star))
+                SingleLogger().info("\033[94m Step: {}, Orig cost: {}, New cost: {} \033[0m".format(
+                    self.step, self.cur_cost, self.cost_star))
                 self.step += 1
 
                 ### Update heat history
@@ -1264,31 +1219,39 @@ class MCMCOptimizer(Optimizer):
                         self.best_cost = self.cur_cost
                         self.best_strategy = self.trajectory.copy()
                         if "+" in self.cst_md_mng.strategy2model:
-                            self.cst_md_mng.strategy2model["+"]._dump_cluster_mapping(G, os.path.join(ROOT_PATH, "cluster_mapping.txt"))
+                            self.cst_md_mng.strategy2model["+"]._dump_cluster_mapping(
+                                G, os.path.join(ROOT_PATH, "cluster_mapping.txt"))
                     ### Init new search space
-                    candidates, _ = self.candidate_selection(G, topk=None, critical_path=self.wrap_critical_path(self.exct_dag))
-                    search_space, weights = self.init_search_space(candidates, G, PKG)
+                    candidates, _ = self.candidate_selection(
+                        G, topk=None, critical_path=self.wrap_critical_path(self.exct_dag))
+                    search_space, weights = self.init_search_space(
+                        candidates, G, PKG)
                     break
             display_and_ckpt()
         display_and_ckpt()
-    
+
     def accept_or_not(self, cost, new_cost):
         # prob = min(1, (math.exp(beta * (cost - new_cost))))
         if cost > new_cost:
-            SingleLogger().info("\033[92m" + "Accept a better action, orig cost: {}, new cost: {}".format(cost, new_cost) + "\033[0m")
+            SingleLogger().info(
+                "\033[92m" + "Accept a better action, orig cost: {}, new cost: {}".format(cost, new_cost) + "\033[0m")
             return True
         else:
             prob = math.exp(MCMC_BETA * (cost - new_cost))
             r = random.random()
             if r < prob:
-                SingleLogger().info("\033[92m" + "Accept a worse action with random value: {} < {} ".format(r, prob) + "\033[0m")
+                SingleLogger().info(
+                    "\033[92m" + "Accept a worse action with random value: {} < {} ".format(r, prob) + "\033[0m")
                 return True
             else:
-                SingleLogger().info("\033[93m" + "Rejected a worse action with random value: {} >= {} ".format(r, prob) + "\033[0m")
+                SingleLogger().info(
+                    "\033[93m" + "Rejected a worse action with random value: {} >= {} ".format(r, prob) + "\033[0m")
                 return False
+
 
 class MCTSOptimizer(Optimizer):
     ''' Monte Carlo Tree Search '''
+
     def __init__(self, *args, **kwargs):
         super(MCTSOptimizer, self).__init__(*args, **kwargs)
         self.loop_cnt = 0
@@ -1296,8 +1259,9 @@ class MCTSOptimizer(Optimizer):
         self.opt_GS = None
         self.ucb_type = args_.ucb_type
         if self.ucb_type != "MAX" and self.ucb_type != "AVG":
-            raise ValueError("UCB type should be MAX or AVG, but {} is given.".format(self.ucb_type))
-        self.no_mutation=args_.no_mutation
+            raise ValueError(
+                "UCB type should be MAX or AVG, but {} is given.".format(self.ucb_type))
+        self.no_mutation = args_.no_mutation
 
     def search(self):
         ### Initialize the root graph state
@@ -1307,19 +1271,20 @@ class MCTSOptimizer(Optimizer):
         while self.check_loop_time() and self.check_loop_num():
             GS = self.tree_policy(self.GS_root)
             reward = self.default_policy(GS)
-            SingleLogger().info("Speedup to the origin %6.4f %%"%(100 * reward))
+            SingleLogger().info("Speedup to the origin %6.4f %%" % (100 * reward))
             self.backpropagation(GS, reward)
             if args_.ucb_visual:
                 self.visualize_tree()
             self.show_opt_strategies()
-        return 
+        return
 
     def visualize_tree(self):
         def iter_print(GS, cnt):
             ### `cnt` is used to decide how many parent branches to print for current nodes
             LENOFNODE = 11
             LENOFARROW = 5
-            node_string = "  %5.4f %% "%(GS.quality * 100) if GS.quality >= 0 else " -%5.4f %% "%(-GS.quality * 100)
+            node_string = "  %5.4f %% " % (
+                GS.quality * 100) if GS.quality >= 0 else " -%5.4f %% " % (-GS.quality * 100)
             sys.stdout.write(node_string)
             assert len(node_string) == LENOFNODE
             if GS.childs is None:
@@ -1329,11 +1294,11 @@ class MCTSOptimizer(Optimizer):
                     sys.stdout.write("\n{}".format(" "*(LENOFNODE + LENOFARROW//2)))
                     sys.stdout.write("{}".format(" "*((LENOFNODE + LENOFARROW) * (GS.depth - cnt))))
                     sys.stdout.write("{}".format(("|" + " " * (LENOFNODE + LENOFARROW - 1))*(cnt)))
-                    sys.stdout.write("{}".format("|" if idx < (len(GS.childs) -1) else "\\"))
+                    sys.stdout.write("{}".format("|" if idx < (len(GS.childs) - 1) else "\\"))
                     sys.stdout.write("{}".format("-"*(LENOFARROW - LENOFARROW//2 - 1)))
                 else:
                     sys.stdout.write("{}".format('-'*LENOFARROW))
-                if idx < (len(GS.childs) -1):
+                if idx < (len(GS.childs) - 1):
                     next_cnt = cnt + 1
                 else:
                     next_cnt = cnt
@@ -1343,17 +1308,18 @@ class MCTSOptimizer(Optimizer):
         sys.stdout.write("\n")
 
     def show_opt_strategies(self):
-        SingleLogger().info("Best speedup: %d th layer, speed up to the origin: %6.4f %%"%(len(self.opt_GS.strategy), 100 * self.opt_GS.quality))
+        SingleLogger().info("Best speedup: %d th layer, speed up to the origin: %6.4f %%" %
+                            (len(self.opt_GS.strategy), 100 * self.opt_GS.quality))
 
     def check_loop_num(self):
         self.loop_cnt += 1
         if self.loop_cnt > MAX_LOOP:
-            return False # End
+            return False  # End
         else:
-            return True # continue
+            return True  # continue
 
     def check_loop_time(self):
-        return True # continue
+        return True  # continue
 
     def tree_policy(self, GS):
         while self.fully_expanded(GS):
@@ -1385,14 +1351,16 @@ class MCTSOptimizer(Optimizer):
             return
         else:
             self.backpropagation(GS.parent, reward)
-        
+
     def best_UCB(self, GS):
         GS_opt = c_opt = None
         for GS_c in GS.childs:
             if self.ucb_type == "MAX":
-                c = GS_c.quality + UCB_GAMMA * math.sqrt((2 * math.log(GS.visit_cnt)) / GS_c.visit_cnt)
+                c = GS_c.quality + UCB_GAMMA * \
+                    math.sqrt((2 * math.log(GS.visit_cnt)) / GS_c.visit_cnt)
             elif self.ucb_type == "AVG":
-                c = GS_c.quality / GS_c.visit_cnt + UCB_GAMMA * math.sqrt((2 * math.log(GS.visit_cnt)) / GS_c.visit_cnt)
+                c = GS_c.quality / GS_c.visit_cnt + UCB_GAMMA * \
+                    math.sqrt((2 * math.log(GS.visit_cnt)) / GS_c.visit_cnt)
             else:
                 raise RuntimeError("Invalid UCB_type")
             if GS_opt is None or c > c_opt:
@@ -1421,7 +1389,7 @@ class MCTSOptimizer(Optimizer):
         GS_c.strategy = GS.strategy.copy()
         GS_c.strategy.append(action)
         GS_c.parent = GS
-        if GS.childs is None: 
+        if GS.childs is None:
             GS.childs = []
         GS.childs.append(GS_c)
 
@@ -1445,7 +1413,8 @@ class MCTSOptimizer(Optimizer):
         if GS.space is None:
             candidates, new_dag = self.candidate_selection(GS, topk=None)
             search_space, _ = self.init_search_space(candidates, new_dag)
-            GS.space = [[action, 0] for action in search_space] ### The integer value is used as a counter
+            # The integer value is used as a counter
+            GS.space = [[action, 0] for action in search_space]
 
     def terminal(self, GS):
         self.check_search_space(GS)
