@@ -712,8 +712,14 @@ class XLAModuleCostModel():
         with open(os.path.join(save_dir, CMPaths.TENSOR_SHAPE_FILE), "r") as f:
             shape_dict_raw = json.load(f)
         shape_dict = {}
+        
         for tensor_name, shape_detail in shape_dict_raw.items():
-            shape_dict[tensor_name] = shape_detail["shape"]
+            ### TODO (huhanpeng) old version: list --> new version: a dict with shape: []
+            if isinstance(shape_detail, list):
+                shape_dict[tensor_name] = shape_detail
+            else:
+                shape_dict[tensor_name] = shape_detail["shape"]
+
         self.graph_def_util = GraphDefUtil(self.graph_def, shape_dict=shape_dict)
         self.computation_cache = {}
 
