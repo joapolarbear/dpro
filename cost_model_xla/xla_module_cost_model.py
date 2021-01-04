@@ -514,10 +514,52 @@ class BatchGenerator(BatchGeneratorBase):
 
         return fusion_types, op_codes, op_hashes, padded_feature_vectors, labels, epoch_end
 
-def train_kernel_model(dataset_path, save_dir, epochs=800, batch_size=64, 
+def get_tf_dataset(training_set, batch_size, num_epochs):
+    # training_set = (fusion_types, op_codes, op_hashes, feature_vectors, labels)
+    ft, opc, oph, fv, lbs = training_set
+
+    max_sequence_length = max([len(v) for v in opc])
+
+    num_batches = math.ceil(len(ft) / batch_size)
+
+    def data_gen():
+        for ft, opc, oph, fv, lbs in zip(*training_set):
+            yield (ft, opc, oph, fv), lbs
+    
+    ds = tf.data.Dataset.from_generator(data_gen,
+                                        output_types=(
+                                            (tf.float32,
+                                            tf.int32,
+                                            tf.int32,
+                                            tf.float32),
+                                            tf.float32
+                                        ),
+                                        output_shapes=(
+                                            ([len(ft[0])],
+                                            [None],
+                                            [None],
+                                            [None, len(fv[0][0])]),
+                                            []
+                                        ))
+    padded_ds = ds.shuffle(len(ft), reshuffle_each_iteration=True) \
+                                    .repeat(num_epochs) \
+                                    .padded_batch(batch_size, padded_shapes=(
+                                            ([len(ft[0])],
+                                            [max_sequence_length],
+                                            [max_sequence_length],
+                                            [max_sequence_length, len(fv[0][0])]),
+                                            []
+                                            ),
+                                            padding_values=(
+                                                (0.0, 0, 0, -1.0), 0.0
+                                            )
+                                        ).prefetch(5)
+    return padded_ds, num_batches
+
+def train_kernel_model(dataset_path, save_dir, epochs=1200, batch_size=256, 
                         op_code_embed_dim=16, subop_embed_dim=16, node_embed_dim=64, 
-                        embedding_output_dim=32, use_embed_hidden=False, 
-                        use_output_hidden=True, drop_out=0.2, learning_rate=5e-4,
+                        embedding_output_dim=32, use_embed_hidden=False,
+                        use_output_hidden=True, drop_out=0.2, learning_rate=1e-3,
                         early_stopping_patience=15, early_stopping_epsilon=1e-5):
     # load kernel dataset
     dataset_save_path = os.path.join(save_dir, CMPaths.DATASET_SAVE_FILE)
@@ -558,7 +600,11 @@ def train_kernel_model(dataset_path, save_dir, epochs=800, batch_size=64,
     ophash_vocab_size = len(dataset.ophash2index) + 1
 
     print("Training fused kernel model...")
-    batch_generator = BatchGenerator(dataset, batch_size)
+    # batch_generator = BatchGenerator(dataset, batch_size)
+    tf_dataset, num_batches_per_epoch = get_tf_dataset(dataset.get_training_set(), batch_size, epochs)
+    t_ft, t_opc, t_oph, t_fv, t_lbs = dataset.get_test_set()
+    eval_tf_ds, val_steps_per_epoch = get_tf_dataset((t_ft, t_opc, t_oph, t_fv, t_lbs), batch_size, 1)
+
     model = FusionKernelModel(opcode_vocab_size, op_code_embed_dim, 
                     ophash_vocab_size, subop_embed_dim, 
                     node_embed_dim, embedding_output_dim,
@@ -586,68 +632,92 @@ def train_kernel_model(dataset_path, save_dir, epochs=800, batch_size=64,
     mape_history = []
     smoothed_val_history = []
     mape_val_history = []
-    pbar = tqdm(total=batch_generator.num_batches() * epochs)
+    # pbar = tqdm(total=batch_generator.num_batches() * epochs)
+    # pbar = tqdm(total=num_batches_per_epoch * epochs)
     epoch_loss_history = []
     epoch_mape_history = []
     early_stopping_counter = 0
-    for epoch_num in range(epochs):
-        while True:
-            (fusion_types, op_codes, op_hashes, 
-                padded_feature_vectors, labels, epoch_end ) = batch_generator.next_batch()
-            loss, metric = model.train_on_batch(x=[fusion_types, op_codes, op_hashes, \
-                                                            padded_feature_vectors], 
-                                                y=labels)
-            epoch_loss_history.append(loss)
-            epoch_mape_history.append(metric)
-            pbar.update(1)
-            if epoch_end:
-                break
-        if epoch_num % 10 == 0:
-            # evaluate at the end of epoch
-            predicted = []
-            percentage_diff = []
-            ( fusion_types_test, op_codes_test, op_hashes_test, 
-                feature_vectors_test, labels_test ) = dataset.get_test_set()
-            for i in range(len(op_codes_test)):
-                fusion_types = np.expand_dims(np.array(fusion_types_test[i], dtype=np.float32), 0)
-                op_codes = np.expand_dims(np.array(op_codes_test[i]), 0)
-                op_hashes = np.expand_dims(np.array(op_hashes_test[i]), 0)
-                feature_vectors = np.expand_dims(np.array(feature_vectors_test[i], dtype=np.float32), 0)
-                predicted_time = model.predict(x=[fusion_types, op_codes, op_hashes, feature_vectors])
-                predicted.append(predicted_time)
-                percentage_diff.append(np.abs(predicted_time - labels_test[i]) / labels_test[i])
-            val_mape = np.average(percentage_diff) * 100
-            mape_val_history.append(val_mape)
-            if len(mape_val_history) > 1 and early_stopping_patience != 0:
-                if mape_val_history[-2] - val_mape >= early_stopping_epsilon:
-                    early_stopping_counter += 1
-                    if early_stopping_counter >= early_stopping_patience:
-                        print("========== EARLY STOPPED ==========")
-                        pbar.close()
-                        break
-                else:
-                    early_stopping_counter = 0
-        if epoch_num % 20 == 0:
-            avg_mse = np.average(epoch_loss_history)
-            avg_mape = np.average(epoch_mape_history)
-            avg_val_mape = np.average(mape_val_history[-2:])
-            tqdm.write("Epoch {}: MSE: {}, MAPE: {}, VAL MAPE:{}" \
-                        .format(epoch_num, avg_mse, avg_mape, avg_val_mape))
-            loss_history.append(avg_mse)
-            mape_history.append(avg_mape)
-            smoothed_val_history.append(avg_val_mape)
-            epoch_loss_history = []
-            epoch_mape_history = []
-    
-            model_save_path = os.path.join(save_dir, CMPaths.MODEL_WEIGHT_SAVE_FILE)
-            model.save_weights(model_save_path)
-    
+    # for epoch_num in trange(epochs // 20):
+    # while True:
+    # (fusion_types, op_codes, op_hashes, 
+    #     padded_feature_vectors, labels, epoch_end ) = batch_generator.next_batch()
+    # loss, metric = model.train_on_batch(x=[fusion_types, op_codes, op_hashes, \
+    #                                                 padded_feature_vectors], 
+    #                                     y=labels)
+    # epoch_loss_history.append(loss)
+    # epoch_mape_history.append(metric)
+    # pbar.update(1)
+    # if epoch_end:
+    #     break
     model_save_path = os.path.join(save_dir, CMPaths.MODEL_WEIGHT_SAVE_FILE)
+    callbacks = [tf.keras.callbacks.ModelCheckpoint(model_save_path, 
+                                                    save_weights_only=True,
+                                                    save_freq=20*num_batches_per_epoch),
+                tf.keras.callbacks.EarlyStopping(monitor='loss', patience=5),
+                tf.keras.callbacks.ReduceLROnPlateau(
+                    monitor='loss', patience=5, min_lr=0.0001
+                )]
+
+    history = model.fit(tf_dataset, verbose=1, epochs=epochs, 
+                                    steps_per_epoch = num_batches_per_epoch,
+                                    validation_data = eval_tf_ds,
+                                    validation_steps = val_steps_per_epoch,
+                                    validation_freq = 20,
+                                    callbacks=callbacks
+                                    )
+    # epoch_loss_history += history.history["loss"]
+    # epoch_mape_history += history.history["mean_absolute_percentage_error"]
+    # if epoch_num % 20 == 0:
+    # evaluate at the end of epoch
+    # t_ft, t_opc, t_oph, t_fv, t_lbs = dataset.get_test_set()
+    # eval_tf_ds, _ = get_tf_dataset((t_ft, t_opc, t_oph, t_fv, t_lbs), batch_size)
+    # predicted = []
+    # percentage_diff = []
+    # ( fusion_types_test, op_codes_test, op_hashes_test, 
+    #     feature_vectors_test, labels_test ) = dataset.get_test_set()
+    # for i in range(len(op_codes_test)):
+    #     fusion_types = np.expand_dims(np.array(fusion_types_test[i], dtype=np.float32), 0)
+    #     op_codes = np.expand_dims(np.array(op_codes_test[i]), 0)
+    #     op_hashes = np.expand_dims(np.array(op_hashes_test[i]), 0)
+    #     feature_vectors = np.expand_dims(np.array(feature_vectors_test[i], dtype=np.float32), 0)
+    #     predicted_time = model.predict(x=[fusion_types, op_codes, op_hashes, feature_vectors])
+    #     predicted.append(predicted_time)
+    #     percentage_diff.append(np.abs(predicted_time - labels_test[i]) / labels_test[i])
+    # predicted_vals = model.predict(eval_tf_ds)
+    # t_lbs_array = np.array(t_lbs)
+    # percentage_diff = np.abs((t_lbs_array - predicted_vals) / t_lbs_array)
+    # val_mape = np.average(percentage_diff) * 100
+    # mape_val_history.append(val_mape)
+    # if len(mape_val_history) > 1 and early_stopping_patience != 0:
+    #     if mape_val_history[-2] - val_mape >= early_stopping_epsilon:
+    #         early_stopping_counter += 1
+    #         if early_stopping_counter >= early_stopping_patience:
+    #             print("========== EARLY STOPPED ==========")
+    #             # pbar.close()
+    #             break
+    #     else:
+    #         early_stopping_counter = 0
+    # if epoch_num % 2 == 0:
+    #     avg_mse = np.average(epoch_loss_history)
+    #     avg_mape = np.average(epoch_mape_history)
+    #     avg_val_mape = np.average(mape_val_history[-2:])
+    #     tqdm.write("Epoch {}: MSE: {}, MAPE: {}, VAL MAPE:{}" \
+    #                 .format(epoch_num*20, avg_mse, avg_mape, avg_val_mape))
+    #     loss_history.append(avg_mse)
+    #     mape_history.append(avg_mape)
+    #     smoothed_val_history.append(avg_val_mape)
+    #     epoch_loss_history = []
+    #     epoch_mape_history = []
+
+    #     model_save_path = os.path.join(save_dir, CMPaths.MODEL_WEIGHT_SAVE_FILE)
+    #     model.save_weights(model_save_path)
     model.save_weights(model_save_path)
 
     # evaluation
     predicted = []
     percentage_diff = []
+    # t_ft, t_opc, t_oph, t_fv, t_lbs = dataset.get_test_set()
+    # eval_tf_ds, _ = get_tf_dataset((t_ft, t_opc, t_oph, t_fv, t_lbs), batch_size)
     ( fusion_types_test, op_codes_test, op_hashes_test, 
         feature_vectors_test, labels_test ) = dataset.get_test_set()
     for i in range(len(op_codes_test)):
@@ -658,21 +728,25 @@ def train_kernel_model(dataset_path, save_dir, epochs=800, batch_size=64,
         predicted_time = model.predict(x=[fusion_types, op_codes, op_hashes, feature_vectors])
         predicted.append(predicted_time)
         percentage_diff.append(np.abs(predicted_time - labels_test[i]) / labels_test[i])
+    # predicted_vals = model.predict(eval_tf_ds)
+    # t_lbs_array = np.array(t_lbs)
+    # percentage_diff = np.abs((t_lbs_array - predicted_vals) / t_lbs_array)
+    # val_mape = np.average(percentage_diff) * 100
 
     for i in range(10):
         print("predicted: {}, true: {}".format(predicted[i], labels_test[i]))
 
-    print("Trained on {} samples, tested on {} samples.".format(batch_generator.num_samples(), len(predicted)))
+    print("Trained on {} samples, tested on {} samples.".format(dataset.train_size(), len(predicted)))
     print("Test MAPE: {}, Median percentage difference: {}".format(np.average(percentage_diff), np.median(percentage_diff)))
 
 # returns a model object which have a predict method
-def load_kernel_model(model_save_dir):
+def load_kernel_model(model_save_dir, training_dataset):
     # load model config
     with open(os.path.join(model_save_dir, CMPaths.MODEL_CONFIG_FILE), "rb") as f:
         model_config = pickle.load(f)
     
-    dataset_save_path = os.path.join(model_save_dir, CMPaths.DATASET_SAVE_FILE)
-    training_dataset = XlaKernelDataset(dataset_save_path)
+    # dataset_save_path = os.path.join(model_save_dir, CMPaths.DATASET_SAVE_FILE)
+    # training_dataset = XlaKernelDataset(dataset_save_path)
 
     elem_op_cache_save_path = os.path.join(model_save_dir, CMPaths.ELEMENTARY_OP_CACHE_SAVE_FILE)
     elem_op_cache = ElementaryOpCache(load_from=elem_op_cache_save_path)
@@ -705,7 +779,7 @@ class XLAModuleCostModel():
         super().__init__()
         dataset_path = os.path.join(save_dir, CMPaths.DATASET_SAVE_FILE)
         self.training_dataset = XlaKernelDataset(dataset_path)
-        self.elem_op_cache, self.ovhd_model, self.kernel_model = load_kernel_model(save_dir)
+        self.elem_op_cache, self.ovhd_model, self.kernel_model = load_kernel_model(save_dir, self.training_dataset)
         graph_def_path = os.path.join(save_dir, CMPaths.GRAPH_DEF_PICKLE_FILE)
         with open(graph_def_path, "rb") as f:
             self.graph_def = pickle.load(f)
@@ -729,14 +803,14 @@ class XLAModuleCostModel():
         # start training
         train_kernel_model(dataset_folder_path, save_dir)
         # transfer graph def into save_dir 
-        graph_def_path = os.path.join(dataset_path, CMPaths.CLEANED_GRAPH_DEF_FILE)
+        graph_def_path = os.path.join(dataset_folder_path, CMPaths.CLEANED_GRAPH_DEF_FILE)
         with open(graph_def_path, "r") as f:
             cleaned_graph_def_str = f.read()
         graph_def = Parse(cleaned_graph_def_str, GraphDef())
         with open(os.path.join(save_dir, CMPaths.GRAPH_DEF_PICKLE_FILE), "wb") as f:
             pickle.dump(graph_def, f)
         # transfer tensor shapes into save_dir
-        shutil.copy(os.path.join(dataset_path, CMPaths.TENSOR_SHAPE_FILE), save_dir)
+        shutil.copy(os.path.join(dataset_folder_path, CMPaths.TENSOR_SHAPE_FILE), save_dir)
 
     def predict(self, node_names):
         try:
@@ -762,7 +836,7 @@ class XLAModuleCostModel():
             compile_to_hlo(graph_def_path, config_path, unopt_hlo_path, opt_hlo_path)
             extract_kernel_features_from_hlo(opt_hlo_path, self._tmp_dir)
 
-            config_path = os.path.join(self._tmp_dir, CMPaths.MODEL_CONFIG_FILE)
+            config_path = os.path.join(self._tmp_dir, CMPaths.MODULE_CONFIG_FILE)
             elem_op_hashes = []
             fused_op_infos = []
             with open(config_path, "r") as f:
@@ -883,7 +957,7 @@ class XLAModuleCostModel():
         shutil.rmtree(self._tmp_dir)
         os.makedirs(self._tmp_dir)
         return module_exec_time, breakdown_dict
-    
+
     def test_on_dataset(self, test_set_path):
         test_set_path = os.path.join(test_set_path, "dataset")
         training_dataset = self.training_dataset

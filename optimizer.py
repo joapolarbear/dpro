@@ -135,6 +135,7 @@ class _XLACostModel(_BaseCostModel):
         super().__init__(opt)
         self.cost_models = self._load_cm()
         self.forbidden_list = set()
+        self.initial_forbidden_list = set()
         self._init_forbidden_list()
         self.token = ["+", "-"]
 
@@ -170,7 +171,7 @@ class _XLACostModel(_BaseCostModel):
             self._dump_cluster_mapping(G, os.environ["BPF_DUMP_INIT_CLUSTER_TO"])
         SingleLogger().info("Successfully initialized {} partitions.".format(initial_partitions_formed))
         return G, PKG, trajectory
-    
+
     def load_ckpt(self):
         if os.path.isfile(self.ckpt_path):
             with open(self.ckpt_path, "rb") as f:
@@ -210,7 +211,8 @@ class _XLACostModel(_BaseCostModel):
         ret_G = nx.DiGraph()
         edges_to_add = []
         for u, v in G.edges:
-            if u.startswith("host0.rank0") and v.startswith("host0.rank0"):
+            if (u.startswith("host0.rank0") and v.startswith("host0.rank0")) \
+                or (u.startswith("traces_0.rank0") and v.startswith("traces_0.rank0")):
                 edges_to_add.append((u, v))
         ret_G.add_edges_from(edges_to_add)
         return ret_G
@@ -221,6 +223,9 @@ class _XLACostModel(_BaseCostModel):
         partition_PKG = PKGraph(partition_G)
 
         source_nodes = sorted([node for node in partition_G.nodes if node not in self.initial_forbidden_list], key=lambda x: partition_G.in_degree(x))
+        print("Len: source nodes: {}".format(len(source_nodes)))
+        import code
+        code.interact(local=locals())
 
         # Run post order traversal on partition_G
         visited_nodes = set()
@@ -254,7 +259,6 @@ class _XLACostModel(_BaseCostModel):
         return G, initial_partitions_formed
 
     def _init_forbidden_list(self):
-        self.initial_forbidden_list = set()
         xla_candidates = parse_xla_candidate_ops()
         # limit the range of nodes during search
         for node in self.dag.nodes:
@@ -272,8 +276,7 @@ class _XLACostModel(_BaseCostModel):
             cat = parse_cat_from_name(node)
             if (not args_.simulate and orig_name not in self._wrap_xla_operation_names(pid)) \
                     or "Assign" in orig_name or cat == CatName.COMM.value \
-                    or "group_deps" in orig_name or "ConstantFolding" in orig_name \
-                    or "LayoutOptimizer" in orig_name \
+                    or "group_deps" in orig_name \
                     or orig_name not in xla_candidates:
                 self.forbidden_list.add(node)
                 self.initial_forbidden_list.add(node)
@@ -326,7 +329,8 @@ class _XLACostModel(_BaseCostModel):
             return _sum * 0.8, None
         else:
             # return self.cost_models[pid].predict(nodes_to_fuse)
-            return self.cost_models["default"].predict(nodes_to_fuse)
+            predicted_time, brkdn_dict = self.cost_models["default"].predict(nodes_to_fuse)
+            return predicted_time / 1000
 
     def _wrap_xla_need_fuse(self, pid, orig_name, long_name):
         return (args_.simulate or orig_name in self._wrap_xla_operation_names(pid)) and long_name not in self.forbidden_list
@@ -765,7 +769,7 @@ class CostModelManager:
             for _tok in cm.token:
                 assert _tok not in self.strategy2model
                 self.strategy2model[_tok] = cm
-    
+
 class Optimizer:
     def __init__(self, collector, memory_budget=None):
         self.clct = collector
@@ -1069,7 +1073,7 @@ class MCMCOptimizer(Optimizer):
             self.best_cost = self.base_cost
             self.best_strategy = []
             self.step = 0
-            self.trajectory = []  
+            self.trajectory = []
             SingleLogger().info("No checkpoint found, search from scratch")
 
         SingleLogger().info("="*20 + " Search Starts " + "="*20)
