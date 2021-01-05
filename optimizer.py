@@ -170,7 +170,7 @@ class _XLACostModel(_BaseCostModel):
 
         cost_model_tmp_dir = os.path.join(ROOT_PATH, "cost_model_tmp")
         if not os.path.exists(cost_model_tmp_dir):
-            os.mkdir(cost_model_tmp_dir)
+            os.makedirs(cost_model_tmp_dir)
         SingleLogger().info("Searching for XLA Cost Model dumps in {}".format(models_dir))
         cost_models["default"] = XLAModuleCostModel(models_dir, tmp_dir=os.path.join(cost_model_tmp_dir))
         # for model_dump_dir in os.listdir(models_dir):
@@ -208,15 +208,6 @@ class _XLACostModel(_BaseCostModel):
             if source not in visited_nodes and source in partition_G.nodes:
                 _, _, partition_G = postorder_contract_nx(
                     partition_G, partition_PKG, source, visited_nodes, forbidden_list=self.initial_forbidden_list, size_limit=800)
-
-        self._dump_cluster_mapping(partition_G, os.path.join(
-            ROOT_PATH, "cluster_mapping.txt"))
-        print("hhhh")
-        raise
-
-        self._dump_cluster_mapping(partition_G, os.path.join(ROOT_PATH, "cluster_mapping.txt"))
-        print("hhhh")
-        raise
 
         SingleLogger().info("Start to init partition graph ... ")
         for node_name in tqdm(partition_G.nodes()):
@@ -316,7 +307,7 @@ class _XLACostModel(_BaseCostModel):
             return _sum * 0.8, None
         else:
             # return self.cost_models[pid].predict(nodes_to_fuse)
-            predict_time_in_us = self.cost_models["default"].predict(nodes_to_fuse)
+            predict_time_in_us, _ = self.cost_models["default"].predict(nodes_to_fuse)
             return predict_time_in_us / 1000.0
 
     def _wrap_xla_need_fuse(self, pid, orig_name, long_name):
@@ -337,7 +328,7 @@ class _XLACostModel(_BaseCostModel):
             SingleLogger().info(
                 "[COST MODEL QUERY] {} Nodes to fuse ...".format(len(nodes_to_fuse)))
 
-        predicted_time, _ = self._wrap_xla_predict(u_pid, nodes_to_fuse, fused_u_)
+        predicted_time = self._wrap_xla_predict(u_pid, nodes_to_fuse, fused_u_)
         SingleLogger().info(
             "[COST MODEL QUERY] Exec time predicted: {}".format(predicted_time))
         if predicted_time < 0:
