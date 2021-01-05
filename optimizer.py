@@ -21,7 +21,8 @@ from trace_utils import *
 from dag_utils import *
 from cost_model_amp.amp_pred import AMPPredictor
 from cost_model_xla.pk_graph import PKGraph, PKGraphCycleError, contract_nodes_nx, \
-                    defuse_nodes_inplace_nx, postorder_contract_nx, subgraph_partition_connected_nx
+                    defuse_nodes_inplace_nx, postorder_contract_nx, \
+                    subgraph_partition_connected_nx, get_concated_names
 from cost_model_xla.gen_dataset_utils import parse_xla_candidate_ops
 
 class GraphExpand(Enum):
@@ -219,16 +220,13 @@ class _XLACostModel(_BaseCostModel):
         partition_PKG = PKGraph(partition_G)
 
         source_nodes = sorted([node for node in partition_G.nodes if node not in self.initial_forbidden_list], key=lambda x: partition_G.in_degree(x))
-        print("Len: source nodes: {}".format(len(source_nodes)))
-        import code
-        code.interact(local=locals())
 
         # Run post order traversal on partition_G
         visited_nodes = set()
         SingleLogger().info("Start to postorder_contract_nx ... ")
         for source in tqdm(source_nodes, total=len(source_nodes)):
             if source not in visited_nodes and source in partition_G.nodes:
-                _, _, partition_G = postorder_contract_nx(partition_G, partition_PKG, source, visited_nodes, forbidden_list=self.initial_forbidden_list, size_limit=800)
+                _, _, partition_G = postorder_contract_nx(partition_G, partition_PKG, source, visited_nodes, forbidden_list=self.initial_forbidden_list)
 
         SingleLogger().info("Start to init partition graph ... ")
         for node_name in tqdm(partition_G.nodes()):
@@ -237,20 +235,19 @@ class _XLACostModel(_BaseCostModel):
             if "+" in node_name:
                 # fused node, test if compilable
                 try:
-                    self._parse_node_attr(partition_G, node_name)
+                    avg = self._get_node_avg(node_name)
+                    self._parse_node_attr(partition_G, node_name, avg)
                     compilable=True
                 except OptQueryCostModelError:
-                    # traceback.print_exc()
                     compilable=False
                 if compilable:
-                    avg = None
-                    for _node_name in [node_name] + self.opt._debug_convert_to_the_other_machine(node_name):
+                    for _node_name in [node_name] + self.opt._debug_convert_to_other_machines(node_name):
                         ns = _node_name.split("+")
                         new_node_name = contract_nodes_nx(G, ns)
                         PKG.contract_nodes_unsafe(ns)
                         ### TODO (huhanpeng): since we assume data parallel
                         ### we directly use the fused time of the first GPU for all GPUs' fused nodes
-                        avg = self._parse_node_attr(G, new_node_name, avg=avg)
+                        self._parse_node_attr(G, new_node_name, avg) # type: ignore
                         initial_partitions_formed += 1
         return G, initial_partitions_formed
 
@@ -472,7 +469,7 @@ class _XLACostModel(_BaseCostModel):
     def _combine_avg(self, u, v):
         ### call cost model to obtain the combined time
         fused_name = self._concat_name(u, v)
-        return self._query_cost_model(fused_name)
+        return self._get_node_avg(fused_name)
 
     def _combine_gap(self, ug, vg):
         ### TODO (huhanpeng): key component
@@ -481,9 +478,9 @@ class _XLACostModel(_BaseCostModel):
         # return max(max((ug + vg) / 0.8, ug), vg)
         return max(ug, vg)
 
-    def _combine_nodes_attr(self, _dag, target, u_, v_, avg=None):
+    def _combine_nodes_attr(self, _dag, target, u_, v_, avg):
         ### In graph _dag, combine the attributes of u_ and v_, store the results in _dag as the attributes of target
-        _dag.nodes[target]["avg"] = self._combine_avg(u_, v_) if avg is None else avg
+        _dag.nodes[target]["avg"] = avg
         _dag.nodes[target][GAP_STR_OP2OP] = self._combine_gap(self._get_node_attr(u_, GAP_STR_OP2OP), self._get_node_attr(v_, GAP_STR_OP2OP))
         _dag.nodes[target][GAP_STR_OP2COMM] = self._combine_gap(self._get_node_attr(u_, GAP_STR_OP2COMM), self._get_node_attr(v_, GAP_STR_OP2COMM))
 
@@ -505,7 +502,13 @@ class _XLACostModel(_BaseCostModel):
         elif GAP_STR_OP2COMM in attr1 and GAP_STR_OP2COMM not in attr2:
             target[GAP_STR_OP2COMM] = self._combine_gap(attr1[GAP_STR_OP2COMM], 0)
 
-    def _parse_node_attr(self, _dag, new_name, avg=None):
+    def _get_node_avg(self, new_name):
+        if new_name in self.node_attr_cache:
+            return self.node_attr_cache[new_name]["avg"]
+        else:
+            return self._query_cost_model(new_name)
+
+    def _parse_node_attr(self, _dag, new_name, avg):
         ''' Parse the fused node attribute corresponding to `new_name` and set _dag
         * If new_name has been cached, directly set _dag with the cached attributes
         * Otherwise, combine the attribution of all original nodes
@@ -525,13 +528,13 @@ class _XLACostModel(_BaseCostModel):
             for idx in range(1, len(ns)):
                 self._combine_attr_except_avg(attrs, attrs, self.node_attr_cache[ns[idx]])
             # combine attr avg
-            attrs["avg"] = self._query_cost_model(new_name) if avg is None else avg
+            attrs["avg"] = avg
             ### set and cache the attribute
             nx.set_node_attributes(_dag, {new_name:attrs})
             self._cache_node_attr(new_name, _dag.nodes[new_name])
         
         ### TODO (huhanpeng): apply to other GPUs, cache the same attribute for corresponding operators on other GPUs
-        for other_name in self.opt._debug_convert_to_the_other_machine(new_name):
+        for other_name in self.opt._debug_convert_to_other_machines(new_name):
             if other_name in self.node_attr_cache:
                 continue
             self._cache_node_attr(other_name, _dag.nodes[new_name])
@@ -544,20 +547,23 @@ class _XLACostModel(_BaseCostModel):
             nodes_to_add = []
             nodes_to_remove = []
 
-            _pkg.contract_edge(u_, v_)
+            # pkg must contract after calling _fuse_pair since it can
+            # throw errors
             avg = self._fuse_pair(_dag, u_, v_)
+            _pkg.contract_edge(u_, v_)
+
             nodes_to_add.append(u_+"+"+v_)
             nodes_to_remove += [u_, v_]
 
             ### apply the same strategy to other GPUs
-            ul = self.opt._debug_convert_to_the_other_machine(u_)
-            vl = self.opt._debug_convert_to_the_other_machine(v_)
+            ul = self.opt._debug_convert_to_other_machines(u_)
+            vl = self.opt._debug_convert_to_other_machines(v_)
             for u__, v__ in zip(ul, vl):
                 assert _pkg.can_contract_edge(u__, v__)
-                _pkg.contract_edge(u__, v__)
                 ### TODO (huhanpeng): since we assume data parallel
                 ### use the same avg for the fused operators
                 self._fuse_pair(_dag, u__, v__, avg=avg)
+                _pkg.contract_edge(u__, v__)
                 nodes_to_add.append(u__+"+"+v__)
                 nodes_to_remove += [u__, v__]
             
@@ -579,9 +585,13 @@ class _XLACostModel(_BaseCostModel):
         if new_name in self.node_attr_cache:
             _dag.add_node(new_name, **self.node_attr_cache[new_name])
         else:
-            _dag.add_node(new_name)
             ### Calculate the new attribute
-            self._combine_nodes_attr(_dag, new_name, u_, v_, avg=avg)
+            if avg is None:
+                # an error is thrown here if cannot combine
+                # we must put all modification of dag after this line
+                avg = self._combine_avg(u_, v_)
+            _dag.add_node(new_name)
+            self._combine_nodes_attr(_dag, new_name, u_, v_, avg)
             ### cache the attribute
             self._cache_node_attr(new_name, _dag.nodes[new_name])
 
@@ -614,17 +624,15 @@ class _XLACostModel(_BaseCostModel):
         nodes2add = []
         nodes2rm = []
 
-        _pkg.split_node(target, components)
         _, new_node_names = self._defuse_node(_dag, _pkg, target, components)
         nodes2add += new_node_names
         nodes2rm.append(target)
         
         ### apply the same strategy to other GPUs
-        target_l = self.opt._debug_convert_to_the_other_machine(target)
-        components_l = [tuple([self.opt._debug_convert_to_the_other_machine(node) for node in comp]) for comp in components]
+        target_l = self.opt._debug_convert_to_other_machines(target)
+        components_l = [tuple([self.opt._debug_convert_to_other_machines(node) for node in comp]) for comp in components]
         for idx, target_ in enumerate(target_l):
             components_ = [tuple([node_l[idx] for node_l in comp]) for comp in components_l]
-            _pkg.split_node(target_, components_)
             _, new_node_names_ = self._defuse_node(_dag, _pkg, target_, components_)
             nodes2add += new_node_names_
             nodes2rm.append(target_)
@@ -632,9 +640,15 @@ class _XLACostModel(_BaseCostModel):
         return True, set(nodes2add), set(nodes2rm)
 
     def _defuse_node(self, _dag, _pkg, target, components):
-        component_names = defuse_nodes_inplace_nx(_dag, _pkg, target, components)
+        avgs = []
+        component_names = get_concated_names(components)
         for new_node_name in component_names:
-            self._parse_node_attr(_dag, new_node_name)
+            avg = self._get_node_avg(new_node_name)
+            avgs.append(avg)
+        _pkg.split_node(target, components)
+        defuse_nodes_inplace_nx(_dag, _pkg, target, components)
+        for idx, new_node_name in enumerate(component_names):
+            self._parse_node_attr(_dag, new_node_name, avgs[idx])
         return True, component_names
 
     def apply(self, s, __dag, __pkg):
@@ -692,7 +706,7 @@ class _AMPCostModel(_BaseCostModel):
         nodes_introduced = self.amp_predictor.quantize(__dag, target)
         ### apply this strategy to other GPUs' corresponding operators
         ### we assume data parallel, use the same model
-        on_other_ranks = self.opt._debug_convert_to_the_other_machine(target)
+        on_other_ranks = self.opt._debug_convert_to_other_machines(target)
         for target in on_other_ranks:
             nodes_introduced += self.amp_predictor.quantize(__dag, target)
         return True, nodes_introduced, []
@@ -909,7 +923,7 @@ class Optimizer:
     def _parse_index_from_name(self, name_):
         return int(name_.split("[")[1].split("]")[0])
     
-    def _debug_convert_to_the_other_machine(self, name_):
+    def _debug_convert_to_other_machines(self, name_):
         if not "+" in name_:
             ret = []
             if args_.relabel:
@@ -929,7 +943,7 @@ class Optimizer:
         else:
             new_names = []
             for sub_name in name_.split("+"):
-                new_names.append(self._debug_convert_to_the_other_machine(sub_name))
+                new_names.append(self._debug_convert_to_other_machines(sub_name))
             new_names = list(np.array(new_names).T)
             return ["+".join(ns) for ns in new_names]
 
@@ -1195,7 +1209,12 @@ class MCMCOptimizer(Optimizer):
                     strategy_introduced_nodes.update(nodes_introduced)
                     strategy_removed_nodes.update(nodes_removed)
 
-                    self.cost_star, self.exct_dag, self.mem_usage_star = self.evaluate(G_star)
+                    if self.step % 100 == 0:
+                        self.cost_star, self.exct_dag, self.mem_usage_star = self.evaluate(G_star, _filename=os.path.join(ROOT_PATH, "searched_graph/{}.json".format(self.step)))
+                        # dump cluster mapping
+                        self.cst_md_mng.strategy2model["+"]._dump_cluster_mapping(G, os.path.join(ROOT_PATH, "searched_graph/cluster_mapping_{}.txt".format(self.step)))
+                    else:
+                        self.cost_star, self.exct_dag, self.mem_usage_star = self.evaluate(G_star)
                     if successful_strategies < step_size:
                         candidates, _ = self.candidate_selection(G_star, topk=None, critical_path=self.wrap_critical_path(self.exct_dag))
                         search_space, weights = self.init_search_space(candidates, G_star, PKG_star)
