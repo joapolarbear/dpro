@@ -596,7 +596,6 @@ def gen_kernel_sample_once_using_replay(sample_generator, dataset_dir, dataset_h
         compile_to_hlo(def_path, config_path, unopt_path, opt_path)
     except:
         print("[WARNING] Failed to compile to HLO code.")
-        raise
         clean_up_dir(profile_dir)
         clean_up_dir(raw_subgraph_dir)
         return False, False, []

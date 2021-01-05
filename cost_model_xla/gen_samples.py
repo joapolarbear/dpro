@@ -24,6 +24,11 @@ from .constant_utils import *
 import networkx as nx
 
 try:
+    import horovod.tensorflow as hvd
+except:
+    pass
+
+try:
     graph_hash = nx.algorithms.weisfeiler_lehman_graph_hash
 except:
     import hashlib
@@ -121,7 +126,8 @@ class GraphDefUtil(object):
                         op_shape_as_list = self.shape_dict["_" + output.name]
                     else:
                         print("Tensor: {}, shape: {}".format(output.name, output.shape))
-                        exit(-1)
+                        # exit(-1)
+                        continue
                     output.set_shape(op_shape_as_list)
         self.operation_names = set([node.name for node in self.original_graph.get_operations()])
         self.original_graph_def = self.original_graph.as_graph_def(add_shapes=True)

@@ -164,17 +164,6 @@ class Collector(object):
         traces = []
         while index < len(raw_traces["traceEvents"]):
             if self.platform == "TENSORFLOW" and one_pid is None:
-                if isinstance(raw_traces["traceEvents"][0]["pid"], int):
-                    pid2name = {}
-                    new_trace = {"traceEvents": []}
-                    for trace in raw_traces["traceEvents"]:
-                        if trace["ph"] == "M" and trace["name"] == "process_name":
-                            pid2name[trace["pid"]] = trace["args"]["name"]
-                    for trace in raw_traces["traceEvents"]:
-                        if trace["ph"] == "X" and trace["pid"] in pid2name:
-                            trace["pid"] = pid2name[trace["pid"]]
-                            new_trace["traceEvents"].append(trace)
-                    raw_traces = new_trace
                 for trace in raw_traces["traceEvents"]:
                     if "device:GPU" in trace["pid"] and "Compute" in trace["pid"] and "replica" in trace["pid"]:
                         pass
