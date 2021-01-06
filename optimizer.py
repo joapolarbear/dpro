@@ -172,7 +172,7 @@ class _XLACostModel(_BaseCostModel):
 
         cost_model_tmp_dir = os.path.join(ROOT_PATH, "cost_model_tmp")
         if not os.path.exists(cost_model_tmp_dir):
-            os.mkdir(cost_model_tmp_dir)
+            os.makedirs(cost_model_tmp_dir)
         SingleLogger().info("Searching for XLA Cost Model dumps in {}".format(models_dir))
         cost_models["default"] = XLAModuleCostModel(models_dir, tmp_dir=os.path.join(cost_model_tmp_dir))
         # for model_dump_dir in os.listdir(models_dir):
@@ -330,7 +330,7 @@ class _XLACostModel(_BaseCostModel):
             SingleLogger().info(
                 "[COST MODEL QUERY] {} Nodes to fuse ...".format(len(nodes_to_fuse)))
 
-        predicted_time, _ = self._wrap_xla_predict(u_pid, nodes_to_fuse, fused_u_)
+        predicted_time = self._wrap_xla_predict(u_pid, nodes_to_fuse, fused_u_)
         SingleLogger().info(
             "[COST MODEL QUERY] Exec time predicted: {}".format(predicted_time))
         if predicted_time < 0:
