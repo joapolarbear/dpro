@@ -1,21 +1,37 @@
-import json
 from pprint import pprint
+from functools import partial
 
 import ml_platform
 import networkx as nx
-from trace_utils import FileName
 
 
+def remove_prefix(text, prefix):
+    if text.startswith(prefix):
+        return text[len(prefix):]
+    return text
 
-    
+
+def get_rank0_forward_nodes(nodes):
+    def _is_rank0(name):
+        if name.startswith("traces_0.rank0"):
+            return True
+        return False
+
+    def _is_forward(name):
+        if "->FW." in name:
+            return True
+        return False
+
+    return [remove_prefix(node, "traces_0.rank0->FW.") for node in nodes
+            if _is_rank0(node) and _is_forward(node)]
+
 
 class MemoryEstimator:
 
     MEMORY_LISTS_MODULE = "memory_lists"
 
-    def __init__(self, platform, path_manager):
+    def __init__(self, platform):
         self.memory_lists = self._get_platform_memory_lists(platform)
-        self.graph_def = self._read_graph_def_from_json(path_manager)
 
     def _get_platform_memory_lists(self, platform):
         module = getattr(ml_platform, platform.lower())
@@ -27,12 +43,6 @@ class MemoryEstimator:
 
         return self.lists
 
-    def _read_graph_def_from_json(self, path_manager):
-        json_path = path_manager.search(FileName.GRAPHDEF.value)
-        with open(json_path, "r") as f:
-            content = json.load(f)
-        return content["node"]
-
     def estimate(self, dag, param_dict):
         """[summary]
 
@@ -40,5 +50,8 @@ class MemoryEstimator:
             dag ([type]): [description]
             param_dict ([type]): [description]
         """
+        nodes = dag.nodes
+        selected_nodes = get_rank0_forward_nodes(nodes)
+        print(selected_nodes)
 
         return 0
