@@ -63,7 +63,7 @@ def log_op_names(graph_def, log_file="./op_names_in_def.txt"):
 
 """
     Classes for fusion cost model
-"""    
+"""
 class XlaKernelDataset(object):
     def __init__(self, dataset_path, test_size=0.2):
         super().__init__()
@@ -512,6 +512,7 @@ def gen_max_cluster_kernel_samples_using_replay(sample_generator, dataset_dir, d
         try:
             graph_def_path, graph_def_config_path, _ = gen_config_fun(raw_subgraph_dir, sample_id)
         except GSInternalErrors as e:
+            clean_up_dir(raw_subgraph_dir)
             continue
 
         # compile hlo
@@ -858,14 +859,14 @@ def gen_kernel_dataset(trace_dir, result_dir, num_samples=2000, num_max_cluster_
                     if should_override:
                         node["attr"]["_output_shapes"] = output_shape_as_list_to_pb_json(shapes)
         cleaned_graph_def_str = json.dumps(graph_def_as_json)
-        with open(os.path.join(result_dir, CMPaths.CLEANED_GRAPH_DEF_FILE), "w") as f_cleaned:
+        with open(os.path.join(dataset_dir, CMPaths.CLEANED_GRAPH_DEF_FILE), "w") as f_cleaned:
             json.dump(graph_def_as_json, f_cleaned, indent=4)
         graph_def = ParseJSON(cleaned_graph_def_str, GraphDef())
 
     # initialize sample generator
     sample_generator = SampleGenerator(graph_def=graph_def, \
                             shape_dict=shape_dict, ignored_nodes=ignored_node)
-    shutil.copy(os.path.join(trace_dir, CMPaths.TENSOR_SHAPE_FILE), result_dir)
+    shutil.copy(os.path.join(trace_dir, CMPaths.TENSOR_SHAPE_FILE), dataset_dir)
     print("Start generation.")
     completed_samples = 0
     op_hash_set = set()
