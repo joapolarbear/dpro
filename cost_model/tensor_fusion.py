@@ -2,8 +2,9 @@ import networkx as nx
 import time
 import os
 import pickle
-import arg_utils
+import numpy as np
 
+import arg_utils
 from .base import _BaseCostModel
 from trace_utils import *
 from cost_model_xla.pk_graph import PKGraph
@@ -26,9 +27,6 @@ class _TensorFusionCM(_BaseCostModel):
         self.tensor_group_info = {}
 
         self.ckpt_path = os.path.join(args_.workspace, "ckpt_tensor_fusion.pickle")
-
-    def load_init_ckpt(self):
-        return None, None, None
 
     def init_search_space(self, candidates, _dag: nx.DiGraph, _pkg: PKGraph):
         search_space = []
@@ -63,6 +61,18 @@ class _TensorFusionCM(_BaseCostModel):
                 if to_fuse_v is not None:
                     search_space.append(("++", to_fuse_u, to_fuse_v))
                     weights.append(l)
+
+                ### tensor partition
+                all_infos = self._wrap_parse_all_info(n)
+                sorted_tensor_ids = [int(n) for n in all_infos[2].split("+")]
+                mu, sigma = (len(sorted_tensor_ids)-1) / 2, (len(sorted_tensor_ids)-1) / 2
+                s = np.random.normal(mu, sigma, int(self.ratio_of_partition * (len(sorted_tensor_ids) - 1)))
+                _set = set([int(n) for n in s])
+                for _s in _set:
+                    ### Here _s denotes which the partition occurs before the _s'th tensor
+                    search_space.append(("--", n, _s))
+                    weights.append(l)
+
             
         return search_space, weights
 
@@ -183,7 +193,7 @@ class _TensorFusionCM(_BaseCostModel):
                 edges_to_rm += [(prev_names[0], to_fuses[0]), (prev_names[1], to_fuses[1])]
                 nodes_to_rm.update((to_fuses[0], to_fuses[1]))
 
-                ### add new node
+                ### add new node and edge
                 new_fused_name, fused_time = self._concat_name_avg(
                     _dag, to_fuses[0], to_fuses[1], base_idx)
                 nodes_to_add.append((new_fused_name, {"avg":fused_time}))
@@ -220,7 +230,6 @@ class _TensorFusionCM(_BaseCostModel):
                             edges_to_rm.append((to_fuses[1], succ_))
                         for _update_op in update_list:
                             edges_to_add.append((new_fused_name, _update_op))           
-                        nodes_to_rm.update(to_fuses)
                         
         _dag.add_edges_from(edges_to_add)
         _dag.add_nodes_from(nodes_to_add)
@@ -251,21 +260,134 @@ class _TensorFusionCM(_BaseCostModel):
                 sizes = [
                     self._parse_tensor_group_info(all_infos[0][2])["size"],
                     self._parse_tensor_group_info(all_infos[1][2])["size"]]
-                fused_time = self._get_node_attr(
+                fused_time = FUSION_RATIO * self._get_node_attr(
                     [u_, v_][base_idx], "avg") * (sizes[0] + sizes[1]) / sizes[base_idx]
             elif all_infos[0][3] in ["QUEUE", "Sync"]:
-                fused_time = max(self._get_node_attr(u_, "avg"), self._get_node_attr(v_, "avg"))
+                fused_time = FUSION_RATIO * max(self._get_node_attr(u_, "avg"), self._get_node_attr(v_, "avg"))
             else:
                 raise ValueError("Unrecognized sub op name {} ({})".format(
                     all_infos[0][3], u_))
             self._cache_node_attr(new_name, {"avg": fused_time})
         else:
             fused_time = self.node_attr_cache[new_name]["avg"]
-        return new_name, FUSION_RATIO * fused_time
+        return new_name, fused_time
     
-    def _parse_tensor_group_info(self, raw_name):
+    def _op_defusion(self, _dag, _pkg: PKGraph, u, loc):
+        all_infos = self._wrap_parse_all_info(u)
+
+        sorted_tensor_ids = sorted([int(n) for n in all_infos[2].split("+")])
+        ids = [sorted_tensor_ids[:loc], sorted_tensor_ids[loc:]]
+        rawnames = ["+".join(n) for n in ids]
+        grp_infos = [self._parse_tensor_group_info(n, ref=all_infos[2]) for n in rawnames]
+
+        edges_to_add = []
+        edges_to_rm = []
+        nodes_to_add = []
+        nodes_to_rm = set()
+        all_pid = sorted(self.opt.clct.all_pid())
+        for _pid in all_pid:
+            _pid_sync = self._wrap_gen_long_name(_pid, all_infos[1], all_infos[2], all_infos[3], all_infos[4])
+            
+            ### add new node: sync
+            new_part_names, part_times = self._defuse_name_avg(_dag, _pid_sync, rawnames)
+            for _name, _time in zip(new_part_names, part_times):
+                nodes_to_add.append((_name, {"avg": _time}))
+
+            ### Handle BW->Sync edges
+            ### each sync may have multiple input bw nodes
+            _in_bw = [n for n, _ in _dag.in_edges(_pid_sync)]
+            edges_to_add += [(_bw, new_part_names[0]) for _bw in _in_bw] + \
+                [(_bw, new_part_names[1]) for _bw in _in_bw]
+            edges_to_rm += [(_bw, _pid_sync) for _bw in _in_bw]     
+            nodes_to_rm.add(_pid_sync)
+
+            prev_part_names = new_part_names
+
+            edges_to_handel = []
+            for _next in _dag.successors(_pid_sync):
+                edges_to_handel.append((prev_part_names, _pid_sync, _next))
+
+            while len(edges_to_handel) > 0:
+                prev_part_names, _prev, _cur = edges_to_handel.pop(0)
+                edges_to_rm += [(_prev, _cur)]
+                nodes_to_rm.update((_cur))
+
+                ### add new node
+                new_part_names, part_times = self._defuse_name_avg(_dag, _cur, rawnames)
+                for _name, _time in zip(new_part_names, part_times):
+                    nodes_to_add.append((_name, {"avg": _time}))
+                
+                ### add new edges
+                edges_to_add += [(prev_part_names[0], new_part_names[0]),
+                                 (prev_part_names[1], new_part_names[1])]
+                
+                ### add successors to handle
+                _all_infos = [
+                    self._wrap_parse_all_info(_prev),
+                    self._wrap_parse_all_info(_cur)]
+                if "Sync" in _prev and _all_infos[0][0] != _all_infos[1][0]:
+                    ### avoid repeatedly add edges for Sync -> other GPUs tensor op
+                    pass
+                else:
+                    last_comm = False
+                    for succ_ in _dag.successors(_cur):
+                        if "Comm" in succ_:
+                            edges_to_handel.append((new_part_names, _cur, succ_))
+                        elif "UPDATE_" in succ_:
+                            last_comm = True
+                            break
+                        else:
+                            raise ValueError("Invalide succ {} of {}".format(succ_, _cur))
+                    
+                    ### For last communication tensor (MEMCOPY)
+                    if last_comm:
+                        update_list = []
+                        for succ_ in _dag.successors(_cur):
+                            assert "UPDATE_" in succ_
+                            update_list.append(succ_)
+                            edges_to_rm.append((_cur, succ_))    
+                        for _update_op in update_list:
+                            edges_to_add += [(new_part_names[0], _update_op), (new_part_names[1], _update_op)]
+        
+        _dag.add_edges_from(edges_to_add)
+        _dag.add_nodes_from(nodes_to_add)
+        _dag.remove_edges_from(edges_to_rm)
+        _dag.remove_nodes_from(nodes_to_rm)
+        return True, [n for n, _ in nodes_to_add], nodes_to_rm
+
+    def _defuse_name_avg(self, _dag, u, rawnames):
+        if u not in self.node_attr_cache and u in _dag.nodes:
+            self._cache_node_attr(u, _dag.nodes[u])
+
+        all_infos = self._wrap_parse_all_info(u)
+        new_part_names = [self._wrap_gen_long_name(
+            all_infos[0], all_infos[1], n, all_infos[3], all_infos[4]) for n in rawnames]
+        grp_infos = [self._parse_tensor_group_info(n, ref=all_infos[2]) for n in rawnames]
+
+        part_times = []
+        for idx, new_name in enumerate(new_part_names):
+            if new_name not in self.node_attr_cache:
+                if all_infos[3] in ["SEND", "RECV", "MEMCPY_IN_FUSION_BUFFER", "NCCL_ALLREDUCE", "MEMCPY_OUT_FUSION_BUFFER"]:
+                    part_time = self._get_node_attr(n, "avg") * grp_infos[idx]["size"] \
+                        / ((grp_infos[0]["size"] + grp_infos[1]["size"]) * FUSION_RATIO)
+                elif all_infos[3] in ["QUEUE", "Sync"]:
+                    part_time = self._get_node_attr(n, "avg") / FUSION_RATIO
+                else:
+                    raise ValueError("Unrecognized sub op name {} ({})".format(
+                        all_infos[3], u))
+                self._cache_node_attr(new_name, {"avg": part_time})
+            else:
+                part_time = self.node_attr_cache[new_name]["avg"]
+            part_times.append(part_time)
+        return new_part_names, part_times
+
+    def _parse_tensor_group_info(self, raw_name, ref=None):
         if raw_name not in self.tensor_group_info:
-            chunkNum, sliceNum, channelNum, loopNum = self.opt.clct.nccl_graph.get_IDnum("Comm." + raw_name)
+            if ref is None:
+                chunkNum, sliceNum, channelNum, loopNum = self.opt.clct.nccl_graph.get_IDnum("Comm." + raw_name)
+            else:
+                ### some group may not occur in the traces, ref to other groups
+                chunkNum, sliceNum, channelNum, loopNum = self.opt.clct.nccl_graph.get_IDnum("Comm." + ref)
             total_size = 0
             for tensor_id_str in raw_name.split("+"):
                 tensor_id = int(tensor_id_str)
