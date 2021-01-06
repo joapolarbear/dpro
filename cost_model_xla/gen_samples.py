@@ -342,10 +342,11 @@ class GraphDefUtil(object):
                 all_ops_used_as_input.add(input_tensor.op.name)
         for node_def in [op.node_def for op in subgraph_nodes]:
             if node_def.name not in all_ops_used_as_input and node_def.op != "Const" and \
-                                                    node_def.name not in constant_nodes:
+                                                    node_def.name not in constant_nodes and \
+                                                    node_def.op != "NoOp":
                 node = out_graph.get_operation_by_name(node_def.name)
                 output_nodes.append(node)
-        
+
         if not output_nodes:
             raise GSConstantSubgraphError("[GraphDefUtil] Subgraph do not have non-constant output.")
 

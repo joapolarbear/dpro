@@ -163,7 +163,7 @@ class _XLACostModel(_BaseCostModel):
 
     def checkpoint(self):
         with open(self.ckpt_path, "wb") as f:
-            pickle.dump([self.node_attr_cache], f)
+            pickle.dump(self.node_attr_cache, f)
 
     def _load_cm(self):
         cost_models = {}
@@ -255,7 +255,6 @@ class _XLACostModel(_BaseCostModel):
             cat = parse_cat_from_name(node)
             if (not args_.simulate and orig_name not in self._wrap_xla_operation_names(pid)) \
                     or "Assign" in orig_name or cat == CatName.COMM.value \
-                    or "group_deps" in orig_name \
                     or orig_name not in xla_candidates:
                 self.forbidden_list.add(node)
                 self.initial_forbidden_list.add(node)
@@ -433,18 +432,6 @@ class _XLACostModel(_BaseCostModel):
                 heat_succ = self.opt._get_heat_from_history(succ_)
 
                 heat_combined = (heat + heat_succ) / 2
-
-                # if n == "traces_0.rank0->BW.[2654]":
-                #     print("Heat for (traces_0.rank0->BW.[2654], {}):".format(succ_))
-                #     print(heat_combined)
-                #     input()
-
-                # if heat_combined > 0:
-                #     print("Heat for ({}, {}): {}".format(n, succ_, heat_combined))
-                #     input()
-
-                # DEBUG_COMPARE
-                # heat_combined = 1
 
                 search_space.append(("+", n, succ_))
                 weights.append(self.opt._combine_weight(l, heat_combined))
@@ -945,7 +932,8 @@ class Optimizer:
 
     def _combine_weight(self, l: float, heat: float) -> float:
         # return l * (0.05 + heat)
-        return heat + 0.01
+        # return heat + 0.01
+        return 1
 
     def _get_heat_from_history(self, node):
         heat = 0
