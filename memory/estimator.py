@@ -1,26 +1,37 @@
+import json
+from pprint import pprint
+
 import ml_platform
 import networkx as nx
+from trace_utils import FileName
+
+
+
+    
 
 class MemoryEstimator:
-    """Memory Estimator
 
+    MEMORY_LISTS_MODULE = "memory_lists"
 
-    """
-    MEMORY_LIST_MOD = "memory_lists"
-    LISTS = ["WHITE_LIST", "CWISE_LIST"]
+    def __init__(self, platform, path_manager):
+        self.memory_lists = self._get_platform_memory_lists(platform)
+        self.graph_def = self._read_graph_def_from_json(path_manager)
 
-    def __init__(self, platform):
-        self.platform = getattr(ml_platform, platform.lower())
-        if hasattr(self.platform, self.MEMORY_LIST_MOD):
-            self.lists = getattr(self.platform, self.MEMORY_LIST_MOD)
+    def _get_platform_memory_lists(self, platform):
+        module = getattr(ml_platform, platform.lower())
+        if hasattr(module, self.MEMORY_LISTS_MODULE):
+            self.lists = getattr(module, self.MEMORY_LISTS_MODULE)
         else:
-            raise NotImplementedError("Memory Estimator Does Not Support %s" % platform)
-        
-        # check validity
-        for list in self.LISTS:
-            if not hasattr(self.lists, list):
-                raise NotImplementedError("Platform %s lacks %s" % (platform, list))
-        
+            raise NotImplementedError(
+                "Memory Estimator Does Not Support %s" % platform)
+
+        return self.lists
+
+    def _read_graph_def_from_json(self, path_manager):
+        json_path = path_manager.search(FileName.GRAPHDEF.value)
+        with open(json_path, "r") as f:
+            content = json.load(f)
+        return content["node"]
 
     def estimate(self, dag, param_dict):
         """[summary]
@@ -29,16 +40,5 @@ class MemoryEstimator:
             dag ([type]): [description]
             param_dict ([type]): [description]
         """
-        print("Nodes num:%d" % (len(dag)))
-        nodes = list(nx.topological_sort(dag))
-        for node in nodes:
-            raw_name, _ = param_dict.metainfo.standarize_name(node)
-            # print(raw_name)
-            if param_dict.metainfo.in_metadata(raw_name):
-                print(raw_name, param_dict.metainfo.ret_output_size_inB(raw_name))
-                input()
-        print("Done!")
-        return 0
 
-    def _estimate_model_size(self):
-        pass
+        return 0
