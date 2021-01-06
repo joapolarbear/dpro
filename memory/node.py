@@ -1,17 +1,14 @@
-import numpy as np 
+import numpy as np
+import tensorflow as tf
 
-def remove_prefix(text, prefix):
-    if text.startswith(prefix):
-        return text[len(prefix):]
-    return text
 
 class Node:
     def __init__(self, node_def):
-        self._name = Node._get_name(node_def)
-        self._op = Node._get_op(node_def)
-        self._input = Node._get_input(node_def)
-        self._dtype = Node._get_dtype(node_def)
-        self._shape = Node._get_shape(node_def)
+        self._name = self._get_name(node_def)
+        self._op = self._get_op(node_def)
+        self._input = self._get_input(node_def)
+        self._dtype = self._get_dtype(node_def)
+        self._shape = self._get_shape(node_def)
 
     @staticmethod
     def _get_name(node_def):
@@ -19,46 +16,69 @@ class Node:
 
     @staticmethod
     def _get_op(node_def):
-        return node_def["op"]
+        return node_def["op"].lower()
 
     @staticmethod
     def _get_input(node_def):
+        if "input" not in node_def:
+            return None
         return node_def["input"]
 
     @staticmethod
     def _get_dtype(node_def):
-        attr = node_def["attr"]
-        tf_dtype = Node._get_tf_dtype(attr)
+        def _convert_tf_dtype_to_np(tf_dtype):
+            tf_dtype = tf.dtypes.DType(tf_dtype)
+            return np.dtype(tf_dtype.name)
+
+        if "dtype" not in node_def:
+            return None
+        tf_dtype = node_def["dtype"]
         if tf_dtype:
-            return Node._convert_tf_dtype_to_np(tf_dtype)            
+            return _convert_tf_dtype_to_np(tf_dtype)
 
         return None
 
     @staticmethod
     def _get_shape(node_def):
-        pass
-
-    @staticmethod
-    def _get_tf_dtype(attr):
-        if "dtype" in attr:
-            return attr["dtype"]["type"]
-        elif "T" in attr:
-            return attr["T"]["type"]
-        else:
+        if "shape" not in node_def:
             return None
 
-    @staticmethod
-    def _convert_tf_dtype_to_np(tf_dtype):
-        dtype = remove_prefix(tf_dtype, "DT_")
-        dtype = dtype.lower()
-        
-        # "float" denotes "double" in numpy
-        if dtype == "float":
-            dtype = "float32"
-        elif dtype == "string":
-            dtype = "str"
-        
-        return np.dtype(dtype)
+        shape = node_def["shape"]
+        # scalar
+        if not shape:
+            shape = [1, ]
+
+        return tuple(shape)
+
+    def is_valid(self):
+        """check the node's validity 
+
+        Returns:
+            [bool]: validity
+        """
+        def _is_valid_op(op):
+            if op in ["NoOp"]:
+                return False
+            return True
+
+        def _is_not_none(value):
+            if value is None:
+                return False
+            return True
+
+        def _is_valid_shape(shape):
+            if not isinstance(shape, tuple):
+                return False
+            if not shape or shape[0] == -1:
+                return False
+            return True
+
+        return all([
+            _is_valid_op(self.op),
+            _is_not_none(self.dtype),
+            _is_not_none(self.input),
+            _is_valid_shape(self.shape)
+        ])
 
     @property
     def name(self):
@@ -104,3 +124,9 @@ class Node:
             [tuple]: output shape
         """
         return self._shape
+
+    def __repr__(self):
+        return "Name: %s, op: %s, input: [%s], dtype: %s, shape: %s" % (
+            self.name, self.op, ", ".join(self.input), str(
+                self.dtype), str(self.shape)
+        )
