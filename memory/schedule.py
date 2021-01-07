@@ -11,7 +11,7 @@ class Schedule:
         self.lists = self._get_platform_memory_lists(platform)
 
     def add(self, node):
-        """add node into schedule
+        """add node into schedule and determine whether it runs in place 
 
         Args:
             node ([Node]): operator
