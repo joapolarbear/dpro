@@ -22,20 +22,26 @@ def get_all_pred_succ_nx(_dag: nx.DiGraph, nodes_to_contract):
                 all_successors.add(succ)
     return all_predecessors, all_successors, new_node_name
 
-def defuse_nodes_inplace_nx(_dag: nx.DiGraph, pkg, target, components):
-    _dag.remove_node(target)
-    # build a node -> component reverse index
+def get_concated_names(components):
     component_names = []
-    node2components = {}
     for idx, component in enumerate(components):
         component_name = ""
         for node_idx, node in enumerate(component):
-            node2components[node] = idx
             component_name += node
             if node_idx != len(component) - 1:
                 component_name += "+"
         component_names.append(component_name)
-        _dag.add_node(component_name)
+    return component_names
+
+def defuse_nodes_inplace_nx(_dag: nx.DiGraph, pkg, target, components):
+    _dag.remove_node(target)
+    # build a node -> component reverse index
+    component_names = get_concated_names(components)
+    node2components = {}
+    for idx, component in enumerate(components):
+        for _, node in enumerate(component):
+            node2components[node] = idx
+        _dag.add_node(component_names[idx])
 
     for comp_idx, component in enumerate(components):
         component_predecessors = set()

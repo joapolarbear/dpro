@@ -23,6 +23,7 @@ class CMPaths:
     OVERHEAD_MODEL_SAVE_FILE = "overhead.pickle"
     MODEL_WEIGHT_SAVE_FILE = "model_weights.h5"
     MODEL_CONFIG_FILE = "model_config.pickle"
+    MODULE_CONFIG_FILE = "module_config.txt"
     GRAPH_DEF_PICKLE_FILE = "graph_def.pickle"
 
     AFTER_OPT_TF_DAG_FILE = "partition_def_0.json"

@@ -708,7 +708,7 @@ class Collector(object):
         for _dir in self.pm.dirs:
             worker_path = os.path.join(self.pm.path, _dir)
             worker_root, worker_dirs, _ = list(os.walk(worker_path))[0]
-            worker_dirs = sorted(worker_dirs)
+            worker_dirs = sorted([_d for _d in worker_dirs if not _d.startswith(".")])
 
             if len(self.pm.dirs) * len(worker_dirs) == 1:
                 self.single = True

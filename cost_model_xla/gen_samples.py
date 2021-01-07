@@ -92,6 +92,9 @@ class GSDuplicateSubgraphError(GSInternalErrors):
 class GSCannotDecideShapeError(GSInternalErrors):
     pass
 
+class GSConstantSubgraphError(GSInternalErrors):
+    pass
+
 class GraphDefUtil(object):
     """ Utility module to process TensorFlow GraphDef. """
     def __init__(self, graph_def, shape_dict):
@@ -123,7 +126,8 @@ class GraphDefUtil(object):
                         op_shape_as_list = self.shape_dict["_" + output.name]
                     else:
                         print("Tensor: {}, shape: {}".format(output.name, output.shape))
-                        exit(-1)
+                        # exit(-1)
+                        continue
                     output.set_shape(op_shape_as_list)
         self.operation_names = set([node.name for node in self.original_graph.get_operations()])
         self.original_graph_def = self.original_graph.as_graph_def(add_shapes=True)
@@ -341,6 +345,9 @@ class GraphDefUtil(object):
                                                     node_def.name not in constant_nodes:
                 node = out_graph.get_operation_by_name(node_def.name)
                 output_nodes.append(node)
+        
+        if not output_nodes:
+            raise GSConstantSubgraphError("[GraphDefUtil] Subgraph do not have non-constant output.")
 
         tf2xla_config_path = os.path.join(output_dir, "{}_config.pbtxt".format(sample_index))
         feed_names = []
