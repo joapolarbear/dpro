@@ -105,15 +105,15 @@ class MemoryEstimator:
                                 output_grad_size + temp_size)
                 total_activations -= op.get_output_size()
 
-        def _byte_to_mb(size):
-            return size / (1000**2)
+        def _byte_to_GB(size):
+            return size / (1000**3)
 
         _get_param_size()
         _simulate_forward_propagation()
         _simulate_backward_propagation()
 
-        peak_size, total_param_size = _byte_to_mb(
-            peak_size), _byte_to_mb(total_param_size)
+        peak_size, total_param_size = _byte_to_GB(
+            peak_size), _byte_to_GB(total_param_size)
 
         peak_size *= self.batch_size / self.default_batch_size
 
@@ -129,7 +129,7 @@ class MemoryEstimator:
             param_dict (ParameterDict): operator information
 
         Returns:
-            [float]: memory usage in MB
+            [float]: memory usage in GB
         """
         operator_schedule = self._compose_operator_schedule(dag, param_dict)
         return self._simulate_memory_allocation(operator_schedule)

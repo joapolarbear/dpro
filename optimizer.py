@@ -24,7 +24,7 @@ from cost_model_xla.pk_graph import PKGraph, PKGraphCycleError, contract_nodes_n
     defuse_nodes_inplace_nx, postorder_contract_nx, subgraph_partition_connected_nx
 from cost_model_xla.gen_dataset_utils import parse_xla_candidate_ops
 from memory import MemoryEstimator
-from memory.cost_model import HalvingBatchSize
+from memory.cost_model import MemoryCostModel
 
 from cost_model.base import _BaseCostModel
 from cost_model.tensor_fusion import _TensorFusionCM
@@ -746,7 +746,7 @@ class CostModelManager:
                 # _XLACostModel(opt),
                 # _AMPCostModel(opt),
             ]
-        self.mem_model_list = [HalvingBatchSize(opt)]
+        self.mem_model_list = [MemoryCostModel(opt)]
         self.strategy2model = {}
 
         ### Register Thoughput-oriented Cost Models
