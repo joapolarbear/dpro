@@ -232,10 +232,10 @@ class bytepsGraph:
         if "~PART" in tensor_name:
             tensor_name_wo_part, part_id = tensor_name.split("~PART")
             if tensor_name_wo_part in self.partition_dict:
-                self.partition_dict[tensor_name_wo_part].append(part_id)
+                self.partition_dict[tensor_name_wo_part].add(part_id)
             else:
-                self.partition_dict[tensor_name_wo_part] = [part_id]
-        
+                self.partition_dict[tensor_name_wo_part] = set([part_id])
+
     def _gen_partitioned_name(self, tensor_name, part_id):
         return tensor_name + "~PART" + str(part_id)
 
@@ -764,7 +764,7 @@ class bytepsGraph:
             key = ("worker_"+str(source_id), self.gradient_assignment_dict[partitioned_name], partitioned_name, COMM_OPS.PUSH_REQ)
             full_names.append(self.gen_comm_full_name(key))
         return full_names
-    
+
     def get_pull_res_node(self, source_id, tensor_name):
         self._check_inited()
         if tensor_name in self.partition_dict:
@@ -902,7 +902,8 @@ class bytepsGraph:
                 for st, ed in durations:
                     if source not in interval:
                         interval[source] = IntervalTree()
-                    interval[source][st:ed] = tensor_name
+                    if st != ed:
+                        interval[source][st:ed] = tensor_name
                 if source not in push_req_ops:
                     push_req_ops[source] = {}
                 push_req_ops[source][tensor_name] = durations
