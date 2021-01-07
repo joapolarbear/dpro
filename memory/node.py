@@ -42,8 +42,12 @@ class Node:
             if not output:
                 return None
             dtype = output[0].get("dtype")
-            if not dtype:
+            if not dtype or dtype == "string":
                 return None
+
+            if dtype.endswith("_ref"):
+                dtype = dtype[:-len("_ref")]
+
             return np.dtype(dtype)
 
         def _get_shape(node_def):
@@ -99,10 +103,11 @@ class Node:
         Returns:
             [bool]: is parameter node
         """
+        print(self._op)
         if self._op == "variablev2":
             return True
         return False
-    
+
     def get_num_ele(self):
         """get number of elements
 

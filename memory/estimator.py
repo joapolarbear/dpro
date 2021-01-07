@@ -47,6 +47,8 @@ class MemoryEstimator:
 
         leaf_nodes = get_leaf_nodes(forward_graph)
         forward_graph.remove_nodes_from(leaf_nodes)
+        leaf_nodes = remove_node_prefix(
+            leaf_nodes, DEL.join([RANK0_PREFIX, FORWARD_CAT]))
 
         sorted_forward_nodes = nx.topological_sort(forward_graph)
         sorted_forward_nodes = remove_node_prefix(
@@ -54,6 +56,10 @@ class MemoryEstimator:
 
         metadata = param_dict.metainfo.tf_meta
         operator_schedule = Schedule(self.platform)
+        for name in leaf_nodes:
+            node = Node.from_metadata(name, metadata)
+            operator_schedule.add(node)
+
         for name in sorted_forward_nodes:
             node = Node.from_metadata(name, metadata)
             operator_schedule.add(node)
@@ -66,6 +72,7 @@ class MemoryEstimator:
         total_param_size = 0
 
         def _get_param_size():
+            # including optimizer states, such as momentums
             nonlocal total_param_size
             for param in operator_schedule.parameters:
                 total_param_size += param.get_output_size()
@@ -106,8 +113,9 @@ class MemoryEstimator:
         peak_size, total_param_size = _byte_to_mb(
             peak_size), _byte_to_mb(total_param_size)
 
-        # TODO(yuchen): Not expandable
-        return peak_size + total_param_size*8
+        print("Memory Usage: %.2f %.2f" % (peak_size, total_param_size))
+        # TODO(yuchen): Not expandable. This is for Adam.
+        return peak_size + total_param_size / 3 * 8
 
     def estimate(self, dag, param_dict):
         """Estimate memory usage based on computation graph
