@@ -40,6 +40,8 @@ class MemoryEstimator:
 
     def __init__(self, platform):
         self.platform = platform
+        self.default_batch_size = 32  # TODO(yuchen): should read from graph
+        self.batch_size = self.default_batch_size
 
     def _compose_operator_schedule(self, dag, param_dict) -> Schedule:
         forward_nodes = get_forward_nodes(dag.nodes)
@@ -112,6 +114,8 @@ class MemoryEstimator:
 
         peak_size, total_param_size = _byte_to_mb(
             peak_size), _byte_to_mb(total_param_size)
+
+        peak_size /= self.default_batch_size * self.batch_size
 
         print("Memory Usage: %.2f %.2f" % (peak_size, total_param_size))
         # TODO(yuchen): Not expandable. This is for Adam.
