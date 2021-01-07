@@ -346,6 +346,9 @@ class GraphDefUtil(object):
                                                     node_def.op != "NoOp":
                 node = out_graph.get_operation_by_name(node_def.name)
                 output_nodes.append(node)
+        
+        if not output_nodes:
+            raise GSConstantSubgraphError("[GraphDefUtil] Subgraph do not have non-constant output.")
 
         if not output_nodes:
             raise GSConstantSubgraphError("[GraphDefUtil] Subgraph do not have non-constant output.")

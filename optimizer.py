@@ -158,7 +158,7 @@ class _XLACostModel(_BaseCostModel):
     def load_ckpt(self):
         if os.path.isfile(self.ckpt_path):
             with open(self.ckpt_path, "rb") as f:
-                node_attr_cache = pickle.load(f)
+                node_attr_cache = pickle.load(f)[0]
                 self.node_attr_cache = node_attr_cache
 
     def checkpoint(self):
@@ -333,7 +333,7 @@ class _XLACostModel(_BaseCostModel):
             SingleLogger().info(
                 "[COST MODEL QUERY] {} Nodes to fuse ...".format(len(nodes_to_fuse)))
 
-        predicted_time = self._wrap_xla_predict(u_pid, nodes_to_fuse, fused_u_)
+        predicted_time, _ = self._wrap_xla_predict(u_pid, nodes_to_fuse, fused_u_)
         SingleLogger().info(
             "[COST MODEL QUERY] Exec time predicted: {}".format(predicted_time))
         if predicted_time < 0:
@@ -561,6 +561,9 @@ class _XLACostModel(_BaseCostModel):
             self._cache_node_attr(u_, _dag.nodes[u_])
         if v_ not in self.node_attr_cache:
             self._cache_node_attr(v_, _dag.nodes[v_])
+
+        SingleLogger().debug("Fuse {} ({}) and {} ({})".format(u_, self.node_attr_cache[u_]["avg"],
+            v_, self.node_attr_cache[v_]["avg"]))
 
         new_name = self._concat_name(u_, v_)
         ### Add new nodes and get the attibute
@@ -893,12 +896,18 @@ class Optimizer:
         step_end_time_ms = [t / 1000 for t in replayer.replayAndDelay(
             None, _ouput=_output, _filename=_filename).values()]
         # print("Evaluate time {}".format(time.time() - t))
+        
+        # print("output critical path")
+        # critical_path = self.wrap_critical_path(replayer.exct_dag)
+        # replayer.dump_critical_path("critical_path_{}.json".format(self.tmp_id), [n for (n, e) in critical_path])
+        # self.tmp_id += 1
 
         return max(step_end_time_ms), replayer.exct_dag, 0
 
     def candidate_selection(self, GS, topk=None, critical_path=None):
-        ### Select nodes on the critical path of the execution graph as the candidates
-        ### Return the candidates and the revised dependency graph
+        ''' Select nodes on the critical path of the execution graph as the candidates
+            Return the candidates and the revised dependency graph
+        '''
         if critical_path is None:
             raise ValueError("critical_path must be given to select candidates")
             if isinstance(GS, GraphState):
@@ -1089,6 +1098,7 @@ class MCMCOptimizer(Optimizer):
                 100 * (self.base_cost - self.cur_cost) / self.base_cost) + "'\033[0m'")
             SingleLogger().info("\033[94m" + "Best speedup: %d th acception, speed up to the origin: %6.4f %%" % (
                 len(self.best_strategy), 100 * (self.base_cost - self.best_cost) / self.base_cost) + "'\033[0m'")
+
             with open(os.path.join(ROOT_PATH, "search_trajectory.txt"), "a") as f:
                 f.write(str(time.time()) + ": {},{},{}".format(
                     self.step,
@@ -1236,6 +1246,7 @@ class MCMCOptimizer(Optimizer):
                         candidates, G, PKG)
                     break
             display_and_ckpt()
+
         display_and_ckpt()
 
     def accept_or_not(self, cost, new_cost):

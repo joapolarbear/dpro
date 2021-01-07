@@ -490,7 +490,8 @@ class Replayer:
             if cat == CatName.COMM.value and self.comm_backend == "BYTEPS":
                 self.device_dict[device_id] = self.create_ps_comm_device(device_id)
             elif "Sync" in device_id:
-                self.device_dict[device_id] = self.create_periodic_device(device_id)
+                self.device_dict[device_id] = self.create_device(device_id)
+                # self.device_dict[device_id] = self.create_periodic_device(device_id)
             elif cat == CatName.COMM.value and "Kernel" in device_id:
                 self.device_dict[device_id] = self.create_comm_kernel_device(device_id)
             else:
