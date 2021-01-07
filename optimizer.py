@@ -803,7 +803,7 @@ class Optimizer:
             self.dag, _filename=bpf_dump_init_graph_to)
 
         ### Budget, in GB
-        self.memory_budget = memory_budget if memory_budget is not None else 1
+        self.memory_budget = memory_budget if memory_budget is not None else 4
 
         ### Some hyper-parameter
         self.enable_defusion = False
@@ -958,13 +958,18 @@ class Optimizer:
         weights = []
         ### OOM
         if self.mem_usage > self.memory_budget:
+            SingleLogger().warn("Estimated memory usage exceeds memory budget: {:.2f}GB > {:.2f}GB".format(
+                self.mem_usage, self.memory_budget))
             for _cost_model in self.cst_md_mng.mem_model_list:
                 ss_, wei_ = _cost_model.init_search_space(candidates, _dag, _pkg)
                 search_space += ss_
                 weights += wei_
             if len(search_space) == 0:
-                SingleLogger().warn("No optimization strategy to reduce memory usage: {} > {}".format(
+                SingleLogger().warn("No optimization strategy to reduce memory usage: {:.2f}GB > {:.2f}GB".format(
                     self.mem_usage, self.memory_budget))
+        else:
+            SingleLogger().info("Estimated memory usage does not exceed memory budget: {:.2f}GB < {:.2f}GB".format(
+                self.mem_usage, self.memory_budget))
 
         for _cost_model in self.cst_md_mng.cost_model_list:
             ss_, wei_ = _cost_model.init_search_space(candidates, _dag, _pkg)

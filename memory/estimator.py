@@ -117,7 +117,6 @@ class MemoryEstimator:
 
         peak_size *= self.batch_size / self.default_batch_size
 
-        print("Memory Usage: %.2f %.2f" % (peak_size, total_param_size))
         # TODO(yuchen): Not expandable. This is for Adam.
         return peak_size + total_param_size / 3 * 8
 
