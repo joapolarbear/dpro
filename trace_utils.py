@@ -217,7 +217,7 @@ warned = False
 def parse_layer_name(name):
     global warned
     if not warned:
-        SingleLogger().warn("parse_layer_name() may be not safe")
+        SingleLogger().warn("parse_layer_name() may not be safe")
         warned = True
     if DEL in name:
         name = name.split(DEL)[1]
@@ -751,7 +751,7 @@ class PathManager:
         self.dir_level = self.get_dir_level(self.path)
         ### get the sub files and directories
         _, self.dirs, self.files = list(os.walk(self.path))[0]
-        self.dirs = sorted(self.dirs)
+        self.dirs = sorted([_d for _d in self.dirs if not _d.startswith(".")])
 
     def get_dir_level(self, _dir):
         ''' return the level of the current dir '''
