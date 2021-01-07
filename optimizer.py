@@ -193,7 +193,11 @@ class _XLACostModel(_BaseCostModel):
         for u, v in G.edges:
             if (u.startswith("host0.rank0") and v.startswith("host0.rank0")) \
                 or (u.startswith("traces_0.rank0") and v.startswith("traces_0.rank0")):
-                edges_to_add.append((u, v))
+                # we also remove FW -> UPDATE egdes here since now we have 
+                # removed communication nodes, postorder_contract will try to
+                # fuse UPDATE with FW
+                if not ("FW" in u and "UPDATE" in v):
+                    edges_to_add.append((u, v))
         ret_G.add_edges_from(edges_to_add)
         return ret_G
 
@@ -811,7 +815,7 @@ class Optimizer:
 
     def relabel_dag_node(self, _dag) -> nx.DiGraph:
         def relabel_func(old_label):
-            if ("BW" in old_label or "FW" in old_label or "Comm" in old_label) and "^" not in old_label:
+            if ("BW" in old_label or "FW" in old_label or "Comm" in old_label or "UPDATE" in old_label) and "^" not in old_label:
                 layer_name = parse_layer_name(old_label)
                 layer_pid = parse_pid_from_name(old_label)
                 # if layer_pid not in self.cost_models or layer_name not in self._wrap_xla_operation_names(layer_pid):
