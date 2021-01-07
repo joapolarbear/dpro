@@ -558,7 +558,7 @@ def train_kernel_model(dataset_path, save_dir, epochs=1200, batch_size=256,
                         op_code_embed_dim=16, subop_embed_dim=16, node_embed_dim=64, 
                         embedding_output_dim=32, use_embed_hidden=False,
                         use_output_hidden=True, drop_out=0.2, learning_rate=1e-3,
-                        early_stopping_patience=15, early_stopping_epsilon=1e-5):
+                        early_stopping_patience=20):
     # load kernel dataset
     dataset_save_path = os.path.join(save_dir, CMPaths.DATASET_SAVE_FILE)
     if os.path.exists(dataset_save_path):
@@ -651,7 +651,7 @@ def train_kernel_model(dataset_path, save_dir, epochs=1200, batch_size=256,
     callbacks = [tf.keras.callbacks.ModelCheckpoint(model_save_path, 
                                                     save_weights_only=True,
                                                     save_freq=20*num_batches_per_epoch),
-                tf.keras.callbacks.EarlyStopping(monitor='loss', patience=5),
+                tf.keras.callbacks.EarlyStopping(monitor='loss', patience=early_stopping_patience),
                 tf.keras.callbacks.ReduceLROnPlateau(
                     monitor='loss', patience=5, min_lr=0.0001
                 )]

@@ -239,7 +239,7 @@ class XlaKernelDataset(object):
         self.max_input_dims = max_input_dims
         self.max_output_dim = max_output_dim
         self.feature_dim = sum(self.max_input_dims) + self.max_output_dim
-    
+
     def _gen_feature_vector(self, input_shapes, output_shape):
         subop_vector = []
         # inputs

@@ -196,7 +196,7 @@ class _XLACostModel(_BaseCostModel):
                 # we also remove FW -> UPDATE egdes here since now we have 
                 # removed communication nodes, postorder_contract will try to
                 # fuse UPDATE with FW
-                if not ("FW" in u and "UPDATE" in v):
+                if not (("FW" in u or "BW" in u) and "UPDATE" in v):
                     edges_to_add.append((u, v))
         ret_G.add_edges_from(edges_to_add)
         return ret_G
