@@ -103,7 +103,6 @@ class Node:
         Returns:
             [bool]: is parameter node
         """
-        print(self._op)
         if self._op == "variablev2":
             return True
         return False
