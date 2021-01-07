@@ -215,7 +215,7 @@ class _SecondOrStepTimer(tf.train.SecondOrStepTimer):
 
     def should_trigger_for_step(self, step):
         if self._start_step is not None:
-            if step <= self._start_step or step > self._end_step:
+            if step < self._start_step or step > self._end_step:
                 return False
 
         return super(_SecondOrStepTimer, self).should_trigger_for_step(step)
