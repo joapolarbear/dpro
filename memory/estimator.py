@@ -1,4 +1,3 @@
-from pprint import pprint
 from functools import partial
 
 from node import Node
@@ -116,6 +115,9 @@ class MemoryEstimator:
         Args:
             dag (nx.DiGraph): computation graph
             param_dict (ParameterDict): operator information
+
+        Returns:
+            [float]: memory usage in MB
         """
         operator_schedule = self._compose_operator_schedule(dag, param_dict)
         return self._simulate_memory_allocation(operator_schedule)
