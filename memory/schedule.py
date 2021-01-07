@@ -7,6 +7,7 @@ class Schedule:
     def __init__(self, platform):
         self._parameters = []
         self._operators = []
+        self._node_collection = {}
         self.lists = self._get_platform_memory_lists(platform)
 
     def add(self, node):
@@ -21,9 +22,12 @@ class Schedule:
         if not isinstance(node, Node):
             return False
 
+        self._node_collection[node.name] = node
+
         if node.is_parameter():
             self._parameters.append(node)
         elif node.is_valid() and self._is_in_whitelist(node):
+            self._set_inplace(node)
             self._operators.append(node)
         else:
             return False
@@ -42,6 +46,29 @@ class Schedule:
         if node.op not in self.lists.WHITE_LIST:
             return False
         return True
+
+    def _should_inplace(self, input_node, output_node):
+        if output_node.op not in self.lists.CWISE_LIST:
+            return False
+
+        if input_node.inplace:
+            return False
+
+        if input_node.dtype != output_node.dtype:
+            return False
+
+        if input_node.get_num_ele() != output_node.get_num_ele():
+            return False
+
+        return True
+
+    def _set_inplace(self, node):
+        input_names = node.input
+        for input_name in input_names:
+            input_node = self._node_collection.get(input_name)
+            if input_node and self._should_inplace(input_node, node):
+                node.inplace = True
+                break
 
     def _get_platform_memory_lists(self, platform):
         module = getattr(ml_platform, platform.lower())

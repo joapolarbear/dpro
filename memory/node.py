@@ -8,8 +8,8 @@ class Node:
         self._input = input
         self._dtype = dtype
         self._shape = shape
-        self._inplace = False
         self._requires_grad = True
+        self._inplace = False
 
     @classmethod
     def from_metadata(cls, name, metadata):
@@ -102,6 +102,14 @@ class Node:
         if self._op == "variablev2":
             return True
         return False
+    
+    def get_num_ele(self):
+        """get number of elements
+
+        Returns:
+            [int]: number of elements
+        """
+        return np.prod(self.shape)
 
     def get_output_size(self):
         """get output size
@@ -176,6 +184,19 @@ class Node:
             [bool]: requires_grad
         """
         return self._requires_grad
+
+    @property
+    def inplace(self):
+        """get inplace status
+
+        Returns:
+            [bool]: inplace
+        """
+        return self._inplace
+
+    @inplace.setter
+    def inplace(self, val):
+        self._inplace = val
 
     def __repr__(self):
         return "Name: %s, op: %s, input: [%s], dtype: %s, shape: %s" % (
