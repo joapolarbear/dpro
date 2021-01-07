@@ -962,7 +962,7 @@ class Optimizer:
                 search_space += ss_
                 weights += wei_
             if len(search_space) == 0:
-                SingleLogger().WARN("No optimization strategy to reduce memory usage: {} > {}".format(
+                SingleLogger().warn("No optimization strategy to reduce memory usage: {} > {}".format(
                     self.mem_usage, self.memory_budget))
 
         for _cost_model in self.cst_md_mng.cost_model_list:

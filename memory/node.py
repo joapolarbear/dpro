@@ -1,54 +1,67 @@
 import numpy as np
-import tensorflow as tf
 
 
 class Node:
-    def __init__(self, node_def):
-        self._name = self._get_name(node_def)
-        self._op = self._get_op(node_def)
-        self._input = self._get_input(node_def)
-        self._dtype = self._get_dtype(node_def)
-        self._shape = self._get_shape(node_def)
+    def __init__(self, name, op, input, dtype, shape):
+        self._name = name
+        self._op = op
+        self._input = input
+        self._dtype = dtype
+        self._shape = shape
+        self._inplace = False
+        self._requires_grad = True
 
-    @staticmethod
-    def _get_name(node_def):
-        return node_def["name"]
+    @classmethod
+    def from_metadata(cls, name, metadata):
+        """create node from metadata
 
-    @staticmethod
-    def _get_op(node_def):
-        return node_def["op"].lower()
+        Args:
+            name (str): node name
+            metadata (dict): from metadata.json
 
-    @staticmethod
-    def _get_input(node_def):
-        if "input" not in node_def:
+        Returns:
+            [Node]: created node
+        """
+        def _get_op(node_def):
+            return node_def.get("op").lower()
+
+        def _get_input(node_def):
+            inputs = node_def.get("input")
+            if not inputs:
+                return None
+
+            names = []
+            for input in inputs:
+                full_name = input.get("name")
+                name = full_name.rsplit(':')[0]
+                names.append(name)
+            return names
+
+        def _get_dtype(node_def):
+            output = node_def.get("output")
+            if not output:
+                return None
+            dtype = output[0].get("dtype")
+            if not dtype:
+                return None
+            return np.dtype(dtype)
+
+        def _get_shape(node_def):
+            output = node_def.get("output")
+            if not output:
+                return None
+            return tuple(output[0].get("shape"))
+
+        if name not in metadata:
             return None
-        return node_def["input"]
 
-    @staticmethod
-    def _get_dtype(node_def):
-        def _convert_tf_dtype_to_np(tf_dtype):
-            tf_dtype = tf.dtypes.DType(tf_dtype)
-            return np.dtype(tf_dtype.name)
+        node_def = metadata[name]
 
-        if "dtype" not in node_def:
-            return None
-        tf_dtype = node_def["dtype"]
-        if tf_dtype:
-            return _convert_tf_dtype_to_np(tf_dtype)
-
-        return None
-
-    @staticmethod
-    def _get_shape(node_def):
-        if "shape" not in node_def:
-            return None
-
-        shape = node_def["shape"]
-        # scalar
-        if not shape:
-            shape = [1, ]
-
-        return tuple(shape)
+        return cls(name,
+                   _get_op(node_def),
+                   _get_input(node_def),
+                   _get_dtype(node_def),
+                   _get_shape(node_def))
 
     def is_valid(self):
         """check the node's validity 
@@ -79,6 +92,36 @@ class Node:
             _is_not_none(self.input),
             _is_valid_shape(self.shape)
         ])
+
+    def is_parameter(self):
+        """Whether this node is parameter node
+
+        Returns:
+            [bool]: is parameter node
+        """
+        if self._op == "variablev2":
+            return True
+        return False
+
+    def get_output_size(self):
+        """get output size
+
+        Returns:
+            [float]: size in Byte
+        """
+        if self._inplace:
+            return 0
+        return np.prod(self.shape) * self.dtype.itemsize
+
+    def get_temp_size(self):
+        """get temporary buffer size
+
+        useful for cudnn workspace size
+
+        Returns:
+            [foat]: size in Byte
+        """
+        return 0
 
     @property
     def name(self):
@@ -124,6 +167,15 @@ class Node:
             [tuple]: output shape
         """
         return self._shape
+
+    @property
+    def requires_grad(self):
+        """get requires_grad
+
+        Returns:
+            [bool]: requires_grad
+        """
+        return self._requires_grad
 
     def __repr__(self):
         return "Name: %s, op: %s, input: [%s], dtype: %s, shape: %s" % (
