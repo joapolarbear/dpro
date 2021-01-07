@@ -588,7 +588,7 @@ class SampleGenerator():
             if cache_dir is not None:
                 with open(os.path.join(cache_dir, CMPaths.MAX_CLUSTER_CACHE_FILE), "wb") as f:
                     pickle.dump(clusters, f)
-        filtered_clusters = [cl for cl in clusters if len(cl>min_cluster_size)]
+        filtered_clusters = [cl for cl in clusters if len(cl) >min_cluster_size]
         def ret_gen():
             for cluster_nodes in filtered_clusters:
                 def try_generate_cluster_config(output_dir, sample_id, 
