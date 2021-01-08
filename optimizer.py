@@ -24,6 +24,8 @@ from cost_model_xla.pk_graph import PKGraph, PKGraphCycleError, contract_nodes_n
                     defuse_nodes_inplace_nx, postorder_contract_nx, \
                     subgraph_partition_connected_nx, get_concated_names
 from cost_model_xla.gen_dataset_utils import parse_xla_candidate_ops
+from memory import MemoryEstimator
+from memory.cost_model import MemoryCostModel
 
 from cost_model.base import _BaseCostModel
 from cost_model.tensor_fusion import _TensorFusionCM
@@ -752,10 +754,10 @@ class CostModelManager:
             self.cost_model_list = [_TensorFusionCM(opt)]
         else:
             self.cost_model_list = [
-                _XLACostModel(opt),
+                # _XLACostModel(opt),
                 # _AMPCostModel(opt),
             ]
-        self.mem_model_list = []
+        self.mem_model_list = [MemoryCostModel(opt)]
         self.strategy2model = {}
 
         ### Register Thoughput-oriented Cost Models
@@ -771,10 +773,11 @@ class CostModelManager:
                 self.strategy2model[_tok] = cm
 
 class Optimizer:
-    def __init__(self, collector, memory_budget=None):
+    def __init__(self, collector):
         self.clct = collector
         self.platform = self.clct.platform
         self.comm_backend = self.clct.comm_backend
+        self.memory_estimator = MemoryEstimator(self.platform)
 
         self.step = 0
         if args_.relabel:
@@ -810,7 +813,7 @@ class Optimizer:
             self.dag, _filename=bpf_dump_init_graph_to)
 
         ### Budget, in GB
-        self.memory_budget = memory_budget if memory_budget is not None else 1
+        self.memory_budget = args_.memory_budget
 
         ### Some hyper-parameter
         self.enable_defusion = False
@@ -906,12 +909,13 @@ class Optimizer:
             None, _ouput=_output, _filename=_filename).values()]
         # print("Evaluate time {}".format(time.time() - t))
         
+        estimated_memory_usage = self.memory_estimator.estimate(_dag, self.clct.para_dict)
         # print("output critical path")
         # critical_path = self.wrap_critical_path(replayer.exct_dag)
         # replayer.dump_critical_path("critical_path_{}.json".format(self.tmp_id), [n for (n, e) in critical_path])
         # self.tmp_id += 1
 
-        return max(step_end_time_ms), replayer.exct_dag, 0
+        return max(step_end_time_ms), replayer.exct_dag, estimated_memory_usage
 
     def candidate_selection(self, GS, topk=None, critical_path=None):
         ''' Select nodes on the critical path of the execution graph as the candidates
@@ -969,13 +973,18 @@ class Optimizer:
         weights = []
         ### OOM
         if self.mem_usage > self.memory_budget:
+            SingleLogger().warn("Estimated memory usage exceeds memory budget: {:.2f}GB > {:.2f}GB".format(
+                self.mem_usage, self.memory_budget))
             for _cost_model in self.cst_md_mng.mem_model_list:
                 ss_, wei_ = _cost_model.init_search_space(candidates, _dag, _pkg)
                 search_space += ss_
                 weights += wei_
             if len(search_space) == 0:
-                SingleLogger().WARN("No optimization strategy to reduce memory usage: {} > {}".format(
+                SingleLogger().warn("No optimization strategy to reduce memory usage: {:.2f}GB > {:.2f}GB".format(
                     self.mem_usage, self.memory_budget))
+        else:
+            SingleLogger().info("Estimated memory usage does not exceed memory budget: {:.2f}GB < {:.2f}GB".format(
+                self.mem_usage, self.memory_budget))
 
         for _cost_model in self.cst_md_mng.cost_model_list:
             ss_, wei_ = _cost_model.init_search_space(candidates, _dag, _pkg)
