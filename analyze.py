@@ -296,11 +296,9 @@ if __name__ == '__main__':
         #             logger.warn("{} not a directory.".format(model_path))
 
         if args.optimizer == "MCTS":
-            opt = optimizer.MCTSOptimizer(
-                clct, memory_budget=args.memory_budget)
+            opt = optimizer.MCTSOptimizer(clct)
         elif args.optimizer == "MCMC":
-            opt = optimizer.MCMCOptimizer(
-                clct, memory_budget=args.memory_budget)
+            opt = optimizer.MCMCOptimizer(clct)
         else:
             raise ArgumentError("Unrecognized optimizer type {}.".format(args.optimizer))
         opt.search()

@@ -773,7 +773,7 @@ class CostModelManager:
                 self.strategy2model[_tok] = cm
 
 class Optimizer:
-    def __init__(self, collector, memory_budget=None):
+    def __init__(self, collector):
         self.clct = collector
         self.platform = self.clct.platform
         self.comm_backend = self.clct.comm_backend
@@ -813,7 +813,7 @@ class Optimizer:
             self.dag, _filename=bpf_dump_init_graph_to)
 
         ### Budget, in GB
-        self.memory_budget = memory_budget if memory_budget is not None else 4
+        self.memory_budget = args_.memory_budget
 
         ### Some hyper-parameter
         self.enable_defusion = False
