@@ -1005,34 +1005,42 @@ class Optimizer:
                 raise OptApplyStrategyError
         return nodes_introduced, nodes_removed
 
+    def cost_model_flush(self, is_accept):
+        for cm in self.cst_md_mng.cost_model_list:
+            cm.flush(is_accept)
+
     def pick_strategy(self, search_space, weights=None, invalid_strategies=None):
         ### TODO (huhanpeng): need some priority/heuristic
-        valid_search_space = []
+        valid_search_space_idx = []
         valid_weights = []
         if invalid_strategies:
             for st_idx, st in enumerate(search_space):
                 if st not in invalid_strategies:
-                    valid_search_space.append(st)
+                    valid_search_space_idx.append(st_idx)
                     if weights is not None:
                         valid_weights.append(weights[st_idx])
         else:
-            valid_search_space = search_space.copy()
+            valid_search_space_idx = range(len(search_space))
             if weights is not None:
                 valid_weights = weights.copy()
-        if not valid_search_space:
+        if not valid_search_space_idx:
             raise OptNoValidStrategyError
 
         valid_weights = np.array(valid_weights)
         valid_weights = valid_weights - np.min(valid_weights)
         valid_weights = valid_weights / np.sum(valid_weights)
         if valid_weights is None:
-            return random.choice(valid_search_space)
+            st_idx = random.choice(valid_search_space_idx)
         else:
             try:
-                return random.choices(valid_search_space, weights=valid_weights, k=1)[0]
+                st_idx = random.choices(valid_search_space_idx, weights=valid_weights, k=1)[0]
             except:
                 ### Adapt to python <3.6
-                return self.weighted_choice(valid_search_space, valid_weights)
+                st_idx = self.weighted_choice(valid_search_space_idx, valid_weights)
+        st = search_space[st_idx]
+        search_space.pop(st_idx)
+        weights.pop(st_idx)
+        return st
 
     def search(self):
         raise NotImplementedError()
@@ -1066,11 +1074,10 @@ class MCMCOptimizer(Optimizer):
 
         self.trajectory = []
         ### load init checkpoint
-        if args_.ckpt:
-            for _cost_model in self.cst_md_mng.cost_model_list:
-                _G, _PKG, _trajectory = _cost_model.load_init_ckpt()
-                if _G is not None:
-                    G, PKG, self.trajectory = _G, _PKG, _trajectory
+        for _cost_model in self.cst_md_mng.cost_model_list:
+            _G, _PKG, _trajectory = _cost_model.load_init_ckpt()
+            if _G is not None:
+                G, PKG, self.trajectory = _G, _PKG, _trajectory
 
         ### load checkpoint
         if args_.ckpt and graph_cache is not None and os.path.isfile(graph_cache):
@@ -1167,7 +1174,9 @@ class MCMCOptimizer(Optimizer):
                     if self.step % 100 == 0:
                         self.cost_star, self.exct_dag, self.mem_usage_star = self.evaluate(G_star, _filename=os.path.join(ROOT_PATH, "searched_graph/{}.json".format(self.step)))
                         # dump cluster mapping
-                        self.cst_md_mng.strategy2model["+"]._dump_cluster_mapping(G, os.path.join(ROOT_PATH, "searched_graph/cluster_mapping_{}.txt".format(self.step)))
+                        ### TODO (HHP): we should only dump cluster mapping for the best strategy 
+                        # if "+" in self.cst_md_mng.strategy2model:
+                        #     self.cst_md_mng.strategy2model["+"]._dump_cluster_mapping(G, os.path.join(ROOT_PATH, "searched_graph/cluster_mapping_{}.txt".format(self.step)))
                     else:
                         self.cost_star, self.exct_dag, self.mem_usage_star = self.evaluate(G_star)
                     if successful_strategies < step_size:
@@ -1220,7 +1229,10 @@ class MCMCOptimizer(Optimizer):
                     else:
                         combined_history.append((None, None))
 
-                if self.accept_or_not(self.cur_cost, self.cost_star):
+                is_accept = self.accept_or_not(self.cur_cost, self.cost_star)
+                ### update cost model internal states
+                self.cost_model_flush(is_accept)
+                if is_accept:
                     invalid_strategies = set()
 
                     ### generate history for new nodes
@@ -1247,6 +1259,9 @@ class MCMCOptimizer(Optimizer):
                         if "+" in self.cst_md_mng.strategy2model:
                             self.cst_md_mng.strategy2model["+"]._dump_cluster_mapping(
                                 G, os.path.join(ROOT_PATH, "cluster_mapping.txt"))
+                        
+                        if "++" in self.cst_md_mng.strategy2model:
+                            self.cst_md_mng.strategy2model["++"].dump_tensor_grp_mapping()
                     ### Init new search space
                     candidates, _ = self.candidate_selection(
                         G, topk=None, critical_path=self.wrap_critical_path(self.exct_dag))
