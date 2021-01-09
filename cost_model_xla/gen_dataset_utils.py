@@ -514,6 +514,10 @@ def gen_max_cluster_kernel_samples_using_replay(sample_generator, dataset_dir, d
         except GSInternalErrors as e:
             clean_up_dir(raw_subgraph_dir)
             continue
+        except:
+            # traceback.print_exc()
+            clean_up_dir(raw_subgraph_dir)
+            continue
 
         # compile hlo
         def_path = os.path.join(raw_subgraph_dir, "{}.pbtxt".format(sample_id))

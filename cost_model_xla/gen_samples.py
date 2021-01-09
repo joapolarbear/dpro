@@ -665,5 +665,10 @@ class SampleGenerator():
                 if duplicated_graph_count > 200:
                     raise RuntimeError("Cannot generate new subgraphs.")
                 continue
+            except:
+                # with open("/root/debug_op_names.txt", "a") as f:
+                #     f.write(str(selected_node_names))
+                #     f.write("\n")
+                continue
             break
         return graph_def_path, graph_def_config_path, sub_g

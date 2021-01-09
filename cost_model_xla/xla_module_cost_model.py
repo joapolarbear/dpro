@@ -518,7 +518,9 @@ def get_tf_dataset(training_set, batch_size, num_epochs):
 
     max_sequence_length = max([len(v) for v in opc])
 
-    num_batches = math.ceil(len(ft) / batch_size)
+    num_batches = math.ceil(len(ft)*num_epochs / batch_size)
+
+    num_batches_per_epoch = math.floor(num_batches / num_epochs)
 
     def data_gen():
         for ft, opc, oph, fv, lbs in zip(*training_set):
@@ -552,7 +554,7 @@ def get_tf_dataset(training_set, batch_size, num_epochs):
                                                 (0.0, 0, 0, -1.0), 0.0
                                             )
                                         ).prefetch(5)
-    return padded_ds, num_batches
+    return padded_ds, num_batches_per_epoch
 
 def train_kernel_model(dataset_path, save_dir, epochs=1200, batch_size=256, 
                         op_code_embed_dim=16, subop_embed_dim=16, node_embed_dim=64, 
@@ -650,11 +652,12 @@ def train_kernel_model(dataset_path, save_dir, epochs=1200, batch_size=256,
     model_save_path = os.path.join(save_dir, CMPaths.MODEL_WEIGHT_SAVE_FILE)
     callbacks = [tf.keras.callbacks.ModelCheckpoint(model_save_path, 
                                                     save_weights_only=True,
-                                                    save_freq=20*num_batches_per_epoch),
-                tf.keras.callbacks.EarlyStopping(monitor='loss', patience=early_stopping_patience),
-                tf.keras.callbacks.ReduceLROnPlateau(
-                    monitor='loss', patience=5, min_lr=0.0001
-                )]
+                                                    save_freq=20*num_batches_per_epoch)
+                # tf.keras.callbacks.EarlyStopping(monitor='loss', patience=early_stopping_patience),
+                # tf.keras.callbacks.ReduceLROnPlateau(
+                #     monitor='loss', patience=5, min_lr=0.0001
+                # )
+    ]
 
     history = model.fit(tf_dataset, verbose=1, epochs=epochs, 
                                     steps_per_epoch = num_batches_per_epoch,
