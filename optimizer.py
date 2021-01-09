@@ -244,6 +244,19 @@ class _XLACostModel(_BaseCostModel):
     def _init_forbidden_list(self):
         xla_candidates = parse_xla_candidate_ops()
         # limit the range of nodes during search
+        IGNORE_OP_TYPES = ["ShapeN", "_Arg", "_Send", "_Recv", "VarIsInitializedOp", "ReadVariableOp", "VarHandleOp",
+                    "IsVariableInitialized", "ResourceApplyGradientDescent",
+                    "IteratorToStringHandle", "IteratorGetNext", "MakeIterator", "IteratorV2"]
+        filtered_xla_candidates = set()
+        for op in xla_candidates:
+            should_ignore = False
+            for ignore_type in IGNORE_OP_TYPES:
+                if ignore_type in op:
+                    should_ignore = True
+                    break
+            if not should_ignore:
+                filtered_xla_candidates.add(op)
+
         for node in self.dag.nodes:
             # ignore BW nodes and communication nodes
             if "BW" in node:
@@ -259,7 +272,7 @@ class _XLACostModel(_BaseCostModel):
             cat = parse_cat_from_name(node)
             if (not args_.simulate and orig_name not in self._wrap_xla_operation_names(pid)) \
                     or "Assign" in orig_name or cat == CatName.COMM.value \
-                    or orig_name not in xla_candidates:
+                    or orig_name not in filtered_xla_candidates:
                 self.forbidden_list.add(node)
                 self.initial_forbidden_list.add(node)
 
