@@ -42,6 +42,16 @@ class _TensorFusionCM(_BaseCostModel):
         search_space = []
         weights = []
 
+        # debug_st = [
+        #     ("++", "host0.rank2->Comm.1+2+3+4+5+6+7+8+9+10+11+12+13+14+15+16+17+18+19+20+21+22+23+24+25+26+27+28.Sync", "host0.rank2->Comm.0.Sync"),
+        #     ("++", "host0.rank2->Comm.29+30+31.Sync",
+        #      "host0.rank2->Comm.32+33+34+35+36+37+38+39+40+41+42+43+44+45+46+47+48+49+50+51+52+53+54+55+56+57+58+59+60+61+62+63+64+65+66.Sync"),
+        #     ("++", "host0.rank2->Comm.0+1+2+3+4+5+6+7+8+9+10+11+12+13+14+15+16+17+18+19+20+21+22+23+24+25+26+27+28.Sync",
+        #      "host0.rank2->Comm.29+30+31+32+33+34+35+36+37+38+39+40+41+42+43+44+45+46+47+48+49+50+51+52+53+54+55+56+57+58+59+60+61+62+63+64+65+66.Sync"),
+        #     ("--", "host0.rank2->Comm.1+2+3+4+5+6+7+8+9+10+11+12+13+14+15+16+17+18+19+20+21+22+23+24+25+26+27+28.Sync", 5)
+        # ]
+        # return [debug_st[0]], [1]
+
         for n, l in candidates:
             if "Comm" in n and "Sync" in n:
                 to_fuse_u = n
@@ -175,27 +185,30 @@ class _TensorFusionCM(_BaseCostModel):
         return self.node_attr_cache[new_name]["avg"]
 
     def flush(self, is_accept):
-        if is_accept:
+        if is_accept:        
             for n in self.cache_change:
                 if "host0.rank0" in n:
                     self._update_tensor2grp(n)
         self.cache_change = []
-
+        
     def _op_fusion(self, _dag, _pkg: PKGraph, u_, v_):
         all_infos = [
             self._wrap_parse_all_info(u_),
             self._wrap_parse_all_info(v_)]
-          
+        
+        ### select the base_idx, according to loopNum
         tensor_group_infos = [
             self._parse_tensor_group_info(all_infos[0][2]),
             self._parse_tensor_group_info(all_infos[1][2])]
-        if tensor_group_infos[0]['size'] >= tensor_group_infos[1]['size']:
+        if tensor_group_infos[0]["sliceNum"] >= tensor_group_infos[1]["sliceNum"] and \
+                tensor_group_infos[0]["loopNum"] >= tensor_group_infos[1]["loopNum"]:
             base_idx = 0
-        else:
+        elif tensor_group_infos[1]["sliceNum"] >= tensor_group_infos[0]["sliceNum"] and \
+            tensor_group_infos[1]["loopNum"] >= tensor_group_infos[0]["loopNum"]:
             base_idx = 1
-        
-        assert tensor_group_infos[base_idx]["sliceNum"] >= tensor_group_infos[1-base_idx]["sliceNum"] and \
-                tensor_group_infos[base_idx]["loopNum"] >= tensor_group_infos[1-base_idx]["loopNum"]
+        else:
+            raise ValueError("Invalid tensor group info for {} and {}: {}".format(
+                u_, v_, tensor_group_infos))
 
         assert all_infos[0][0] == all_infos[1][0] and \
             all_infos[0][1] == all_infos[1][1] and \
@@ -213,7 +226,7 @@ class _TensorFusionCM(_BaseCostModel):
                 self._wrap_gen_long_name(_pid, all_infos[1][1], all_infos[1][2], all_infos[1][3], all_infos[1][4])]
 
             ### add new node: sync
-            new_fused_name, fused_time = self._concat_name_avg(_dag, _pid_sync[0], _pid_sync[1])
+            new_fused_name, fused_time = self._concat_name_avg(_dag, _pid_sync[0], _pid_sync[1], base_idx=base_idx)
             nodes_to_add.append((new_fused_name, {"avg": fused_time}))
             # if "host0.rank0" == _pid:
             #     print("add node {}".format(new_fused_name))
@@ -300,17 +313,19 @@ class _TensorFusionCM(_BaseCostModel):
         _dag.remove_nodes_from(nodes_to_rm)
 
         forbidden_list = [_info[2] for _info in all_infos]
-        self._check_dag_not_contain(_dag, forbidden_list)
+        self._check_dag_not_contain(_dag, forbidden_list, tensor_group_infos)
 
         self.cache_change += [n for n, _ in nodes_to_add]
         return True, [n for n, _ in nodes_to_add], nodes_to_rm
 
-    def _check_dag_not_contain(self, _dag, forbidden_list):
+    def _check_dag_not_contain(self, _dag, forbidden_list, tensor_group_infos=None):
         for n in _dag.nodes():
             if "Comm" not in n:
                 continue
             for f in forbidden_list:
                 if "Comm.{}.".format(f) in n:
+                    for grp_info in tensor_group_infos:
+                        print(grp_info)
                     raise ValueError("{} is still in the dag: node {}".format(f, n))
 
     def _concat_name_avg(self, _dag, u_, v_, base_idx=0):
@@ -431,6 +446,10 @@ class _TensorFusionCM(_BaseCostModel):
         _dag.add_nodes_from(nodes_to_add)
         _dag.remove_edges_from(edges_to_rm)
         _dag.remove_nodes_from(nodes_to_rm)
+
+        forbidden_list = [all_infos[2]]
+        self._check_dag_not_contain(_dag, forbidden_list)
+
         self.cache_change += [n for n, _ in nodes_to_add]
         return True, [n for n, _ in nodes_to_add], nodes_to_rm
 
@@ -514,5 +533,12 @@ class _TensorFusionCM(_BaseCostModel):
 
     def dump_tensor_grp_mapping(self, _file_name=None):
         file_name = 'tensor_fusion_grp_mapping.json' if _file_name is None else _file_name
+
+        tensor_ids, tensor_grps = zip(*list(self.cur_tensor2group.items()))
+        tensor_grps = set(tensor_grps)
+        tensor_ids = set(tensor_ids)
+        assert len(tensor_ids) == len(self.meta_info.gradient_name_list()), \
+            ("incompleted tensor_ids {} : {}".format(sorted(tensor_ids), len(self.meta_info.gradient_name_list())))
+
         with open(os.path.join(ROOT_PATH, file_name), 'w') as f:
-            json.dump(self.cur_tensor2group, f)
+            json.dump({"mapping": list(tensor_grps)}, f)

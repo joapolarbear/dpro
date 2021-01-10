@@ -1,4 +1,4 @@
-from estimator import MemoryEstimator
+from .estimator import MemoryEstimator
 
 
 __all__ = [
