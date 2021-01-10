@@ -24,6 +24,8 @@ from cost_model_xla.pk_graph import PKGraph, PKGraphCycleError, contract_nodes_n
                     defuse_nodes_inplace_nx, postorder_contract_nx, \
                     subgraph_partition_connected_nx, get_concated_names
 from cost_model_xla.gen_dataset_utils import parse_xla_candidate_ops
+from memory import MemoryEstimator
+from memory.cost_model import MemoryCostModel
 
 from cost_model.base import _BaseCostModel
 from cost_model.tensor_fusion import _TensorFusionCM
@@ -756,10 +758,10 @@ class CostModelManager:
             self.cost_model_list = [_TensorFusionCM(opt)]
         else:
             self.cost_model_list = [
-                _XLACostModel(opt),
+                # _XLACostModel(opt),
                 # _AMPCostModel(opt),
             ]
-        self.mem_model_list = []
+        self.mem_model_list = [MemoryCostModel(opt)]
         self.strategy2model = {}
 
         ### Register Thoughput-oriented Cost Models
@@ -775,10 +777,11 @@ class CostModelManager:
                 self.strategy2model[_tok] = cm
 
 class Optimizer:
-    def __init__(self, collector, memory_budget=None):
+    def __init__(self, collector):
         self.clct = collector
         self.platform = self.clct.platform
         self.comm_backend = self.clct.comm_backend
+        self.memory_estimator = MemoryEstimator(self.platform)
 
         self.step = 0
         if args_.relabel:
@@ -814,7 +817,7 @@ class Optimizer:
             self.dag, _filename=bpf_dump_init_graph_to)
 
         ### Budget, in GB
-        self.memory_budget = memory_budget if memory_budget is not None else 1
+        self.memory_budget = args_.memory_budget
 
         ### Some hyper-parameter
         self.enable_defusion = False
@@ -910,12 +913,13 @@ class Optimizer:
             None, _ouput=_output, _filename=_filename).values()]
         # print("Evaluate time {}".format(time.time() - t))
         
+        estimated_memory_usage = self.memory_estimator.estimate(_dag, self.clct.para_dict)
         # print("output critical path")
         # critical_path = self.wrap_critical_path(replayer.exct_dag)
         # replayer.dump_critical_path("critical_path_{}.json".format(self.tmp_id), [n for (n, e) in critical_path])
         # self.tmp_id += 1
 
-        return max(step_end_time_ms), replayer.exct_dag, 0
+        return max(step_end_time_ms), replayer.exct_dag, estimated_memory_usage
 
     def candidate_selection(self, GS, topk=None, critical_path=None):
         ''' Select nodes on the critical path of the execution graph as the candidates
@@ -974,13 +978,18 @@ class Optimizer:
         weights = []
         ### OOM
         if self.mem_usage > self.memory_budget:
+            SingleLogger().warn("Estimated memory usage exceeds memory budget: {:.2f}GB > {:.2f}GB".format(
+                self.mem_usage, self.memory_budget))
             for _cost_model in self.cst_md_mng.mem_model_list:
                 ss_, wei_ = _cost_model.init_search_space(candidates, _dag, _pkg)
                 search_space += ss_
                 weights += wei_
             if len(search_space) == 0:
-                SingleLogger().WARN("No optimization strategy to reduce memory usage: {} > {}".format(
+                SingleLogger().warn("No optimization strategy to reduce memory usage: {:.2f}GB > {:.2f}GB".format(
                     self.mem_usage, self.memory_budget))
+        else:
+            SingleLogger().info("Estimated memory usage does not exceed memory budget: {:.2f}GB < {:.2f}GB".format(
+                self.mem_usage, self.memory_budget))
 
         for _cost_model in self.cst_md_mng.cost_model_list:
             ss_, wei_ = _cost_model.init_search_space(candidates, _dag, _pkg)
@@ -1010,34 +1019,42 @@ class Optimizer:
                 raise OptApplyStrategyError
         return nodes_introduced, nodes_removed
 
+    def cost_model_flush(self, is_accept):
+        for cm in self.cst_md_mng.cost_model_list:
+            cm.flush(is_accept)
+
     def pick_strategy(self, search_space, weights=None, invalid_strategies=None):
         ### TODO (huhanpeng): need some priority/heuristic
-        valid_search_space = []
+        valid_search_space_idx = []
         valid_weights = []
         if invalid_strategies:
             for st_idx, st in enumerate(search_space):
                 if st not in invalid_strategies:
-                    valid_search_space.append(st)
+                    valid_search_space_idx.append(st_idx)
                     if weights is not None:
                         valid_weights.append(weights[st_idx])
         else:
-            valid_search_space = search_space.copy()
+            valid_search_space_idx = range(len(search_space))
             if weights is not None:
                 valid_weights = weights.copy()
-        if not valid_search_space:
+        if not valid_search_space_idx:
             raise OptNoValidStrategyError
 
         valid_weights = np.array(valid_weights)
         valid_weights = valid_weights - np.min(valid_weights)
         valid_weights = valid_weights / np.sum(valid_weights)
         if valid_weights is None:
-            return random.choice(valid_search_space)
+            st_idx = random.choice(valid_search_space_idx)
         else:
             try:
-                return random.choices(valid_search_space, weights=valid_weights, k=1)[0]
+                st_idx = random.choices(valid_search_space_idx, weights=valid_weights, k=1)[0]
             except:
                 ### Adapt to python <3.6
-                return self.weighted_choice(valid_search_space, valid_weights)
+                st_idx = self.weighted_choice(valid_search_space_idx, valid_weights)
+        st = search_space[st_idx]
+        search_space.pop(st_idx)
+        weights.pop(st_idx)
+        return st
 
     def search(self):
         raise NotImplementedError()
@@ -1071,11 +1088,10 @@ class MCMCOptimizer(Optimizer):
 
         self.trajectory = []
         ### load init checkpoint
-        if args_.ckpt:
-            for _cost_model in self.cst_md_mng.cost_model_list:
-                _G, _PKG, _trajectory = _cost_model.load_init_ckpt()
-                if _G is not None:
-                    G, PKG, self.trajectory = _G, _PKG, _trajectory
+        for _cost_model in self.cst_md_mng.cost_model_list:
+            _G, _PKG, _trajectory = _cost_model.load_init_ckpt()
+            if _G is not None:
+                G, PKG, self.trajectory = _G, _PKG, _trajectory
 
         ### load checkpoint
         if args_.ckpt and graph_cache is not None and os.path.isfile(graph_cache):
@@ -1172,7 +1188,9 @@ class MCMCOptimizer(Optimizer):
                     if self.step % 100 == 0:
                         self.cost_star, self.exct_dag, self.mem_usage_star = self.evaluate(G_star, _filename=os.path.join(ROOT_PATH, "searched_graph/{}.json".format(self.step)))
                         # dump cluster mapping
-                        self.cst_md_mng.strategy2model["+"]._dump_cluster_mapping(G, os.path.join(ROOT_PATH, "searched_graph/cluster_mapping_{}.txt".format(self.step)))
+                        ### TODO (HHP): we should only dump cluster mapping for the best strategy 
+                        # if "+" in self.cst_md_mng.strategy2model:
+                        #     self.cst_md_mng.strategy2model["+"]._dump_cluster_mapping(G, os.path.join(ROOT_PATH, "searched_graph/cluster_mapping_{}.txt".format(self.step)))
                     else:
                         self.cost_star, self.exct_dag, self.mem_usage_star = self.evaluate(G_star)
                     if successful_strategies < step_size:
@@ -1225,7 +1243,10 @@ class MCMCOptimizer(Optimizer):
                     else:
                         combined_history.append((None, None))
 
-                if self.accept_or_not(self.cur_cost, self.cost_star):
+                is_accept = self.accept_or_not(self.cur_cost, self.cost_star)
+                ### update cost model internal states
+                self.cost_model_flush(is_accept)
+                if is_accept:
                     invalid_strategies = set()
 
                     ### generate history for new nodes
@@ -1252,6 +1273,9 @@ class MCMCOptimizer(Optimizer):
                         if "+" in self.cst_md_mng.strategy2model:
                             self.cst_md_mng.strategy2model["+"]._dump_cluster_mapping(
                                 G, os.path.join(ROOT_PATH, "cluster_mapping.txt"))
+                        
+                        if "++" in self.cst_md_mng.strategy2model:
+                            self.cst_md_mng.strategy2model["++"].dump_tensor_grp_mapping()
                     ### Init new search space
                     candidates, _ = self.candidate_selection(
                         G, topk=None, critical_path=self.wrap_critical_path(self.exct_dag))
