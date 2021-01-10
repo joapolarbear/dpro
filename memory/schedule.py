@@ -1,6 +1,6 @@
 import ml_platform
 
-from node import Node
+from .node import Node
 
 
 class Schedule:

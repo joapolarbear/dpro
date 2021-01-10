@@ -1,7 +1,7 @@
 from functools import partial
 
-from node import Node
-from schedule import Schedule
+from .node import Node
+from .schedule import Schedule
 
 import networkx as nx
 

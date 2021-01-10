@@ -30,9 +30,9 @@ class MetaInfo:
             with open(os.path.join(meta_dir, FileName.TENSOR_NAME.value), 'r') as fp:
                 self.gradient_name_list = json.load(fp)["gradient_name_list"]
         except FileNotFoundError:
-            pass
-    
-        self.gradient_name_list = []
+            SingleLogger().warn("{} is not found !".format(FileName.TENSOR_NAME.value))
+            self.gradient_name_list = []
+
         ### Batch size used for this meta data file
         self.old_B = None
         self.cache_hyper_para = {}
