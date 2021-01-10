@@ -342,10 +342,14 @@ class GraphDefUtil(object):
                 all_ops_used_as_input.add(input_tensor.op.name)
         for node_def in [op.node_def for op in subgraph_nodes]:
             if node_def.name not in all_ops_used_as_input and node_def.op != "Const" and \
-                                                    node_def.name not in constant_nodes:
+                                                    node_def.name not in constant_nodes and \
+                                                    node_def.op != "NoOp":
                 node = out_graph.get_operation_by_name(node_def.name)
                 output_nodes.append(node)
         
+        if not output_nodes:
+            raise GSConstantSubgraphError("[GraphDefUtil] Subgraph do not have non-constant output.")
+
         if not output_nodes:
             raise GSConstantSubgraphError("[GraphDefUtil] Subgraph do not have non-constant output.")
 
@@ -386,6 +390,24 @@ class SampleGenerator():
         original_graph = self.graph_def_util.original_graph
         op_info_dict = {}
         unique_op_types = set()
+        # build a simple nx graph to find out FW, BW and UPDATE nodes
+        tmp_nx_graph = nx.DiGraph()
+        update_nodes = set()
+
+        def recursive_add_succs(_node):
+            for succ_ in tmp_nx_graph.successors(_node):
+                update_nodes.add(succ_)
+                recursive_add_succs(succ_)
+
+        for op_name in self.graph_def_util.operation_names:
+            op = original_graph.get_operation_by_name(op_name)
+            for input_tensor in op.inputs:
+                tmp_nx_graph.add_edge(input_tensor.op.name, op_name)
+        for node in tmp_nx_graph.nodes:
+            if "allreduce" in node.lower() or "bytepspushpull" in node.lower() \
+                                and "switch" not in node.lower():
+                recursive_add_succs(node)
+
         for op_name in self.graph_def_util.operation_names:
             if op_name in ignored_nodes:
                 continue
@@ -396,13 +418,7 @@ class SampleGenerator():
             unique_op_types.add(op_type)
             op_info_dict[op_name]["type"] = op_type
             input_size = 0
-            # op_shapes = []
-            # for t in op.inputs:
-            #     try:
-            #         l = t.shape.as_list()
-            #         op_shapes.append(l)
-            #     except:
-            #         print("Tensor: {}, shape: {}".format(t, t.shape))
+
             op_shapes = [t.shape.as_list() for t in op.inputs]
             op_hash_str = op_type
             for input_shape in op_shapes:
@@ -426,7 +442,9 @@ class SampleGenerator():
             for input_tensor in op.inputs:
                 if input_tensor.op.name in ignored_nodes:
                     continue
-                self.nx_graph.add_edge(input_tensor.op.name, op_name)
+                if not (op_name in update_nodes and 
+                        input_tensor.op.name not in update_nodes):
+                    self.nx_graph.add_edge(input_tensor.op.name, op_name)
         # generate feature vector for each node
         len_type_one_hot = len(unique_op_types)
         sorted_op_types = sorted(list(unique_op_types))
@@ -547,7 +565,7 @@ class SampleGenerator():
         return chosen_node
     
     # this method returns a generator of functions
-    def gen_max_cluster(self, forbidden_nodes=None, random_sample=False, min_cluster_size=4, max_cluster_size=800, cache_dir=None, forbidden_ratio=0.2):
+    def gen_max_cluster(self, forbidden_nodes=None, random_sample=False, min_cluster_size=4, max_cluster_size=2000, cache_dir=None, forbidden_ratio=0.2):
         clusters = []
         if cache_dir is not None:
             # check if cluster cache exists
@@ -570,8 +588,9 @@ class SampleGenerator():
             if cache_dir is not None:
                 with open(os.path.join(cache_dir, CMPaths.MAX_CLUSTER_CACHE_FILE), "wb") as f:
                     pickle.dump(clusters, f)
+        filtered_clusters = [cl for cl in clusters if len(cl) >min_cluster_size]
         def ret_gen():
-            for cluster_nodes in clusters:
+            for cluster_nodes in filtered_clusters:
                 def try_generate_cluster_config(output_dir, sample_id, 
                                                 _min_cluster_size = min_cluster_size, 
                                                 _cluster_nodes = cluster_nodes):
@@ -645,6 +664,11 @@ class SampleGenerator():
                 duplicated_graph_count += 1
                 if duplicated_graph_count > 200:
                     raise RuntimeError("Cannot generate new subgraphs.")
+                continue
+            except:
+                # with open("/root/debug_op_names.txt", "a") as f:
+                #     f.write(str(selected_node_names))
+                #     f.write("\n")
                 continue
             break
         return graph_def_path, graph_def_config_path, sub_g

@@ -239,7 +239,7 @@ class XlaKernelDataset(object):
         self.max_input_dims = max_input_dims
         self.max_output_dim = max_output_dim
         self.feature_dim = sum(self.max_input_dims) + self.max_output_dim
-    
+
     def _gen_feature_vector(self, input_shapes, output_shape):
         subop_vector = []
         # inputs
@@ -512,6 +512,10 @@ def gen_max_cluster_kernel_samples_using_replay(sample_generator, dataset_dir, d
         try:
             graph_def_path, graph_def_config_path, _ = gen_config_fun(raw_subgraph_dir, sample_id)
         except GSInternalErrors as e:
+            clean_up_dir(raw_subgraph_dir)
+            continue
+        except:
+            # traceback.print_exc()
             clean_up_dir(raw_subgraph_dir)
             continue
 

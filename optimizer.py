@@ -165,7 +165,7 @@ class _XLACostModel(_BaseCostModel):
 
     def checkpoint(self):
         with open(self.ckpt_path, "wb") as f:
-            pickle.dump([self.node_attr_cache], f)
+            pickle.dump(self.node_attr_cache, f)
 
     def _load_cm(self):
         cost_models = {}
@@ -195,7 +195,11 @@ class _XLACostModel(_BaseCostModel):
         for u, v in G.edges:
             if (u.startswith("host0.rank0") and v.startswith("host0.rank0")) \
                 or (u.startswith("traces_0.rank0") and v.startswith("traces_0.rank0")):
-                edges_to_add.append((u, v))
+                # we also remove FW -> UPDATE egdes here since now we have 
+                # removed communication nodes, postorder_contract will try to
+                # fuse UPDATE with FW
+                if not (("FW" in u or "BW" in u) and "UPDATE" in v):
+                    edges_to_add.append((u, v))
         ret_G.add_edges_from(edges_to_add)
         return ret_G
 
@@ -257,7 +261,6 @@ class _XLACostModel(_BaseCostModel):
             cat = parse_cat_from_name(node)
             if (not args_.simulate and orig_name not in self._wrap_xla_operation_names(pid)) \
                     or "Assign" in orig_name or cat == CatName.COMM.value \
-                    or "group_deps" in orig_name \
                     or orig_name not in xla_candidates:
                 self.forbidden_list.add(node)
                 self.initial_forbidden_list.add(node)
@@ -435,18 +438,6 @@ class _XLACostModel(_BaseCostModel):
                 heat_succ = self.opt._get_heat_from_history(succ_)
 
                 heat_combined = (heat + heat_succ) / 2
-
-                # if n == "traces_0.rank0->BW.[2654]":
-                #     print("Heat for (traces_0.rank0->BW.[2654], {}):".format(succ_))
-                #     print(heat_combined)
-                #     input()
-
-                # if heat_combined > 0:
-                #     print("Heat for ({}, {}): {}".format(n, succ_, heat_combined))
-                #     input()
-
-                # DEBUG_COMPARE
-                # heat_combined = 1
 
                 search_space.append(("+", n, succ_))
                 weights.append(self.opt._combine_weight(l, heat_combined))
@@ -830,7 +821,7 @@ class Optimizer:
 
     def relabel_dag_node(self, _dag) -> nx.DiGraph:
         def relabel_func(old_label):
-            if ("BW" in old_label or "FW" in old_label or "Comm" in old_label) and "^" not in old_label:
+            if ("BW" in old_label or "FW" in old_label or "Comm" in old_label or "UPDATE" in old_label) and "^" not in old_label:
                 layer_name = parse_layer_name(old_label)
                 layer_pid = parse_pid_from_name(old_label)
                 # if layer_pid not in self.cost_models or layer_name not in self._wrap_xla_operation_names(layer_pid):
@@ -958,7 +949,8 @@ class Optimizer:
 
     def _combine_weight(self, l: float, heat: float) -> float:
         # return l * (0.05 + heat)
-        return heat + 0.01
+        # return heat + 0.01
+        return 1
 
     def _get_heat_from_history(self, node):
         heat = 0
