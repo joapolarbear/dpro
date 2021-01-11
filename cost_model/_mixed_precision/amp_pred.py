@@ -273,7 +273,7 @@ class AMPPredictor:
             self.init_op_statu(op_name)
         return self.op_status[op_name]["dtype"] == "float32"
 
-from cost_model_amp import dataloader, grouper
+from . import dataloader, grouper
 
 def train_amp_model():
     OP_TYPES = {
