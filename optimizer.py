@@ -385,13 +385,15 @@ class _XLACostModel(_BaseCostModel):
                 # st = time.time()
                 # randomly split edges using spanning tree
                 valid_split_plans = subgraph_partition_connected_nx(subgraph)
-                split_weights = []
-                for splits in valid_split_plans:
-                    split_weights.append(gmean([len(nodes) for nodes in splits]))
-                split_weights = np.exp(5e-4*(len(ns) - 80)) * (np.array(split_weights) / np.sum(split_weights))
+                # split_weights = [1/edge_count] * len
+                # for splits in valid_split_plans:
+                #     split_weights.append(gmean([len(nodes) for nodes in splits]))
+                # split_weights = np.exp(5e-4*(len(ns) - 80)) * (np.array(split_weights) / np.sum(split_weights))
                 for split_index, splits in enumerate(valid_split_plans):
                     search_space.append(("-", n, splits))
-                    weights.append(self.opt._combine_weight(l, heat) * split_weights[split_index])
+                    # weights.append(self.opt._combine_weight(l, heat) * split_weights[split_index])
+                    weights.append(self.opt._combine_weight(l, heat))
+
             else:
                 ### Nodes that have never been fused
                 cat = parse_cat_fine_grained(n)
@@ -1242,8 +1244,20 @@ class MCMCOptimizer(Optimizer):
                         combined_history.append((h_avg, self.step))
                     else:
                         combined_history.append((None, None))
+                
+                # calculate the proposal probability q here
+                proposed_candidates, _ = self.candidate_selection(
+                        G_star, topk=None, critical_path=self.wrap_critical_path(self.exct_dag))
+                proposed_search_space, proposed_weights = self.init_search_space(
+                        proposed_candidates, G_star, PKG_star)
+                forward_prob = 1 / len(search_space)
+                backward_prob = 1 / len(proposed_search_space)
+                # if strategy[0] == "+": #type: ignore
+                #     # devide by total number of edges
+                #     subgraph = nx.subgraph(G, strategy[1]+strategy[2]) #type: ignore
+                #     backward_prob /= len(subgraph.edges)
 
-                is_accept = self.accept_or_not(self.cur_cost, self.cost_star)
+                is_accept = self.accept_or_not(self.cur_cost, self.cost_star * backward_prob / forward_prob)
                 ### update cost model internal states
                 self.cost_model_flush(is_accept)
                 if is_accept:
@@ -1277,10 +1291,13 @@ class MCMCOptimizer(Optimizer):
                         if "++" in self.cst_md_mng.strategy2model:
                             self.cst_md_mng.strategy2model["++"].dump_tensor_grp_mapping()
                     ### Init new search space
-                    candidates, _ = self.candidate_selection(
-                        G, topk=None, critical_path=self.wrap_critical_path(self.exct_dag))
-                    search_space, weights = self.init_search_space(
-                        candidates, G, PKG)
+                    # candidates, _ = self.candidate_selection(
+                    #     G, topk=None, critical_path=self.wrap_critical_path(self.exct_dag))
+                    # search_space, weights = self.init_search_space(
+                    #     candidates, G, PKG)
+                    candidates = proposed_candidates
+                    search_space = proposed_search_space
+                    weights = proposed_weights
                     break
             display_and_ckpt()
 
