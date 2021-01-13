@@ -126,6 +126,9 @@ class _XLACostModel(_BaseCostModel):
         ### Used to cache the node attribtue
         self.node_attr_cache = AttrCache()
 
+    def flush(self, is_accept):
+        pass
+
     def load_init_ckpt(self):
         init_ckpt_path = os.path.join(ROOT_PATH, "xla_init_ckpt.pickle")
         trajectory = []
@@ -372,7 +375,7 @@ class _XLACostModel(_BaseCostModel):
         # time_st = []
         for n, l in candidates:
             # node heat
-            heat = self.opt._get_heat_from_history(n)
+            # heat = self.opt._get_heat_from_history(n)
 
             if "+" in n:
                 ### This a fused node
@@ -392,7 +395,7 @@ class _XLACostModel(_BaseCostModel):
                 for split_index, splits in enumerate(valid_split_plans):
                     search_space.append(("-", n, splits))
                     # weights.append(self.opt._combine_weight(l, heat) * split_weights[split_index])
-                    weights.append(self.opt._combine_weight(l, heat))
+                    weights.append(1)
 
             else:
                 ### Nodes that have never been fused
@@ -405,8 +408,12 @@ class _XLACostModel(_BaseCostModel):
 
             if not self._wrap_xla_need_fuse(n_pid, n_orig_name, n):
                 continue
+            
+            candidate_names = [c[0] for c in candidates]
 
             for succ_ in _dag.successors(n):
+                if succ_ not in candidate_names:
+                    continue
                 # some filters
                 if not _pkg.can_contract_edge(n, succ_):
                     continue
@@ -450,12 +457,12 @@ class _XLACostModel(_BaseCostModel):
                     continue
 
                 # calculate heat using max(heat(n), heat(succ_))
-                heat_succ = self.opt._get_heat_from_history(succ_)
+                # heat_succ = self.opt._get_heat_from_history(succ_)
 
-                heat_combined = (heat + heat_succ) / 2
+                # heat_combined = (heat + heat_succ) / 2
 
                 search_space.append(("+", n, succ_))
-                weights.append(self.opt._combine_weight(l, heat_combined))
+                weights.append(1)
         SingleLogger().info("Init search space len={} from {} candidates, prune {}".format(
             len(search_space), len(candidates), prun_cnt))
         # SingleLogger().info("Time spent for spanning tree: {}".format(sum(time_spanning_trees)/ len(time_spanning_trees)))
@@ -691,7 +698,7 @@ class _AMPCostModel(_BaseCostModel):
         weights = []
         for n, l in candidates:
             # node heat
-            heat = self.opt._get_heat_from_history(n)
+            # heat = self.opt._get_heat_from_history(n)
             # ### Nodes that have never been fused
             # cat = parse_cat_fine_grained(n)
             # pid = parse_pid_from_name(n)
@@ -1042,12 +1049,12 @@ class Optimizer:
         if not valid_search_space_idx:
             raise OptNoValidStrategyError
 
-        valid_weights = np.array(valid_weights)
-        valid_weights = valid_weights - np.min(valid_weights)
-        valid_weights = valid_weights / np.sum(valid_weights)
-        if valid_weights is None:
+        if not valid_weights:
             st_idx = random.choice(valid_search_space_idx)
         else:
+            valid_weights = np.array(valid_weights)
+            valid_weights = valid_weights - np.min(valid_weights)
+            valid_weights = valid_weights / np.sum(valid_weights)
             try:
                 st_idx = random.choices(valid_search_space_idx, weights=valid_weights, k=1)[0]
             except:
@@ -1055,7 +1062,8 @@ class Optimizer:
                 st_idx = self.weighted_choice(valid_search_space_idx, valid_weights)
         st = search_space[st_idx]
         search_space.pop(st_idx)
-        weights.pop(st_idx)
+        if weights:
+            weights.pop(st_idx)
         return st
 
     def search(self):
@@ -1221,29 +1229,29 @@ class MCMCOptimizer(Optimizer):
                 self.step += 1
 
                 ### Update heat history
-                combined_history_list = [None] * self.heat_window_size
-                for node in strategy_removed_nodes:
-                    if node in self.heat_history:
-                        node_history = self.heat_history[node]
-                        for idx, (h, _) in enumerate(node_history):
-                            if combined_history_list[idx] is None:
-                                combined_history_list[idx] = [h]
-                            elif h is None:
-                                continue
-                            else:
-                                combined_history_list[idx].append(h)
-                        node_history.insert(0, (self.cur_cost - self.cost_star, self.step))
-                        node_history.pop()
-                        # print("node: {}".format(node))
-                        # print("node_history: {}".format(node_history))
-                        # input()
-                combined_history = []
-                for h_list in combined_history_list:
-                    if h_list is not None:
-                        h_avg = np.average(h_list)
-                        combined_history.append((h_avg, self.step))
-                    else:
-                        combined_history.append((None, None))
+                # combined_history_list = [None] * self.heat_window_size
+                # for node in strategy_removed_nodes:
+                #     if node in self.heat_history:
+                #         node_history = self.heat_history[node]
+                #         for idx, (h, _) in enumerate(node_history):
+                #             if combined_history_list[idx] is None:
+                #                 combined_history_list[idx] = [h]
+                #             elif h is None:
+                #                 continue
+                #             else:
+                #                 combined_history_list[idx].append(h)
+                #         node_history.insert(0, (self.cur_cost - self.cost_star, self.step))
+                #         node_history.pop()
+                #         # print("node: {}".format(node))
+                #         # print("node_history: {}".format(node_history))
+                #         # input()
+                # combined_history = []
+                # for h_list in combined_history_list:
+                #     if h_list is not None:
+                #         h_avg = np.average(h_list)
+                #         combined_history.append((h_avg, self.step))
+                #     else:
+                #         combined_history.append((None, None))
                 
                 # calculate the proposal probability q here
                 proposed_candidates, _ = self.candidate_selection(
@@ -1257,17 +1265,17 @@ class MCMCOptimizer(Optimizer):
                 #     subgraph = nx.subgraph(G, strategy[1]+strategy[2]) #type: ignore
                 #     backward_prob /= len(subgraph.edges)
 
-                is_accept = self.accept_or_not(self.cur_cost, self.cost_star * backward_prob / forward_prob)
+                is_accept = self.accept_or_not(self.cur_cost, self.cost_star, backward_prob / forward_prob)
                 ### update cost model internal states
                 self.cost_model_flush(is_accept)
                 if is_accept:
                     invalid_strategies = set()
 
                     ### generate history for new nodes
-                    combined_history.insert(0, (self.cur_cost - self.cost_star, self.step))
-                    combined_history.pop()
-                    for node in strategy_introduced_nodes:
-                        self.heat_history[node] = combined_history.copy()
+                    # combined_history.insert(0, (self.cur_cost - self.cost_star, self.step))
+                    # combined_history.pop()
+                    # for node in strategy_introduced_nodes:
+                    #     self.heat_history[node] = combined_history.copy()
 
                     G = G_star
                     PKG = PKG_star
@@ -1276,9 +1284,9 @@ class MCMCOptimizer(Optimizer):
                     self.mem_usage = self.mem_usage_star
 
                     ### clean up heat history for removed nodes
-                    for node in strategy_removed_nodes:
-                        if node in self.heat_history:
-                            self.heat_history.pop(node)
+                    # for node in strategy_removed_nodes:
+                    #     if node in self.heat_history:
+                    #         self.heat_history.pop(node)
 
                     ### Cache the best strategy
                     if self.cur_cost < self.best_cost:
@@ -1303,14 +1311,16 @@ class MCMCOptimizer(Optimizer):
 
         display_and_ckpt()
 
-    def accept_or_not(self, cost, new_cost):
+    def accept_or_not(self, cost, new_cost, prob_ratio):
         # prob = min(1, (math.exp(beta * (cost - new_cost))))
-        if cost > new_cost:
+        prob = math.exp(MCMC_BETA * (cost - new_cost)) * prob_ratio
+        # if cost > new_cost:
+        if prob > 1:
             SingleLogger().info(
                 "\033[92m" + "Accept a better action, orig cost: {}, new cost: {}".format(cost, new_cost) + "\033[0m")
             return True
         else:
-            prob = math.exp(MCMC_BETA * (cost - new_cost))
+            # prob = math.exp(MCMC_BETA * (cost - new_cost))
             r = random.random()
             if r < prob:
                 SingleLogger().info(
