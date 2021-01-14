@@ -42,7 +42,12 @@ class MemoryEstimator:
         self.platform = platform
         self.default_batch_size = 32  # TODO(yuchen): should read from graph
         self.batch_size = self.default_batch_size
-
+        self._schedule = None
+    
+    @property
+    def schedule(self):
+        return self._schedule
+    
     def _compose_operator_schedule(self, dag, param_dict) -> Schedule:
         forward_nodes = get_forward_nodes(dag.nodes)
         forward_graph = dag.subgraph(forward_nodes).copy()
@@ -130,5 +135,6 @@ class MemoryEstimator:
         Returns:
             [float]: memory usage in GB
         """
-        operator_schedule = self._compose_operator_schedule(dag, param_dict)
-        return self._simulate_memory_allocation(operator_schedule)
+        if not self._schedule:
+            self._schedule = self._compose_operator_schedule(dag, param_dict)
+        return self._simulate_memory_allocation(self._schedule)
