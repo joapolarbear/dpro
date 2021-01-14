@@ -1,39 +1,8 @@
-from functools import partial
-
 from .node import Node
 from .schedule import Schedule
+from .utils import *
 
 import networkx as nx
-
-DEL = "->"
-RANK0_PREFIX = "traces_0.rank0"
-FORWARD_CAT = "FW."
-
-
-def remove_prefix(text, prefix):
-    if text.startswith(prefix):
-        return text[len(prefix):]
-    return text
-
-
-def get_forward_nodes(nodes):
-    # TODO(yuchen): Not expandable
-    def _is_forward(name):
-        if name.startswith(DEL.join([RANK0_PREFIX, FORWARD_CAT]) + "bert"):
-            return True
-        return False
-
-    return list(filter(_is_forward, nodes))
-
-
-def remove_node_prefix(nodes, prefix):
-    func = partial(remove_prefix, prefix=prefix)
-    return list(map(func, nodes))
-
-
-def get_leaf_nodes(dag):
-    return [node for node in dag.nodes if dag.out_degree(node) == 1
-            and dag.in_degree(node) == 0]
 
 
 class MemoryEstimator:
@@ -43,11 +12,11 @@ class MemoryEstimator:
         self.default_batch_size = 32  # TODO(yuchen): should read from graph
         self.batch_size = self.default_batch_size
         self._schedule = None
-    
+
     @property
     def schedule(self):
         return self._schedule
-    
+
     def _compose_operator_schedule(self, dag, param_dict) -> Schedule:
         forward_nodes = get_forward_nodes(dag.nodes)
         forward_graph = dag.subgraph(forward_nodes).copy()
