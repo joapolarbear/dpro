@@ -9,7 +9,7 @@ class MemoryCostModel(_BaseCostModel):
 
     def init_search_space(self, candidates, dag, pkg):
         # TODO(yuchen): calculate weight from replay's performance
-        return [("reduce_batch_size", None, None), ("recomputation", None, None)], [0, 1000]
+        return [("recomputation", None, None)], [1]
 
     def apply(self, s, dag, pkg):
         if s[0] == "reduce_batch_size":
@@ -18,7 +18,7 @@ class MemoryCostModel(_BaseCostModel):
         elif s[0] == "recomputation":
             status = get_recomputation_edited_graph(
                 dag, self.opt.memory_estimator.schedule, "speed")
-             
+
         else:
             raise NotImplementedError
         return True, [], []

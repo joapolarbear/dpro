@@ -33,7 +33,7 @@ class MemoryCheckpointsSelector(CheckpointsSelector):
         raise NotImplementedError
 
 
-def get_recomputation_edited_graph(dag, schedule, mode, verbose=True):
+def get_recomputation_edited_graph(dag, schedule, mode, verbose=False):
     selector = CheckpointsSelector.get_checkpoint_selector(mode)
     checkpoints = selector.select_checkpoints(schedule)
     if not checkpoints:
@@ -82,8 +82,8 @@ def _compose_subgraph_between_two_nodes(dag, source, target):
 
 def _insert_forward_nodes(dag: nx.DiGraph, subgraph: nx.DiGraph, target):
     # copy subgraph
-    dag.add_nodes_from(subgraph.nodes)
-    dag.add_edges_from(subgraph.edges)
+    dag.add_nodes_from(subgraph.nodes.data())
+    dag.add_edges_from(subgraph.edges.data())
 
     # connect subgraph output to target
     outputs = get_output_nodes(subgraph)
@@ -124,7 +124,8 @@ def _update_dag(dag, checkpoints, verbose):
 
     for checkpoint in checkpoints[::-1]:
         source = checkpoints_to_nodes[checkpoint.name]
-        print("source %s, target %s" % (source, target))
+        if verbose:
+            SingleLogger().info("source %s, target %s" % (source, target))
         subgraph = _compose_subgraph_between_two_nodes(dag, source, target)
 
         if subgraph:
