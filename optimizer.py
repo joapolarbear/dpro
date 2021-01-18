@@ -1014,12 +1014,12 @@ class MCMCOptimizer(Optimizer):
                 G, PKG, self.heat_window_size, self.heat_history, self.best_cost, self.best_strategy, self.step, self.trajectory = pickle.load(f)
             SingleLogger().info("Loading checkpoint of step {}".format(self.step))
             self.cur_cost, self.exct_dag, self.mem_usage = self.evaluate(G)
-            self.cost_star = self.mem_usage_star = None
+            self.cost_star = self.exct_dag_star = self.mem_usage_star = None
         else:
             for node in G.nodes:
                 self.heat_history[node] = [(0, 0)] * self.heat_window_size
             self.cur_cost, self.exct_dag, self.mem_usage = self.evaluate(G)
-            self.cost_star = self.mem_usage_star = None
+            self.cost_star = self.exct_dag_star = self.mem_usage_star = None
             self.best_cost = self.cur_cost
             self.best_strategy = self.trajectory
             self.step = 0
@@ -1099,16 +1099,16 @@ class MCMCOptimizer(Optimizer):
                     strategy_removed_nodes.update(nodes_removed)
 
                     if self.step % 100 == 0:
-                        self.cost_star, self.exct_dag, self.mem_usage_star = self.evaluate(G_star, _filename=os.path.join(ROOT_PATH, "searched_graph/{}.json".format(self.step)))
+                        self.cost_star, self.exct_dag_star, self.mem_usage_star = self.evaluate(G_star, _filename=os.path.join(ROOT_PATH, "searched_graph/{}.json".format(self.step)))
                         # dump cluster mapping
                         ### TODO (HHP): we should only dump cluster mapping for the best strategy 
                         # if "+" in self.cst_md_mng.strategy2model:
                         #     self.cst_md_mng.strategy2model["+"]._dump_cluster_mapping(G, os.path.join(ROOT_PATH, "searched_graph/cluster_mapping_{}.txt".format(self.step)))
                     else:
-                        self.cost_star, self.exct_dag, self.mem_usage_star = self.evaluate(G_star)
+                        self.cost_star, self.exct_dag_star, self.mem_usage_star = self.evaluate(G_star)
                     if successful_strategies < step_size:
                         candidates, _ = self.candidate_selection(
-                            G_star, topk=None, critical_path=self.wrap_critical_path(self.exct_dag))
+                            G_star, topk=None, critical_path=self.wrap_critical_path(self.exct_dag_star))
                         search_space, weights = self.init_search_space(
                             candidates, G_star, PKG_star)
                     invalid_strategies = set()
@@ -1116,12 +1116,6 @@ class MCMCOptimizer(Optimizer):
                     if len(msg) > 200:
                         msg = msg[:200] + "... successfully applied."
                     SingleLogger().info(msg + "\033[0m")
-
-                # ### Start to replay
-                # if self.step % 20 == 0:
-                #     cost_star, self.exct_dag, mem_usage = self.evaluate(G_star, _filename=os.path.join(ROOT_PATH, "searched_graph/{}.json".format(self.step)))
-                # else:
-                #     cost_star, self.exct_dag, mem_usage = self.evaluate(G_star)
 
                 # if step < 200:
                 #     MCMC_BETA = 1
@@ -1172,6 +1166,7 @@ class MCMCOptimizer(Optimizer):
                     PKG = PKG_star
                     self.trajectory += strategy_history_in_step
                     self.cur_cost = self.cost_star
+                    self.exct_dag = self.exct_dag_star
                     self.mem_usage = self.mem_usage_star
 
                     ### clean up heat history for removed nodes
@@ -1189,13 +1184,11 @@ class MCMCOptimizer(Optimizer):
                         
                         if "++" in self.cst_md_mng.strategy2model:
                             self.cst_md_mng.strategy2model["++"].dump_tensor_grp_mapping()
-                    ### Init new search space
-                    candidates, _ = self.candidate_selection(
-                        G, topk=None, critical_path=self.wrap_critical_path(self.exct_dag))
-                    search_space, weights = self.init_search_space(
-                        candidates, G, PKG)
                     break
             display_and_ckpt()
+            ### Init new search space
+            candidates, _ = self.candidate_selection(G, topk=None, critical_path=self.wrap_critical_path(self.exct_dag))
+            search_space, weights = self.init_search_space(candidates, G_star, PKG_star)
 
         display_and_ckpt()
 
