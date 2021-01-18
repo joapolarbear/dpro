@@ -40,7 +40,7 @@ parser.add_argument("--metadata_path", type=str, default=None,
                     help="Paths to Model metadata")
 
 ### replay
-parser.add_argument("--update_barrier", type=bool, default=False, help="If true, add a barrier before all UPDATE ops.")
+parser.add_argument("--update_barrier", action="store_true", default=False, help="If true, add a barrier before all UPDATE ops.")
 parser.add_argument("--step_num", type=int, default="1", help="Default step numbers to replay.")
 parser.add_argument("--delay_ratio", type=float, default=1.1, help="delay ratio")
 parser.add_argument("--full_trace", action="store_true", help="If this arg is set, simulate traces with detailed dependency info.")

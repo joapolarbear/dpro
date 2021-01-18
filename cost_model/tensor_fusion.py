@@ -4,6 +4,7 @@ import os
 import pickle
 import numpy as np
 import ujson as json
+from tqdm import tqdm, trange
 
 import arg_utils
 from .base import _BaseCostModel
@@ -11,6 +12,7 @@ from trace_utils import *
 from cost_model_xla.pk_graph import PKGraph
 
 args_ = arg_utils.SingleArg().args
+ENABLE_PARTITION = False
 FUSION_RATIO = 1
 ### given a fused tensor, return N possible partition method
 # N <= MAX_PARTITION_NUM
@@ -38,10 +40,100 @@ class _TensorFusionCM(_BaseCostModel):
         self.ckpt_path = os.path.join(ROOT_PATH, "ckpt_tensor_fusion.pickle")
         self.cache_change = []
 
-    def init_search_space(self, candidates, _dag: nx.DiGraph, _pkg: PKGraph):
+        self.num_grp = 1
+        self.history_num_grp = {}
+        if self.num_grp is not None:
+            SingleLogger().info("Search the optimal number of tensor fusion groups")
+        else:
+            SingleLogger().info("Search the optimal tensor fusion strategies")
+
+    def _ret_weight_num_grp(self, num_grp):
+        if num_grp not in self.history_num_grp:
+            return 1
+        else:
+            return 1.0 / float(self.history_num_grp[num_grp] + 1)
+        
+    def _init_search_space_num_grp(self, candidates, _dag: nx.DiGraph, _pkg: PKGraph):
         search_space = []
         weights = []
+        
+        assert self.num_grp is not None
+        if self.num_grp == 1:
+            if (self.num_grp + 1) not in self.history_num_grp:
+                search_space.append(("++", self.num_grp + 1, None))
+                weights.append(self._ret_weight_num_grp(self.num_grp + 1))
+        else:
+            if (self.num_grp + 1) not in self.history_num_grp:
+                search_space.append(("++", self.num_grp + 1, None))
+                weights.append(self._ret_weight_num_grp(self.num_grp + 1))
+            if (self.num_grp - 1) not in self.history_num_grp:
+                search_space.append(("++", self.num_grp - 1, None))
+                weights.append(self._ret_weight_num_grp(self.num_grp - 1))
+        return search_space, weights
 
+    def _apply_grp_num(self, _dag, _pkg, num_grp):
+        ''' The method used in horovod to construct tensor groups
+        * here `l` is the list of tensors, `n` is the number of groups
+        ```
+            d, r = divmod(len(l), n)
+            return [l[i * d + min(i, r):(i + 1) * d + min(i + 1, r)] for i in range(n)]
+        ```
+        '''
+        tensor_num = len(self.cur_tensor2group)
+        num_per_grp, _ = divmod(tensor_num, num_grp)
+        
+        trajectory = []
+        residual = []
+        groups = sorted(list(set(self.cur_tensor2group.values())), key=lambda grp_id: int(grp_id.split("+")[0]))
+        for grp in groups:
+            tensor_ids = grp.split("+")
+            if len(residual) + len(tensor_ids) == num_per_grp:
+                if len(residual) > 0:
+                    to_fuse_u = self._wrap_gen_long_name("host0.rank0", "Comm", "+".join(residual), "Sync", None)
+                    to_fuse_v = self._wrap_gen_long_name("host0.rank0", "Comm", "+".join(tensor_ids), "Sync", None)
+                    trajectory.append(("++", to_fuse_u, to_fuse_v))
+                    residual = []
+            elif len(residual) + len(tensor_ids) < num_per_grp:
+                if len(residual) > 0:
+                    to_fuse_u = self._wrap_gen_long_name("host0.rank0", "Comm", "+".join(residual), "Sync", None)
+                    to_fuse_v = self._wrap_gen_long_name("host0.rank0", "Comm", "+".join(tensor_ids), "Sync", None)
+                    trajectory.append(("++", to_fuse_u, to_fuse_v))
+                residual += tensor_ids
+            else:
+                if len(residual) > 0:
+                    tensor_name = self._wrap_gen_long_name("host0.rank0", "Comm", "+".join(tensor_ids), "Sync", None)
+                    trajectory.append(("--", tensor_name, num_per_grp - len(residual)))
+                    to_fuse_u = self._wrap_gen_long_name("host0.rank0", "Comm", "+".join(residual), "Sync", None)
+                    to_fuse_v = self._wrap_gen_long_name(
+                        "host0.rank0", "Comm", "+".join(tensor_ids[:(num_per_grp - len(residual))]), "Sync", None)
+                    trajectory.append(("++", to_fuse_u, to_fuse_v))
+                    tensor_ids = tensor_ids[(num_per_grp - len(residual)):]
+                while len(tensor_ids) > num_per_grp:
+                    tensor_name = self._wrap_gen_long_name("host0.rank0", "Comm", "+".join(tensor_ids), "Sync", None)
+                    trajectory.append(("--", tensor_name, num_per_grp))
+                    tensor_ids = tensor_ids[num_per_grp:]
+                if len(tensor_ids) < num_per_grp:
+                    residual = tensor_ids
+                else:
+                    residual = []
+
+        SingleLogger().info("From {} groups to {} groups, apply {} strategies in totoal ...".format(self.num_grp, num_grp, len(trajectory)))
+        rst = [True, [], []]
+        for st in tqdm(trajectory, total=len(trajectory)):
+            # print(st)
+            succ_, nodes_to_add, nodes_to_rm = self.apply(st, _dag, _pkg)
+            rst[0] &= succ_
+            rst[1] += nodes_to_add
+            rst[2] += nodes_to_rm
+        self.cache_change.append(num_grp)
+        return rst
+        
+    def init_search_space(self, candidates, _dag: nx.DiGraph, _pkg: PKGraph):
+        if self.num_grp is not None:
+            return self._init_search_space_num_grp(candidates, _dag, _pkg)
+        
+        search_space = []
+        weights = []
         # debug_st = [
         #     ("++", "host0.rank2->Comm.1+2+3+4+5+6+7+8+9+10+11+12+13+14+15+16+17+18+19+20+21+22+23+24+25+26+27+28.Sync", "host0.rank2->Comm.0.Sync"),
         #     ("++", "host0.rank2->Comm.29+30+31.Sync",
@@ -114,17 +206,18 @@ class _TensorFusionCM(_BaseCostModel):
                     weights.append(l)
                 '''
 
-                ### tensor partition
-                all_infos = self._wrap_parse_all_info(to_fuse_u)
-                sorted_tensor_ids = [int(_n) for _n in all_infos[2].split("+")]
-                mu, sigma = (len(sorted_tensor_ids)-1) / 2, (len(sorted_tensor_ids)-1) / 4
-                s = np.random.normal(mu, sigma, min(len(sorted_tensor_ids) - 1, MAX_PARTITION_NUM))
-                _set = set([int(_n) for _n in s])
-                for _s in _set:
-                    if _s > 0 and _s <= len(sorted_tensor_ids)-1:
-                        ### Here _s denotes the partition occurs before the _s'th tensor
-                        search_space.append(("--", to_fuse_u, _s))
-                        weights.append(l)
+                if ENABLE_PARTITION:
+                    ### tensor partition
+                    all_infos = self._wrap_parse_all_info(to_fuse_u)
+                    sorted_tensor_ids = [int(_n) for _n in all_infos[2].split("+")]
+                    mu, sigma = (len(sorted_tensor_ids)-1) / 2, (len(sorted_tensor_ids)-1) / 4
+                    s = np.random.normal(mu, sigma, min(len(sorted_tensor_ids) - 1, MAX_PARTITION_NUM))
+                    _set = set([int(_n) for _n in s])
+                    for _s in _set:
+                        if _s > 0 and _s <= len(sorted_tensor_ids)-1:
+                            ### Here _s denotes the partition occurs before the _s'th tensor
+                            search_space.append(("--", to_fuse_u, _s))
+                            weights.append(l)
    
         return search_space, weights
 
@@ -132,6 +225,8 @@ class _TensorFusionCM(_BaseCostModel):
         op, target, next_ = s
         if op == "++":
             ### Fuse two nodes
+            if isinstance(target, int):
+                return self._apply_grp_num(__dag, __pkg, target)
             return self._op_fusion(__dag, __pkg, target, next_)
         elif op == "--":
             return self._op_defusion(__dag, __pkg, target, next_)
@@ -187,7 +282,10 @@ class _TensorFusionCM(_BaseCostModel):
     def flush(self, is_accept):
         if is_accept:        
             for n in self.cache_change:
-                if "host0.rank0" in n:
+                if isinstance(n, int):
+                    self.history_num_grp[self.num_grp] = 1 if self.num_grp not in self.history_num_grp else self.history_num_grp[self.num_grp] + 1
+                    self.num_grp = n
+                elif "host0.rank0" in n:
                     self._update_tensor2grp(n)
         self.cache_change = []
         
@@ -366,8 +464,10 @@ class _TensorFusionCM(_BaseCostModel):
         return new_name, fused_time
     
     def _op_defusion(self, _dag, _pkg: PKGraph, u, loc):
-        all_infos = self._wrap_parse_all_info(u)
+        ### need to use original local DFG to parse dependency info
+        local_dfg = self.opt.clct.dag
 
+        all_infos = self._wrap_parse_all_info(u)
         sorted_tensor_ids = sorted([int(n) for n in all_infos[2].split("+")])
         ids = [sorted_tensor_ids[:loc], sorted_tensor_ids[loc:]]
         rawnames = ["+".join([str(n) for n in _ids]) for _ids in ids]
@@ -388,14 +488,19 @@ class _TensorFusionCM(_BaseCostModel):
 
             ### Handle BW->Sync edges
             ### each sync may have multiple input bw nodes
-            _in_bw = [n for n, _ in _dag.in_edges(_pid_sync)]
-            edges_to_add += [(_bw, new_part_names[0]) for _bw in _in_bw] + \
-                [(_bw, new_part_names[1]) for _bw in _in_bw]
-            edges_to_rm += [(_bw, _pid_sync) for _bw in _in_bw]     
+            def parse_bw_dependency(_node, edges_to_add, edges_to_rm, _old_node):
+                _info = self._wrap_parse_all_info(_node)
+                for tensor_id in _info[2].split("+"):
+                    op_type_and_name = "{}.{}".format(_info[1], tensor_id)
+                    _bw_list = [gen_long_name(_info[0], n, None) for n, _ in local_dfg.in_edges(op_type_and_name)]
+                    edges_to_add += [(_bw, _node) for _bw in _bw_list]
+                    edges_to_rm += [(_bw, _old_node) for _bw in _bw_list]
+            
+            parse_bw_dependency(new_part_names[0], edges_to_add, edges_to_rm, _pid_sync)
+            parse_bw_dependency(new_part_names[1], edges_to_add, edges_to_rm, _pid_sync)
             nodes_to_rm.add(_pid_sync)
 
             prev_part_names = new_part_names
-
             edges_to_handel = []
             for _next in _dag.successors(_pid_sync):
                 edges_to_handel.append((prev_part_names, _pid_sync, _next))
@@ -441,6 +546,22 @@ class _TensorFusionCM(_BaseCostModel):
                             edges_to_rm.append((_cur, succ_))    
                         for _update_op in update_list:
                             edges_to_add += [(new_part_names[0], _update_op), (new_part_names[1], _update_op)]
+                        # def parse_update_dependency(_node, edges_to_add, edges_to_rm, _old_node):
+                        #     _info = self._wrap_parse_all_info(_node)
+                        #     for tensor_id in _info[2].split("+"):
+                        #         op_type_and_name = "{}.{}".format(_info[1], tensor_id)
+                        #         _update_list = [gen_long_name(_info[0], n, None) for n in local_dfg.successors(op_type_and_name)]
+                        #         edges_to_add += [(_node, _update_op) for _update_op in _update_list]
+                        #         edges_to_rm += [(_old_node, _update_op) for _update_op in _update_list]
+                        #         for n in _update_list:
+                        #             if n == "host1.rank7->UPDATE_.DistributedGradientDescentOptimizer_Allreduce/truediv_78":
+                        #                 print(tensor_id)
+                        #                 print([(_node, _update_op) for _update_op in _update_list])
+                        #                 print([(_old_node, _update_op) for _update_op in _update_list])
+                        #                 assert n in _dag.nodes()
+                        
+                        # parse_update_dependency(new_part_names[0], edges_to_add, edges_to_rm, _cur)
+                        # parse_update_dependency(new_part_names[1], edges_to_add, edges_to_rm, _cur)
         
         _dag.add_edges_from(edges_to_add)
         _dag.add_nodes_from(nodes_to_add)
@@ -503,33 +624,78 @@ class _TensorFusionCM(_BaseCostModel):
 
     def checkpoint(self):
         with open(self.ckpt_path, "wb") as f:
-            pickle.dump([self.node_attr_cache, self.tensor_group_info, self.cur_tensor2group], f)
+            pickle.dump([self.node_attr_cache, self.tensor_group_info, self.cur_tensor2group, self.num_grp, self.history_num_grp], f)
 
     def load_ckpt(self):
         if os.path.isfile(self.ckpt_path):
             with open(self.ckpt_path, "rb") as f:
-                self.node_attr_cache, self.tensor_group_info, self.cur_tensor2group = pickle.load(f)
+                self.node_attr_cache, self.tensor_group_info, self.cur_tensor2group, self.num_grp, self.history_num_grp = pickle.load(f)
         self.cache_change = []
 
     def load_init_ckpt(self):
         init_ckpt_path = os.path.join(ROOT_PATH, "tensor_fusion_init_ckpt.pickle")
         if os.path.isfile(init_ckpt_path):
             with open(init_ckpt_path, "rb") as f:
-                self.cur_tensor2group = pickle.load(f)[0]
+                G, PKG, trajectory, self.node_attr_cache, self.tensor_group_info, self.cur_tensor2group, self.num_grp, self.history_num_grp = pickle.load(f)
+            if self.num_grp is not None:
+                SingleLogger().info("Initialzed the graph with {} tensor group(s) ...".format(self.num_grp))
             SingleLogger().info("Reading init state from cache.")
         else:
-            for n in self.dag.nodes():
-                if "Comm" in n:
-                    self._cache_node_attr(n, self.dag.nodes[n])
-                    ### Assume each host has the same tensor fusion pattern
-                    if "host0.rank0" in n:
-                        self._update_tensor2grp(n)
+            G = self.dag.copy()
+            PKG = PKGraph(G)
+
+            trajectory = []
+            source_nodes = [n for n in G.nodes() if "Comm" in n]
+            for n in tqdm(source_nodes, total=len(source_nodes)):  
+                self._cache_node_attr(n, G.nodes[n])
+                ### Assume each host has the same tensor fusion pattern
+                if "host0.rank0" in n and "Sync" in n:
+                    self._update_tensor2grp(n)
+
+                    ### check uncontinuous fusions
+                    groups = []
+                    cur_group = []
+                    prev_id = None
+                    rawname = self._wrap_parse_all_info(n)[2]
+                    for idx, tensor_id in enumerate(rawname.split("+")):
+                        if prev_id is None or prev_id + 1 == int(tensor_id):
+                            cur_group.append(int(tensor_id))
+                        else:
+                            assert prev_id + 1 < int(tensor_id), (n, prev_id, tensor_id)
+                            groups.append(cur_group)
+                            cur_group = [int(tensor_id)]
+                        prev_id = int(tensor_id)
+                    if len(cur_group) > 0:
+                        groups.append(cur_group)
+                    if len(groups) > 1:
+                        ### tensor ids are not continuous, divide this into multiple group
+                        SingleLogger().info("Non-continuous tensor group {}, groups: {}".format(n, groups))
+                        name_to_split = n
+                        for idx in range(len(groups) - 1):
+                            ### except for the last group
+                            grp = groups[idx]
+                            trajectory.append(("--", name_to_split, len(grp)))
+                            _info = self._wrap_parse_all_info(name_to_split)
+                            name_to_split = self._wrap_gen_long_name(
+                                _info[0], _info[1], "+".join(_info[2].split("+")[len(grp):]), _info[3], _info[4])
+                            print(grp, trajectory[-1])
+            SingleLogger().info("Applying initialized strategies...")
+            for st in tqdm(trajectory, total=len(trajectory)):
+                self.apply(st, G, PKG)
+                self.flush(True)
+            
+            if self.num_grp is not None:
+                SingleLogger().info("Initialzed the graph with {} tensor group(s) ...".format(self.num_grp))
+                self._apply_grp_num(G, PKG, self.num_grp)
+                self.flush(True)
+
             with open(init_ckpt_path, "wb") as f:
-                pickle.dump([self.cur_tensor2group], f)
+                pickle.dump([G, PKG, trajectory, self.node_attr_cache, self.tensor_group_info, self.cur_tensor2group, self.num_grp, self.history_num_grp], f)
             SingleLogger().info("Graph cache dumped to {}.".format(init_ckpt_path))
+        
         self.dump_tensor_grp_mapping(_file_name="tensor_fusion_grp_mapping_init.json")
         self.cache_change = []
-        return None, None, None
+        return G, PKG, []
 
     def dump_tensor_grp_mapping(self, _file_name=None):
         file_name = 'tensor_fusion_grp_mapping.json' if _file_name is None else _file_name

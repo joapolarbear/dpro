@@ -86,7 +86,7 @@ class Collector(object):
         self.time_dict = None
         self.run_span = {}
 
-        ### TODO (huhanpeng): assume different host use the same dag, original dag
+        ### TODO (huhanpeng): assume different host use the same dag, local DFG
         self.dag = None
         self.update_nodes_in_dag = None
         self.para_dict = None
@@ -827,6 +827,7 @@ class Collector(object):
 
     def init(self, force_=False):
         trace_path = self.pm.search(FileName.TRACE)
+
         if self.comm_backend == "NCCL":
             nccl_graph_path = self.pm.search(FileName.NCCL_GRAPH)
         else:
@@ -917,6 +918,9 @@ class Collector(object):
             graph_thread.start()
             if self.comm_backend == "NCCL":
                 self.nccl_graph.dump(os.path.join(self.pm.path, FileName.NCCL_GRAPH.value))
+            local_dfg_thread = threading.Thread(target=nx.write_gml, 
+                args=(self.dag, os.path.join(self.pm.path, FileName.LOCAL_DFG.value), lambda x: str(x)))
+            local_dfg_thread.start()
         else:
             self.traceM = TraceManager()
             self.traceM.load(self.pm.path)
@@ -924,6 +928,7 @@ class Collector(object):
             if self.comm_backend == "NCCL":
                 self.nccl_graph.load(nccl_graph_path)
             self.trail_dag = nx.read_gml(trail_dag_path)
+            self.dag = nx.read_gml(self.pm.search(FileName.LOCAL_DFG))
 
         return iter_time
         

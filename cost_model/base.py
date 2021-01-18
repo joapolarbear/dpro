@@ -28,7 +28,8 @@ class _BaseCostModel:
         ''' A strategy may be rejected, so the internal states of 
             * cost model should not be changed in apply() 
             * but be changed when the strategy is accepted
-        Each cost model need to cache the change, and flush the change when this function is called
+        Each cost model may cache the change of the internal states, 
+        and flush the change when this function is called
         '''
         raise NotImplementedError()
 

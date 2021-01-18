@@ -40,6 +40,9 @@ class AMPPredictor:
         self.cast_cnt = 0
         self.num_nonvar_casts_to_fp16 = 0
         self.op_status = {}
+
+        ### Internal state
+        self.cache_change = []
     
     def checkpoint(self):
         with open(self.ckpt_path, "wb") as f:
@@ -92,6 +95,10 @@ class AMPPredictor:
             raise
         cast_time = self.cost_model[cm_name].predict([1, 1, 1, S_out, 1, 1])
         return cast_time
+
+    def _wrap_update_status(node, key, value):
+        # self.op_status[_node]["dtype"] = "float16"
+        self.cache_change.append((node, key, value))
 
     def quantize(self, dag, op_name):
         if op_name not in self.op_status:
@@ -176,8 +183,9 @@ class AMPPredictor:
                             break
                     if half_avg:
                         dag.nodes[_node]["avg"] = dag.nodes[_node]["avg"] / 2.0
-                    self.op_status[_node]["dtype"] = "float16"
-
+                    
+                    self._wrap_update_status(_node, "dtype", "float16")
+                    
                     for _succ in dag.successors(_node):
                         if "UPDATE_" in _succ:
                             ### Use UPDATE operator's name to let cast op run on computation device
@@ -191,7 +199,8 @@ class AMPPredictor:
         ### update the meta info of current node
         prev_avg = dag.nodes[op_name]["avg"]
         dag.nodes[op_name]["avg"] = self.pred_amp_avg(op_name, _avg=prev_avg)
-        self.op_status[op_name]["dtype"] = "float16"
+        self._wrap_update_status(op_name, "dtype", "float16")
+        # self.op_status[op_name]["dtype"] = "float16"
         # SingleLogger().info("Convert {} from {} ms to {} ms".format(op_name, prev_avg, dag.nodes[op_name]["avg"]))
 
         dag.add_nodes_from(nodes_to_add)
@@ -272,8 +281,15 @@ class AMPPredictor:
         if op_name not in self.op_status:
             self.init_op_statu(op_name)
         return self.op_status[op_name]["dtype"] == "float32"
+    
+    def flush(self, is_accept: bool):
+        if is_accept:
+            for node, key, value in self.cache_change:
+                self.op_status[node][key] = value
+        
+        self.cache_change = []
 
-from cost_model_amp import dataloader, grouper
+from . import dataloader, grouper
 
 def train_amp_model():
     OP_TYPES = {
