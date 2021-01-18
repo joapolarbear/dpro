@@ -85,3 +85,6 @@ class _AMPCostModel(_BaseCostModel):
         SingleLogger().info("Successfully initialized mixed precision strategy with {} cast(s).".format(
             self.amp_predictor.num_nonvar_casts_to_fp16))
         return G, PKG, trajectory
+
+    def flush(self, is_accept: bool):
+        self.amp_predictor.flush(is_accept)
