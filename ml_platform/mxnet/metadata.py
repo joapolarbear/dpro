@@ -57,8 +57,8 @@ class MetaInfo:
 
         ### dependency graph of this model
         self.dag = self.gen_dag()
-        nx.write_gml(self.dag, os.path.join(
-            "/Users/bytedance/0/data/20201126_01_2W2G_rdma_hvd_mx_bert_hvd_input_data_shape", "dag.gml"), lambda x: str(x))
+        # nx.write_gml(self.dag, os.path.join(
+        #     "/Users/bytedance/0/data/20201126_01_2W2G_rdma_hvd_mx_bert_hvd_input_data_shape", "dag.gml"), lambda x: str(x))
 
         ### init name2shape dict, convert name to std. name
         self.name2shape = {}

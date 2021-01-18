@@ -329,6 +329,10 @@ class DAGManager:
                                         update_name = self.add_prefix("UPDATE_CAL", _prefix=next_rank_prefix)
                                         self.wrap_add_dag(prev_name, update_name)
                                     elif self.platform == "TENSORFLOW":
+                                        if args_.update_barrier:
+                                            update_name = self.add_prefix("UPDATE_CAL", _prefix=next_rank_prefix)
+                                            self.wrap_add_dag(prev_name, update_name)
+                                            prev_name = update_name
                                         for post_node in post_nodes:
                                             update_name = self.add_prefix(post_node, _prefix=next_rank_prefix)
                                             self.wrap_add_dag(prev_name, update_name)
@@ -404,6 +408,10 @@ class DAGManager:
                                         update_name = self.add_prefix("UPDATE_CAL")
                                         self.wrap_add_dag(self.add_prefix(prev_rawname), update_name)
                                     elif self.platform == "TENSORFLOW":
+                                        if args_.update_barrier:
+                                            update_name = self.add_prefix("UPDATE_CAL", _prefix=next_rank_prefix)
+                                            self.wrap_add_dag(prev_name, update_name)
+                                            prev_name = update_name
                                         for post_node in post_nodes:
                                             update_name = self.add_prefix(post_node)
                                             self.wrap_add_dag(self.add_prefix(prev_rawname), update_name)
