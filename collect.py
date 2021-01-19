@@ -1323,7 +1323,7 @@ class Collector(object):
                 print("Cat: %-20s: Avg %-12.4f ms, Op Count %-10d" % (cat_, sta_["avg"], sta_["op_cnt"]))
             name2sta_list.append(prefix2traces[key_].name2sta)
             sheet_name.append(key_)
-        
+
         self.traceM.export2xlsx(name2sta_list, self.pm.path, filename="diagnosis", sheet_name=sheet_name)
 
     def detect_bottleneck1(self):

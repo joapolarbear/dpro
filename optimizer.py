@@ -5,7 +5,6 @@ import random
 import math
 import time
 from collections import deque
-from networkx.algorithms.coloring.greedy_coloring import strategy_connected_sequential
 from scipy.stats.mstats import gmean
 import numpy as np
 import code
@@ -441,17 +440,29 @@ class _XLACostModel(_BaseCostModel):
                     return __ret
 
                 comm_t = 0
+                effective_succ_bw = set()
                 # for bw_u_succ in _dag.successors(bw_u):
                 for bw_u_succ in _dag.successors(n):
                     if "Comm" in bw_u_succ:
                         if self.opt.comm_backend == "NCCL":
-                            comm_t += ret_comm_time(bw_u_succ)
+                            # check if the comm node's predecessor includes succ_
+                            if succ_ in _dag.predecessors(bw_u_succ):
+                                # OK to fuse
+                                continue
+                            else:
+                                succ_bws = [node for node in _dag.predecessors(bw_u_succ) if "BW" in node]
+                                effective_succ_bw.union(set(succ_bws))
+                                comm_t += ret_comm_time(bw_u_succ)
                         else:
                             ### TODO (huhanpeng): is there only one comm sub operator ???
                             comm_t += _dag.nodes[bw_u_succ]["avg"]
+                            effective_succ_bw.add(succ_)
+                effective_bw_size = 0
+                for node in effective_succ_bw:
+                    effective_bw_size += _dag.nodes[node]["avg"]
 
                 # if comm_t >= _dag.nodes[bw_v]["avg"]:
-                if comm_t >= _dag.nodes[succ_]["avg"]:
+                if comm_t > effective_bw_size:
                     prun_cnt += 1
                     SingleLogger().debug("Prune fusing {} and {} with comm time {}".format(n, succ_, comm_t))
                     continue
@@ -1258,12 +1269,8 @@ class MCMCOptimizer(Optimizer):
                         G_star, topk=None, critical_path=self.wrap_critical_path(self.exct_dag))
                 proposed_search_space, proposed_weights = self.init_search_space(
                         proposed_candidates, G_star, PKG_star)
-                forward_prob = 1 / len(search_space)
+                forward_prob = 1 / (len(search_space)+1)
                 backward_prob = 1 / len(proposed_search_space)
-                # if strategy[0] == "+": #type: ignore
-                #     # devide by total number of edges
-                #     subgraph = nx.subgraph(G, strategy[1]+strategy[2]) #type: ignore
-                #     backward_prob /= len(subgraph.edges)
 
                 is_accept = self.accept_or_not(self.cur_cost, self.cost_star, backward_prob / forward_prob)
                 ### update cost model internal states
