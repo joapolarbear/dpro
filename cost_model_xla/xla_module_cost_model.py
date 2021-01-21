@@ -43,6 +43,15 @@ class ElementaryOpCache():
     def __init__(self, dataset_path=None, load_from=None):
         if load_from is not None:
             self.load(load_from)
+            # backward compatibility: preprocess loaded dict if necessary
+            any_value = next(iter(self.hash_dict.values()))
+            if isinstance(any_value, list):
+                print("[BACKWARD COMPAT] preprocessing ElemOpCache...")
+                for hash_v, times in self.hash_dict.items():
+                    self.hash_dict[hash_v] = np.average(times)
+
+                for hash_v, times in self.op_code_dict.items():
+                    self.op_code_dict[hash_v] = np.average(times)
         else:
             if dataset_path is None:
                 raise RuntimeError("At least one of dataset_path and load_from must be set.")
@@ -88,15 +97,30 @@ class ElementaryOpCache():
         
         self.elemophash2index = elemophash2index
         self.index2elemophash = index2elemophash
+
+        for hash_v, times in hash_dict.items():
+            hash_dict[hash_v] = np.average(times)
+        
+        for hash_v, times in op_code_dict.items():
+            op_code_dict[hash_v] = np.average(times)
     
+    # def query(self, hash_v, op_code=None):
+    #     if hash_v not in self.hash_dict:
+    #         if op_code is not None and op_code in self.op_code_dict:
+    #             return np.average(self.op_code_dict[op_code]), False
+    #         else:
+    #             return 0, False
+    #     else:
+    #         return np.average(self.hash_dict[hash_v]), True
+
     def query(self, hash_v, op_code=None):
         if hash_v not in self.hash_dict:
             if op_code is not None and op_code in self.op_code_dict:
-                return np.average(self.op_code_dict[op_code]), False
+                return self.op_code_dict[op_code], False
             else:
                 return 0, False
         else:
-            return np.average(self.hash_dict[hash_v]), True
+            return self.hash_dict[hash_v], True
 
     def dump(self, save_path):
         with open(save_path, "wb") as f:
@@ -775,6 +799,18 @@ def load_kernel_model(model_save_dir, training_dataset):
     model.load_weights(model_save_path)
     return elem_op_cache, ovhd_model, model
 
+def pad_list(tensor, max_seq_len, pad_value=0):
+    """ Pads a nested list with dim 2 or 3 to max_seq_len in axis 1 in place.
+        If dim = 3, all elements must have identical shapes in axis 3
+    """
+    is_3d_padding = isinstance(tensor[0][0], list)
+    for ax2_list in tensor:
+        if len(ax2_list) < max_seq_len:
+            if not is_3d_padding:
+                ax2_list += [pad_value] * (max_seq_len - len(ax2_list))
+            else:
+                ax2_list += [[pad_value] * len(ax2_list[0])] * (max_seq_len - len(ax2_list))
+
 class XLAModuleCostModel():
     def __init__(self, save_dir, tmp_dir = "./cost_model_tmp"):
         super().__init__()
@@ -818,6 +854,106 @@ class XLAModuleCostModel():
             pickle.dump(graph_def, f)
         # transfer tensor shapes into save_dir
         shutil.copy(os.path.join(dataset_folder_path, CMPaths.TENSOR_SHAPE_FILE), save_dir)
+
+    # def predict(self, node_names):
+    #     try:
+    #         graph_def_path, config_path = \
+    #             self.graph_def_util.get_subgraph_def_config_from_nodes(node_names, self._tmp_dir, 0)
+    #     except GSInternalErrors as e:
+    #         print("[Cost Model] Failed to generate legal graph def for input nodes: {}".format(e))
+    #         return -1, {}
+    #     except RuntimeError:
+    #         traceback.print_exc()
+    #         print("[Cost Model] Failed to generate legal graph def for input nodes.")
+    #         return -1, {}
+
+    #     if graph_def_path is None or config_path is None:
+    #         if len(node_names) > 10:
+    #             print("[Cost Model] Failed to predict the running time of ops: {} ...".format(list(node_names)[:10]))
+    #         else:
+    #             print("[Cost Model] Failed to predict the running time of ops: {} ...".format(node_names))
+    #         return -1, {}
+    #     unopt_hlo_path = os.path.join(self._tmp_dir, "unopt.txt")
+    #     opt_hlo_path = os.path.join(self._tmp_dir, "opt.txt")
+    #     try:
+    #         compile_to_hlo(graph_def_path, config_path, unopt_hlo_path, opt_hlo_path)
+    #         extract_kernel_features_from_hlo(opt_hlo_path, self._tmp_dir)
+
+    #         config_path = os.path.join(self._tmp_dir, CMPaths.MODULE_CONFIG_FILE)
+    #         elem_op_hashes = []
+    #         fused_op_infos = []
+    #         with open(config_path, "r") as f:
+    #             for line in f:
+    #                 is_fused_op = bool(int(line.split(",")[0]))
+    #                 if is_fused_op:
+    #                     fused_op_hash = int(line.split(",")[1])
+    #                     kernel_path = os.path.join(self._tmp_dir, line.split(",")[-1].split("/")[-1].strip())
+    #                     kernel_sid = int(line.split(",")[-1].split("/")[-1].split(".txt")[0])
+    #                     with open(kernel_path, "r") as f_kernel:
+    #                         (adj, fusion_type, computation_hash, subop_infos) = \
+    #                             self.training_dataset._parse_feature_file(f_kernel)
+    #                     if (computation_hash != fused_op_hash):
+    #                         print("Inconsistent hashes for kernel SID: {}".format(kernel_sid))
+    #                         assert False
+    #                     # generate representations
+    #                     ( fusion_type_one_hot, op_codes_in_sample, 
+    #                         op_hashes_in_sample, feature_vectors_in_sample )= \
+    #                             self.training_dataset.gen_representation_for_sample(fusion_type, subop_infos)
+    #                     fused_op_infos.append((computation_hash, fusion_type_one_hot, 
+    #                                             op_codes_in_sample, op_hashes_in_sample, 
+    #                                             feature_vectors_in_sample))
+    #                 else:
+    #                     _, elem_op_hash, op_code = [v.strip() for v in line.split(",")]
+    #                     elem_op_hashes.append((int(elem_op_hash), op_code))
+
+    #         predicted_module_time = 0
+    #         fused_kernel_sizes = [len(op_codes_in_sample) for (_, _, op_codes_in_sample, _, _) \
+    #                                                         in fused_op_infos]
+
+    #         breakdown_dict = {}
+    #         breakdown_dict["elementary"] = {}
+    #         breakdown_dict["fused"] = {}
+
+    #         overhead = self.ovhd_model.get_overhead(elem_op_hashes, fused_kernel_sizes)
+    #         predicted_module_time += overhead
+    #         breakdown_dict["overhead"] = overhead
+
+    #         # look up elementary op cache
+    #         for (hash_v, op_code) in elem_op_hashes:
+    #             predicted_time, cache_hit = self.elem_op_cache.query(hash_v, op_code=op_code)
+    #             predicted_module_time += predicted_time
+    #             breakdown_dict["elementary"][hash_v] = predicted_time
+            
+    #         # run model to predict fused kernel time
+    #         for (computation_hash, fusion_type_one_hot, op_codes_in_sample, 
+    #                 op_hashes_in_sample, feature_vectors_in_sample) in fused_op_infos:
+    #             if computation_hash in self.computation_cache:
+    #                 predicted_time = self.computation_cache[computation_hash]
+    #             else:
+    #                 fusion_types = np.expand_dims(np.array(fusion_type_one_hot, dtype=np.float32), 0)
+    #                 op_codes = np.expand_dims(np.array(op_codes_in_sample), 0)
+    #                 op_hashes = np.expand_dims(op_hashes_in_sample, 0)
+    #                 feature_vectors = np.expand_dims(np.array(feature_vectors_in_sample, dtype=np.float32), 0)
+    #                 predicted_time = self.kernel_model.predict(
+    #                                         x=[fusion_types, op_codes, op_hashes, feature_vectors]) \
+    #                                                                                     .flatten()[0]
+    #                 self.computation_cache[computation_hash] = predicted_time
+    #             predicted_module_time += predicted_time
+    #             breakdown_dict["fused"][computation_hash] = predicted_time
+
+    #     except Exception as e:
+    #         traceback.print_exc()
+    #         if len(node_names) > 10:
+    #             print("[Cost Model] Failed to predict the running time of ops: {} ...".format(list(node_names)[:10]))
+    #         else:
+    #             print("[Cost Model] Failed to predict the running time of ops: {} ...".format(node_names))
+    #         shutil.rmtree(self._tmp_dir)
+    #         os.makedirs(self._tmp_dir)
+    #         return -1, {}
+    #     # clean up
+    #     shutil.rmtree(self._tmp_dir)
+    #     os.makedirs(self._tmp_dir)
+    #     return predicted_module_time, breakdown_dict
 
     def predict(self, node_names):
         try:
@@ -888,22 +1024,73 @@ class XLAModuleCostModel():
                 predicted_module_time += predicted_time
                 breakdown_dict["elementary"][hash_v] = predicted_time
             
-            # run model to predict fused kernel time
+            # process data
+            batch_computation_hashes = []
+            batch_fusion_type_one_hot = []
+            batch_op_codes = []
+            batch_op_hashes = []
+            batch_feature_vectors = []
+
             for (computation_hash, fusion_type_one_hot, op_codes_in_sample, 
                     op_hashes_in_sample, feature_vectors_in_sample) in fused_op_infos:
                 if computation_hash in self.computation_cache:
-                    predicted_time = self.computation_cache[computation_hash]
+                    predicted_module_time += self.computation_cache[computation_hash]
                 else:
-                    fusion_types = np.expand_dims(np.array(fusion_type_one_hot, dtype=np.float32), 0)
-                    op_codes = np.expand_dims(np.array(op_codes_in_sample), 0)
-                    op_hashes = np.expand_dims(op_hashes_in_sample, 0)
-                    feature_vectors = np.expand_dims(np.array(feature_vectors_in_sample, dtype=np.float32), 0)
-                    predicted_time = self.kernel_model.predict(
-                                            x=[fusion_types, op_codes, op_hashes, feature_vectors]) \
-                                                                                        .flatten()[0]
+                    batch_computation_hashes.append(computation_hash)
+                    batch_fusion_type_one_hot.append(fusion_type_one_hot)
+                    batch_op_codes.append(op_codes_in_sample)
+                    batch_op_hashes.append(op_hashes_in_sample)
+                    batch_feature_vectors.append(feature_vectors_in_sample)
+            
+            if batch_computation_hashes:
+                max_sequence_length = max([len(v) for v in batch_op_codes])
+                #                ([len(ft[0])],
+                #    [max_sequence_length],
+                #    [max_sequence_length],
+                #    [max_sequence_length, len(fv[0][0])]),
+                #    []
+                #    ),
+                #    padding_values=(
+                #        (0.0, 0, 0, -1.0), 0.0
+                #    )
+                # pad inputs
+                pad_list(batch_op_codes, max_sequence_length, 0)
+                pad_list(batch_op_hashes, max_sequence_length, 0)
+                pad_list(batch_feature_vectors, max_sequence_length, -1)
+
+                batch_fusion_type_one_hot = np.array(batch_fusion_type_one_hot).astype(np.float32)
+                batch_op_codes = np.array(batch_op_codes).astype(np.int32)
+                batch_op_hashes = np.array(batch_op_hashes).astype(np.int32)
+                batch_feature_vectors = np.array(batch_feature_vectors).astype(np.float32)
+
+                predicted_times = self.kernel_model.predict(
+                                        x=[batch_fusion_type_one_hot, 
+                                            batch_op_codes, 
+                                            batch_op_hashes, 
+                                            batch_feature_vectors]).flatten()
+                
+                for idx, predicted_time in enumerate(predicted_times):
+                    computation_hash = batch_computation_hashes[idx]
                     self.computation_cache[computation_hash] = predicted_time
-                predicted_module_time += predicted_time
-                breakdown_dict["fused"][computation_hash] = predicted_time
+                    predicted_module_time += predicted_time
+                    breakdown_dict["fused"][computation_hash] = predicted_time
+
+            # # run model to predict fused kernel time
+            # for (computation_hash, fusion_type_one_hot, op_codes_in_sample, 
+            #         op_hashes_in_sample, feature_vectors_in_sample) in fused_op_infos:
+            #     if computation_hash in self.computation_cache:
+            #         predicted_time = self.computation_cache[computation_hash]
+            #     else:
+            #         fusion_types = np.expand_dims(np.array(fusion_type_one_hot, dtype=np.float32), 0)
+            #         op_codes = np.expand_dims(np.array(op_codes_in_sample), 0)
+            #         op_hashes = np.expand_dims(op_hashes_in_sample, 0)
+            #         feature_vectors = np.expand_dims(np.array(feature_vectors_in_sample, dtype=np.float32), 0)
+            #         predicted_time = self.kernel_model.predict(
+            #                                 x=[fusion_types, op_codes, op_hashes, feature_vectors]) \
+            #                                                                             .flatten()[0]
+            #         self.computation_cache[computation_hash] = predicted_time
+            #     predicted_module_time += predicted_time
+            #     breakdown_dict["fused"][computation_hash] = predicted_time
 
         except Exception as e:
             traceback.print_exc()
