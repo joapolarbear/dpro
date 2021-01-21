@@ -149,7 +149,8 @@ if __name__ == '__main__':
                 dump_path=clct.pm.path,
                 comm_backend=clct.comm_backend,
                 byteps_graph=clct.byteps_graph,
-                show_queue=args.show_queue)
+                show_queue=args.show_queue,
+                infi_para_update=args.update_infi_para)
         
         def replay_with_delay(idx_, rst, node_name=None):
             logger.info(node_name)

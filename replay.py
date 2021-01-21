@@ -267,6 +267,7 @@ class PeriodicDevice(Device):
             self.device_time += self.period
 
 class PSCommDevice(Device):
+    '''Handles BytePS communication'''
     def __init__(self, device_name, _replayer, op_counter, comm_delay = 0, comm_backend = "NCCL", infi_para=False):
         super().__init__(device_name, _replayer, infi_para=infi_para, comm_backend = comm_backend)
         self.op_counter = op_counter
@@ -323,13 +324,17 @@ class PSCommDevice(Device):
                 exit(0)
 
 class Replayer:
-    def __init__(self, dag, _step_num, leaf_dirs, dump_path, comm_backend, byteps_graph, show_queue=False):
+    def __init__(self, dag, _step_num, leaf_dirs, dump_path, comm_backend, byteps_graph, 
+                infi_para_update=False, show_queue=False):
         self.dag = dag
+        self.preprocess_dag()
         self.step_num = _step_num
         self.leaf_dirs = leaf_dirs
         self.dump_path = dump_path
         self.comm_backend = comm_backend
         self.byteps_graph = byteps_graph
+
+        self.infi_para_update = infi_para_update
 
         self.logger = logger_utils.SingleLogger()
         ### Delay information, the unit of 'delay' field should be ms
@@ -346,6 +351,21 @@ class Replayer:
         self.show_queue = show_queue
         if not self.show_queue:	
             self.queue = []
+
+    def preprocess_dag(self):
+        if self.infi_para_update:
+            bw_nodes = []
+            update_nodes = []
+            for node in self.dag.nodes:
+                if "BW." in node:
+                    bw_nodes.append(node)
+                elif "UPDATE_." in node:
+                    update_nodes.append(node)
+            self.dag.add_node("BW_BARRIER", avg=0)
+            for node in bw_nodes:
+                self.dag.add_edge(node, "BW_BARRIER", avg=0)
+            for node in update_nodes:
+                self.dag.add_edge("BW_BARRIER", node, avg=0)
 
     def pre_prepare(self):
         ''' Initialize nodes that need to be replayed first
@@ -483,6 +503,9 @@ class Replayer:
                 
                 if not in_queue_type:
                     device_id = gen_long_name(pid, cat)
+        elif "UPDATE" in n and self.infi_para_update:
+            # update node, generate a new device
+            device_id = n
         else:
             device_id = gen_long_name(pid, cat)
 
@@ -526,7 +549,7 @@ class Replayer:
         ### Ininitalize the execution graph as the depdency graph
         self.exct_dag = self.dag.copy()
 
-    def dump_critical_path(self, file, critical_path):
+    def dump_critical_path(self, file, critical_path, prefix=None):
         rst = {
             "traceEvents": [],
             "displayTimeUnit": "ms"
@@ -537,7 +560,11 @@ class Replayer:
             else:
                 trace["name"] = "N"
             rst["traceEvents"].append(trace)
-        with open(os.path.join(self.dump_path, file), 'w') as f:
+        if prefix is None:
+            dump_path = os.path.join(self.dump_path, file)
+        else:
+            dump_path = os.path.join(prefix, file)
+        with open(dump_path, 'w') as f:
             json.dump(rst, f)
 
     def output_traces(self, _filename=None):

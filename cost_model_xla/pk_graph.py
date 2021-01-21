@@ -80,21 +80,22 @@ def contract_nodes_nx(graph: nx.DiGraph, nodes_to_contract: list):
         G.add_edge(new_node_name, succ)
     return new_node_name
 
-def subgraph_partition_connected_nx(subgraph, size_limit=10):
+def subgraph_partition_connected_nx(subgraph, size_limit=100):
     split_plans = []
     pkg = PKGraph(subgraph)
+    source_nodes = [node for node in subgraph.nodes if subgraph.in_degree(node) == 0]
     sp = nx.Graph()
-    sp.add_edges_from(nx.dfs_edges(subgraph.to_undirected()))
+    sp.add_edges_from(nx.dfs_edges(subgraph.to_undirected(), source=random.sample(source_nodes, k=1)[0]))
     if len(sp.edges) > size_limit:
         sampled_edges = random.sample(list(sp.edges), k=size_limit)
     else:
         sampled_edges = list(sp.edges)
     for (u, v) in sampled_edges:
-        spt = sp.copy()
-        spt.remove_edge(u, v)
-        a = nx.dfs_preorder_nodes(spt, source=u)
-        b = nx.dfs_preorder_nodes(spt, source=v)
+        sp.remove_edge(u, v)
+        a = nx.dfs_preorder_nodes(sp, source=u)
+        b = nx.dfs_preorder_nodes(sp, source=v)
         split_plans.append((tuple(a), tuple(b)))
+        sp.add_edge(u, v)
     valid_split_plans = []
     for splits in split_plans:
         plan_valid = True
@@ -109,6 +110,20 @@ def subgraph_partition_connected_nx(subgraph, size_limit=10):
         if plan_valid:
             valid_split_plans.append(splits)
     return valid_split_plans
+
+def subgraph_partition_connected_nx_using_topo(subgraph, size=100):
+    split_plans = set()
+    topo_order_nodes = list(nx.topological_sort(subgraph))
+    size = min(size, len(topo_order_nodes) - 1)
+    for _ in range(size):
+        sp_idx = random.randint(1, len(topo_order_nodes) - 1)
+        part_a = topo_order_nodes[:sp_idx]
+        # part_b = topo_order_nodes[sp_idx:], but we do not care about that part
+        subgraph_a = subgraph.subgraph(part_a)
+        nodes_in_a = max(nx.weakly_connected_components(subgraph_a), key=len)
+        nodes_in_b = [node for node in subgraph.nodes if node not in nodes_in_a]
+        split_plans.add((tuple(nodes_in_a), tuple(nodes_in_b)))
+    return list(split_plans)
 
 class PKGraph(object):
     def __init__(self, nx_graph=None, nx_graph_reference=None, _init_copy = False):

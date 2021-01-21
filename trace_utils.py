@@ -268,10 +268,10 @@ def parse_cat_fine_grained(name_):
         return "Comm.PULL_RES"
     elif "I/O" in name_:
         ret_cat = "I/O"
-    elif "FW" in name_:
-        ret_cat = "operator.FW"
     elif "BW" in name_:
         ret_cat = "operator.BW"
+    elif "FW" in name_:
+        ret_cat = "operator.FW"
     elif "COMM" in name_:
         ret_cat = "operator.COMM"
     elif "COMP" in name_:
