@@ -459,6 +459,11 @@ class Collector(object):
         first_op = None
         for trace in traces:
             ### ignore digit
+            if "<<" in trace["name"] and ">>" in trace["name"]:
+                tmp = trace["name"].split("<<")
+                trace["name"] = tmp[0] + tmp[1].split(">>")[1]
+                trace["args"]["name"] = trace["name"]
+            
             if re.match("[^.]+\.[0-9+]+\.(SEND|RECV)", trace["name"]) is None:
                 continue
 
@@ -654,6 +659,42 @@ class Collector(object):
                     _append_trace(ret, "%s.%s"%(process_name, op_name), ts, dur, process_name, "debug", input0)
             else:
                 pass
+                
+        ### TODO (hphu): delete after correcting Horovod profiling
+        traces = sorted(ret, key=lambda x: x["ts"], reverse=False)
+        last_sync_op = None
+        ret = []
+        for trace in traces:
+            if "Sync" not in trace["name"]:
+                ret.append(trace)
+                continue
+        
+            tensor_id_str = trace["name"].split(".")[1]
+            ts, dur = trace["ts"], trace["dur"]
+            
+            # if pid == "host0.rank0":
+            #     print("-> {}".format(tensor_id_str))
+
+            if last_sync_op is not None:
+                prev_tensor_ids, prev_ts, prev_dur = last_sync_op
+                overlapping_len = max(0, min(prev_ts + prev_dur, ts + dur) - max(prev_ts, ts))
+                overlapping_ratio = overlapping_len / (max(prev_ts + prev_dur, ts + dur) - min(prev_ts, ts))
+                if overlapping_ratio > 0.9:
+                    ### sync together
+                    prev_tensor_ids += "+" + tensor_id_str
+                    last_sync_op = [prev_tensor_ids, prev_ts, prev_dur]
+                else:
+                    ### next sync op
+                    prev_tensor_ids = "+".join([str(id_) for id_ in sorted([int(id_str) for id_str in prev_tensor_ids.split("+")])])
+                    # if pid == "host0.rank0":
+                    #     print("add {}".format(prev_tensor_ids))
+                    _append_trace(ret, "Comm.%s.Sync" % prev_tensor_ids, prev_ts, prev_dur, "Comm", "Comm", None)       
+                    last_sync_op = [tensor_id_str, ts, dur]
+            else:
+                last_sync_op = [tensor_id_str, ts, dur]
+        if last_sync_op is not None:
+            prev_tensor_ids, prev_ts, prev_dur = last_sync_op
+            _append_trace(ret, "Comm.%s.Sync" % prev_tensor_ids, prev_ts, prev_dur, "Comm", "Comm", None)
         return ret
 
     def _collect_nccl_graph(self, tmp_pm=None, pid=None, host_id=None):
@@ -1088,6 +1129,8 @@ class Collector(object):
                     ### TODO (huhanpeng): test whether to use this threshold
                     if gap < 0:
                         continue
+                    if self.comm_backend == "NCCL" and gap > prev_e["dur"]:
+                        gap = 10
                     if gap < gap_threshold or self.comm_backend == "NCCL":
                         prev_name = self.traceM.ret_unique_name(prev_e)
                         if prev_name not in self.trail_dag.nodes:
@@ -1209,12 +1252,16 @@ class Collector(object):
             ### Add duration to the node as an attribute
             cat = parse_cat_fine_grained(node_)
             if cat == "Comm.other":
-                ### for Sync|Queue|MEMCPY_IN_FUSION_BUFFER|MEMCPY_OUT_FUSION_BUFFER sub operators
+                prefix, rawname, _, suffix = parse_allinfo_from_name(node_)
+                op_type, op_name, sub_op = rawname.split(".")
+                if "Sync" in node_:
+                    ### TODO (hphu): estimate sync time
+                    ref_node = gen_long_name("host0.rank0", rawname, suffix)
+                    self.trail_dag.nodes[node_]["avg"] = self.traceM.lookup_stat(None, None, ref_node) 
+                    assert self.trail_dag.nodes[node_]["avg"] != 0, (node_)
+                ### for Queue|MEMCPY_IN_FUSION_BUFFER|MEMCPY_OUT_FUSION_BUFFER sub operators
                 ### there are not corresponding fused traces, instead, each tensor has its own sub operator traces
                 ### when building the graph, use the average duration of corresponding tensor as the fused operator time 
-                prefix, rawname, _, _ = parse_allinfo_from_name(node_)
-                op_type, op_name, sub_op = rawname.split(".")
-
                 tensor_list = re.findall("[0-9]+", op_name)
                 ### this tensor_list has been sorted
                 # tensor_list = sorted([int(e) for e in tensor_list])
@@ -1226,7 +1273,7 @@ class Collector(object):
                 assert len(avgs) > 0
                 self.trail_dag.nodes[node_]["avg"] = sum(avgs) / len(avgs)
             else:
-                self.trail_dag.nodes[node_]["avg"] = self.traceM.lookup_stat(None, None, node_)
+                self.trail_dag.nodes[node_]["avg"] = self.traceM.lookup_stat(None, None, node_)     
 
     def add_gaps_clip_events(self):
         ''' According to the traces and DAG, add a 'gap' field for each edge (u, v)

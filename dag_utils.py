@@ -246,26 +246,6 @@ class DAGManager:
                 ### add virtual Comm edges for single rank casts
                 self.wrap_add_dag(self.add_prefix(u), self.add_prefix(v))
                 return
-            if self.byteps_graph is not None:
-                wk_rank = int(self.wk_prefix.split("_")[-1])
-                # add push request dependency
-                gra_name = u.split("Comm.")[1]
-                push_req_nodes = self.byteps_graph.get_push_req_node(wk_rank, gra_name)
-                for pre_node in pre_nodes:
-                    prev_name = self.add_prefix(pre_node)
-                    for push_req_node in push_req_nodes:
-                        self.wrap_add_dag(prev_name, push_req_node)
-                # add update dependencies
-                pull_res_nodes = self.byteps_graph.get_pull_res_node(wk_rank, gra_name)
-                for pull_res_node in pull_res_nodes:
-                    if args_.update_barrier:
-                        self.wrap_add_dag(pull_res_node, self.add_prefix("UPDATE_CAL"))
-                    else:
-                        if self.platform == "MXNET":
-                            for update_id in post_nodes:
-                                self.wrap_add_dag(pull_res_node, self.add_prefix("UPDATE_%d"%update_id))
-                        else:
-                            raise NotImplementedError()
             elif self.nccl_graph is not None and self.nccl_graph.algo == NCCL_ALGO.RING:
                 ### Combine chunkId, sliceId and channelId into the graph for RING algorithm
                 chunkNum, sliceNum, channelNum, loopNum = self.nccl_graph.get_IDnum(u)
@@ -276,21 +256,23 @@ class DAGManager:
                                 if self.nccl_graph.is_first_step(chunkId):
                                     ### The first step
                                     ### Connect BW nodes to Sync, if this is a fused tensor, there should be multiple BW nodes
-                                    next_rawname = gen_long_name(None, "%s.%s"%(u, queue_type_list[0]), suffix=None)
-                                    for pre_node in pre_nodes:
-                                        self.wrap_add_dag(self.add_prefix(pre_node), self.add_prefix(next_rawname))
+                                    # next_rawname = gen_long_name(None, "%s.%s"%(u, queue_type_list[0]), suffix=None)
+                                    # for pre_node in pre_nodes:
+                                    #     self.wrap_add_dag(self.add_prefix(pre_node), self.add_prefix(next_rawname))
+
+                                    next_rawname = pre_nodes[0]
                                     
-                                    ### Connect all ranks' NEGOTIATE_ALLREDUCE to the first Send
+                                    ### Connect all ranks' Sync to the first Send
                                     prev_rawname = next_rawname
                                     prev_nodes_prefix = self.nccl_graph.bw_to_first_send(channelId)
-                                    next_rawname = gen_long_name(None, "%s.%s"%(u, queue_type_list[1]), suffix=None)
+                                    next_rawname = "%s.%s"%(u, queue_type_list[1])
                                     for _prefix in prev_nodes_prefix:
                                         prev_name = self.add_prefix(prev_rawname, _prefix=_prefix)
                                         self.wrap_add_dag(prev_name, self.add_prefix(next_rawname))
 
                                     ### Queue --> MEMCPY_IN_FUSION_BUFFER
                                     prev_rawname = next_rawname 
-                                    comm_in_name = gen_long_name(None, "%s.%s"%(u, queue_type_list[2]), suffix=None)
+                                    comm_in_name = "%s.%s"%(u, queue_type_list[2])
                                     self.wrap_add_dag(self.add_prefix(prev_rawname), self.add_prefix(comm_in_name))
 
                                     ### MEMCPY_IN_FUSION_BUFFER to the first Send
@@ -379,8 +361,10 @@ class DAGManager:
                                         if self.wrap_in_dag(self.add_prefix(next_rawname)):
                                                 ### has been processed, no edges shoud be added
                                                 return
-                                        for pre_node in pre_nodes:
-                                            self.wrap_add_dag(self.add_prefix(pre_node), self.add_prefix(next_rawname))
+                                        # for pre_node in pre_nodes:
+                                        #     self.wrap_add_dag(self.add_prefix(pre_node), self.add_prefix(next_rawname))
+
+                                        next_rawname = pre_nodes[0]
 
                                         prev_name_base = next_rawname
                                         next_rawname = gen_long_name(None, "%s.SEND"%u, suffix="%d_%d_%d_%d_%d_%d"%(loopId, channelId, chunkId, sliceId, rank, parent))
@@ -532,6 +516,7 @@ class DAGManager:
         queue_type_list = QueueType("NCCL").ret_list()
 
         done_comm = []
+        done_sync = []
         for u, v in mygraph.edges:
             pre_nodes, post_nodes = [], []
             if "Comm." in u and self.nccl_graph is not None:
@@ -543,28 +528,43 @@ class DAGManager:
                     tensor_id = int(tensor_name)
                 else:
                     raise ArgumentError("Unsupported platform {}.".format(self.platform))
-                nccl_grp_name = self.nccl_graph.tensor2group_name(tensor_id)
+                try:
+                    nccl_grp_name = self.nccl_graph.tensor2group_name(tensor_id)
+                    nccl_grp_name_sync = self.nccl_graph.tensor2group_name_sync(tensor_id, self.prefix)
+                except TypeError:
+                    ### some tensors do not have grads
+                    continue
+
+                ### handle the edges from BW to Comm.xxx.Sync
+                sync_op = "Comm." + nccl_grp_name_sync + ".Sync"
+                if sync_op not in done_sync:
+                    for _id in nccl_grp_name_sync.split("+"):
+                        if self.platform == "MXNET":
+                            co_comm_op = "Comm." + para_dict.tensor_id_to_name(int(_id))   # e.g., Comm.bertmodel0_word_embed_embedding0_weight
+                        elif self.platform == "TENSORFLOW":
+                            co_comm_op = "Comm.{}".format(_id)
+                        else:
+                            raise ArgumentError("Unsupported platform {}.".format(self.platform))
+                        prev_bw_nodes = [_u for _u, _ in mygraph.in_edges(co_comm_op)]
+                        # assert len(prev_bw_nodes) == 1, (co_comm_op, prev_bw_nodes)
+                        prev_rawname = prev_bw_nodes[0]         # no prefix, start with BW.
+                        self.wrap_add_dag(self.add_prefix(prev_rawname), self.add_prefix(sync_op))
+                    done_sync.append(sync_op)
+                
                 ### take the fused name as the node name, e.g., Comm.1+2+3
                 u = "Comm." + nccl_grp_name
                 if u in done_comm:
                     continue
+                pre_nodes =[sync_op]
                 _first = True
                 for _id in nccl_grp_name.split("+"):
-                    if self.platform == "MXNET":
-                        co_comm_op = "Comm." + para_dict.tensor_id_to_name(int(_id))   # e.g., Comm.bertmodel0_word_embed_embedding0_weight
-                    elif self.platform == "TENSORFLOW":
-                        co_comm_op = "Comm.{}".format(_id)
-                    else:
-                        raise ArgumentError("Unsupported platform {}.".format(self.platform))
-                    prev_bw_nodes = [_u for _u, _ in mygraph.in_edges(co_comm_op)]
-                    # assert len(prev_bw_nodes) == 1, (co_comm_op, prev_bw_nodes)
-                    prev_rawname = prev_bw_nodes[0]         # no prefix, start with BW.
-                    pre_nodes.append(prev_rawname)
                     if self.platform == "MXNET":
                         # e.g., from tensor 256 to update 140
                         update_id = para_dict.tensor_id2update_id(int(_id))
                         post_nodes.append(update_id)
                     elif self.platform == "TENSORFLOW":
+                        ### TODO (hphu): for a fused tensor, it corresponds to multiple updates which run cocurrently
+                        # Current, only select one as the update operator
                         if _first:
                             post_update_nodes = list(mygraph.successors(co_comm_op))
                             post_nodes += post_update_nodes
