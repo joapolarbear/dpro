@@ -235,7 +235,7 @@ if __name__ == '__main__':
                 json.dump(rst, f)
         elif args.sub_option == "theory":
             replayer.daydream_dag(clct.para_dict)
-            replayer.replay()
+            replayer.replayAndDelay(None, _output=False, _filename="./replay_daydream.json")
 
     if args.option == "collect":
         if args.sub_option == "combine":

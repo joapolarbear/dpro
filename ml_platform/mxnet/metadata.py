@@ -142,7 +142,7 @@ class MetaInfo:
                         "Conv2D node {} has undefined parameter {}".format(node, succ_))
         if wei_node is None:
             raise ValueError("No variable/weights for {}".format(node))
-        return self.name2shape[wei_node]
+        return self.name2shape[wei_node], bias_node
     
     def get_hyper_para(self):
         for node in self.name2shape:
@@ -168,7 +168,7 @@ class MetaInfo:
                 H = W = input_shape[2]
                 C = input_shape[3] if input_shape[1] == H else input_shape[1]
 
-                wei_shape = self.get_wei_shape(node)
+                wei_shape, bias_node = self.get_wei_shape(node)
                 # TODO (huhanpeng): still assume the kernel is a square
                 if wei_shape[2] == wei_shape[3]:
                     R = S = wei_shape[2]
@@ -189,7 +189,8 @@ class MetaInfo:
                         assert input_shape[0] == B, (node, input_shape, output_shape)
                         C_in = input_shape[1]   
                     elif len(input_shape) == 3:
-                        C_in, C_out = self.get_wei_shape(node)
+                        weight_shape, _ = self.get_wei_shape(node)
+                        C_in, C_out = weight_shape
                         if C_in == input_shape[0] * input_shape[2]:
                             assert input_shape[1] == B, (node, input_shape, output_shape)
                         elif C_in == input_shape[2]:

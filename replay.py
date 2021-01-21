@@ -417,11 +417,11 @@ class Replayer:
         if _output:
             self.output_traces()
         
-    def replayAndDelay(self, delay_dict_, _ouput=False, _filename=None):
+    def replayAndDelay(self, delay_dict_, _output=False, _filename=None):
         self.reset_replayer()
         self.delay_dict = delay_dict_
         self.replay_one_iter(0)
-        if _ouput:
+        if _output:
             self.output_traces(_filename=_filename)
         return self.step_end_time
 
@@ -568,6 +568,8 @@ class Replayer:
                 "meta info is None, --metadata_path should be set: {} is given".format(args_.metadata_path))
         _dag = nx.DiGraph()
 
+        DAYDREAM_BW_RATIO = 0.85
+
         def wrap_add_edge(u, v):
             _dag.add_edge(u, v)
 
@@ -602,7 +604,7 @@ class Replayer:
                     ### Comm --> UPDATE
                     wrap_add_edge(comm_op, update_op)
                     tensor_id = int(tensor_id_str)
-                    bw_in_g = 100
+                    bw_in_g = 100 * DAYDREAM_BW_RATIO
                     tensor_size = metadata.tensor_id2size(tensor_id)
                     _dag.nodes[comm_op]["avg"] = tensor_size / (bw_in_g * 1e6)
                     fused_size += tensor_size
