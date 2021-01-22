@@ -890,6 +890,7 @@ class Optimizer:
         search_space = []
         weights = []
         ### OOM
+        # if OOM, only search memory cost model
         if self.mem_usage > self.memory_budget:
             SingleLogger().warn("Estimated memory usage exceeds memory budget: {:.2f}GB > {:.2f}GB".format(
                 self.mem_usage, self.memory_budget))
@@ -904,10 +905,10 @@ class Optimizer:
             SingleLogger().info("Estimated memory usage does not exceed memory budget: {:.2f}GB < {:.2f}GB".format(
                 self.mem_usage, self.memory_budget))
 
-        for _cost_model in self.cst_md_mng.cost_model_list:
-            ss_, wei_ = _cost_model.init_search_space(candidates, _dag, _pkg)
-            search_space += ss_
-            weights += wei_
+            for _cost_model in self.cst_md_mng.cost_model_list:
+                ss_, wei_ = _cost_model.init_search_space(candidates, _dag, _pkg)
+                search_space += ss_
+                weights += wei_
         # SingleLogger().info("Init search space len={} from {} candidates, prune {}".format(len(search_space), len(candidates), prun_cnt))
         # SingleLogger().info("Time spent for spanning tree: {}".format(sum(time_spanning_trees)/ len(time_spanning_trees)))
         # SingleLogger().info("Time spent for source/sink: {}".format(sum(time_st)/ len(time_st)))
