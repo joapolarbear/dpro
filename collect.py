@@ -969,7 +969,10 @@ class Collector(object):
             if self.comm_backend == "NCCL":
                 self.nccl_graph.load(nccl_graph_path)
             self.trail_dag = nx.read_gml(trail_dag_path)
-            self.dag = nx.read_gml(self.pm.search(FileName.LOCAL_DFG))
+            try:
+                self.dag = nx.read_gml(self.pm.search(FileName.LOCAL_DFG))
+            except TypeError:
+                pass
 
         return iter_time
         

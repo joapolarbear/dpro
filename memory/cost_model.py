@@ -1,5 +1,5 @@
 from cost_model.base import _BaseCostModel
-from recomputation import get_recomputation_edited_graph
+from .recomputation import get_recomputation_edited_graph
 
 
 class MemoryCostModel(_BaseCostModel):
