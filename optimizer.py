@@ -823,7 +823,7 @@ class Optimizer:
                             comm_backend=self.clct.comm_backend,
                             byteps_graph=self.clct.byteps_graph)
         step_end_time_ms = [t / 1000 for t in replayer.replayAndDelay(
-            None, _ouput=_output, _filename=_filename).values()]
+            None, _output=_output, _filename=_filename).values()]
         # print("Evaluate time {}".format(time.time() - t))
         
         estimated_memory_usage = self.memory_estimator.estimate(_dag, self.clct.para_dict)
@@ -1058,6 +1058,22 @@ class MCMCOptimizer(Optimizer):
                     pickle.dump([G, PKG, self.heat_window_size, self.heat_history,
                                  self.best_cost, self.best_strategy, self.step, self.trajectory], f)
 
+        '''
+        ### Test some strategies
+        grp_num_to_test = [1, 10, 20, 40, 80]
+        search_space = [("++", grp_num, None) for grp_num in grp_num_to_test]
+        for st in search_space:
+            G_star = G.copy()
+            PKG_star = PKG.copy()
+            nodes_introduced, nodes_removed = self.apply_strategies(G_star, PKG_star, st)
+            self.cost_star, self.exct_dag_star, self.mem_usage_star = self.evaluate(
+                G_star, _filename=os.path.join(ROOT_PATH, "searched_graph/grp_num_{}.json".format(st[1])))
+            SingleLogger().info("\033[94m Group Num: {}: default fusion: {} ms, Cur cost: {} ms \033[0m".format(
+                st[1], self.cur_cost, self.cost_star))
+            self.cost_model_flush(False)
+        raise
+        '''
+        
         while len(search_space) > 0:
             invalid_strategies = set()
             while True and len(search_space) > 0:

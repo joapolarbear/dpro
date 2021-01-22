@@ -18,6 +18,8 @@ FUSION_RATIO = 1
 # N <= MAX_PARTITION_NUM
 MAX_PARTITION_NUM = 5
 ROOT_PATH = os.path.join(args_.workspace, ".opt_ws")
+IGNORE_SYNC = True
+
 class _TensorFusionCM(_BaseCostModel):
     ''' This is a cost model for HOROVOD tensor fusion
     '''
@@ -453,8 +455,13 @@ class _TensorFusionCM(_BaseCostModel):
                     self._parse_tensor_group_info(all_infos[1][2])["size"]]
                 fused_time = FUSION_RATIO * self._get_node_attr(
                     [u_, v_][base_idx], "avg") * (sizes[0] + sizes[1]) / sizes[base_idx]
-            elif all_infos[0][3] in ["QUEUE", "Sync"]:
+            elif all_infos[0][3] in ["QUEUE"]:
                 fused_time = FUSION_RATIO * max(self._get_node_attr(u_, "avg"), self._get_node_attr(v_, "avg"))
+            elif all_infos[0][3] in ["Sync"]:
+                if IGNORE_SYNC:
+                    fused_time = 0
+                else:
+                    fused_time = FUSION_RATIO * max(self._get_node_attr(u_, "avg"), self._get_node_attr(v_, "avg"))
             else:
                 raise ValueError("Unrecognized sub op name {} ({})".format(
                     all_infos[0][3], u_))
@@ -589,8 +596,10 @@ class _TensorFusionCM(_BaseCostModel):
                 if all_infos[3] in ["SEND", "RECV", "MEMCPY_IN_FUSION_BUFFER", "NCCL_ALLREDUCE", "MEMCPY_OUT_FUSION_BUFFER"]:
                     part_time = self._get_node_attr(u, "avg") * grp_infos[idx]["size"] \
                         / ((grp_infos[0]["size"] + grp_infos[1]["size"]) * FUSION_RATIO)
-                elif all_infos[3] in ["QUEUE", "Sync"]:
+                elif all_infos[3] in ["QUEUE"]:
                     part_time = self._get_node_attr(u, "avg") / FUSION_RATIO
+                elif all_infos[3] in ["Sync"]:
+                    part_time = self._get_node_attr(u, "avg") / FUSION_RATIO if not IGNORE_SYNC else 0
                 else:
                     raise ValueError("Unrecognized sub op name {} ({})".format(
                         all_infos[3], u))
@@ -693,6 +702,11 @@ class _TensorFusionCM(_BaseCostModel):
                 pickle.dump([G, PKG, trajectory, self.node_attr_cache, self.tensor_group_info, self.cur_tensor2group, self.num_grp, self.history_num_grp], f)
             SingleLogger().info("Graph cache dumped to {}.".format(init_ckpt_path))
         
+        if IGNORE_SYNC:
+            for n in G.nodes():
+                if "Sync" in n:
+                    G.nodes[n]["avg"] = 0
+
         self.dump_tensor_grp_mapping(_file_name="tensor_fusion_grp_mapping_init.json")
         self.cache_change = []
         return G, PKG, []
@@ -708,3 +722,4 @@ class _TensorFusionCM(_BaseCostModel):
 
         with open(os.path.join(ROOT_PATH, file_name), 'w') as f:
             json.dump({"mapping": list(tensor_grps)}, f)
+
