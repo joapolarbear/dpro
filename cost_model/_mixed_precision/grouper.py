@@ -1,4 +1,4 @@
-from cost_model_amp.amp_cost_model import CurveFiter
+from .amp_cost_model import CurveFiter
 import matplotlib.pyplot as plt
 import seaborn as sns
 import numpy as np

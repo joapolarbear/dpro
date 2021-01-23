@@ -18,7 +18,6 @@ from tqdm import tqdm, trange
 from replay import Replayer
 from trace_utils import *
 from dag_utils import *
-from cost_model_amp.amp_pred import AMPPredictor
 from cost_model_xla.pk_graph import PKGraph, PKGraphCycleError, contract_nodes_nx, \
                     defuse_nodes_inplace_nx, postorder_contract_nx, \
                     subgraph_partition_connected_nx_using_topo, get_concated_names
@@ -27,6 +26,7 @@ from memory import MemoryEstimator
 from memory.cost_model import MemoryCostModel
 
 from cost_model.base import _BaseCostModel
+from cost_model.mixed_precision import _AMPCostModel
 from cost_model.tensor_fusion import _TensorFusionCM
 
 class GraphExpand(Enum):
@@ -162,7 +162,7 @@ class _XLACostModel(_BaseCostModel):
     def load_ckpt(self):
         if os.path.isfile(self.ckpt_path):
             with open(self.ckpt_path, "rb") as f:
-                node_attr_cache = pickle.load(f)[0]
+                node_attr_cache = pickle.load(f)
                 self.node_attr_cache = node_attr_cache
 
     def checkpoint(self):
@@ -697,80 +697,6 @@ class _XLACostModel(_BaseCostModel):
         raise RuntimeError()
 
 
-class _AMPCostModel(_BaseCostModel):
-    def __init__(self, opt):
-        super().__init__(opt)
-        ### AMP predictor
-        self.amp_predictor = AMPPredictor(self.opt.clct.para_dict)
-        self.token = [">", "<"]
-        self.meta_info = self.opt.clct.para_dict
-
-    def init_search_space(self, candidates, _dag: nx.DiGraph, _pkg: PKGraph):
-        search_space = []
-        weights = []
-        for n, l in candidates:
-            # node heat
-            heat = self.opt._get_heat_from_history(n)
-            ### Nodes that have never been fused
-            # cat = parse_cat_fine_grained(n)
-            # pid = parse_pid_from_name(n)
-
-            ### check if mixed precision can be used for this node
-            if self.amp_predictor.is_need_amp(_dag, n):
-                search_space.append((">", n, None))
-                weights.append(l)
-
-        # return [(">", "host1.rank0->BW.gradients/resnet50/conv2_block3_1_conv/Conv2D_grad/Conv2DBackpropFilter", None)], [1]
-        SingleLogger().info("MP Cost Model init {} strategies.".format(len(search_space)))
-        return search_space, weights
-
-    def apply(self, s, __dag, __pkg):
-        op, target, _ = s
-        nodes_introduced = self.amp_predictor.quantize(__dag, target)
-        ### apply this strategy to other GPUs' corresponding operators
-        ### we assume data parallel, use the same model
-        on_other_ranks = self.opt._debug_convert_to_other_machines(target)
-        for target in on_other_ranks:
-            nodes_introduced += self.amp_predictor.quantize(__dag, target)
-        return True, nodes_introduced, []
-
-    def checkpoint(self):
-        self.amp_predictor.checkpoint()
-
-    def load_ckpt(self):
-        self.amp_predictor.load_ckpt()
-
-    def load_init_ckpt(self):
-        init_ckpt_path = os.path.join(ROOT_PATH, "amp_init_ckpt.pickle")
-        if os.path.isfile(init_ckpt_path):
-            with open(init_ckpt_path, "rb") as f:
-                G, PKG, trajectory, _cast_cnt, _num_nonvar_casts_to_fp16, _op_status = pickle.load(f)
-                self.amp_predictor.cast_cnt = _cast_cnt
-                self.amp_predictor.num_nonvar_casts_to_fp16 = _num_nonvar_casts_to_fp16
-                self.amp_predictor.op_status = _op_status
-            SingleLogger().info("Reading init graph from cache.")
-        else:
-            G = self.dag.copy()
-            PKG = PKGraph(G)
-
-            source_nodes = [n for n in G.nodes() if "host0.rank0" in n]
-            trajectory = []
-            for n in tqdm(source_nodes, total=len(source_nodes)):
-                if self.amp_predictor.is_need_amp(G, n):
-                    s = (">", n, None)
-                    trajectory.append(s)
-                    self.apply(s, G, PKG)
-
-            with open(init_ckpt_path, "wb") as f:
-                pickle.dump([G, PKG, trajectory, self.amp_predictor.cast_cnt,
-                             self.amp_predictor.num_nonvar_casts_to_fp16, self.amp_predictor.op_status], f)
-            SingleLogger().info("Graph cache dumped to {}.".format(init_ckpt_path))
-
-        SingleLogger().info("Successfully initialized mixed precision strategy with {} cast(s).".format(
-            self.amp_predictor.num_nonvar_casts_to_fp16))
-        return G, PKG, trajectory
-
-
 class CostModelManager:
     def __init__(self, opt):
         if args_.sub_option == "amp":
@@ -796,6 +722,7 @@ class CostModelManager:
             for _tok in cm.token:
                 assert _tok not in self.strategy2model
                 self.strategy2model[_tok] = cm
+
 
 class Optimizer:
     def __init__(self, collector):
@@ -932,7 +859,7 @@ class Optimizer:
                             byteps_graph=self.clct.byteps_graph,
                             infi_para_update=args_.update_infi_para)
         step_end_time_ms = [t / 1000 for t in replayer.replayAndDelay(
-            None, _ouput=_output, _filename=_filename).values()]
+            None, _output=_output, _filename=_filename).values()]
         # print("Evaluate time {}".format(time.time() - t))
         if _crit_filename is not None:
             prefix, crit_file_name = os.path.split(_crit_filename)
@@ -1003,6 +930,7 @@ class Optimizer:
         search_space = []
         weights = []
         ### OOM
+        # if OOM, only search memory cost model
         if self.mem_usage > self.memory_budget:
             SingleLogger().warn("Estimated memory usage exceeds memory budget: {:.2f}GB > {:.2f}GB".format(
                 self.mem_usage, self.memory_budget))
@@ -1017,10 +945,10 @@ class Optimizer:
             SingleLogger().info("Estimated memory usage does not exceed memory budget: {:.2f}GB < {:.2f}GB".format(
                 self.mem_usage, self.memory_budget))
 
-        for _cost_model in self.cst_md_mng.cost_model_list:
-            ss_, wei_ = _cost_model.init_search_space(candidates, _dag, _pkg)
-            search_space += ss_
-            weights += wei_
+            for _cost_model in self.cst_md_mng.cost_model_list:
+                ss_, wei_ = _cost_model.init_search_space(candidates, _dag, _pkg)
+                search_space += ss_
+                weights += wei_
         # SingleLogger().info("Init search space len={} from {} candidates, prune {}".format(len(search_space), len(candidates), prun_cnt))
         # SingleLogger().info("Time spent for spanning tree: {}".format(sum(time_spanning_trees)/ len(time_spanning_trees)))
         # SingleLogger().info("Time spent for source/sink: {}".format(sum(time_st)/ len(time_st)))
@@ -1128,12 +1056,12 @@ class MCMCOptimizer(Optimizer):
                 G, PKG, self.heat_window_size, self.heat_history, self.best_cost, self.best_strategy, self.step, self.trajectory = pickle.load(f)
             SingleLogger().info("Loading checkpoint of step {}".format(self.step))
             self.cur_cost, self.exct_dag, self.mem_usage = self.evaluate(G)
-            self.cost_star = self.mem_usage_star = None
+            self.cost_star = self.exct_dag_star = self.mem_usage_star = None
         else:
             for node in G.nodes:
                 self.heat_history[node] = [(0, 0)] * self.heat_window_size
             self.cur_cost, self.exct_dag, self.mem_usage = self.evaluate(G)
-            self.cost_star = self.mem_usage_star = None
+            self.cost_star = self.exct_dag_star = self.mem_usage_star = None
             self.best_cost = self.cur_cost
             self.best_strategy = self.trajectory
             self.step = 0
@@ -1172,6 +1100,22 @@ class MCMCOptimizer(Optimizer):
                     pickle.dump([G, PKG, self.heat_window_size, self.heat_history,
                                  self.best_cost, self.best_strategy, self.step, self.trajectory], f)
 
+        '''
+        ### Test some strategies
+        grp_num_to_test = [1, 10, 20, 40, 80]
+        search_space = [("++", grp_num, None) for grp_num in grp_num_to_test]
+        for st in search_space:
+            G_star = G.copy()
+            PKG_star = PKG.copy()
+            nodes_introduced, nodes_removed = self.apply_strategies(G_star, PKG_star, st)
+            self.cost_star, self.exct_dag_star, self.mem_usage_star = self.evaluate(
+                G_star, _filename=os.path.join(ROOT_PATH, "searched_graph/grp_num_{}.json".format(st[1])))
+            SingleLogger().info("\033[94m Group Num: {}: default fusion: {} ms, Cur cost: {} ms \033[0m".format(
+                st[1], self.cur_cost, self.cost_star))
+            self.cost_model_flush(False)
+        raise
+        '''
+        
         while len(search_space) > 0:
             invalid_strategies = set()
             while True and len(search_space) > 0:
@@ -1222,10 +1166,10 @@ class MCMCOptimizer(Optimizer):
                         # if "+" in self.cst_md_mng.strategy2model:
                         #     self.cst_md_mng.strategy2model["+"]._dump_cluster_mapping(G, os.path.join(ROOT_PATH, "searched_graph/cluster_mapping_{}.txt".format(self.step)))
                     else:
-                        self.cost_star, self.exct_dag, self.mem_usage_star = self.evaluate(G_star)
+                        self.cost_star, self.exct_dag_star, self.mem_usage_star = self.evaluate(G_star)
                     if successful_strategies < step_size:
                         candidates, _ = self.candidate_selection(
-                            G_star, topk=None, critical_path=self.wrap_critical_path(self.exct_dag))
+                            G_star, topk=None, critical_path=self.wrap_critical_path(self.exct_dag_star))
                         search_space, weights = self.init_search_space(
                             candidates, G_star, PKG_star)
                     invalid_strategies = set()
@@ -1233,12 +1177,6 @@ class MCMCOptimizer(Optimizer):
                     if len(msg) > 200:
                         msg = msg[:200] + "... successfully applied."
                     SingleLogger().info(msg + "\033[0m")
-
-                # ### Start to replay
-                # if self.step % 20 == 0:
-                #     cost_star, self.exct_dag, mem_usage = self.evaluate(G_star, _filename=os.path.join(ROOT_PATH, "searched_graph/{}.json".format(self.step)))
-                # else:
-                #     cost_star, self.exct_dag, mem_usage = self.evaluate(G_star)
 
                 # if step < 200:
                 #     MCMC_BETA = 1
@@ -1297,6 +1235,7 @@ class MCMCOptimizer(Optimizer):
                     PKG = PKG_star
                     self.trajectory += strategy_history_in_step
                     self.cur_cost = self.cost_star
+                    self.exct_dag = self.exct_dag_star
                     self.mem_usage = self.mem_usage_star
 
                     ### clean up heat history for removed nodes
@@ -1314,7 +1253,7 @@ class MCMCOptimizer(Optimizer):
                         
                         if "++" in self.cst_md_mng.strategy2model:
                             self.cst_md_mng.strategy2model["++"].dump_tensor_grp_mapping()
-                        # log best graph
+                        # DEBUG: log best graph for debugging
                         self.evaluate(G, 
                             _filename=os.path.join(ROOT_PATH, "best.json".format(self.step)),
                             _crit_filename=os.path.join(ROOT_PATH, "best_crit.json".format(self.step)))
@@ -1325,10 +1264,6 @@ class MCMCOptimizer(Optimizer):
                         candidates, G, PKG)
                     # candidates = proposed_candidates
                     # search_space = proposed_search_space
-                    # if len(search_space) == 0:
-                    #     print("Search Space len = 0??????????")
-                    #     import code
-                    #     code.interact(local=locals())
                     # weights = proposed_weights
                     break
             display_and_ckpt()

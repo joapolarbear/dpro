@@ -60,6 +60,7 @@ class FileName(Enum):
     NCCL_GRAPH="nccl_graph.txt"
     NCCL_RANK_GRAPH="nccl_rank_graph.json"
     TRAIL_DAG="trail_dag.gml"
+    LOCAL_DFG="local_dfg.gml"
     STATISTIC="statistic.txt"
     BPS_COMM_DETAIL="comm_timeline.json"
     BPS_SERVER_TRACE="server_timeline.json"
@@ -501,14 +502,19 @@ class TraceManager:
         ### calculate the average iteration time
         iter_list_all = []
         for prefix in prefix_dict.keys():
-            ### Necessary for the last step
             pid_info = prefix_dict[prefix]
+
+            ### Check and statistic the laste step
             if pid_info["fw_end"] is None or pid_info["bw_end"] is None or pid_info["bw_start"] is None:
-                continue
-            pid_info["iter_list"].append((pid_info["cur_iter_time"] - pid_info["step_start_ts"]) / 1000.0)
-            pid_info["fw_list"].append((pid_info["fw_end"] - pid_info["step_start_ts"]) / 1000.0)
-            pid_info["bw_list"].append((pid_info["bw_end"] - pid_info["bw_start"]) / 1000.0)
-            SingleLogger().debug("%s - the %d th iteration: FW:%f, BW: %f, Iteration time: %f" % (prefix, len(pid_info["iter_list"]), pid_info["fw_list"][-1], pid_info["bw_list"][-1], pid_info["iter_list"][-1]))
+                pass
+            elif len(pid_info["iter_list"]) > 0:
+                ### TODO (hhp): ignore the last step now
+                pass
+            else:
+                pid_info["iter_list"].append((pid_info["cur_iter_time"] - pid_info["step_start_ts"]) / 1000.0)
+                pid_info["fw_list"].append((pid_info["fw_end"] - pid_info["step_start_ts"]) / 1000.0)
+                pid_info["bw_list"].append((pid_info["bw_end"] - pid_info["bw_start"]) / 1000.0)
+                SingleLogger().debug("%s - the %d th iteration: FW:%f, BW: %f, Iteration time: %f" % (prefix, len(pid_info["iter_list"]), pid_info["fw_list"][-1], pid_info["bw_list"][-1], pid_info["iter_list"][-1]))
 
             fw_time = sum(pid_info["fw_list"]) / float(len(pid_info["fw_list"]))
             bw_time = sum(pid_info["bw_list"]) / float(len(pid_info["bw_list"]))

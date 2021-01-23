@@ -189,6 +189,10 @@ class Node:
         """
         return self._requires_grad
 
+    @requires_grad.setter
+    def requires_grad(self, val):
+        self._requires_grad = val
+
     @property
     def inplace(self):
         """get inplace status

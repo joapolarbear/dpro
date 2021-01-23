@@ -236,7 +236,7 @@ if __name__ == '__main__':
                 json.dump(rst, f)
         elif args.sub_option == "theory":
             replayer.daydream_dag(clct.para_dict)
-            replayer.replay()
+            replayer.replayAndDelay(None, _output=False, _filename="./replay_daydream.json")
 
     if args.option == "collect":
         if args.sub_option == "combine":
@@ -264,14 +264,14 @@ if __name__ == '__main__':
         elif args.sub_option == "gap":
             clct.list_max_gap(args.head)
         elif args.sub_option.startswith("amp_data_clct"):
-            from cost_model_amp import data_clct
+            from cost_model._mixed_precision import data_clct
             ### E.g. args.sub_option = amp_data_clct,save_names=fp32,model=resnet,platform=tf
             kvs = dict([tuple(kv.split("="))for kv in args.sub_option.split(",")[1:]])
             trace_filter = data_clct.TraceFilter(**kvs)
             trace_filter.dump_for_cost_model(clct.traceM.name2sta, clct.pm.path)
 
     if args.option == "optimize":
-        from cost_model_amp.amp_pred import AMPPredictor, train_amp_model
+        from cost_model._mixed_precision.amp_pred import AMPPredictor, train_amp_model
         from cost_model_xla.xla_module_cost_model import XLAModuleCostModel
         if args.sub_option == "train_amp":
             train_amp_model()

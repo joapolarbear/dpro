@@ -436,11 +436,11 @@ class Replayer:
         if _output:
             self.output_traces()
         
-    def replayAndDelay(self, delay_dict_, _ouput=False, _filename=None):
+    def replayAndDelay(self, delay_dict_, _output=False, _filename=None):
         self.reset_replayer()
         self.delay_dict = delay_dict_
         self.replay_one_iter(0)
-        if _ouput:
+        if _output:
             self.output_traces(_filename=_filename)
         return self.step_end_time
 
@@ -593,13 +593,18 @@ class Replayer:
             raise ValueError(
                 "meta info is None, --metadata_path should be set: {} is given".format(args_.metadata_path))
         _dag = nx.DiGraph()
+
+        DAYDREAM_BW_RATIO = 0.85
+
         def wrap_add_edge(u, v):
             _dag.add_edge(u, v)
+
+        one_pid = "host0.rank0" if self.comm_backend == "NCCL" else "traces_0.rank0"
         for u, v in self.dag.edges():
             u_pid, u_raw_name, u_cat, _ = parse_allinfo_from_name(u)
             v_pid, v_raw_name, v_cat, _ = parse_allinfo_from_name(v)
             ### Only keep operators on one GPU, i.e. host0.rank0
-            if u_pid != "host0.rank0" or v_pid != "host0.rank0":
+            if u_pid != one_pid or v_pid != one_pid:
                 continue
             if u_cat == CatName.COMM.value:
                 continue
@@ -609,27 +614,30 @@ class Replayer:
                 ### find corresponding UPDATE operator
                 op_type, op_name, _ = v_raw_name.split(".")
                 last_comm_op = gen_long_name(
-                    "host0.rank0", "{}.{}.{}".format(op_type, op_name, QueueType().ret_list()[-1]))
+                    one_pid, "{}.{}.{}".format(op_type, op_name, QueueType().ret_list()[-1]))
                 succs_ = list(self.dag.successors(last_comm_op))
                 assert len(succs_) == 1, (last_comm_op)
                 update_op = succs_[0]
+                assert "UPDATE_" in update_op, (u, v, last_comm_op, update_op)
 
                 tensor_list = re.findall("[0-9]+", op_name)
                 fused_size = 0
                 for tensor_id_str in tensor_list:
                     comm_op = gen_long_name(
-                        "host0.rank0", "{}.{}".format(op_type, tensor_id_str))
+                        one_pid, "{}.{}".format(op_type, tensor_id_str))
                     ### BW --> Comm
                     wrap_add_edge(u, comm_op)
                     ### Comm --> UPDATE
                     wrap_add_edge(comm_op, update_op)
                     tensor_id = int(tensor_id_str)
-                    bw_in_g = 100
+                    bw_in_g = 100 * DAYDREAM_BW_RATIO
                     tensor_size = metadata.tensor_id2size(tensor_id)
                     _dag.nodes[comm_op]["avg"] = tensor_size / (bw_in_g * 1e6)
                     fused_size += tensor_size
                 SingleLogger().info("Fused Tensor Size for {}: {} MB".format(op_name, fused_size / (1024.0 * 1024.0)))
             else:
+                if "BW" in u and "UPDATE_" in v:
+                    raise ValueError(u, v)
                 wrap_add_edge(u, v)
         for node_ in _dag.nodes():
             if "Comm" in node_:

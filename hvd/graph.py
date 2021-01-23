@@ -76,7 +76,7 @@ class ncclGraph:
         self.host_id2prefix = {}
         self.host_prefix2id = {}
 
-        self.nccl_fusion = {"grp_names": [], "tensor2grpID": []}
+        self.nccl_fusion = {"grp_names": [], "tensor2grpID": [], "grp_names_sync": [], "tensor2grpID_sync": []}
        
     def parse_tree_topo(self, tree_dict, map_to=None):
         ''' If `map_to` is set, map the rank to the given prefix '''
@@ -118,7 +118,6 @@ class ncclGraph:
                 self.graph["Tree"][channel_id][rank] = {}
             self.graph["Tree"][channel_id][rank]["down"] = down
             self.graph["Tree"][channel_id][rank]["up"] = up
-
 
     def parse_connect_topo(self, ring_dict, map_to=None):
         ''' If `map_to` is set, map the rank to the given prefix '''
@@ -238,7 +237,6 @@ class ncclGraph:
                     if "next" in rank_dict:
                         peer_rank = rank_dict["next"]
                         print("\t\t\tSend to %d" % peer_rank)
-
 
     def parse_traces(self, raw_name2IDnum):
         ''' Parse traces from one GPU, to get NCCL hyper-parameters: chunkNum, sliceNum, channelNum and loopNum
@@ -434,6 +432,7 @@ class ncclGraph:
     def init_nccl_fusion(self, traceM, grad_num, show=False):
         ### go over traces and store all combinations of traces
         self.nccl_fusion["tensor2grpID"] = [None] * grad_num
+        self.nccl_fusion["tensor2grpID_sync"] = [None] * grad_num
         for event in traceM.traces:
             if traceM._is_ignore_for_sta(event):
                 continue
@@ -447,18 +446,30 @@ class ncclGraph:
             ### assert tensor_list has been sorted
             # tensor_list = sorted([int(e) for e in tensor_list])
             sorted_name = "+".join([str(e) for e in tensor_list])
-            if sorted_name not in self.nccl_fusion["grp_names"]:
-                for tensor_id in tensor_list:
-                    self.nccl_fusion["tensor2grpID"][int(tensor_id)] = len(self.nccl_fusion["grp_names"])
-                self.nccl_fusion["grp_names"].append(sorted_name)
+            if "Sync" in event["name"]:
+                if event["pid"] == "host0.rank0":
+                    if sorted_name not in self.nccl_fusion["grp_names_sync"]:
+                        for tensor_id in tensor_list:
+                            self.nccl_fusion["tensor2grpID_sync"][int(tensor_id)] = len(self.nccl_fusion["grp_names_sync"])
+                        self.nccl_fusion["grp_names_sync"].append(sorted_name)
+            else:
+                if sorted_name not in self.nccl_fusion["grp_names"]:
+                    for tensor_id in tensor_list:
+                        self.nccl_fusion["tensor2grpID"][int(tensor_id)] = len(self.nccl_fusion["grp_names"])
+                    self.nccl_fusion["grp_names"].append(sorted_name)
         if show:
             for tensor_id, grp_id in enumerate(self.nccl_fusion["tensor2grpID"]):
                 print("Tensor ID: {} -> Group ID: {}".format(tensor_id, grp_id))
             for grp_id, grp_name in enumerate(self.nccl_fusion["grp_names"]):
                 print("Group ID: {} --> Group Name: {}".format(grp_id, grp_name))
+        
+        # print(self.nccl_fusion)
 
     def tensor2group_name(self, tensor_id):
         return self.nccl_fusion["grp_names"][self.nccl_fusion["tensor2grpID"][tensor_id]]
+
+    def tensor2group_name_sync(self, tensor_id):
+        return self.nccl_fusion["grp_names_sync"][self.nccl_fusion["tensor2grpID_sync"][tensor_id]]
 
 
 
