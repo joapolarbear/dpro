@@ -327,14 +327,13 @@ class Replayer:
     def __init__(self, dag, _step_num, leaf_dirs, dump_path, comm_backend, byteps_graph, 
                 infi_para_update=False, show_queue=False):
         self.dag = dag
+        self.infi_para_update = infi_para_update
         self.preprocess_dag()
         self.step_num = _step_num
         self.leaf_dirs = leaf_dirs
         self.dump_path = dump_path
         self.comm_backend = comm_backend
         self.byteps_graph = byteps_graph
-
-        self.infi_para_update = infi_para_update
 
         self.logger = logger_utils.SingleLogger()
         ### Delay information, the unit of 'delay' field should be ms
