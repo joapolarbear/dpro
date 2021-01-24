@@ -677,9 +677,9 @@ class Collector(object):
 
             if last_sync_op is not None:
                 prev_tensor_ids, prev_ts, prev_dur = last_sync_op
-                overlapping_len = max(0, min(prev_ts + prev_dur, ts + dur) - max(prev_ts, ts))
-                overlapping_ratio = overlapping_len / (max(prev_ts + prev_dur, ts + dur) - min(prev_ts, ts))
-                if overlapping_ratio > 0.9:
+                # overlapping_len = max(0, min(prev_ts + prev_dur, ts + dur) - max(prev_ts, ts))
+                # overlapping_ratio = overlapping_len / (max(prev_ts + prev_dur, ts + dur) - min(prev_ts, ts))
+                if prev_ts == ts:
                     ### sync together
                     prev_tensor_ids += "+" + tensor_id_str
                     last_sync_op = [prev_tensor_ids, prev_ts, prev_dur]
@@ -1261,7 +1261,7 @@ class Collector(object):
                     ### TODO (hphu): estimate sync time
                     ref_node = gen_long_name("host0.rank0", rawname, suffix)
                     self.trail_dag.nodes[node_]["avg"] = self.traceM.lookup_stat(None, None, ref_node) 
-                    assert self.trail_dag.nodes[node_]["avg"] != 0, (node_)
+                    assert self.trail_dag.nodes[node_]["avg"] > 0, (node_)
                 ### for Queue|MEMCPY_IN_FUSION_BUFFER|MEMCPY_OUT_FUSION_BUFFER sub operators
                 ### there are not corresponding fused traces, instead, each tensor has its own sub operator traces
                 ### when building the graph, use the average duration of corresponding tensor as the fused operator time 

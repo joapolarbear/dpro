@@ -83,6 +83,8 @@ def tf_relabel_func(_name, update_nodes_in_dag):
                 _name = "BW." + tensor_name + "_Switch"
             else:
                 _name = "Comm." + tensor_name
+        elif "cond_" in _name and "Switch" in _name:
+            _name = "BW." + _name
         else:
             _name = "UPDATE_." + _name
     else:
@@ -113,6 +115,7 @@ def wrap_read_gml(gml_path, platform="MXNET"):
         for node in mygraph.nodes:
             if "allreduce" in node.lower() or "bytepspushpull" in node.lower() \
                                             and "switch" not in node.lower():
+                ### node is the Comm node, add its downstream nodes as update operators
                 recursive_add_succs(node)
             # if "apply" in node.lower() or ("gradientdescent" in node.lower() and "learning_rate" not in node.lower()):
             #     update_nodes_in_dag.add(node)
@@ -530,7 +533,7 @@ class DAGManager:
                     raise ArgumentError("Unsupported platform {}.".format(self.platform))
                 try:
                     nccl_grp_name = self.nccl_graph.tensor2group_name(tensor_id)
-                    nccl_grp_name_sync = self.nccl_graph.tensor2group_name_sync(tensor_id, self.prefix)
+                    nccl_grp_name_sync = self.nccl_graph.tensor2group_name_sync(tensor_id)
                 except TypeError:
                     ### some tensors do not have grads
                     continue
@@ -570,7 +573,8 @@ class DAGManager:
                             post_nodes += post_update_nodes
                             _first = False
                 done_comm.append(u)
-
+                
+            
             if self.byteps_graph is not None:
                 self._process_edge_byteps(mygraph, queue_type_list, u, v)
             elif self.nccl_graph is not None:
@@ -727,7 +731,7 @@ class DAGManager:
             # visualize_gml(composed_dag)
             critical_path = dag_longest_path(composed_dag, self.pm, weight="weight", default_weight=0)
 
-        SingleLogger().info("Generate a local dag with {} edges".format(len(self.dag)))
+        SingleLogger().debug("Generate a local dag with {} edges".format(len(self.dag)))
         # return max_para_degree, critical_path
         return 1, critical_path
 
