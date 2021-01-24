@@ -739,7 +739,10 @@ def gen_kernel_dataset(trace_dir, result_dir, num_samples=2000, num_max_cluster_
         shape_dict_raw = json.load(f)
     shape_dict = {}
     for tensor_name, shape_detail in shape_dict_raw.items():
-        shape_dict[tensor_name] = shape_detail["shape"]
+        if isinstance(shape_detail, list):
+            shape_dict[tensor_name] = shape_detail
+        else:
+            shape_dict[tensor_name] = shape_detail["shape"]
     # TF2XLA supported ops
     # white_list_ops = parse_white_list()
     candidate_ops = parse_xla_candidate_ops()

@@ -112,6 +112,9 @@ def wrap_read_gml(gml_path, platform="MXNET"):
             for succ_ in mygraph.successors(_node):
                 update_nodes_in_dag.add(succ_)
                 recursive_add_succs(succ_)
+                if "^"+succ_ in mygraph.nodes:
+                    recursive_add_succs("^"+succ_)
+        # mygraph.add_edges_from([(n[1:], n) for n in mygraph.nodes if n.startswith("^")])
         for node in mygraph.nodes:
             if "allreduce" in node.lower() or "bytepspushpull" in node.lower() \
                                             and "switch" not in node.lower():
