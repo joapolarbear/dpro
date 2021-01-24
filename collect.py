@@ -1262,19 +1262,20 @@ class Collector(object):
                     ref_node = gen_long_name("host0.rank0", rawname, suffix)
                     self.trail_dag.nodes[node_]["avg"] = self.traceM.lookup_stat(None, None, ref_node) 
                     assert self.trail_dag.nodes[node_]["avg"] > 0, (node_)
-                ### for Queue|MEMCPY_IN_FUSION_BUFFER|MEMCPY_OUT_FUSION_BUFFER sub operators
-                ### there are not corresponding fused traces, instead, each tensor has its own sub operator traces
-                ### when building the graph, use the average duration of corresponding tensor as the fused operator time 
-                tensor_list = re.findall("[0-9]+", op_name)
-                ### this tensor_list has been sorted
-                # tensor_list = sorted([int(e) for e in tensor_list])
-                avgs = []
-                for tensor_id_str in tensor_list:
-                    tensor_id = int(tensor_id_str)
-                    org_name = gen_long_name(prefix, "{}.{}.{}".format(op_type, tensor_id, sub_op))
-                    avgs.append(self.traceM.lookup_stat(None, None, org_name))
-                assert len(avgs) > 0
-                self.trail_dag.nodes[node_]["avg"] = sum(avgs) / len(avgs)
+                else:
+                    ### for Queue|MEMCPY_IN_FUSION_BUFFER|MEMCPY_OUT_FUSION_BUFFER sub operators
+                    ### there are not corresponding fused traces, instead, each tensor has its own sub operator traces
+                    ### when building the graph, use the average duration of corresponding tensor as the fused operator time 
+                    tensor_list = re.findall("[0-9]+", op_name)
+                    ### this tensor_list has been sorted
+                    # tensor_list = sorted([int(e) for e in tensor_list])
+                    avgs = []
+                    for tensor_id_str in tensor_list:
+                        tensor_id = int(tensor_id_str)
+                        org_name = gen_long_name(prefix, "{}.{}.{}".format(op_type, tensor_id, sub_op))
+                        avgs.append(self.traceM.lookup_stat(None, None, org_name))
+                    assert len(avgs) > 0
+                    self.trail_dag.nodes[node_]["avg"] = sum(avgs) / len(avgs)
             else:
                 self.trail_dag.nodes[node_]["avg"] = self.traceM.lookup_stat(None, None, node_)     
 
