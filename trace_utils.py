@@ -401,12 +401,14 @@ class TraceManager:
                     "cur_step": None,
                     "fw_list": [],
                     "bw_list": [],
+                    "update_list": [],
                     "iter_list": [],
                     "step_start_ts": None,
                     "cur_iter_time": 0,
                     "fw_end": None,
                     "bw_start": None,
                     "bw_end": None,
+                    "cat_cnt": {}
                 }
             cat = parse_cat_fine_grained(event["name"])
 
@@ -435,16 +437,13 @@ class TraceManager:
                     "id": len(self.name2sta)
                     }
             event["args"]["cnt"] = self.name2sta[unique_name]["cnt"] - 1
-
-            # if prefix == "host0.rank1":
-            #     print(event["name"])
-
-            pid_info = prefix_dict[prefix]
+            
             ### add step field
+            pid_info = prefix_dict[prefix]
             if pid_info["cat_cursor"] is None:
                 pass
             elif pid_info["cat_cursor"] == "operator.UPDATE" and cat in AS_START_CAT:
-            # elif cat not in AS_START_CAT and cat in AS_START_CAT:
+                ### last op is update, cur op is in (IO, FW), increase the step_cnt
                 pid_info["step_cnt"] += 1
                 # if prefix == "host0.rank1":
                 #     print("Add step to {} for {}, before: {}".format(
@@ -458,10 +457,14 @@ class TraceManager:
             event["args"]["step"] = pid_info["step_cnt"]
             if parse_cat_from_name(event["name"]) in [CatName.OPERATOR.value, CatName.IO.value]:
                 pid_info["cat_cursor"] = cat
+                if cat not in pid_info["cat_cnt"]:
+                    pid_info["cat_cnt"][cat] = 0
+                pid_info["cat_cnt"][cat] += event["dur"] / 1000.0
             self.max_step = max(event["args"]["step"], self.max_step)
 
             ### calculate the iteration time
             if parse_cat_from_name(event["name"]) != CatName.OPERATOR.value:
+                ### only check the iteration time when current node is FW/BW/UPDATE op
                 continue    
             if pid_info["cur_step"] is None:
                 ### initialization
@@ -476,8 +479,12 @@ class TraceManager:
                 assert event["args"]["step"] > pid_info["cur_step"], (event, pid_info)
                 pid_info["iter_list"].append((pid_info["cur_iter_time"] - pid_info["step_start_ts"]) / 1000.0)
                 try:
-                    pid_info["fw_list"].append((pid_info["fw_end"] - pid_info["step_start_ts"]) / 1000.0)
-                    pid_info["bw_list"].append((pid_info["bw_end"] - pid_info["bw_start"]) / 1000.0)
+                    # pid_info["fw_list"].append((pid_info["fw_end"] - pid_info["step_start_ts"]) / 1000.0)
+                    # pid_info["bw_list"].append((pid_info["bw_end"] - pid_info["bw_start"]) / 1000.0)
+                    pid_info["fw_list"].append(pid_info["cat_cnt"]["operator.FW"])
+                    pid_info["bw_list"].append(pid_info["cat_cnt"]["operator.BW"])
+                    pid_info["update_list"].append(pid_info["cat_cnt"]["operator.UPDATE"])
+                    pid_info["cat_cnt"]["operator.FW"] = pid_info["cat_cnt"]["operator.BW"] = pid_info["cat_cnt"]["operator.UPDATE"] = 0
                 except:
                     print(event, pid_info)
                     raise
@@ -512,16 +519,21 @@ class TraceManager:
                 pass
             else:
                 pid_info["iter_list"].append((pid_info["cur_iter_time"] - pid_info["step_start_ts"]) / 1000.0)
-                pid_info["fw_list"].append((pid_info["fw_end"] - pid_info["step_start_ts"]) / 1000.0)
-                pid_info["bw_list"].append((pid_info["bw_end"] - pid_info["bw_start"]) / 1000.0)
+                # pid_info["fw_list"].append((pid_info["fw_end"] - pid_info["step_start_ts"]) / 1000.0)
+                # pid_info["bw_list"].append((pid_info["bw_end"] - pid_info["bw_start"]) / 1000.0)
+                pid_info["fw_list"].append(pid_info["cat_cnt"]["operator.FW"])
+                pid_info["bw_list"].append(pid_info["cat_cnt"]["operator.BW"])
+                pid_info["update_list"].append(pid_info["cat_cnt"]["operator.UPDATE"])
+                pid_info["cat_cnt"]["operator.FW"] = pid_info["cat_cnt"]["operator.BW"] = pid_info["cat_cnt"]["operator.UPDATE"] = 0
                 SingleLogger().debug("%s - the %d th iteration: FW:%f, BW: %f, Iteration time: %f" % (prefix, len(pid_info["iter_list"]), pid_info["fw_list"][-1], pid_info["bw_list"][-1], pid_info["iter_list"][-1]))
 
             fw_time = sum(pid_info["fw_list"]) / float(len(pid_info["fw_list"]))
             bw_time = sum(pid_info["bw_list"]) / float(len(pid_info["bw_list"]))
+            update_time = sum(pid_info["update_list"]) / float(len(pid_info["update_list"]))
             iter_time = sum(pid_info["iter_list"]) / float(len(pid_info["iter_list"]))
             iter_list_all.append(pid_info["iter_list"])
-            SingleLogger().info("<%s> fw : %f, bw: %f ms -- iteration time: %f ms" % (prefix,
-                    fw_time, bw_time, iter_time))
+            SingleLogger().info("<%s> fw : %f + bw: %f + update: %f -> time/it = %f ms" % (prefix,
+                    fw_time, bw_time, update_time, iter_time))
 
         ### iter_list_all, shape = (n_GPUs, n_steps) ==> (n_steps)
         iter_list_all = np.average(np.array(iter_list_all), axis=0)

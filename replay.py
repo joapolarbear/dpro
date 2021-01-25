@@ -675,7 +675,7 @@ class Replayer:
                     _last_comm_task = gen_long_name(
                         one_pid, "{}.{}.{}".format(op_type, op_name, QueueType().ret_list()[-1]))
                     _update_ops = list(self.dag.successors(_last_comm_task))
-                    assert len(_update_ops) == 1, (_last_comm_task)
+                    # assert len(_update_ops) == 1, (_last_comm_task)
                     _update_op = _update_ops[0]
                     assert "UPDATE_" in _update_op, (u, v, _last_comm_task, _update_op)
                     update_ops.append(_update_op)
@@ -695,7 +695,7 @@ class Replayer:
                     tensor_size = metadata.tensor_id2size(tensor_id)
                     _dag.nodes[comm_op]["avg"] = tensor_size / (bw_in_g * 1e6)
                     fused_size += tensor_size
-                SingleLogger().info("Fused Tensor Size for {}: {} MB".format(op_name, fused_size / (1024.0 * 1024.0)))
+                SingleLogger().debug("Fused Tensor Size for {}: {} MB".format(op_name, fused_size / (1024.0 * 1024.0)))
             else:
                 if "BW" in u and "UPDATE_" in v:
                     raise ValueError(u, v)
