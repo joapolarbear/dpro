@@ -163,11 +163,14 @@ if __name__ == '__main__':
 
         if args.sub_option is None:
             ''' Directly replay '''
+            SingleLogger().info("\033[92m" + "="*10 + " Replayer " + "="*10 + "\033[0m")
             replayer.replay()
             cal_edge_cost(replayer.exct_dag)
             critical_path = dag_longest_path(replayer.exct_dag, clct.pm, weight="cost", default_weight=0, _debug_level=1)
             # replayer.dump_critical_path("critical_path.json", [n for (n, e) in critical_path])
-
+            SingleLogger().info("\033[92m" + "="*10 + " Daydream " + "="*10 + "\033[0m")
+            replayer.daydream_dag(clct.para_dict)
+            replayer.replayAndDelay(None, _output=False, _filename="./replay_daydream.json")
         elif args.sub_option == "smlt_delay_cmp":
             ''' Replay with computation delays'''
             delay_dict = {"DELAY_ALL_CMP": {"delay": 0, "ratio": args.delay_ratio}}
@@ -237,7 +240,7 @@ if __name__ == '__main__':
                 json.dump(rst, f)
         elif args.sub_option == "theory":
             replayer.daydream_dag(clct.para_dict)
-            replayer.replayAndDelay(None, _output=False, _filename="./replay_daydream.json")
+            replayer.replayAndDelay(None, _output=True, _filename="./replay_daydream.json")
 
     if args.option == "collect":
         if args.sub_option == "combine":
