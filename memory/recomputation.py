@@ -1,6 +1,6 @@
 import re
 import networkx as nx
-from utils import *
+from .utils import *
 from logger_utils import SingleLogger
 
 

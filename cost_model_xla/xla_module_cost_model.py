@@ -595,6 +595,8 @@ def train_kernel_model(dataset_path, save_dir, epochs=1200, batch_size=256,
         dataset = XlaKernelDataset(dataset_path)
         dataset.dump_dataset(dataset_save_path)
 
+    print("Kernel dataset size {}".format(dataset.train_size()))
+
     elem_op_cache_save_path = os.path.join(save_dir, CMPaths.ELEMENTARY_OP_CACHE_SAVE_FILE)
     ovhd_model_save_path = os.path.join(save_dir, CMPaths.OVERHEAD_MODEL_SAVE_FILE)
 
@@ -839,12 +841,12 @@ class XLAModuleCostModel():
             os.makedirs(self._tmp_dir)
 
     @classmethod
-    def train_on_dataset(cls, dataset_path, save_dir):
+    def train_on_dataset(cls, dataset_path, save_dir, batch_size=256):
         if not os.path.exists(save_dir):
             os.mkdir(save_dir)
         dataset_folder_path = os.path.join(dataset_path, CMPaths.DATASET_DIR)
         # start training
-        train_kernel_model(dataset_folder_path, save_dir)
+        train_kernel_model(dataset_folder_path, save_dir, batch_size=batch_size)
         # transfer graph def into save_dir 
         graph_def_path = os.path.join(dataset_folder_path, CMPaths.CLEANED_GRAPH_DEF_FILE)
         with open(graph_def_path, "r") as f:

@@ -43,7 +43,7 @@ def _schedule(_a, _b):
         return _a[1] < _b[1]
     else:
         return _ap < _bp
-        
+
 class Device:
     def __init__(self, device_name, _replayer, infi_para=False, comm_backend = "NCCL"):
         self.replayer = _replayer
@@ -188,11 +188,12 @@ class Device:
 
                 ### Whether the dependency has met
                 _status["in_degree"] -= 1
-
+                # self.replayer.debuger.mark_as_exct(name, _succ)
                 if _status["in_degree"] == 0:
                     if _status["ready"] is None:
                         raise RuntimeError("{}\'s ready time is not decided".format(_succ))
                     self.replayer.insert_next_node(_succ, _status["ready"])
+        # self.replayer.debuger.show_staue()
 
     def get_delay_para(self, name_):
         #! Get the delay parameters.
@@ -395,6 +396,8 @@ class Replayer:
                 self.insert_next_node(n, _last_end)
     
     def replay_one_iter(self, step_idx):
+        self.debuger = ReplayDebuger(self)
+        # self.debuger.monitor_node()
         self.pre_prepare()
         while True:
             if self.pop_one_node_exec(step_idx) == 1:
@@ -565,6 +568,55 @@ class Replayer:
             dump_path = os.path.join(prefix, file)
         with open(dump_path, 'w') as f:
             json.dump(rst, f)
+    
+    def paint_bw_comm_depend(self, one_pid = None):
+        ''' Paint the timeline to show the dependency between BW nodes and Comm nodes
+        * E.g., if there is an edge from BW.A to Comm.1.Sync, BW.A would be renamed with Comm.1.Sync
+        * This is useful when considering tensor fusion
+        * NOTE: may not adapt to operator fusion
+        '''
+        final_trace = []
+        start_ts = None
+
+        def map_bw_2_comm(node_):
+            ''' Some nodes may have not corresponding traces
+            * E.g., BW.A -> BW.B --> Comm.1, but BW.B has no trace,
+            *   in this case, we will paint BW.A to show the dependency
+            '''
+            ret = []
+            succs = list(self.dag.successors(node_))
+            for succ_ in succs:
+                if "Comm" in succ_:
+                    ret.append(succ_)
+                else:
+                    assert "BW" in succ_
+                    if self.dag.nodes[succ_]["avg"] == 0:
+                        ret += map_bw_2_comm(succ_)
+            return ret
+        
+        for trace in self.rst_traces:
+            if one_pid is None or trace["pid"] != one_pid:
+                continue
+            if "BW" in trace["name"]:
+                long_name = trace["args"]["name"]
+                comm_succs = map_bw_2_comm(long_name)
+                assert len(comm_succs) <= 1, (trace["name"], comm_succs)
+                if len(comm_succs) > 0:
+                    rawname = parse_rawname_from_name(comm_succs[0])
+                    trace["name"] = "BW." + rawname
+                else:
+                    trace["name"] = "BW"
+            elif "Comm" in trace["name"]:
+                pass
+            else:
+                trace["name"] = "others"
+            trace["pid"] += ".replay"
+            if start_ts is None:
+                start_ts = trace["ts"]
+            trace["ts"] -= start_ts
+            final_trace.append(trace)
+        with open(os.path.join(self.dump_path, "compare_replay_real.json"), 'w') as f:
+            json.dump(final_trace, f)
 
     def output_traces(self, _filename=None):
         #! Output the synthetic traces.
@@ -573,8 +625,7 @@ class Replayer:
             "displayTimeUnit": "ms"
         }
         for trace in self.rst_traces:
-            if "^" not in trace["name"]:
-                rst["traceEvents"].append(trace)
+            rst["traceEvents"].append(trace)
         TraceManager(self.rst_traces, DirLevel.TRIAL).get_iter_time()
         filename = "synthetic.json" if _filename is None else _filename
         with open(os.path.join(self.dump_path, filename), 'w') as f:
@@ -644,3 +695,37 @@ class Replayer:
                 continue
             nx.set_node_attributes(_dag, {node_: self.dag.nodes[node_]})
         self.dag = _dag
+
+class ReplayDebuger:
+    def __init__(self, replayer):
+        self.debug_nodes = {}
+        self.dag = replayer.dag
+        self.enabled = False
+
+    def monitor_node(self, n):
+        self.enabled = True
+        self.debug_nodes[n] = {"todo": [u for u, _ in self.dag.in_edges(n)], "done": []}
+
+    def mark_as_exct(self, u, v):
+        ''' node `u` is executed, and handle the status of `v` if it is monitored
+        and (u, v) must be an edge in self.dag
+        '''
+        if not self.enabled or v not in self.debug_nodes:
+            return
+        self.debug_nodes[v]["todo"].remove(u)
+        self.debug_nodes[v]["done"].append(u)
+    
+    def _show_staue(self, node):
+        todos = self.debug_nodes[node]["todo"]
+        if len(todos) > 0:
+            print("{} is waiting for {} nodes: {}".format(node, len(todos), str(todos)))
+
+    def show_staue(self, nodes=None):
+        if nodes is None:
+            for node in self.debug_nodes.keys():
+                self._show_staue(node)
+        elif isinstance(nodes, list):
+            for node in nodes:
+                self._show_staue(node)
+        else:
+            self._show_staue(nodes)

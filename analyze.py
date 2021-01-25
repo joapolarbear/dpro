@@ -166,7 +166,8 @@ if __name__ == '__main__':
             replayer.replay()
             cal_edge_cost(replayer.exct_dag)
             critical_path = dag_longest_path(replayer.exct_dag, clct.pm, weight="cost", default_weight=0, _debug_level=1)
-            replayer.dump_critical_path("critical_path.json", [n for (n, e) in critical_path])
+            # replayer.dump_critical_path("critical_path.json", [n for (n, e) in critical_path])
+
         elif args.sub_option == "smlt_delay_cmp":
             ''' Replay with computation delays'''
             delay_dict = {"DELAY_ALL_CMP": {"delay": 0, "ratio": args.delay_ratio}}
