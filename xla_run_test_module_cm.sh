@@ -8,4 +8,4 @@ export BPF_COST_MODEL_PROFILE_GPU="0"
 DATASET_DIR="/PATH/TO/DATASET/DIR"
 COST_MODEL_DIR="/PATH/TO/COST/MODEL"
 
-python3 test_module_cost_model.py --dataset_dir ${DATASET_DIR} --cost_model_dir ${COST_MODEL_DIR}
+python3 xla_test_module_cm.py --dataset_dir ${DATASET_DIR} --cost_model_dir ${COST_MODEL_DIR}
