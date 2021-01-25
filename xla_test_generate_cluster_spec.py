@@ -1,4 +1,4 @@
-from cost_model_xla.process_trace import TRACE_SUFFIX
+from .process_trace import TRACE_SUFFIX
 from tqdm import tqdm
 import networkx as nx
 import pickle

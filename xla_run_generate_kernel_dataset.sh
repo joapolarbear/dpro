@@ -39,14 +39,21 @@ export BPF_COST_MODEL_PROFILE_GPU="0"
 # modify these
 TRACE_DIR="$BYTEPS_TRACE_DIR/0"
 OUTPUT_DIR="/opt/tiger/xla/kernel_dataset"
+
+### resnet
 NUM_RANDOM_SAMPLES=5000
 MAX_CLUSTER_SAMPLES=5
 MIN_CLUSTER_SIZE=4
 MAX_CLUSTER_SIZE=800
 
+### VGG16
+NUM_RANDOM_SAMPLES=5000
+MAX_CLUSTER_SAMPLES=5
+MIN_CLUSTER_SIZE=4
+MAX_CLUSTER_SIZE=200
 
 cd /opt/tiger/byteprofile-analysis
-python3 generate_kernel_dataset.py --trace_dir ${TRACE_DIR} \
+python3 xla_generate_kernel_dataset.py --trace_dir ${TRACE_DIR} \
     --output_dir ${OUTPUT_DIR} \
     --num_samples ${NUM_RANDOM_SAMPLES} \
     --max_cluster_samples ${MAX_CLUSTER_SAMPLES} \
@@ -61,7 +68,7 @@ cp /opt/tiger/xla/kernel_dataset/cleaned_graph.json /opt/tiger/xla/kernel_datase
 cp /opt/tiger/xla/kernel_dataset/tensor_shapes.json /opt/tiger/xla/kernel_dataset/dataset/
 
 cd /opt/tiger/byteprofile-analysis
-python3 train_module_cost_model.py --dataset_dir ${DATASET_DIR} --output_dir ${OUTPUT_DIR}
+python3 xla_train_module_cm.py --dataset_dir ${DATASET_DIR} --output_dir ${OUTPUT_DIR} --batch_size 256
 
 
 ### exit root 
