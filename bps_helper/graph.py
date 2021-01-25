@@ -137,6 +137,7 @@ class bytepsGraph:
         self.master_host_id = 0
         self.time_drift = None
         self.comm_delays = None
+        self.server_op2comm_delays = None
         self._manual_delay = 0
         self._ignored_tensors = set()
         self._inited = False
@@ -184,7 +185,8 @@ class bytepsGraph:
          self.comm_durations, self.comp_durations,
          self.servers_threads, self.partition_dict,
          self.comp_ops_tid, self.workers, self.graph,
-         self.master_host_id, self.time_drift, self.comm_delays, self.bw_delays) = state
+         self.master_host_id, self.time_drift, 
+         self.comm_delays, self.server_op2comm_delays, self.bw_delays) = state
         self._inited = True
     
     def _dump_cache(self, cache_path=None):
@@ -194,7 +196,8 @@ class bytepsGraph:
                  self.comm_durations, self.comp_durations,
                  self.servers_threads, self.partition_dict,
                  self.comp_ops_tid, self.workers, self.graph,
-                 self.master_host_id, self.time_drift, self.comm_delays, self.bw_delays)
+                 self.master_host_id, self.time_drift, 
+                 self.comm_delays, self.server_op2comm_delays, self.bw_delays)
         with open(cache_path, "wb") as f:
             pickle.dump(state, f)
 
@@ -579,8 +582,13 @@ class bytepsGraph:
     def _calc_comm_delays(self):
         intervals = {}
         network_delays = {}
+        server_op2comm_delays = {}
         push_req_ops = {}
         push_res_ops = {}
+        pull_req_ops = {}
+
+        copy_first_ops = {}
+        sum_ops = {}
 
         source_ranks = set()
 
@@ -606,97 +614,117 @@ class bytepsGraph:
                 if (source, target) not in push_res_ops:
                     push_res_ops[(source, target)] = {}
                 push_res_ops[(source, target)][key] = durations
+            elif op == COMM_OPS.PULL_REQ:
+                if (source, target) not in pull_req_ops:
+                    pull_req_ops[(source, target)] = {}
+                pull_req_ops[(source, target)][key] = durations
 
-        # for key, durations in self.comp_durations.items():
-        #     # comp_key is in format 
-        #     server, tensor_name, op, tid = key
-        #     if server not in intervals:
-        #         intervals[server] = IntervalTree()
-        #     unique_tensors.add(tensor_name)
-        #     if op != COMP_OPS.COPY_FIRST:
-        #         continue
-        #     for st, ed in durations:
-        #         intervals[server][st:ed] = (tensor_name, op)
-        #     if server not in copy_first_ops:
-        #         copy_first_ops[server] = {}
-        #     copy_first_ops[server][tensor_name] = durations
 
-        # ops_name = ["push_res_ops", "push_res_ops", "pull_req_ops", "copy_first_ops"]
-        # for index, ops in enumerate([push_res_ops, push_res_ops, pull_req_ops, copy_first_ops]):
-        #     print("\n{}:\n".format(ops_name[index]))
-        #     for k, v in ops.items():
-        #         for kk, vv in v.items():
-        #             if len(vv) != 30:
-        #                 print(k, kk, len(vv))
-        # exit(0)
+        for key, durations in self.comp_durations.items():
+            server, tensor_name, op, tid = key
+            if server+tid not in intervals:
+                intervals[server+tid] = IntervalTree()
+            unique_tensors.add(tensor_name)
+            if op != COMP_OPS.COPY_FIRST and op != COMP_OPS.SUM:
+                continue
+            for st, ed in durations:
+                intervals[server+tid][st:ed] = (tensor_name, op)
+            if op == COMP_OPS.COPY_FIRST:
+                if server not in copy_first_ops:
+                    copy_first_ops[server] = {}
+                copy_first_ops[server][tensor_name] = (durations, tid)
+            elif op == COMP_OPS.SUM:
+                if server not in sum_ops:
+                    sum_ops[server] = {}
+                sum_ops[server][tensor_name] = (durations, tid)
 
-        # def _is_first_push(key, index):
-        #     source, target, tensor_name, _ = key
-        #     min_ts = []
-        #     my_end = push_req_ops[(source, target)][key][index][1]
-        #     for (s, t) in push_req_ops.keys():
-        #         for key, durations in push_req_ops[(s, t)].items():
-        #             try:
-        #                 if durations[index][1] < my_end:
-        #                     return False
-        #             except:
-        #                 return False
-        #     return True
+        def _is_first_push(key, index):
+            source, target, tensor_name, _ = key
+            min_ts = []
+            my_end = push_req_ops[(source, target)][key][index][1]
+            for (s, t) in push_req_ops.keys():
+                for key, durations in push_req_ops[(s, t)].items():
+                    try:
+                        if durations[index][1] < my_end:
+                            return False
+                    except:
+                        return False
+            return True
 
         for (source, target) in push_req_ops.keys():
-            # for each push req, get delay for its push res or copy first
+            # source: worker, target: server
+            # for each push req, get delay for its corresponding copy first or sum
             for key, durations in push_req_ops[(source, target)].items():
                 _, _, tensor_name, _ = key
                 if key in self._ignored_tensors:
                     continue
-                # copy_first_op_durations = copy_first_ops[target][tensor_name]
+                copy_first_op_durations, tid_cp = copy_first_ops[target][tensor_name]
+                sum_op_durations, tid_sum = sum_ops[target][tensor_name]
                 push_res_op_durations = push_res_ops[(target, source)][(target, source, tensor_name, COMM_OPS.PUSH_RES)]
                 for index, (st, ed) in enumerate(durations):
-                    # if _is_first_push(key, index):
-                    #     # get copy_first
-                    #     cp_st, cp_ed = copy_first_op_durations[index]
-                    #     # if not queued
-                    #     if not intervals[target].overlap(st - 500, st + 500) and not intervals[target].overlap(cp_st - 500, cp_st - 5):
-                    #         latency = cp_st - ed
-                    #         # if latency < 0:
-                    #         #     print(source, target, key)
-                    #         #     input()
-                    #         if (source, target) not in network_delays:
-                    #             network_delays[(source, target)] = []
-                    #         network_delays[(source, target)].append(latency)
-                    # else:
-                    # get push_response
-                    rs_st, rs_ed = push_res_op_durations[index]
-                    # if not queued
-                    if not intervals[(target, source)].overlap(rs_st-500, rs_st - 5):
-                        latency = rs_st - ed
+                    if _is_first_push(key, index):
+                        # get copy_first
+                        cp_st, sv_ed = copy_first_op_durations[index]
+                        # if not queued in server process thread
+                        if not intervals[target+tid_cp].overlap(cp_st - 500, cp_st - 5):
+                            latency = cp_st - ed
+                            if (source, target) not in network_delays:
+                                network_delays[(source, target)] = []
+                            network_delays[(source, target)].append(latency)
+                    else:
+                        # get sum
+                        sm_st, sv_ed = sum_op_durations[index]
+                        # if not queued in server process thread
+                        if not intervals[target+tid_sum].overlap(sm_st-500, sm_st - 5):
+                            latency = sm_st - ed
+                            if (source, target) not in network_delays:
+                                network_delays[(source, target)] = []
+                            network_delays[(source, target)].append(latency)
+                    pres_st, pres_ed = push_res_op_durations[index]
+                    # if not queued in server->worker communication queue
+                    if not intervals[(target, source)].overlap(pres_st - 500, pres_st - 5):
+                        latency = pres_st - sv_ed
+                        if target not in server_op2comm_delays:
+                            server_op2comm_delays[target] = []
+                        server_op2comm_delays[target].append(latency)
 
+        for (source, target) in push_res_ops.keys():
+            # source: server, target: worker
+            for key, durations in push_res_ops[(source, target)].items():
+                _, _, tensor_name, _ = key
+                if key in self._ignored_tensors:
+                    continue
+                pull_req_op_durations = pull_req_ops[(target, source)][(target, source, tensor_name, COMM_OPS.PULL_REQ)]
+                for index, (st, ed) in enumerate(durations):
+                    # get pull request
+                    rq_st, rq_ed = pull_req_op_durations[index]
+                    # if not queued in worker -> server communication queue
+                    if not intervals[(target, source)].overlap(rq_st - 500, rq_st - 5):
+                        latency = rq_st - ed
                         if (source, target) not in network_delays:
                             network_delays[(source, target)] = []
                         network_delays[(source, target)].append(latency)
 
-        # for (source, target) in push_res_ops.keys():
-        #     for key, durations in push_res_ops[(source, target)].items():
-        #         _, _, tensor_name, _ = key
-        #         if key in self._ignored_tensors:
-        #             continue
-        #         pull_req_op_durations = pull_req_ops[(target, source)][(target, source, tensor_name, COMM_OPS.PULL_REQ)]
-        #         for index, (st, ed) in enumerate(durations):
-        #             # get pull request
-        #             rq_st, rq_ed = pull_req_op_durations[index]
-        #             # if not queued
-        #             if not intervals[target].overlap(st - 500, st + 500) and not intervals[target].overlap(rq_st - 500, rq_st):
-        #                 latency = rq_st - ed
-        #                 if (source, target) not in network_delays:
-        #                     network_delays[(source, target)] = []
-        #                 network_delays[(source, target)].append(latency)
-        
         for key, items in network_delays.items():
-            avg_delay = np.average(items)
-            network_delays[key] = avg_delay
-            SingleLogger().info("Comm delay for {} is {} us.".format(key, avg_delay))
+            if items:
+                avg_delay = np.average(items)
+                network_delays[key] = avg_delay
+                SingleLogger().info("Comm delay for {} is {} us.".format(key, avg_delay))
+            else:
+                network_delays[key] = 0
+                SingleLogger().info("Cannot determine comm delay for {}.".format(key))
+        
+        for key, items in server_op2comm_delays.items():
+            if items:
+                avg_delay = np.average(items)
+                server_op2comm_delays[key] = avg_delay
+                SingleLogger().info("ServerOp -> comm delay for {} is {} us.".format(key, avg_delay))
+            else:
+                server_op2comm_delays[key] = 0
+                SingleLogger().info("Cannot determine ServerOp -> comm delay for {}.".format(key))
 
         self.comm_delays = network_delays
+        self.server_op2comm_delays = server_op2comm_delays
 
     def gen_compatible_trace(self, dump_path=None):
         self._check_inited()
@@ -726,7 +754,7 @@ class bytepsGraph:
                         json_event["pid"] = self.gen_comp_unique_pid(key)
                         json_event["tid"] = 0
                         json_event["dur"] = ed - st
-                        json_event["cat"] = "operator"
+                        json_event["cat"] = CatName.PS_SERVER_OPERATOR.value
                         json_event["args"] = {}
                         trace.append(json_event)
                 else:
@@ -737,7 +765,7 @@ class bytepsGraph:
                     json_event["pid"] = self.gen_comp_unique_pid(key)
                     json_event["tid"] = 0
                     json_event["dur"] = ed - st
-                    json_event["cat"] = "operator"
+                    json_event["cat"] = CatName.PS_SERVER_OPERATOR.value
                     json_event["args"] = {}
                     trace.append(json_event)
 

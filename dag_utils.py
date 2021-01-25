@@ -37,10 +37,16 @@ def cal_edge_cost(G):
         next_cat = parse_cat_from_name(v)
         for key, value in G.nodes[u].items():
             if "GAP" in key:
-                ### e.g. "gap.operator.operator"
-                key_s = key.split("GAP")
-                if prev_cat == key_s[0] and next_cat == key_s[1]:
-                    gap += value
+                if key == GAP_STR_INTERNODE:
+                    prev_cat_finegrained = parse_cat_fine_grained(u)
+                    next_cat_finegrained = parse_cat_fine_grained(v)
+                    if prev_cat_finegrained == "Comm.PUSH_RES" and next_cat_finegrained == "Comm.PULL_REQ":
+                        gap += value
+                else:
+                    ### e.g. "gap.operator.operator"
+                    key_s = key.split("GAP")
+                    if prev_cat == key_s[0] and next_cat == key_s[1]:
+                        gap += value
         G.edges[u, v]["cost"] = G.nodes[u]["avg"] + gap / 1000.0
 
 def dag_longest_path(G, pathM=None, weight='weight', default_weight=0, _debug_level=0):
