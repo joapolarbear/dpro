@@ -247,8 +247,12 @@ class GraphDefUtil(object):
                 # op with inputs, replace all its inputs with placeholders
                 op_input_tensors = n.inputs
                 rewritten_input_nodes = []
+                rewritten_input_tensors = []
                 for op_input_tensor in op_input_tensors:
                     input_source_op = op_input_tensor.op
+                    output_id = int(op_input_tensor.name.split(":")[-1])
+                    def get_input_name_str(op_name):
+                        return op_name if output_id == 0 else op_name + ":{}".format(output_id)
                     # check if shape fixed
                     if not self.is_fixed_shape(op_input_tensor.shape):
                         raise GSNonFixedShapeError("{} has non-fixed shape at compile time." \
@@ -256,8 +260,10 @@ class GraphDefUtil(object):
                     if input_source_op in subgraph_input_nodes \
                             or input_source_op in internal_subgraph_nodes:
                         node_def = self.name2nodedef[input_source_op.name]
+                        tensor_name = get_input_name_str(node_def.name)
                     elif input_source_op.type == 'Const':
                         node_def = self.name2nodedef[input_source_op.name]
+                        tensor_name = get_input_name_str(node_def.name)
                         internal_subgraph_nodes.add(input_source_op)
                     elif input_source_op.type in ["Shape", "ShapeN"]:
                         # convert to constant nodes
@@ -272,6 +278,7 @@ class GraphDefUtil(object):
                             node_def.name = "generated{}_".format(gen_placeholder_counter) + \
                                             input_source_op.name
                             generated_subgraph_input_defs.append(node_def)
+                            tensor_name = node_def.name
                         else:
                             raise GSCannotDecideShapeError("Failed to infer value for required constant {}." \
                                                             .format(op_input_tensor))
@@ -292,7 +299,9 @@ class GraphDefUtil(object):
                         node_def.attr["dtype"].CopyFrom(dtype_attv)
                         node_def.attr["shape"].CopyFrom(shape_attv)
                         generated_subgraph_input_defs.append(node_def)
+                        tensor_name = node_def.name
                     rewritten_input_nodes.append(node_def)
+                    rewritten_input_tensors.append(tensor_name)
                 rewritten_node_def = tf.compat.v1.NodeDef()
                 orig_output_node_def = self.name2nodedef[n.name]
                 rewritten_node_def.name = orig_output_node_def.name
@@ -300,7 +309,8 @@ class GraphDefUtil(object):
                 rewritten_node_def.device = orig_output_node_def.device
                 for key in orig_output_node_def.attr.keys():
                     rewritten_node_def.attr[key].CopyFrom(orig_output_node_def.attr[key])
-                rewritten_node_def.input.extend([input_node.name for input_node in rewritten_input_nodes])
+                # rewritten_node_def.input.extend([input_node.name for input_node in rewritten_input_nodes])
+                rewritten_node_def.input.extend(rewritten_input_tensors)
                 converted_frontline_node_defs.append(rewritten_node_def)
 
         # add all the defs into the out graph def
