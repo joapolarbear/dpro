@@ -576,7 +576,7 @@ def gen_max_cluster_kernel_samples_using_replay(sample_generator, dataset_dir, d
     return total_fused_hashes
 
 def gen_kernel_sample_once_using_replay(sample_generator, dataset_dir, dataset_hlo_dir, 
-                    profile_dir, min_levels=1, max_levels=8, debug_dir = None, ):
+                    profile_dir, min_levels=4, max_levels=800, debug_dir = None):
     # generate one sample
     raw_subgraph_dir = os.path.join(dataset_dir, CMPaths.RAW_SUBGRAPH_DIR)
     if not os.path.isdir(raw_subgraph_dir):

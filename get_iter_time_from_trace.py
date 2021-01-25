@@ -1,6 +1,6 @@
 import json
 
-with open("/Users/chenyu/temp_1_FW_UPD.json", "r") as f:
+with open("/Users/chenyu/temp_1_OPT.json", "r") as f:
     trace = json.load(f)
 
 one_pid = -1
@@ -27,14 +27,14 @@ last_assign = -1
 for ev in evs:
     if ev["ph"] == "X" and ev["pid"] == one_pid:
         # if "args" in ev and ev["args"]["name"] == "_SOURCE":
-        if "args" in ev and "RandomUniform" in ev["args"]["name"] and started == False:
+        if "args" in ev and "random_uniform" in ev["args"]["name"] and started == False:
             source_sts.append(ev["ts"])
             if last_assign != -1:
                 dep_eds.append(last_assign)
                 last_assign = -1
             started = True
         # elif "args" in ev and ev["args"]["name"] == "group_deps_1":
-        elif "args" in ev and "Assign" in ev["args"]["name"]:
+        elif "args" in ev and "GradientDescent" == ev["args"]["name"]:
             started = False
             last_assign = ev["ts"] + ev["dur"]
 if last_assign != -1:

@@ -4,6 +4,7 @@ import os
 import pickle
 import numpy as np
 import ujson as json
+from tqdm import tqdm
 
 import arg_utils
 from .base import _BaseCostModel

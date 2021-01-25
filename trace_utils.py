@@ -269,10 +269,10 @@ def parse_cat_fine_grained(name_):
         return "Comm.PULL_RES"
     elif "I/O" in name_:
         ret_cat = "I/O"
-    elif "FW" in name_:
-        ret_cat = "operator.FW"
     elif "BW" in name_:
         ret_cat = "operator.BW"
+    elif "FW" in name_:
+        ret_cat = "operator.FW"
     elif "COMM" in name_:
         ret_cat = "operator.COMM"
     elif "COMP" in name_:
@@ -528,7 +528,7 @@ class TraceManager:
         self.iter_time = np.average(iter_list_all)
         self.opt_step = np.argmin(np.abs(iter_list_all - self.iter_time))
         SingleLogger().info("<Overall> step %d is the one closest to average %f - %s" % (self.opt_step, self.iter_time, iter_list_all))
-                
+
         """calculate the avg """
         for name, statistic in self.name2sta.items():
             if cal_median:

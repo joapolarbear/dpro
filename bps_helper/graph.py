@@ -915,11 +915,15 @@ class bytepsGraph:
             return tensor_name
 
         for process_name, tensor_dict in bw_durations.items():
+            bw_delay_for_its = [ [] for _ in range(self.PROFILE_ITER_DURATION)]
+            node_rank = process_name.split(".")[0].split("_")[-1]
+            local_rank = process_name.split(".")[1].split("rank")[-1]
             for layer_name, evs in tensor_dict.items():
+                # if len(bw_delay_for_its) < len(evs):
+                #     for _ in range(len(evs)-len(bw_delay_for_its)):
+                #         bw_delay_for_its.append([])
                 long_name = gen_long_name(process_name, layer_name)
                 if long_name in dag:
-                    node_rank = process_name.split(".")[0].split("_")[-1]
-                    local_rank = process_name.split(".")[1].split("rank")[-1]
                     # push_tensor_names = [n.split(".")[-1] for n in dag.neighbors(long_name) if "Comm" in n]
                     push_tensor_names = [get_tensor_name_from_full_name(n) for n in dag.neighbors(long_name) if "PUSH_REQ" in n]
                     matched_tensor_names = []
@@ -927,43 +931,51 @@ class bytepsGraph:
                         if tensor_name in push_tensor_names:
                             matched_tensor_names.append(tensor_name)
                     for index in range(len(evs)):
-                        local_min_delay = float('inf')
+                        # local_min_delay = float('inf')
                         for tensor_name in matched_tensor_names:
                             tensor_durations = push_req_ops["worker_"+node_rank][tensor_name]
-                            if len(evs) != len(tensor_durations):
-                                # SingleLogger().warn("Length mismatch between PUSH REQ {} and BW node {}".format(long_name, tensor_name))
-                                # print("Len BW: {}, Len comm: {}".format(len(evs), len(tensor_durations)))
-                                # input()
+                            if len(evs) != len(tensor_durations) or len(evs) > self.PROFILE_ITER_DURATION:
                                 continue
                             bw_st, bw_ed = evs[index]
                             pu_st, pu_ed = tensor_durations[index]
-                            # print("BW ST: {}, BW ED: {}".format(bw_st, bw_ed))
-                            # print("PU ST: {}, PU ED: {}".format(pu_st, pu_ed))
-                            # input()
                             if not interval["worker_"+node_rank].overlap(bw_ed - 200, bw_ed + 200) and not interval["worker_"+node_rank].overlap(pu_st - 200, pu_st - 5):
-                                # if pu_st - bw_ed > 10000:
-                                #     print("BW ST: {}, BW ED: {}".format(bw_st, bw_ed))
-                                #     print("PU ST: {}, PU ED: {}".format(pu_st, pu_ed))
-                                #     print(layer_name, tensor_name, index, pu_st - bw_ed)
-                                #     input()
-                                local_min_delay = min(local_min_delay, pu_st - bw_ed)
-                                # print(layer_name, tensor_name, index, pu_st - bw_ed)
-                        if node_rank not in bw_delay_dict:
-                            bw_delay_dict[node_rank] = {}
-                        if local_rank not in bw_delay_dict[node_rank]:
-                            bw_delay_dict[node_rank][local_rank] = []
-                        if local_min_delay != float('inf'):
-                            bw_delay_dict[node_rank][local_rank].append(local_min_delay)
+                                # local_min_delay = min(local_min_delay, pu_st - bw_ed)
+                                bw_delay_for_its[index].append(pu_st - bw_ed)
+                        # if node_rank not in bw_delay_dict:
+                        #     bw_delay_dict[node_rank] = {}
+                        # if local_rank not in bw_delay_dict[node_rank]:
+                        #     bw_delay_dict[node_rank][local_rank] = []
+                        # if local_min_delay != float('inf'):
+                        #     bw_delay_dict[node_rank][local_rank].append(local_min_delay)
+                        # else:
+                        #     bw_delay_dict[node_rank][local_rank].append(None)
                 else:
                     SingleLogger().warn("BYTEPS BW Delay: {} not in dag.".format(long_name))
+            bw_avg_for_its = []
+            for delays in bw_delay_for_its:
+                if delays:
+                    bw_avg_for_its.append(np.average(delays))
+                else:
+                    bw_avg_for_its.append(None)
+            if node_rank not in bw_delay_dict:
+                bw_delay_dict[node_rank] = {}
+            if local_rank not in bw_delay_dict[node_rank]:
+                bw_delay_dict[node_rank][local_rank] = []
+            bw_delay_dict[node_rank][local_rank] = bw_avg_for_its
 
         node_delay_dict = {}
         for node_rank, local_dict in bw_delay_dict.items():
             min_avg = float("inf")
-            for local_rank, delays in local_dict.items():
-                avg = np.average(delays)
-                if avg < min_avg:
-                    min_avg = avg
+            local_mins = []
+            num_iters = len(local_dict[list(local_dict.keys())[0]])
+            for idx in range(num_iters):
+                local_min = float("inf")
+                for local_rank, delays in local_dict.items():
+                    if delays[idx] is not None:
+                        local_min = min(local_min, delays[idx])
+                if not np.isnan(local_min) and not local_min == float("inf") and not local_min < 0:
+                    local_mins.append(local_min)
+            min_avg = np.average(local_mins)
             if np.isnan(min_avg) or min_avg == float("inf") or min_avg < 0:
                 SingleLogger().warn("Cannot determine the BW delay of {}.".format("worker_"+node_rank))
                 node_delay_dict["worker_"+node_rank] = 0

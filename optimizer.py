@@ -5,7 +5,6 @@ import random
 import math
 import time
 from collections import deque
-from networkx.algorithms.coloring.greedy_coloring import strategy_connected_sequential
 from scipy.stats.mstats import gmean
 import numpy as np
 import code
@@ -21,12 +20,13 @@ from trace_utils import *
 from dag_utils import *
 from cost_model_xla.pk_graph import PKGraph, PKGraphCycleError, contract_nodes_nx, \
                     defuse_nodes_inplace_nx, postorder_contract_nx, \
-                    subgraph_partition_connected_nx, get_concated_names
+                    subgraph_partition_connected_nx_using_topo, get_concated_names
 from cost_model_xla.gen_dataset_utils import parse_xla_candidate_ops
 from memory import MemoryEstimator
 from memory.cost_model import MemoryCostModel
 
 from cost_model.base import _BaseCostModel
+from cost_model.mixed_precision import _AMPCostModel
 from cost_model.tensor_fusion import _TensorFusionCM
 
 class GraphExpand(Enum):
@@ -124,6 +124,9 @@ class _XLACostModel(_BaseCostModel):
         self.ckpt_path = os.path.join(ROOT_PATH, "xla_ckpt.pickle")
         ### Used to cache the node attribtue
         self.node_attr_cache = AttrCache()
+
+    def flush(self, is_accept):
+        pass
 
     def load_init_ckpt(self):
         init_ckpt_path = os.path.join(ROOT_PATH, "xla_init_ckpt.pickle")
@@ -245,10 +248,23 @@ class _XLACostModel(_BaseCostModel):
     def _init_forbidden_list(self):
         xla_candidates = parse_xla_candidate_ops()
         # limit the range of nodes during search
+        IGNORE_OP_TYPES = ["ShapeN", "_Arg", "_Send", "_Recv", "VarIsInitializedOp", "ReadVariableOp", "VarHandleOp",
+                    "IsVariableInitialized", "ResourceApplyGradientDescent",
+                    "IteratorToStringHandle", "IteratorGetNext", "MakeIterator", "IteratorV2"]
+        filtered_xla_candidates = set()
+        for op in xla_candidates:
+            should_ignore = False
+            for ignore_type in IGNORE_OP_TYPES:
+                if ignore_type in op:
+                    should_ignore = True
+                    break
+            if not should_ignore:
+                filtered_xla_candidates.add(op)
+
         for node in self.dag.nodes:
             # ignore BW nodes and communication nodes
-            if "BW" in node:
-                self.initial_forbidden_list.add(node)
+            # if "BW" in node:
+                # self.initial_forbidden_list.add(node)
 
             try:
                 orig_name, pid = self.opt._get_original_name_pid_from_index(node)
@@ -260,7 +276,7 @@ class _XLACostModel(_BaseCostModel):
             cat = parse_cat_from_name(node)
             if (not args_.simulate and orig_name not in self._wrap_xla_operation_names(pid)) \
                     or "Assign" in orig_name or cat == CatName.COMM.value \
-                    or orig_name not in xla_candidates:
+                    or orig_name not in filtered_xla_candidates:
                 self.forbidden_list.add(node)
                 self.initial_forbidden_list.add(node)
 
@@ -370,7 +386,7 @@ class _XLACostModel(_BaseCostModel):
 
                 # st = time.time()
                 # randomly split edges using spanning tree
-                valid_split_plans = subgraph_partition_connected_nx(subgraph)
+                valid_split_plans = subgraph_partition_connected_nx_using_topo(subgraph)
                 split_weights = []
                 for splits in valid_split_plans:
                     split_weights.append(gmean([len(nodes) for nodes in splits]))
@@ -378,6 +394,8 @@ class _XLACostModel(_BaseCostModel):
                 for split_index, splits in enumerate(valid_split_plans):
                     search_space.append(("-", n, splits))
                     weights.append(self.opt._combine_weight(l, heat) * split_weights[split_index])
+                    # weights.append(1)
+
             else:
                 ### Nodes that have never been fused
                 cat = parse_cat_fine_grained(n)
@@ -389,8 +407,12 @@ class _XLACostModel(_BaseCostModel):
 
             if not self._wrap_xla_need_fuse(n_pid, n_orig_name, n):
                 continue
+            
+            candidate_names = [c[0] for c in candidates]
 
             for succ_ in _dag.successors(n):
+                if succ_ not in candidate_names:
+                    continue
                 # some filters
                 if not _pkg.can_contract_edge(n, succ_):
                     continue
@@ -418,17 +440,29 @@ class _XLACostModel(_BaseCostModel):
                     return __ret
 
                 comm_t = 0
+                effective_succ_bw = set()
                 # for bw_u_succ in _dag.successors(bw_u):
                 for bw_u_succ in _dag.successors(n):
                     if "Comm" in bw_u_succ:
                         if self.opt.comm_backend == "NCCL":
-                            comm_t += ret_comm_time(bw_u_succ)
+                            # check if the comm node's predecessor includes succ_
+                            if succ_ in _dag.predecessors(bw_u_succ):
+                                # OK to fuse
+                                continue
+                            else:
+                                succ_bws = [node for node in _dag.predecessors(bw_u_succ) if "BW" in node]
+                                effective_succ_bw.union(set(succ_bws))
+                                comm_t += ret_comm_time(bw_u_succ)
                         else:
                             ### TODO (huhanpeng): is there only one comm sub operator ???
                             comm_t += _dag.nodes[bw_u_succ]["avg"]
+                            effective_succ_bw.add(succ_)
+                effective_bw_size = 0
+                for node in effective_succ_bw:
+                    effective_bw_size += _dag.nodes[node]["avg"]
 
                 # if comm_t >= _dag.nodes[bw_v]["avg"]:
-                if comm_t >= _dag.nodes[succ_]["avg"]:
+                if comm_t > effective_bw_size:
                     prun_cnt += 1
                     SingleLogger().debug("Prune fusing {} and {} with comm time {}".format(n, succ_, comm_t))
                     continue
@@ -440,6 +474,7 @@ class _XLACostModel(_BaseCostModel):
 
                 search_space.append(("+", n, succ_))
                 weights.append(self.opt._combine_weight(l, heat_combined))
+                # weights.append(1)
         SingleLogger().info("Init search space len={} from {} candidates, prune {}".format(
             len(search_space), len(candidates), prun_cnt))
         # SingleLogger().info("Time spent for spanning tree: {}".format(sum(time_spanning_trees)/ len(time_spanning_trees)))
@@ -670,7 +705,7 @@ class CostModelManager:
             self.cost_model_list = [_TensorFusionCM(opt)]
         else:
             self.cost_model_list = [
-                # _XLACostModel(opt),
+                _XLACostModel(opt),
                 # _AMPCostModel(opt),
             ]
         self.mem_model_list = [MemoryCostModel(opt)]
@@ -812,7 +847,7 @@ class Optimizer:
         else:
             return parse_layer_name(name_), parse_pid_from_name(name_)
 
-    def evaluate(self, _dag, _filename=None):
+    def evaluate(self, _dag, _filename=None, _crit_filename = None):
         # t = time.time()
         ### input _dag is a dependency graph, using the replayer to get the simulated traces and execution graph
         ### Return the iteration time and the execution graph
@@ -821,10 +856,15 @@ class Optimizer:
                             leaf_dirs=self.clct.all_prefix_list(),
                             dump_path=self.clct.pm.path,
                             comm_backend=self.clct.comm_backend,
-                            byteps_graph=self.clct.byteps_graph)
+                            byteps_graph=self.clct.byteps_graph,
+                            infi_para_update=args_.update_infi_para)
         step_end_time_ms = [t / 1000 for t in replayer.replayAndDelay(
             None, _output=_output, _filename=_filename).values()]
         # print("Evaluate time {}".format(time.time() - t))
+        if _crit_filename is not None:
+            prefix, crit_file_name = os.path.split(_crit_filename)
+            critical_path = list(zip(*self.wrap_critical_path(replayer.exct_dag)))[0]
+            replayer.dump_critical_path(crit_file_name, critical_path, prefix=prefix)
         
         estimated_memory_usage = self.memory_estimator.estimate(_dag, self.clct.para_dict)
         # print("output critical path")
@@ -875,8 +915,8 @@ class Optimizer:
 
     def _combine_weight(self, l: float, heat: float) -> float:
         # return l * (0.05 + heat)
-        # return heat + 0.01
-        return 1
+        return heat + 0.01
+        # return 1
 
     def _get_heat_from_history(self, node):
         heat = 0
@@ -954,12 +994,12 @@ class Optimizer:
         if not valid_search_space_idx:
             raise OptNoValidStrategyError
 
-        valid_weights = np.array(valid_weights)
-        valid_weights = valid_weights - np.min(valid_weights)
-        valid_weights = valid_weights / np.sum(valid_weights)
-        if valid_weights is None:
+        if not valid_weights:
             st_idx = random.choice(valid_search_space_idx)
         else:
+            valid_weights = np.array(valid_weights)
+            valid_weights = valid_weights - np.min(valid_weights)
+            valid_weights = valid_weights / np.sum(valid_weights)
             try:
                 st_idx = random.choices(valid_search_space_idx, weights=valid_weights, k=1)[0]
             except:
@@ -967,7 +1007,8 @@ class Optimizer:
                 st_idx = self.weighted_choice(valid_search_space_idx, valid_weights)
         st = search_space[st_idx]
         search_space.pop(st_idx)
-        weights.pop(st_idx)
+        if weights:
+            weights.pop(st_idx)
         return st
 
     def search(self):
@@ -1116,7 +1157,10 @@ class MCMCOptimizer(Optimizer):
                     strategy_removed_nodes.update(nodes_removed)
 
                     if self.step % 100 == 0:
-                        self.cost_star, self.exct_dag_star, self.mem_usage_star = self.evaluate(G_star, _filename=os.path.join(ROOT_PATH, "searched_graph/{}.json".format(self.step)))
+                        self.cost_star, self.exct_dag, self.mem_usage_star = \
+                            self.evaluate(G_star, 
+                            _filename=os.path.join(ROOT_PATH, "searched_graph/{}.json".format(self.step)),
+                            _crit_filename=os.path.join(ROOT_PATH, "searched_graph/{}_crit.json".format(self.step)))
                         # dump cluster mapping
                         ### TODO (HHP): we should only dump cluster mapping for the best strategy 
                         # if "+" in self.cst_md_mng.strategy2model:
@@ -1166,6 +1210,14 @@ class MCMCOptimizer(Optimizer):
                         combined_history.append((h_avg, self.step))
                     else:
                         combined_history.append((None, None))
+                
+                # calculate the proposal probability q here
+                # proposed_candidates, _ = self.candidate_selection(
+                        # G_star, topk=None, critical_path=self.wrap_critical_path(self.exct_dag))
+                # proposed_search_space, proposed_weights = self.init_search_space(
+                        # proposed_candidates, G_star, PKG_star)
+                # forward_prob = 1 / (len(search_space)+1)
+                # backward_prob = 1 / len(proposed_search_space)
 
                 is_accept = self.accept_or_not(self.cur_cost, self.cost_star)
                 ### update cost model internal states
@@ -1201,22 +1253,35 @@ class MCMCOptimizer(Optimizer):
                         
                         if "++" in self.cst_md_mng.strategy2model:
                             self.cst_md_mng.strategy2model["++"].dump_tensor_grp_mapping()
+                        # DEBUG: log best graph for debugging
+                        self.evaluate(G, 
+                            _filename=os.path.join(ROOT_PATH, "best.json".format(self.step)),
+                            _crit_filename=os.path.join(ROOT_PATH, "best_crit.json".format(self.step)))
+                    ### Init new search space
+                    candidates, _ = self.candidate_selection(
+                        G, topk=None, critical_path=self.wrap_critical_path(self.exct_dag))
+                    search_space, weights = self.init_search_space(
+                        candidates, G, PKG)
+                    # candidates = proposed_candidates
+                    # search_space = proposed_search_space
+                    # weights = proposed_weights
                     break
             display_and_ckpt()
-            ### Init new search space
-            candidates, _ = self.candidate_selection(G, topk=None, critical_path=self.wrap_critical_path(self.exct_dag))
-            search_space, weights = self.init_search_space(candidates, G_star, PKG_star)
-
         display_and_ckpt()
 
     def accept_or_not(self, cost, new_cost):
         # prob = min(1, (math.exp(beta * (cost - new_cost))))
-        if cost > new_cost:
+        try:
+            prob = math.exp(MCMC_BETA*math.log(self.step+1) * (cost - new_cost))
+        except OverflowError:
+            prob = float('inf')
+        # if cost > new_cost:
+        if prob > 1:
             SingleLogger().info(
                 "\033[92m" + "Accept a better action, orig cost: {}, new cost: {}".format(cost, new_cost) + "\033[0m")
             return True
         else:
-            prob = math.exp(MCMC_BETA * (cost - new_cost))
+            # prob = math.exp(MCMC_BETA * (cost - new_cost))
             r = random.random()
             if r < prob:
                 SingleLogger().info(
