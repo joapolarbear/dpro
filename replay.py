@@ -649,8 +649,8 @@ class Replayer:
 
         edges_to_add = []
         def wrap_add_edge(u, v):
-            # _dag.add_edge(u, v)
-            edges_to_add.append((u, v))
+            _dag.add_edge(u, v)
+            # edges_to_add.append((u, v))
 
         one_pid = "host0.rank0" if self.comm_backend == "NCCL" else "traces_0.rank0"
         for u, v in self.dag.edges():
@@ -700,7 +700,7 @@ class Replayer:
                 if "BW" in u and "UPDATE_" in v:
                     raise ValueError(u, v)
                 wrap_add_edge(u, v)
-        _dag.add_edges_from(edges_to_add)
+        # _dag.add_edges_from(edges_to_add)
         for node_ in _dag.nodes():
             if "Comm" in node_:
                 continue
