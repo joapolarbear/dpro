@@ -1125,7 +1125,6 @@ class Collector(object):
                         node_ = self.traceM.ret_unique_name(event)
 
                         bw_nodes = []
-
                         _to_process = [_in for _in, _  in self.trail_dag.in_edges(node_)]
                         while len(_to_process) >0:
                             _prev = _to_process.pop(0)
