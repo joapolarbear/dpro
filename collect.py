@@ -659,7 +659,8 @@ class Collector(object):
                     _append_trace(ret, "%s.%s"%(process_name, op_name), ts, dur, process_name, "debug", input0)
             else:
                 pass
-                
+        
+        ### Combine Comm.1.Sync, Comm.2.Sync into Comm.1+2.Sync, is their 'ts's are the same
         ### TODO (hphu): delete after correcting Horovod profiling
         traces = sorted(ret, key=lambda x: x["ts"], reverse=False)
         last_sync_op = None
@@ -1114,6 +1115,34 @@ class Collector(object):
             if self.comm_backend == "NCCL":
                 ### Calculate gaps for operator nodes now
                 is_need_gap = (cat_ in cur_pid_dict and cat_ == CatName.OPERATOR.value)
+
+                ### calculate gaps for BW -> Comm, only for one step
+                if event["args"]["step"] == self.traceM.opt_step:
+                    if "first_comm_op" not in prev_events_dict[event["pid"]] and "Comm" in event["name"] and "Sync" not in event["name"]:
+                        ### Handle the gap between BW and the first Comm node
+                        ### The gap is added to Sync nodes
+                        prev_events_dict[event["pid"]]["first_comm_op"] = event["name"]
+                        node_ = self.traceM.ret_unique_name(event)
+
+                        bw_nodes = []
+
+                        _to_process = [_in for _in, _  in self.trail_dag.in_edges(node_)]
+                        while len(_to_process) >0:
+                            _prev = _to_process.pop(0)
+                            if event["pid"] not in _prev:
+                                continue
+                            if "BW" in _prev and self.trail_dag.nodes[_prev]["avg"] > 0:
+                                bw_nodes.append(_prev)
+                            else:
+                                _to_process += [_in for _in, _ in self.trail_dag.in_edges(_prev)]
+                        
+                        u_idx_l = [self.traceM.map_name2idxlist(_node) for _node in bw_nodes]
+                        assert len(u_idx_l) > 0, bw_nodes
+                        bw_traces = [self.traceM.traces[u_idxs[self.traceM.opt_step]] for u_idxs in u_idx_l]
+                        last_bw_time = max([trace["ts"] + trace["dur"] for trace in bw_traces])
+                        gap = event["ts"] - last_bw_time
+                        assert gap > 0, (bw_nodes)
+                        prev_events_dict[event["pid"]][GAP_STR_OP2COMM] = gap
             else:
                 ### BYTEPS
                 is_need_gap = (cat_ in cur_pid_dict and (cat_ == CatName.OPERATOR.value or cat_ == CatName.COMM.value))
@@ -1154,32 +1183,11 @@ class Collector(object):
                 self.trail_dag.nodes[node_][GAP_STR_COMM2COMM] /= self.trail_dag.nodes[node_]["cnt"]
 
             if self.comm_backend == "NCCL":
-                ### Handle the gap between BW and the first Comm node
-                # if queue_type_ in node_:
-                #     bw_node, _ = list(self.trail_dag.in_edges(node_))[0]
-                #     prefix_ = parse_pid_from_name(node_)
-                #     comm_node = None
-                #     for succ_ in self.trail_dag.successors(node_):
-                #         if parse_pid_from_name(succ_) == prefix_:
-                #             comm_node = succ_
-                #             break
-                #     try:
-                #         u_idx_l, v_idx_l = self.traceM.map_name2idxlist(bw_node), self.traceM.map_name2idxlist(comm_node)
-                #     except KeyError:
-                #         ### Some rank does not have SEND nodes
-                #         continue
-                #     gap = 0
-                #     cnt = 0
-                #     for cnt_ in range(self.traceM.max_step):
-                #         u_idx, v_idx = u_idx_l[cnt_], v_idx_l[cnt_]
-                #         if u_idx is None or v_idx is None:
-                #             continue
-                #         u_event = self.traceM.traces[u_idx]
-                #         v_event = self.traceM.traces[v_idx]
-                #         gap += v_event["ts"] - (u_event["ts"] + u_event["dur"])
-                #         cnt += 1
-                #     self.trail_dag.nodes[bw_node][GAP_STR_OP2COMM] = gap / cnt if cnt != 0 else 0
-                pass
+                if "Sync" in node_:
+                    prefix_ = parse_pid_from_name(node_)
+                    if GAP_STR_OP2COMM in prev_events_dict[prefix_]:
+                        self.trail_dag.nodes[node_][GAP_STR_OP2COMM] = prev_events_dict[prefix_][GAP_STR_OP2COMM]
+                        SingleLogger().info("Add gap:{} to pid: {}".format(GAP_STR_OP2COMM, prefix_))
             else:
                 ## Add BW -> Comm delays using byteps_graph
                 ## inter node delays are directly added in replayer
@@ -1259,9 +1267,10 @@ class Collector(object):
                 op_type, op_name, sub_op = rawname.split(".")
                 if "Sync" in node_:
                     ### TODO (hphu): estimate sync time
-                    ref_node = gen_long_name("host0.rank0", rawname, suffix)
-                    self.trail_dag.nodes[node_]["avg"] = self.traceM.lookup_stat(None, None, ref_node) 
-                    assert self.trail_dag.nodes[node_]["avg"] > 0, (node_)
+                    # ref_node = gen_long_name("host0.rank0", rawname, suffix)
+                    # self.trail_dag.nodes[node_]["avg"] = self.traceM.lookup_stat(None, None, ref_node) 
+                    # assert self.trail_dag.nodes[node_]["avg"] > 0, (node_)
+                    self.trail_dag.nodes[node_]["avg"] = 0
                 else:
                     ### for Queue|MEMCPY_IN_FUSION_BUFFER|MEMCPY_OUT_FUSION_BUFFER sub operators
                     ### there are not corresponding fused traces, instead, each tensor has its own sub operator traces

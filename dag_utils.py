@@ -13,6 +13,8 @@ if args_.comm_backend == "NCCL":
 elif args_.comm_backend == "BYTEPS":
     from bps_helper.graph import *
 
+VIRTUAL_SYNC_OP = True
+
 def visualize_gml(graph, layout="circular"):
     if layout == "spectral":
         pos = nx.spectral_layout(graph, dim=2, scale=0.5)
@@ -541,6 +543,9 @@ class DAGManager:
                 except TypeError:
                     ### some tensors do not have grads
                     continue
+                
+                if VIRTUAL_SYNC_OP:
+                    nccl_grp_name_sync = nccl_grp_name
 
                 ### handle the edges from BW to Comm.xxx.Sync
                 sync_op = "Comm." + nccl_grp_name_sync + ".Sync"

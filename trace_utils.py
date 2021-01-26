@@ -340,6 +340,7 @@ class TraceManager:
 
     def load(self, dir_):
         self.traces = read_traces(os.path.join(dir_, FileName.TRACE.value))
+        self.traces = sorted(self.traces, key=lambda x: (x["ts"], x["name"]), reverse=False)
         with open(os.path.join(dir_, FileName.STATISTIC.value), 'r') as fp:
             str_ = fp.read().split("\n")
 
@@ -506,9 +507,9 @@ class TraceManager:
                         pid_info["bw_start"] = pid_info["cur_iter_time"]
                     pid_info["bw_end"] = pid_info["cur_iter_time"]
 
-        ### calculate the average iteration time
+        ### aggregate duration of all iterations
         iter_list_all = []
-        for prefix in prefix_dict.keys():
+        for prefix in sorted(prefix_dict.keys()):
             pid_info = prefix_dict[prefix]
 
             ### Check and statistic the laste step
@@ -535,7 +536,8 @@ class TraceManager:
             SingleLogger().info("<%s> fw : %f + bw: %f + update: %f -> time/it = %f ms" % (prefix,
                     fw_time, bw_time, update_time, iter_time))
 
-        ### iter_list_all, shape = (n_GPUs, n_steps) ==> (n_steps)
+        ### calculate the average iteration time
+        # * iter_list_all, shape = (n_GPUs, n_steps) ==> (n_steps)
         iter_list_all = np.average(np.array(iter_list_all), axis=0)
         self.iter_time = np.average(iter_list_all)
         self.opt_step = np.argmin(np.abs(iter_list_all - self.iter_time))
