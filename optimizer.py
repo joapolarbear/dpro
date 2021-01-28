@@ -195,6 +195,8 @@ class _XLACostModel(_BaseCostModel):
         ret_G = nx.DiGraph()
         edges_to_add = []
         for u, v in G.edges:
+            if u == v:
+                continue
             if (u.startswith("host0.rank0") and v.startswith("host0.rank0")) \
                 or (u.startswith("traces_0.rank0") and v.startswith("traces_0.rank0")):
                 # we also remove FW -> UPDATE egdes here since now we have 
@@ -1116,9 +1118,9 @@ class MCMCOptimizer(Optimizer):
         raise
         '''
         
-        while len(search_space) > 0:
+        while True:
             invalid_strategies = set()
-            while True and len(search_space) > 0:
+            while len(search_space) > 0:
                 G_star = G.copy()
                 PKG_star = PKG.copy()
                 successful_strategies = 0
@@ -1157,7 +1159,7 @@ class MCMCOptimizer(Optimizer):
                     strategy_removed_nodes.update(nodes_removed)
 
                     if self.step % 100 == 0:
-                        self.cost_star, self.exct_dag, self.mem_usage_star = \
+                        self.cost_star, self.exct_dag_star, self.mem_usage_star = \
                             self.evaluate(G_star, 
                             _filename=os.path.join(ROOT_PATH, "searched_graph/{}.json".format(self.step)),
                             _crit_filename=os.path.join(ROOT_PATH, "searched_graph/{}_crit.json".format(self.step)))
@@ -1267,6 +1269,12 @@ class MCMCOptimizer(Optimizer):
                     # weights = proposed_weights
                     break
             display_and_ckpt()
+            if len(search_space) == 0:
+                ### Init new search space
+                candidates, _ = self.candidate_selection(
+                    G, topk=None, critical_path=self.wrap_critical_path(self.exct_dag))
+                search_space, weights = self.init_search_space(
+                    candidates, G, PKG)
         display_and_ckpt()
 
     def accept_or_not(self, cost, new_cost):

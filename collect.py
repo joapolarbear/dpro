@@ -392,6 +392,25 @@ class Collector(object):
                         self.run_span[wk_prefix].init_end(_trace["ts"])
             else:
                 raise NotImplementedError("Unsupported platform {}.".format(self.platform))
+        
+        if args_.update_clip_overlapping:
+            # trim the overlapping parts of update nodes
+            # assume the end time of each event is accurate
+            update_nodes = []
+            for ev in rst_traces:
+                if "UPDATE" in ev["name"]:
+                    update_nodes.append(ev)
+            end_times = [ev["ts"] + ev["dur"] for ev in update_nodes]
+            sorted_end_times, sorted_update_nodes = zip(*sorted(zip(end_times, update_nodes)))
+            for idx, ev in enumerate(sorted_update_nodes):
+                if idx == 0:
+                    continue
+                start_time = ev["ts"]
+                if start_time < sorted_end_times[idx - 1]:
+                    # needs clipping
+                    ev["ts"] = sorted_end_times[idx - 1]
+                    ev["dur"] = sorted_end_times[idx] - ev["ts"]
+
         SingleLogger().debug("Comp traces length: {}.".format(len(rst_traces)))
         return rst_traces
 
@@ -1188,17 +1207,10 @@ class Collector(object):
                 if "BW" in node_:
                     gap = self.byteps_graph.bw_delays["worker_"+node_rank]
                     self.trail_dag.nodes[node_][GAP_STR_OP2COMM] = gap
-                elif "PUSH_REQ" in node_ or "PULL_REQ" in node_:
-                    _, target, _, _= self.byteps_graph.parse_comm_event_name(parse_rawname_from_name(node_))
-                    gap = self.byteps_graph.comm_delays[("worker_"+node_rank, target)]
-                    self.trail_dag.nodes[node_][GAP_STR_COMM2SVOP] = gap
-                elif "COPY_FIRST" in node_ or "SUM" in node_ or "COPY_MERGED" in node_:
-                    _, target, _, _ = self.byteps_graph.parse_comm_event_name(parse_rawname_from_name(node_))
-                    gap = self.byteps_graph.server_op2comm_delays[target]
-                    self.trail_dag.nodes[node_][GAP_STR_SVOP2COMM] = gap
-                elif "PUSH_RES" in node_ or "PULL_RES" in node_:
-                    _, target, _, _ = self.byteps_graph.parse_comm_event_name(parse_rawname_from_name(node_))
-                    gap = self.byteps_graph.comm_delays[("server_"+node_rank, target)]
+                elif "PUSH_REQ" in node_ or "PULL_REQ" in node_ \
+                        or "PUSH_RES" in node_ or "PULL_RES" in node_:
+                    source, target, _, _= self.byteps_graph.parse_comm_event_name(parse_rawname_from_name(node_))
+                    gap = self.byteps_graph.comm_delays[(source, target)]
                     self.trail_dag.nodes[node_][GAP_STR_INTERNODE] = gap
 
     def clip_recv_events(self):

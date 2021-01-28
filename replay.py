@@ -183,11 +183,6 @@ class Device:
                         gap += self.replayer.dag.nodes[name][GAP_STR_OP2COMM]
                         if self.replayer.dag.nodes[name][GAP_STR_OP2COMM] > 10000:
                             SingleLogger().debug("Large OP2COMM gap detected, {} -> {},  gap: {}".format(name, _succ, self.replayer.dag.nodes[name][GAP_STR_OP2COMM]))
-                    elif GAP_STR_SVOP2COMM in self.replayer.dag.nodes[name] and \
-                            self.comm_backend == "BYTEPS" and \
-                            this_cat == CatName.PS_SERVER_OPERATOR.value and \
-                            next_cat == CatName.COMM.value:
-                        gap += self.replayer.dag.nodes[name][GAP_STR_SVOP2COMM]
                     _status["ready"] = (_end_time + gap) if _status["ready"] is None else max(_end_time + gap, _status["ready"])
 
                 ### Whether the dependency has met
@@ -285,7 +280,7 @@ class PSCommDevice(Device):
         self.replayer.node_status.pop(name)
 
         this_cat = parse_cat_from_name(name)
-        actual_successors = self.replayer.dag.successors(name)
+        actual_successors = list(self.replayer.dag.successors(name))
         if next_name is not None:
             actual_successors.append(next_name)
             # add an edge from this name to next_name in exct dag
@@ -298,11 +293,7 @@ class PSCommDevice(Device):
                 _status["in_degree"] -= 1
                 # add GAPs
                 gap = 0
-                if GAP_STR_COMM2SVOP in self.replayer.dag.nodes[name] and \
-                        next_cat == CatName.PS_SERVER_OPERATOR.value and \
-                        this_cat == CatName.COMM.value:
-                    gap += self.replayer.dag.nodes[name][GAP_STR_COMM2SVOP]
-                elif GAP_STR_INTERNODE in self.replayer.dag.nodes[name] and \
+                if GAP_STR_INTERNODE in self.replayer.dag.nodes[name] and \
                         this_cat == CatName.COMM.value and \
                         next_cat == CatName.COMM.value:
                     gap += self.replayer.dag.nodes[name][GAP_STR_INTERNODE]

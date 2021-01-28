@@ -460,7 +460,9 @@ class TraceManager:
                 #     print("Minus step to {} for {}, before: {}".format(
                 #         pid_info["step_cnt"], event, pid_info["cat_cursor"]))
             event["args"]["step"] = pid_info["step_cnt"]
-            if parse_cat_from_name(event["name"]) in [CatName.OPERATOR.value, CatName.IO.value]:
+            if parse_cat_from_name(event["name"]) in [CatName.OPERATOR.value,
+                                                        CatName.IO.value,
+                                                        CatName.PS_SERVER_OPERATOR.value]:
                 pid_info["cat_cursor"] = cat
                 if cat not in pid_info["cat_cnt"]:
                     pid_info["cat_cnt"][cat] = 0
@@ -517,8 +519,8 @@ class TraceManager:
             pid_info = prefix_dict[prefix]
 
             ### Check and statistic the laste step
-            if pid_info["fw_end"] is None or pid_info["bw_end"] is None or pid_info["bw_start"] is None:
-                pass
+            if not pid_info["fw_end"] or not pid_info["bw_end"] or not pid_info["bw_start"]:
+                continue
             elif len(pid_info["iter_list"]) > 0:
                 ### TODO (hhp): ignore the last step now
                 pass
