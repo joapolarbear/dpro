@@ -666,7 +666,7 @@ class Collector(object):
         last_sync_op = None
         ret = []
         for trace in traces:
-            if "Sync" not in trace["name"]:
+            if "Sync" not in trace["name"] or "local_num_masks" in trace["name"]:
                 ret.append(trace)
                 continue
         
@@ -1185,8 +1185,9 @@ class Collector(object):
                 if "Sync" in node_:
                     prefix_ = parse_pid_from_name(node_)
                     if GAP_STR_OP2COMM in prev_events_dict[prefix_]:
-                        self.trail_dag.nodes[node_][GAP_STR_OP2COMM] = prev_events_dict[prefix_][GAP_STR_OP2COMM]
-                        SingleLogger().info("Add gap:{} to pid: {}".format(GAP_STR_OP2COMM, prefix_))
+                        gap = prev_events_dict[prefix_][GAP_STR_OP2COMM]
+                        self.trail_dag.nodes[node_][GAP_STR_OP2COMM] = gap
+                        SingleLogger().debug("Add gap:{} to pid: {}".format(gap, prefix_))
             else:
                 ## Add BW -> Comm delays using byteps_graph
                 ## inter node delays are directly added in replayer

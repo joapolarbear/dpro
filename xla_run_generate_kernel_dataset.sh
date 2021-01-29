@@ -1,12 +1,12 @@
 #!/bin/bash
-cd /opt/tiger
+cd /home/tiger
 if hdfs dfs -test -e /usr/hphu/xla_model ; then
     hdfs dfs -get /usr/hphu/xla_model/xla
     hdfs dfs -get /usr/hphu/xla_model/traces
 fi
 
 sudo -i
-cd /opt/tiger/
+cd /home/tiger/
 rm -rf byteprofile-analysis
 git clone https://github.com/joapolarbear/byteprofile-analysis.git
 
@@ -24,7 +24,7 @@ cd /root/tensorflow
 ## Set enviroment variables related to profiling
 export BYTEPS_TRACE_ON="${BYTEPS_TRACE_ON:-1}"
 if [ "${BYTEPS_TRACE_ON}" = "1" ]; then
-	export BYTEPS_TRACE_DIR="/opt/tiger/traces"
+	export BYTEPS_TRACE_DIR="/home/tiger/traces"
 	export BYTEPS_TRACE_START_STEP="${BYTEPS_TRACE_START_STEP:-50}"
 	export BYTEPS_TRACE_END_STEP="${BYTEPS_TRACE_END_STEP:-60}"
     echo "BYTEPS_TRACE_DIR: ${BYTEPS_TRACE_DIR}"
@@ -38,7 +38,7 @@ export BPF_COST_MODEL_PROFILE_GPU="0"
 
 # modify these
 TRACE_DIR="$BYTEPS_TRACE_DIR/0"
-OUTPUT_DIR="/opt/tiger/xla/kernel_dataset"
+OUTPUT_DIR="/home/tiger/xla/kernel_dataset"
 
 ### resnet
 NUM_RANDOM_SAMPLES=5000
@@ -52,7 +52,13 @@ MAX_CLUSTER_SAMPLES=5
 MIN_CLUSTER_SIZE=4
 MAX_CLUSTER_SIZE=200
 
-cd /opt/tiger/byteprofile-analysis
+### VGG19
+NUM_RANDOM_SAMPLES=2000
+MAX_CLUSTER_SAMPLES=5
+MIN_CLUSTER_SIZE=4
+MAX_CLUSTER_SIZE=200
+
+cd /home/tiger/byteprofile-analysis
 python3 xla_generate_kernel_dataset.py --trace_dir ${TRACE_DIR} \
     --output_dir ${OUTPUT_DIR} \
     --num_samples ${NUM_RANDOM_SAMPLES} \
@@ -61,13 +67,13 @@ python3 xla_generate_kernel_dataset.py --trace_dir ${TRACE_DIR} \
     --max_cluster_size ${MAX_CLUSTER_SIZE}
 
 # modify these
-DATASET_DIR="/opt/tiger/xla/kernel_dataset"
-OUTPUT_DIR="/opt/tiger/xla/cost_model"
+DATASET_DIR="/home/tiger/xla/kernel_dataset"
+OUTPUT_DIR="/home/tiger/xla/cost_model"
 
-cp /opt/tiger/xla/kernel_dataset/cleaned_graph.json /opt/tiger/xla/kernel_dataset/dataset/
-cp /opt/tiger/xla/kernel_dataset/tensor_shapes.json /opt/tiger/xla/kernel_dataset/dataset/
+cp /home/tiger/xla/kernel_dataset/cleaned_graph.json /home/tiger/xla/kernel_dataset/dataset/
+cp /home/tiger/xla/kernel_dataset/tensor_shapes.json /home/tiger/xla/kernel_dataset/dataset/
 
-cd /opt/tiger/byteprofile-analysis
+cd /home/tiger/byteprofile-analysis
 python3 xla_train_module_cm.py --dataset_dir ${DATASET_DIR} --output_dir ${OUTPUT_DIR} --batch_size 256
 
 
@@ -76,4 +82,4 @@ exit
 if hdfs dfs -test -e /usr/hphu/xla_model/xla ; then
     hdfs dfs -rmr /usr/hphu/xla_model/xla
 fi
-hdfs dfs -put /opt/tiger/xla /usr/hphu/xla_model/
+hdfs dfs -put /home/tiger/xla /usr/hphu/xla_model/

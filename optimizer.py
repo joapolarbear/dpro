@@ -1157,7 +1157,7 @@ class MCMCOptimizer(Optimizer):
                     strategy_removed_nodes.update(nodes_removed)
 
                     if self.step % 100 == 0:
-                        self.cost_star, self.exct_dag, self.mem_usage_star = \
+                        self.cost_star, self.exct_dag_star, self.mem_usage_star = \
                             self.evaluate(G_star, 
                             _filename=os.path.join(ROOT_PATH, "searched_graph/{}.json".format(self.step)),
                             _crit_filename=os.path.join(ROOT_PATH, "searched_graph/{}_crit.json".format(self.step)))
@@ -1254,9 +1254,9 @@ class MCMCOptimizer(Optimizer):
                         if "++" in self.cst_md_mng.strategy2model:
                             self.cst_md_mng.strategy2model["++"].dump_tensor_grp_mapping()
                         # DEBUG: log best graph for debugging
-                        self.evaluate(G, 
-                            _filename=os.path.join(ROOT_PATH, "best.json".format(self.step)),
-                            _crit_filename=os.path.join(ROOT_PATH, "best_crit.json".format(self.step)))
+                        # self.evaluate(G, 
+                        #     _filename=os.path.join(ROOT_PATH, "best.json".format(self.step)),
+                        #     _crit_filename=os.path.join(ROOT_PATH, "best_crit.json".format(self.step)))
                     ### Init new search space
                     candidates, _ = self.candidate_selection(
                         G, topk=None, critical_path=self.wrap_critical_path(self.exct_dag))

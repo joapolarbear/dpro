@@ -509,6 +509,7 @@ class TraceManager:
 
         ### aggregate duration of all iterations
         iter_list_all = []
+        min_step_num = None
         for prefix in sorted(prefix_dict.keys()):
             pid_info = prefix_dict[prefix]
 
@@ -535,9 +536,13 @@ class TraceManager:
             iter_list_all.append(pid_info["iter_list"])
             SingleLogger().info("<%s> fw : %f + bw: %f + update: %f -> time/it = %f ms" % (prefix,
                     fw_time, bw_time, update_time, iter_time))
-
+            
+            if min_step_num is None or len(pid_info["iter_list"]) < min_step_num:
+                min_step_num = len(pid_info["iter_list"])
+    
         ### calculate the average iteration time
         # * iter_list_all, shape = (n_GPUs, n_steps) ==> (n_steps)
+        iter_list_all = [_list[:min_step_num] for _list in iter_list_all]
         iter_list_all = np.average(np.array(iter_list_all), axis=0)
         self.iter_time = np.average(iter_list_all)
         self.opt_step = np.argmin(np.abs(iter_list_all - self.iter_time))
