@@ -33,13 +33,11 @@ class _TensorFusionCM(_BaseCostModel):
         super().__init__(opt)
         self.token = ["++", "--"]
         self.meta_info = self.opt.clct.para_dict
-        self.node_attr_cache = {}
         self.tensor_group_info = {}
         self.cur_tensor2group = {}
 
         for n in self.dag.nodes():
             if "Comm" in n:
-                self._cache_node_attr(n, self.dag.nodes[n])
                 ### Assume each host has the same tensor fusion pattern
                 if "host0.rank0" in n:
                     self._update_tensor2grp(n)
@@ -258,37 +256,6 @@ class _TensorFusionCM(_BaseCostModel):
     def _wrap_gen_long_name(self, pid, op_name, layer_name, sub_op, suffix):
         return gen_long_name(pid, "{}.{}.{}".format(op_name, layer_name, sub_op), suffix)
 
-    def _cache_node_attr(self, n, attrs):
-        self.node_attr_cache[n] = attrs
-    
-    def _get_node_attr(self, n, attr_):
-        if attr_ in self.node_attr_cache[n]:
-            return self.node_attr_cache[n][attr_]
-        else:
-            raise ValueError(n, attr_)
-    
-    def _parse_node_attr(self, _dag, new_name, avg=None):
-        ''' Parse the fused tensor attribute corresponding to `new_name` and set _dag
-        * If new_name has been cached, directly set _dag with the cached attributes
-        * Otherwise, combine the attribution of all original nodes
-            * If avg is not given, query the cost model
-        Return
-        ------
-        avg: average time
-        '''
-        if new_name in self.node_attr_cache:
-            nx.set_node_attributes(_dag, {new_name: self.node_attr_cache[new_name]})
-            # _dag.add_node(new_name, **self.node_attr_cache[new_name])
-        else:
-            assert avg is not None, "avg must be given for new_name: {}".format(new_name)
-            # combine attr avg
-            attrs = {"avg": avg}
-            ### set and cache the attribute
-            nx.set_node_attributes(_dag, {new_name: attrs})
-            self._cache_node_attr(new_name, _dag.nodes[new_name])
-
-        return self.node_attr_cache[new_name]["avg"]
-
     def flush(self, is_accept):
         if is_accept:        
             for n in self.cache_change:
@@ -441,11 +408,6 @@ class _TensorFusionCM(_BaseCostModel):
         * NOTE: u_/v_ may not exist in _dag, since two tensors needed to be fused may have 
         * different loopid, channelid, and sliceid
         '''
-        if u_ not in self.node_attr_cache and u_ in _dag.nodes:
-            self._cache_node_attr(u_, _dag.nodes[u_])
-        if v_ not in self.node_attr_cache and v_ in _dag.nodes:
-            self._cache_node_attr(v_, _dag.nodes[v_])
-        
         all_infos = [
             self._wrap_parse_all_info(u_),
             self._wrap_parse_all_info(v_)]
@@ -460,31 +422,23 @@ class _TensorFusionCM(_BaseCostModel):
                 self.tensor_group_info[all_infos[0][2]]["size"]
             # print("add new name {}".format(new_raw_name))
 
-        if new_name not in self.node_attr_cache:
-            if all_infos[0][3] in ["SEND", "RECV"]:
-                grp_infos = [
-                    self._parse_tensor_group_info(all_infos[0][2]),
-                    self._parse_tensor_group_info(all_infos[1][2])]
-                sizes = [grp_info["size"] for grp_info in grp_infos]
-                # comm_time = [self._get_node_attr(u_, "avg"),
-                #              self._get_node_attr(v_, "avg")]
-                # fused_time = FUSION_RATIO * self._get_node_attr(
-                #     [u_, v_][base_idx], "avg") * (sizes[0] + sizes[1]) / sizes[base_idx]
-                fused_time = self.predict_comm_time(
-                    (sizes[0] + sizes[1])/grp_infos[base_idx]["partNum"], all_infos[0][0])
-            elif all_infos[0][3] in ["QUEUE", "MEMCPY_IN_FUSION_BUFFER", "NCCL_ALLREDUCE", "MEMCPY_OUT_FUSION_BUFFER"]:
-                fused_time = FUSION_RATIO * max(self._get_node_attr(u_, "avg"), self._get_node_attr(v_, "avg"))
-            elif all_infos[0][3] in ["Sync"]:
-                if IGNORE_SYNC:
-                    fused_time = 0
-                else:
-                    fused_time = FUSION_RATIO * max(self._get_node_attr(u_, "avg"), self._get_node_attr(v_, "avg"))
+        if all_infos[0][3] in ["SEND", "RECV"]:
+            grp_infos = [
+                self._parse_tensor_group_info(all_infos[0][2]),
+                self._parse_tensor_group_info(all_infos[1][2])]
+            sizes = [grp_info["size"] for grp_info in grp_infos]
+            fused_time = self.predict_comm_time(
+                (sizes[0] + sizes[1])/grp_infos[base_idx]["partNum"], all_infos[0][0])
+        elif all_infos[0][3] in ["QUEUE", "MEMCPY_IN_FUSION_BUFFER", "NCCL_ALLREDUCE", "MEMCPY_OUT_FUSION_BUFFER"]:
+            fused_time = FUSION_RATIO * max(_dag.nodes[u_]["avg"], _dag.nodes[v_]["avg"])
+        elif all_infos[0][3] in ["Sync"]:
+            if IGNORE_SYNC:
+                fused_time = 0
             else:
-                raise ValueError("Unrecognized sub op name {} ({})".format(
-                    all_infos[0][3], u_))
-            self._cache_node_attr(new_name, {"avg": fused_time})
+                fused_time = FUSION_RATIO * max(_dag.nodes[u_]["avg"], _dag.nodes[v_]["avg"])
         else:
-            fused_time = self.node_attr_cache[new_name]["avg"]
+            raise ValueError("Unrecognized sub op name {} ({})".format(
+                all_infos[0][3], u_))
         return new_name, fused_time
     
     def _op_defusion(self, _dag, _pkg: PKGraph, u, loc):
@@ -495,7 +449,6 @@ class _TensorFusionCM(_BaseCostModel):
         sorted_tensor_ids = sorted([int(n) for n in all_infos[2].split("+")])
         ids = [sorted_tensor_ids[:loc], sorted_tensor_ids[loc:]]
         rawnames = ["+".join([str(n) for n in _ids]) for _ids in ids]
-        grp_infos = [self._parse_tensor_group_info(n, ref=all_infos[2]) for n in rawnames]
 
         edges_to_add = []
         edges_to_rm = []
@@ -537,10 +490,6 @@ class _TensorFusionCM(_BaseCostModel):
                 new_part_names, part_times = self._defuse_name_avg(_dag, _cur, rawnames)
                 for _name, _time in zip(new_part_names, part_times):
                     nodes_to_add.append((_name, {"avg": _time}))
-                
-                ### TODO (delete)
-                assert new_part_names[0] in self.node_attr_cache \
-                    and new_part_names[1] in self.node_attr_cache, (_cur, new_part_names)
 
                 ### add new edges
                 edges_to_add += [(prev_part_names[0], new_part_names[0]),
@@ -602,9 +551,6 @@ class _TensorFusionCM(_BaseCostModel):
         return True, [n for n, _ in nodes_to_add], nodes_to_rm
 
     def _defuse_name_avg(self, _dag, u, rawnames):
-        if u not in self.node_attr_cache and u in _dag.nodes:
-            self._cache_node_attr(u, _dag.nodes[u])
-
         all_infos = self._wrap_parse_all_info(u)
         new_part_names = [self._wrap_gen_long_name(
             all_infos[0], all_infos[1], n, all_infos[3], all_infos[4]) for n in rawnames]
@@ -612,21 +558,15 @@ class _TensorFusionCM(_BaseCostModel):
 
         part_times = []
         for idx, new_name in enumerate(new_part_names):
-            if new_name not in self.node_attr_cache:
-                if all_infos[3] in ["SEND", "RECV"]:
-                    # part_time = self._get_node_attr(u, "avg") * grp_infos[idx]["size"] \
-                    #     / ((grp_infos[0]["size"] + grp_infos[1]["size"]) * FUSION_RATIO)
-                    part_time = self.predict_comm_time(grp_infos[idx]["size"]/grp_infos[idx]["partNum"], all_infos[0])
-                elif all_infos[3] in ["QUEUE", "MEMCPY_IN_FUSION_BUFFER", "NCCL_ALLREDUCE", "MEMCPY_OUT_FUSION_BUFFER"]:
-                    part_time = self._get_node_attr(u, "avg") / FUSION_RATIO
-                elif all_infos[3] in ["Sync"]:
-                    part_time = self._get_node_attr(u, "avg") / FUSION_RATIO if not IGNORE_SYNC else 0
-                else:
-                    raise ValueError("Unrecognized sub op name {} ({})".format(
-                        all_infos[3], u))
-                self._cache_node_attr(new_name, {"avg": part_time})
+            if all_infos[3] in ["SEND", "RECV"]:
+                part_time = self.predict_comm_time(grp_infos[idx]["size"]/grp_infos[idx]["partNum"], all_infos[0])
+            elif all_infos[3] in ["QUEUE", "MEMCPY_IN_FUSION_BUFFER", "NCCL_ALLREDUCE", "MEMCPY_OUT_FUSION_BUFFER"]:
+                part_time = _dag.nodes[u]["avg"] / FUSION_RATIO
+            elif all_infos[3] in ["Sync"]:
+                part_time = _dag.nodes[u]["avg"] / FUSION_RATIO if not IGNORE_SYNC else 0
             else:
-                part_time = self.node_attr_cache[new_name]["avg"]
+                raise ValueError("Unrecognized sub op name {} ({})".format(
+                    all_infos[3], u))
             part_times.append(part_time)
         return new_part_names, part_times
 
@@ -654,13 +594,17 @@ class _TensorFusionCM(_BaseCostModel):
         return self.tensor_group_info[raw_name]
 
     def checkpoint(self):
-        with open(self.ckpt_path, "wb") as f:
-            pickle.dump([self.node_attr_cache, self.tensor_group_info, self.cur_tensor2group, self.num_grp, self.history_num_grp], f)
-
+        try:
+            with open(self.ckpt_path, "wb") as f:
+                pickle.dump([self.tensor_group_info, self.cur_tensor2group, self.num_grp, self.history_num_grp], f)
+        except:
+            print(len(self.tensor_group_info), self.history_num_grp)
+            raise
+        
     def load_ckpt(self):
         if os.path.isfile(self.ckpt_path):
             with open(self.ckpt_path, "rb") as f:
-                self.node_attr_cache, self.tensor_group_info, self.cur_tensor2group, self.num_grp, self.history_num_grp = pickle.load(f)
+                self.tensor_group_info, self.cur_tensor2group, self.num_grp, self.history_num_grp = pickle.load(f)
         self.cache_change = []
 
     def predict_comm_time(self, _size, _pid):
@@ -673,7 +617,7 @@ class _TensorFusionCM(_BaseCostModel):
         if os.path.isfile(init_ckpt_path):
             try:
                 with open(init_ckpt_path, "rb") as f:
-                    G, PKG, trajectory, self.node_attr_cache, self.tensor_group_info, self.cur_tensor2group,\
+                    G, PKG, trajectory, self.tensor_group_info, self.cur_tensor2group,\
                         self.num_grp, self.history_num_grp, self.pid_to_cm = pickle.load(f)
                 if self.num_grp is not None:
                     SingleLogger().info("Initialzed the graph with {} tensor group(s) ...".format(self.num_grp))
@@ -693,8 +637,7 @@ class _TensorFusionCM(_BaseCostModel):
             source_nodes = [n for n in G.nodes() if "Comm" in n]
             self.pid_to_cm = {}
             no_suffix_time = {}
-            for n in tqdm(source_nodes, total=len(source_nodes)):  
-                self._cache_node_attr(n, G.nodes[n])
+            for n in tqdm(source_nodes, total=len(source_nodes)):
                 all_info = self._wrap_parse_all_info(n)
                 ### Assume each host has the same tensor fusion pattern
                 if "host0.rank0" == all_info[0] and "Sync" == all_info[3]:
@@ -777,7 +720,7 @@ class _TensorFusionCM(_BaseCostModel):
                 self.flush(True)
 
             with open(init_ckpt_path, "wb") as f:
-                pickle.dump([G, PKG, trajectory, self.node_attr_cache, self.tensor_group_info, 
+                pickle.dump([G, PKG, trajectory, self.tensor_group_info,
                     self.cur_tensor2group, self.num_grp, self.history_num_grp, self.pid_to_cm], f)
             SingleLogger().info("Graph cache dumped to {}.".format(init_ckpt_path))
         
