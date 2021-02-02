@@ -446,7 +446,7 @@ class TraceManager:
             elif pid_info["cat_cursor"] == "operator.UPDATE" and cat in AS_START_CAT:
                 ### last op is update, cur op is in (IO, FW), increase the step_cnt
                 pid_info["step_cnt"] += 1
-                # if prefix == "host0.rank1":
+                # if prefix in ["host0.rank1", "trace_0.rank1"]:
                 #     print("Add step to {} for {}, before: {}".format(
                 #         pid_info["step_cnt"], event, pid_info["cat_cursor"]))
             elif (pid_info["cat_cursor"] in AS_START_CAT) and cat == "operator.UPDATE":
@@ -464,9 +464,12 @@ class TraceManager:
             self.max_step = max(event["args"]["step"], self.max_step)
 
             ### calculate the iteration time
-            if parse_cat_from_name(event["name"]) != CatName.OPERATOR.value:
+            if parse_cat_from_name(event["name"]) != CatName.OPERATOR.value or \
+                    not (prefix.startswith("host") or prefix.startswith("traces_")):
                 ### only check the iteration time when current node is FW/BW/UPDATE op
-                continue    
+                # * and for byteps traces, there exists pids in the form like server_3_t2....
+                #   do not need to calculate iteration time for those pids
+                continue
             if pid_info["cur_step"] is None:
                 ### initialization
                 pid_info["step_start_ts"] = event['ts']
@@ -511,8 +514,9 @@ class TraceManager:
         iter_list_all = []
         min_step_num = None
         for prefix in sorted(prefix_dict.keys()):
+            if not (prefix.startswith("host") or prefix.startswith("traces_")):
+                continue
             pid_info = prefix_dict[prefix]
-
             ### Check and statistic the laste step
             if pid_info["fw_end"] is None or pid_info["bw_end"] is None or pid_info["bw_start"] is None:
                 pass

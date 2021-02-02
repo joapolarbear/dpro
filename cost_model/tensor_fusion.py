@@ -608,7 +608,7 @@ class _TensorFusionCM(_BaseCostModel):
         self.cache_change = []
 
     def predict_comm_time(self, _size, _pid):
-        popt, pcov = self.pid_to_cm[_pid]["param"]
+        popt, _ = self.pid_to_cm[_pid]["param"]
         return func_tensor_size_to_time(_size, *popt)
     
     def load_init_ckpt(self):
