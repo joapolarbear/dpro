@@ -699,11 +699,14 @@ class _XLACostModel(_BaseCostModel):
 
 class CostModelManager:
     def __init__(self, opt):
-        if args_.sub_option == "amp":
-            self.cost_model_list = [_AMPCostModel(opt)]
-        elif args_.sub_option == "tensor_fusion":
-            self.cost_model_list = [_TensorFusionCM(opt)]
-        else:
+        self.cost_model_list = []
+        if "amp" in args_.sub_option:
+            self.cost_model_list.append(_AMPCostModel(opt))
+        if "tensor_fusion" in args_.sub_option:
+            self.cost_model_list.append(_TensorFusionCM(opt))
+        if "xla" in args_.sub_option:
+            self.cost_model_list.append(_XLACostModel(opt))
+        if len(self.cost_model_list) == 0:
             self.cost_model_list = [
                 _XLACostModel(opt),
                 # _AMPCostModel(opt),
