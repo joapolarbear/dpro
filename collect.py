@@ -26,7 +26,7 @@ elif args_.comm_backend == "BYTEPS":
 
 
 GAP_THRESHOLD_COMP = 1000
-GAP_THRESHOLD_COMM = 50000
+GAP_THRESHOLD_COMM = 1000
 
 class RunningSpan:
     def __init__(self):
