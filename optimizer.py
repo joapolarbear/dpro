@@ -128,7 +128,9 @@ class _XLACostModel(_BaseCostModel):
     def flush(self, is_accept):
         pass
 
-    def load_init_ckpt(self):
+    def load_init_ckpt(self, G_prime=None):
+        ''' Other cost model may initialize the DFG, init DFG based on that
+        '''
         init_ckpt_path = os.path.join(ROOT_PATH, "xla_init_ckpt.pickle")
         trajectory = []
         if os.path.isfile(init_ckpt_path):
@@ -137,7 +139,7 @@ class _XLACostModel(_BaseCostModel):
                 self.node_attr_cache = node_attr_cache
             SingleLogger().info("Reading init graph from cache.")
         else:
-            G = self.dag.copy()
+            G = self.dag.copy() if G_prime is None else G_prime
             PKG = PKGraph(G)
             # # randomly contract edges if possible
             # k = int(len(G.edges()) * init_edges_to_contract)
@@ -210,7 +212,7 @@ class _XLACostModel(_BaseCostModel):
         partition_G = self._reduce_nx_size(G)
         partition_PKG = PKGraph(partition_G)
 
-        source_nodes = sorted([node for node in partition_G.nodes if node not in self.initial_forbidden_list], key=lambda x: partition_G.in_degree(x))
+        source_nodes = sorted([node for node in partition_G.nodes if node not in self.initial_forbidden_list and "Comm" not in node], key=lambda x: partition_G.in_degree(x))
 
         # Run post order traversal on partition_G
         visited_nodes = set()
@@ -232,7 +234,7 @@ class _XLACostModel(_BaseCostModel):
                     avg = self._get_node_avg(node_name)
                     self._parse_node_attr(partition_G, node_name, avg)
                     compilable=True
-                except OptQueryCostModelError:
+                except (OptQueryCostModelError, ValueError):
                     compilable=False
                 if compilable:
                     for _node_name in [node_name] + self.opt._debug_convert_to_other_machines(node_name):
@@ -246,7 +248,7 @@ class _XLACostModel(_BaseCostModel):
         return G, initial_partitions_formed
 
     def _init_forbidden_list(self):
-        xla_candidates = parse_xla_candidate_ops()
+        xla_candidates = parse_xla_candidate_ops(xla_candidate_path=args_.xla_candidate_path)
         # limit the range of nodes during search
         IGNORE_OP_TYPES = ["ShapeN", "_Arg", "_Send", "_Recv", "VarIsInitializedOp", "ReadVariableOp", "VarHandleOp",
                     "IsVariableInitialized", "ResourceApplyGradientDescent",
@@ -336,7 +338,6 @@ class _XLACostModel(_BaseCostModel):
         return (orig_name in self._wrap_xla_operation_names(pid)) and long_name not in self.forbidden_list
 
     def _wrap_xla_operation_names(self, pid):
-        # return self.cost_models[pid].graph_def_util.operation_names
         return self.cost_models["default"].graph_def_util.operation_names
 
     def _query_cost_model(self, fused_u_):
@@ -375,6 +376,8 @@ class _XLACostModel(_BaseCostModel):
         for n, l in candidates:
             # node heat
             heat = self.opt._get_heat_from_history(n)
+            if "Comm" in n:
+                continue
 
             if "+" in n:
                 ### This a fused node
@@ -395,7 +398,6 @@ class _XLACostModel(_BaseCostModel):
                     search_space.append(("-", n, splits))
                     weights.append(self.opt._combine_weight(l, heat) * split_weights[split_index])
                     # weights.append(1)
-
             else:
                 ### Nodes that have never been fused
                 cat = parse_cat_fine_grained(n)
@@ -1046,11 +1048,15 @@ class MCMCOptimizer(Optimizer):
 
         self.trajectory = []
         ### load init checkpoint
+        G = None
         for _cost_model in self.cst_md_mng.cost_model_list:
-            _G, _PKG, _trajectory = _cost_model.load_init_ckpt()
+            _G, _PKG, _trajectory = _cost_model.load_init_ckpt(G_prime=G)
             if _G is not None:
-                G, PKG, self.trajectory = _G, _PKG, _trajectory
-
+                G = _G
+            if _PKG is not None:
+                PKG = _PKG
+            self.trajectory += _trajectory
+            
         ### load checkpoint
         if args_.ckpt and graph_cache is not None and os.path.isfile(graph_cache):
             ### TODO (hhp): need to guarantee the consistence of checkpoints of both cost models and DFG states

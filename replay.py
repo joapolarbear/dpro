@@ -94,7 +94,8 @@ class Device:
         ### Really start to execute
         avg = self.replayer.dag.nodes[name]["avg"]
         if "+" in name and "Comm" not in name:
-            pid, raw_name, cat, suffix = parse_allinfo_from_name(name.split("+")[0])
+            pid, _, cat, suffix = parse_allinfo_from_name(name.split("+")[0])
+            raw_name = "+".join([parse_allinfo_from_name(_name)[1] for _name in name.split("+")])
         else:
             pid, raw_name, cat, suffix = parse_allinfo_from_name(name)
         delay, ratio = self.get_delay_para(name)

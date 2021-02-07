@@ -611,7 +611,9 @@ class _TensorFusionCM(_BaseCostModel):
         popt, _ = self.pid_to_cm[_pid]["param"]
         return func_tensor_size_to_time(_size, *popt)
     
-    def load_init_ckpt(self):
+    def load_init_ckpt(self, G_prime=None):
+        ''' Other cost model may initialize the DFG, init DFG based on that
+        '''
         init_ckpt_path = os.path.join(ROOT_PATH, "tensor_fusion_init_ckpt.pickle")
         re_load = False
         if os.path.isfile(init_ckpt_path):
@@ -628,8 +630,8 @@ class _TensorFusionCM(_BaseCostModel):
             re_load = True
             
         if re_load:
-            G = self.dag.copy()
-            PKG = PKGraph(G)
+            G = self.dag.copy() if G_prime is None else G_prime
+            PKG = None
 
             ### Check uncontinuous tensor groups, and split them for futher tensor fusion
             ### Since Horovod 0.21.0 Tensor Group API requires tensors in a group to be continuous
@@ -731,7 +733,7 @@ class _TensorFusionCM(_BaseCostModel):
 
         self.dump_tensor_grp_mapping(_file_name="tensor_fusion_grp_mapping_init.json")
         self.cache_change = []
-        return G, PKG, []
+        return G, PKG, trajectory
     
     def dump_tensor_grp_mapping(self, _file_name=None):
         file_name = 'tensor_fusion_grp_mapping.json' if _file_name is None else _file_name

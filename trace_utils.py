@@ -269,6 +269,8 @@ def parse_cat_fine_grained(name_):
         return "Comm.PULL_RES"
     elif "I/O" in name_:
         ret_cat = "I/O"
+    elif "BW" in name_ and "FW" in name_:
+        ret_cat = "operator.FW+BW"
     elif "BW" in name_:
         ret_cat = "operator.BW"
     elif "FW" in name_:
@@ -452,7 +454,7 @@ class TraceManager:
             elif (pid_info["cat_cursor"] in AS_START_CAT) and cat == "operator.UPDATE":
                 ### handle the overlapping cases between UPDATE and (IO, FW)
                 pid_info["step_cnt"] -= 1
-                # if prefix == "host0.rank1":
+                # if prefix == "host0.rank4":
                 #     print("Minus step to {} for {}, before: {}".format(
                 #         pid_info["step_cnt"], event, pid_info["cat_cursor"]))
             event["args"]["step"] = pid_info["step_cnt"]
@@ -528,7 +530,12 @@ class TraceManager:
                 # pid_info["fw_list"].append((pid_info["fw_end"] - pid_info["step_start_ts"]) / 1000.0)
                 # pid_info["bw_list"].append((pid_info["bw_end"] - pid_info["bw_start"]) / 1000.0)
                 pid_info["fw_list"].append(pid_info["cat_cnt"]["operator.FW"])
-                pid_info["bw_list"].append(pid_info["cat_cnt"]["operator.BW"])
+                try:
+                    pid_info["bw_list"].append(pid_info["cat_cnt"]["operator.BW"])
+                except KeyError:
+                    ### for fused op, there may be not BW nodes
+                    # append -1 as abnormal cases
+                    pid_info["bw_list"].append(-1)
                 pid_info["update_list"].append(pid_info["cat_cnt"]["operator.UPDATE"])
                 pid_info["cat_cnt"]["operator.FW"] = pid_info["cat_cnt"]["operator.BW"] = pid_info["cat_cnt"]["operator.UPDATE"] = 0
                 SingleLogger().debug("%s - the %d th iteration: FW:%f, BW: %f, Iteration time: %f" % (prefix, len(pid_info["iter_list"]), pid_info["fw_list"][-1], pid_info["bw_list"][-1], pid_info["iter_list"][-1]))
