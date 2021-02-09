@@ -353,8 +353,11 @@ class _TensorFusionCM(_BaseCostModel):
                 _all_infos = [
                     self._wrap_parse_all_info(prev_fused_name),
                     self._wrap_parse_all_info(new_fused_name)]
-                if "Sync" in prev_fused_name and _all_infos[0][0] != _all_infos[1][0]:
-                    ### avoid repeatedly add edges for Sync -> other GPUs tensor op
+                if ("Sync" in prev_fused_name and _all_infos[0][0] != _all_infos[1][0]) or \
+                        ("RECV" in new_fused_name and "SEND" not in prev_fused_name):
+                    ### avoid repeatedly add following edges,
+                    #   *  Sync -> other GPUs tensor ops
+                    #   *  Sync -> MEMCPY -> RECV
                     pass
                 else:
                     last_comm = False
@@ -380,7 +383,7 @@ class _TensorFusionCM(_BaseCostModel):
                             update_list.append(succ_)
                             edges_to_rm.append((to_fuses[1], succ_))
                         for _update_op in update_list:
-                            edges_to_add.append((new_fused_name, _update_op))           
+                            edges_to_add.append((new_fused_name, _update_op))      
                         
         _dag.add_edges_from(edges_to_add)
         _dag.add_nodes_from(nodes_to_add)
@@ -419,7 +422,7 @@ class _TensorFusionCM(_BaseCostModel):
             self.tensor_group_info[new_raw_name] = self.tensor_group_info[all_infos[base_idx][2]].copy()
             self.tensor_group_info[new_raw_name]["size"] = \
                 self.tensor_group_info[all_infos[0][2]]["size"] + \
-                self.tensor_group_info[all_infos[0][2]]["size"]
+                self.tensor_group_info[all_infos[1][2]]["size"]
             # print("add new name {}".format(new_raw_name))
 
         if all_infos[0][3] in ["SEND", "RECV"]:
@@ -428,7 +431,15 @@ class _TensorFusionCM(_BaseCostModel):
                 self._parse_tensor_group_info(all_infos[1][2])]
             sizes = [grp_info["size"] for grp_info in grp_infos]
             fused_time = self.predict_comm_time(
-                (sizes[0] + sizes[1])/grp_infos[base_idx]["partNum"], all_infos[0][0])
+                (sizes[0] + sizes[1])/grp_infos[base_idx]["partNum"], all_infos[0][0], all_infos[0][3])
+            # if all_infos[0][0] == "host0.rank3" and "0_0_0_0" in u_:
+            #     print("Tensor Fusion Log")
+            #     print(" *** {} - total size={}, partnum={}".format(u_, sizes[0], grp_infos[0]["partNum"]))
+            #     print(" *** {} - total size={}, partnum={}".format(v_, sizes[1], grp_infos[1]["partNum"]))
+            #     print(" *** -> total size={}, partnum={}, size={}, pred={}".format(
+            #         self.tensor_group_info[new_raw_name]["size"],
+            #         self.tensor_group_info[new_raw_name]["partNum"],
+            #         (sizes[0] + sizes[1])/grp_infos[base_idx]["partNum"], fused_time))
         elif all_infos[0][3] in ["QUEUE", "MEMCPY_IN_FUSION_BUFFER", "NCCL_ALLREDUCE", "MEMCPY_OUT_FUSION_BUFFER"]:
             fused_time = FUSION_RATIO * max(_dag.nodes[u_]["avg"], _dag.nodes[v_]["avg"])
         elif all_infos[0][3] in ["Sync"]:
@@ -499,8 +510,12 @@ class _TensorFusionCM(_BaseCostModel):
                 _all_infos = [
                     self._wrap_parse_all_info(_prev),
                     self._wrap_parse_all_info(_cur)]
-                if "Sync" in _prev and _all_infos[0][0] != _all_infos[1][0]:
-                    ### avoid repeatedly add edges for Sync -> other GPUs tensor op
+
+                if ("Sync" in _prev and _all_infos[0][0] != _all_infos[1][0]) or \
+                        ("RECV" in _cur and "SEND" not in _prev):
+                    ### avoid repeatedly add following edges,
+                    #   *  Sync -> other GPUs tensor ops
+                    #   *  Sync ->Memcpy -> RECV
                     pass
                 else:
                     last_comm = False
@@ -559,7 +574,8 @@ class _TensorFusionCM(_BaseCostModel):
         part_times = []
         for idx, new_name in enumerate(new_part_names):
             if all_infos[3] in ["SEND", "RECV"]:
-                part_time = self.predict_comm_time(grp_infos[idx]["size"]/grp_infos[idx]["partNum"], all_infos[0])
+                part_time = self.predict_comm_time(
+                    grp_infos[idx]["size"]/grp_infos[idx]["partNum"], all_infos[0], all_infos[3])
             elif all_infos[3] in ["QUEUE", "MEMCPY_IN_FUSION_BUFFER", "NCCL_ALLREDUCE", "MEMCPY_OUT_FUSION_BUFFER"]:
                 part_time = _dag.nodes[u]["avg"] / FUSION_RATIO
             elif all_infos[3] in ["Sync"]:
@@ -607,9 +623,11 @@ class _TensorFusionCM(_BaseCostModel):
                 self.tensor_group_info, self.cur_tensor2group, self.num_grp, self.history_num_grp = pickle.load(f)
         self.cache_change = []
 
-    def predict_comm_time(self, _size, _pid):
-        popt, _ = self.pid_to_cm[_pid]["param"]
-        return func_tensor_size_to_time(_size, *popt)
+    def predict_comm_time(self, _size, _pid, _sub_op):
+        params = self.pid_to_cm[_pid][_sub_op]["param"]
+        if params is None:
+            return 0
+        return func_tensor_size_to_time(_size, *(params[0]))
     
     def load_init_ckpt(self, G_prime=None):
         ''' Other cost model may initialize the DFG, init DFG based on that
@@ -674,7 +692,7 @@ class _TensorFusionCM(_BaseCostModel):
                 
                 ### Collect data to fit tensor fusion cost model,
                 # TODO (hhp): only collect SEND operators now
-                if all_info[3] == "SEND":
+                if all_info[3] == "SEND" or all_info[3] == "RECV":
                     name_no_suffix = self._wrap_gen_long_name(all_info[0], all_info[1], all_info[2], all_info[3], None)
                     if name_no_suffix not in no_suffix_time:
                         no_suffix_time[name_no_suffix] = []
@@ -683,32 +701,40 @@ class _TensorFusionCM(_BaseCostModel):
             for n in no_suffix_time.keys():
                 all_info = self._wrap_parse_all_info(n)
                 if all_info[0] not in self.pid_to_cm:
-                    self.pid_to_cm[all_info[0]] = {"data":[], "param": None}
+                    self.pid_to_cm[all_info[0]] = {
+                        "SEND": {"data":[], "param": None},
+                        "RECV": {"data":[], "param": None}}
                 grp_info = self._parse_tensor_group_info(all_info[2])
                 # assert grp_info["partNum"] < len(no_suffix_time[n]), (n, grp_info, len(no_suffix_time[n]))
                 _size = grp_info["size"] / grp_info["partNum"]
                 _avg = sum(no_suffix_time[n]) / len(no_suffix_time[n])
-                self.pid_to_cm[all_info[0]]["data"].append([_size, _avg])
+                if _avg > 0:
+                    self.pid_to_cm[all_info[0]][all_info[3]]["data"].append([_size, _avg])
             
             ### Fit the cost model for each GPU
             SingleLogger().info("Fit the cost model for each GPU...")
             for pid in sorted(self.pid_to_cm.keys()):
-                ### data shape = (n_dim, n_samples)
-                all_data = np.array(self.pid_to_cm[pid]["data"]).T
-                n_dim, n_samples = all_data.shape
-                mask = np.zeros(n_samples, dtype=bool)
-                train_idx = np.random.choice(n_samples, int(TRAIN_PERCENT * n_samples), replace=False)
-                mask[train_idx] = True
-                train_data = all_data[:, mask]
-                test_data = all_data[:, ~mask]
-                popt, pcov = curve_fit(func_tensor_size_to_time, train_data[0], train_data[1],
-                                       bounds=((0, -np.inf), (np.inf, np.inf)), p0=(1, 1), maxfev=100000)
-                pred_ = func_tensor_size_to_time(test_data[0], *popt)
-                mape = 100 * np.average(np.abs(pred_ - test_data[1]) / test_data[1])
-                SingleLogger().info(" - Cost Model Error on {}: {} % ({} training data, {} test data)".format(pid,
-                                                                                                              mape, train_data.shape[1], test_data.shape[1]))
-                self.pid_to_cm[pid]["param"] = [popt, pcov]
-                self.pid_to_cm[pid]["data"] = None
+                for sub_op in sorted(self.pid_to_cm[pid].keys()):
+                    data_param_dict = self.pid_to_cm[pid][sub_op]
+                    if len(data_param_dict["data"]) == 0:
+                        continue
+
+                    ### data shape = (n_dim, n_samples)
+                    all_data = np.array(data_param_dict["data"]).T
+                    n_dim, n_samples = all_data.shape
+                    mask = np.zeros(n_samples, dtype=bool)
+                    train_idx = np.random.choice(n_samples, int(TRAIN_PERCENT * n_samples), replace=False)
+                    mask[train_idx] = True
+                    train_data = all_data[:, mask]
+                    test_data = all_data[:, ~mask]
+                    popt, pcov = curve_fit(func_tensor_size_to_time, train_data[0], train_data[1],
+                                        bounds=((0, -np.inf), (np.inf, np.inf)), p0=(1, 1), maxfev=100000)
+                    pred_ = func_tensor_size_to_time(test_data[0], *popt)
+                    mape = 100 * np.average(np.abs(pred_ - test_data[1]) / test_data[1])
+                    SingleLogger().info(" - Tensor Fusion CM for {} {}: {} % ({} training data, {} test data)".format(pid, sub_op,
+                                                                                                                mape, train_data.shape[1], test_data.shape[1]))
+                    data_param_dict["param"] = [popt, pcov]
+                    data_param_dict["data"] = None
 
             ### applying strategies to make tensors in each group are continuous
             SingleLogger().info("Applying initialized strategies...")

@@ -762,12 +762,17 @@ class Optimizer:
 
         self.forbidden_list = []
 
-        if "BPF_DUMP_INIT_GRAPH_TO" in os.environ:
-            bpf_dump_init_graph_to = os.environ["BPF_DUMP_INIT_GRAPH_TO"]
-        else:
-            bpf_dump_init_graph_to = None
+        if not os.path.exists(ROOT_PATH):
+            os.mkdir(ROOT_PATH)
+        if not os.path.exists(os.path.join(ROOT_PATH, "searched_graph")):
+            os.mkdir(os.path.join(ROOT_PATH, "searched_graph"))
+
+        # if "BPF_DUMP_INIT_GRAPH_TO" in os.environ:
+        #     bpf_dump_init_graph_to = os.environ["BPF_DUMP_INIT_GRAPH_TO"]
+        # else:
+        #     bpf_dump_init_graph_to = None
         self.base_cost, self.exct_dag, self.base_mem_usage = self.evaluate(
-            self.dag, _filename=bpf_dump_init_graph_to)
+            self.dag, _filename=os.path.join(ROOT_PATH, "searched_graph/base.json"))
 
         ### Budget, in GB
         self.memory_budget = args_.memory_budget
@@ -780,10 +785,7 @@ class Optimizer:
 
         self.cst_md_mng = CostModelManager(self)
 
-        if not os.path.exists(ROOT_PATH):
-            os.mkdir(ROOT_PATH)
-        if not os.path.exists(os.path.join(ROOT_PATH, "searched_graph")):
-            os.mkdir(os.path.join(ROOT_PATH, "searched_graph"))
+        
 
     def relabel_dag_node(self, _dag) -> nx.DiGraph:
         def relabel_func(old_label):
@@ -1065,12 +1067,14 @@ class MCMCOptimizer(Optimizer):
             with open(graph_cache, "rb") as f:
                 G, PKG, self.heat_window_size, self.heat_history, self.best_cost, self.best_strategy, self.step, self.trajectory = pickle.load(f)
             SingleLogger().info("Loading checkpoint of step {}".format(self.step))
-            self.cur_cost, self.exct_dag, self.mem_usage = self.evaluate(G)
+            self.cur_cost, self.exct_dag, self.mem_usage = self.evaluate(
+                G, _filename=os.path.join(ROOT_PATH, "searched_graph/init.json"))
             self.cost_star = self.exct_dag_star = self.mem_usage_star = None
         else:
             for node in G.nodes:
                 self.heat_history[node] = [(0, 0)] * self.heat_window_size
-            self.cur_cost, self.exct_dag, self.mem_usage = self.evaluate(G)
+            self.cur_cost, self.exct_dag, self.mem_usage = self.evaluate(
+                G, _filename=os.path.join(ROOT_PATH, "searched_graph/init.json"))
             self.cost_star = self.exct_dag_star = self.mem_usage_star = None
             self.best_cost = self.cur_cost
             self.best_strategy = self.trajectory
@@ -1079,8 +1083,8 @@ class MCMCOptimizer(Optimizer):
             SingleLogger().info("No checkpoint found, search from scratch")
 
         SingleLogger().info("="*20 + " Search Starts " + "="*20)
-        SingleLogger().info(
-            "\033[92m" + "Start to search, the original iteration time is %f" % self.base_cost + "\033[0m")
+        SingleLogger().info("\033[92m" + "Start to search, the original iteration time is %f, init cost is %f" %
+                            (self.base_cost, self.cur_cost) + "\033[0m")
         candidates, _ = self.candidate_selection(
             G, topk=None, critical_path=self.wrap_critical_path(self.exct_dag))
         search_space, weights = self.init_search_space(candidates, G, PKG)
