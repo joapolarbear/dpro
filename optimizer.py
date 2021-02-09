@@ -44,7 +44,7 @@ MAX_LOOP = 1000
 UCB_GAMMA = args_.ucb_gamma
 MCMC_BETA = args_.mcmc_beta
 ROOT_PATH = os.path.join(args_.workspace, ".opt_ws")
-
+XLA_INIT_NO_BW = True
 
 class OptApplyStrategyError(Exception):
     pass
@@ -265,8 +265,9 @@ class _XLACostModel(_BaseCostModel):
 
         for node in self.dag.nodes:
             # ignore BW nodes and communication nodes
-            # if "BW" in node:
-                # self.initial_forbidden_list.add(node)
+            if XLA_INIT_NO_BW and "BW" in node:
+                self.initial_forbidden_list.add(node)
+                print(node)
 
             try:
                 orig_name, pid = self.opt._get_original_name_pid_from_index(node)
@@ -1065,7 +1066,7 @@ class MCMCOptimizer(Optimizer):
             for _cost_model in self.cst_md_mng.cost_model_list:
                 _cost_model.load_ckpt()
             with open(graph_cache, "rb") as f:
-                G, PKG, self.heat_window_size, self.heat_history, self.best_cost, self.best_strategy, self.step, self.trajectory = pickle.load(f)
+                G, PKG, self.heat_window_size, self.heat_history, self.best_cost, self.best_strategy, self.best_step, self.step, self.trajectory = pickle.load(f)
             SingleLogger().info("Loading checkpoint of step {}".format(self.step))
             self.cur_cost, self.exct_dag, self.mem_usage = self.evaluate(
                 G, _filename=os.path.join(ROOT_PATH, "searched_graph/init.json"))
@@ -1078,6 +1079,7 @@ class MCMCOptimizer(Optimizer):
             self.cost_star = self.exct_dag_star = self.mem_usage_star = None
             self.best_cost = self.cur_cost
             self.best_strategy = self.trajectory
+            self.best_step = 0
             self.step = 0
             self.trajectory = []
             SingleLogger().info("No checkpoint found, search from scratch")
@@ -1092,10 +1094,10 @@ class MCMCOptimizer(Optimizer):
             len(candidates), len(search_space)))
 
         def display_and_ckpt():
-            SingleLogger().info("\033[94m" + "Speedup to the origin: %6.4f %%" % (
+            SingleLogger().info("\033[94m" + "Current speedup to the origin: %6.4f %%" % (
                 100 * (self.base_cost - self.cur_cost) / self.base_cost) + "'\033[0m'")
-            SingleLogger().info("\033[94m" + "Best speedup: %d th acception, speed up to the origin: %6.4f %%" % (
-                len(self.best_strategy), 100 * (self.base_cost - self.best_cost) / self.base_cost) + "'\033[0m'")
+            SingleLogger().info("\033[94m" + "Best speedup: %d th step, speed up to the origin: %6.4f %%" % (
+                self.best_step, 100 * (self.base_cost - self.best_cost) / self.base_cost) + "'\033[0m'\n")
 
             with open(os.path.join(ROOT_PATH, "search_trajectory.txt"), "a") as f:
                 f.write(str(time.time()) + ": {},{},{}".format(
@@ -1112,7 +1114,7 @@ class MCMCOptimizer(Optimizer):
                     _cost_model.checkpoint()
                 with open(graph_cache, "wb") as f:
                     pickle.dump([G, PKG, self.heat_window_size, self.heat_history,
-                                 self.best_cost, self.best_strategy, self.step, self.trajectory], f)
+                                 self.best_cost, self.best_strategy, self.best_step, self.step, self.trajectory], f)
 
         '''
         ### Test some strategies
@@ -1196,7 +1198,7 @@ class MCMCOptimizer(Optimizer):
                 #     MCMC_BETA = 1
                 # else:
                 #     MCMC_BETA = args.mcmc_beta
-                SingleLogger().info("\033[94m Step: {}, Orig cost: {}, New cost: {} \033[0m".format(
+                SingleLogger().info("\033[94m Step: {} - cost from {} -> {} \033[0m".format(
                     self.step, self.cur_cost, self.cost_star))
                 self.step += 1
 
@@ -1261,6 +1263,7 @@ class MCMCOptimizer(Optimizer):
                     if self.cur_cost < self.best_cost:
                         self.best_cost = self.cur_cost
                         self.best_strategy = self.trajectory.copy()
+                        self.best_step = self.step - 1
                         if "+" in self.cst_md_mng.strategy2model:
                             self.cst_md_mng.strategy2model["+"]._dump_cluster_mapping(
                                 G, os.path.join(ROOT_PATH, "cluster_mapping.txt"))
