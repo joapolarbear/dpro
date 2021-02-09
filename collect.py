@@ -401,7 +401,8 @@ class Collector(object):
                 if "UPDATE" in ev["name"]:
                     update_nodes.append(ev)
             end_times = [ev["ts"] + ev["dur"] for ev in update_nodes]
-            sorted_end_times, sorted_update_nodes = zip(*sorted(zip(end_times, update_nodes)))
+
+            sorted_end_times, sorted_update_nodes = zip(*sorted(zip(end_times, update_nodes), key=lambda x: x[0]))
             for idx, ev in enumerate(sorted_update_nodes):
                 if idx == 0:
                     continue
