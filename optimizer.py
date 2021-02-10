@@ -26,7 +26,7 @@ from memory import MemoryEstimator
 from memory.cost_model import MemoryCostModel
 
 from cost_model.base import _BaseCostModel
-from cost_model.mixed_precision import _AMPCostModel
+# from cost_model.mixed_precision import _AMPCostModel
 from cost_model.tensor_fusion import _TensorFusionCM
 
 class GraphExpand(Enum):
@@ -703,17 +703,18 @@ class _XLACostModel(_BaseCostModel):
 class CostModelManager:
     def __init__(self, opt):
         self.cost_model_list = []
-        if "amp" in args_.sub_option:
-            self.cost_model_list.append(_AMPCostModel(opt))
-        if "tensor_fusion" in args_.sub_option:
-            self.cost_model_list.append(_TensorFusionCM(opt))
+        # if "amp" in args_.sub_option:
+        #     self.cost_model_list.append(_AMPCostModel(opt))
+        # if "tensor_fusion" in args_.sub_option:
+        #     self.cost_model_list.append(_TensorFusionCM(opt))
         if "xla" in args_.sub_option:
             self.cost_model_list.append(_XLACostModel(opt))
         if len(self.cost_model_list) == 0:
             self.cost_model_list = [
-                _XLACostModel(opt),
+                # _XLACostModel(opt),
                 # _AMPCostModel(opt),
             ]
+        self.cost_model_list = []
         self.mem_model_list = [MemoryCostModel(opt)]
         self.strategy2model = {}
 
@@ -1051,14 +1052,14 @@ class MCMCOptimizer(Optimizer):
 
         self.trajectory = []
         ### load init checkpoint
-        G = None
-        for _cost_model in self.cst_md_mng.cost_model_list:
-            _G, _PKG, _trajectory = _cost_model.load_init_ckpt(G_prime=G)
-            if _G is not None:
-                G = _G
-            if _PKG is not None:
-                PKG = _PKG
-            self.trajectory += _trajectory
+        # G = None
+        # for _cost_model in self.cst_md_mng.cost_model_list:
+        #     _G, _PKG, _trajectory = _cost_model.load_init_ckpt(G_prime=G)
+        #     if _G is not None:
+        #         G = _G
+        #     if _PKG is not None:
+        #         PKG = _PKG
+        #     self.trajectory += _trajectory
             
         ### load checkpoint
         if args_.ckpt and graph_cache is not None and os.path.isfile(graph_cache):

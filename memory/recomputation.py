@@ -2,6 +2,7 @@ import re
 import networkx as nx
 from .utils import *
 from logger_utils import SingleLogger
+from itertools import islice
 
 
 class CheckpointsSelector:
@@ -11,6 +12,8 @@ class CheckpointsSelector:
             return SpeedCheckpointsSelector()
         elif mode == "memory":
             return MemoryCheckpointsSelector()
+        elif mode == "topk":
+            return TopkCheckpointsSelector()
         else:
             raise ValueError("%s is not found" % mode)
 
@@ -31,6 +34,20 @@ class MemoryCheckpointsSelector(CheckpointsSelector):
     def select_checkpoints(schedule):
         # TODO(yuchen): https://arxiv.org/pdf/1604.06174.pdf
         raise NotImplementedError
+
+
+class TopkCheckpointsSelector(CheckpointsSelector):
+    k = 0.1
+
+    @staticmethod
+    def select_checkpoints(schedule):
+        num_checkpoints = int(
+            TopkCheckpointsSelector.k * len(schedule.operators))
+        sorted_ops_indices = [i for i, _ in sorted(
+            enumerate(schedule.operators), key=lambda n:n[1].time)]
+        topk_indices = sorted(sorted_ops_indices[-num_checkpoints:])
+        expensive_ops = [schedule.operators[i] for i in topk_indices]
+        return expensive_ops
 
 
 def get_recomputation_edited_graph(dag, schedule, mode, verbose=False):
@@ -69,7 +86,8 @@ def _compose_subgraph_between_two_nodes(dag, source, target):
         # it is possible. e.g. matmul in k, q, v
         return None
 
-    paths_between_two_nodes = nx.shortest_simple_paths(dag, source, target)
+    paths_between_two_nodes = list(
+        islice(nx.shortest_simple_paths(dag, source, target), 10))
     nodes_between_set = {
         node for path in paths_between_two_nodes for node in path}
 
@@ -81,14 +99,20 @@ def _compose_subgraph_between_two_nodes(dag, source, target):
 
 
 def _insert_forward_nodes(dag: nx.DiGraph, subgraph: nx.DiGraph, target):
+    if not target:
+        return
     # copy subgraph
     dag.add_nodes_from(subgraph.nodes.data())
     dag.add_edges_from(subgraph.edges.data())
 
+    # remove previous nodes
+    prev_nodes = list(dag.predecessors(target))
+    for prev_node in prev_nodes:
+        dag.remove_edge(prev_node, target)
+
     # connect subgraph output to target
     outputs = get_output_nodes(subgraph)
-    for output in outputs:
-        subgraph.add_edge(output, target)
+    dag.add_edge(outputs[0], target)
 
 
 def _get_last_forward_node(dag):

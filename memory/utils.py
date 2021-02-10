@@ -1,7 +1,7 @@
 from functools import partial
 
 DEL = "->"
-RANK0_PREFIX = "traces_0.rank0"
+RANK0_PREFIX = "host0.rank0"
 FORWARD_CAT = "FW."
 
 
@@ -11,9 +11,14 @@ def remove_prefix(text, prefix):
     return text
 
 
-def remove_node_prefix(nodes, prefix):
+def remove_nodes_prefix(nodes, prefix):
     func = partial(remove_prefix, prefix=prefix)
     return list(map(func, nodes))
+
+
+def remove_node_prefix(node, prefix):
+    func = partial(remove_prefix, prefix=prefix)
+    return func(node)
 
 
 def filter_out_comm_nodes(nodes):

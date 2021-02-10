@@ -654,7 +654,7 @@ class Replayer:
             rst["traceEvents"].append(trace)
         TraceManager(self.rst_traces, DirLevel.TRIAL).get_iter_time()
         filename = "synthetic.json" if _filename is None else _filename
-        with open(os.path.join(self.dump_path, filename), 'w') as f:
+        with open(filename, 'w') as f:
             json.dump(rst, f)
         if self.show_queue:
             with open(os.path.join(self.dump_path, 'queue_status.json'), 'w') as f:
