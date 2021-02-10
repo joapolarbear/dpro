@@ -98,23 +98,6 @@ def _compose_subgraph_between_two_nodes(dag, source, target):
     return nx.relabel_nodes(subgraph, mapping)
 
 
-def _insert_forward_nodes(dag: nx.DiGraph, subgraph: nx.DiGraph, target):
-    if not target:
-        return
-    # copy subgraph
-    dag.add_nodes_from(subgraph.nodes.data())
-    dag.add_edges_from(subgraph.edges.data())
-
-    # remove previous nodes
-    prev_nodes = list(dag.predecessors(target))
-    for prev_node in prev_nodes:
-        dag.remove_edge(prev_node, target)
-
-    # connect subgraph output to target
-    outputs = get_output_nodes(subgraph)
-    dag.add_edge(outputs[0], target)
-
-
 def _get_last_forward_node(dag):
     forward_nodes = get_forward_nodes(dag.nodes)
     forward_graph = dag.subgraph(forward_nodes).copy()
@@ -161,6 +144,6 @@ def _update_dag(dag, checkpoints, verbose):
                 SingleLogger().info("target backward op: %s" % (str(target_bwp_op)))
 
             # rewire
-            _insert_forward_nodes(dag, subgraph, target_bwp_op)
+            insert_nodes(dag, subgraph, target_bwp_op)
 
         target = source

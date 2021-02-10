@@ -23,7 +23,7 @@ from cost_model_xla.pk_graph import PKGraph, PKGraphCycleError, contract_nodes_n
                     subgraph_partition_connected_nx_using_topo, get_concated_names
 from cost_model_xla.gen_dataset_utils import parse_xla_candidate_ops
 from memory import MemoryEstimator
-from memory.cost_model import MemoryCostModel
+from memory.cost_model import IncreasingBatchSizeCostModel, MemoryCostModel
 
 from cost_model.base import _BaseCostModel
 # from cost_model.mixed_precision import _AMPCostModel
@@ -714,7 +714,7 @@ class CostModelManager:
                 # _XLACostModel(opt),
                 # _AMPCostModel(opt),
             ]
-        self.cost_model_list = []
+        self.cost_model_list = [IncreasingBatchSizeCostModel(opt)]
         self.mem_model_list = [MemoryCostModel(opt)]
         self.strategy2model = {}
 
@@ -1289,10 +1289,11 @@ class MCMCOptimizer(Optimizer):
 
     def accept_or_not(self, cost, new_cost):
         # prob = min(1, (math.exp(beta * (cost - new_cost))))
-        try:
-            prob = math.exp(MCMC_BETA*math.log(self.step+1) * (cost - new_cost))
-        except OverflowError:
-            prob = float('inf')
+        # try:
+        #     prob = math.exp(MCMC_BETA*math.log(self.step+1) * (cost - new_cost))
+        # except OverflowError:
+        #     prob = float('inf')
+        prob = 1.2
         # if cost > new_cost:
         if prob > 1:
             SingleLogger().info(

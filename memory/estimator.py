@@ -18,6 +18,10 @@ class MemoryEstimator:
     def schedule(self):
         return self._schedule
 
+    @schedule.setter
+    def schedule(self, val):
+        self._schedule = val
+
     def _compose_operator_schedule(self, dag, param_dict) -> Schedule:
         forward_nodes = get_forward_nodes(dag.nodes)
         forward_graph = dag.subgraph(forward_nodes).copy()
@@ -69,6 +73,7 @@ class MemoryEstimator:
 
         def _simulate_backward_propagation():
             nonlocal total_activations, peak_size
+            restore_list = []
             for i, op in reversed(list(enumerate(operator_schedule.operators))):
                 output_grad_size = op.get_output_size()
 
@@ -77,12 +82,17 @@ class MemoryEstimator:
                     total_activations += operator_schedule.operators[j].get_output_size(
                     )
                     operator_schedule.operators[j].requires_grad = True
+                    restore_list.append(operator_schedule.operators[j])
                     j -= 1
 
                 temp_size = op.get_temp_size()
                 peak_size = max(peak_size, total_activations +
                                 output_grad_size + temp_size)
                 total_activations -= output_grad_size
+
+            # restore
+            for op in restore_list:
+                op.requires_grad = False
 
         def _byte_to_GB(size):
             return size / (1000**3)
