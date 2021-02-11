@@ -28,11 +28,12 @@ class MemoryCostModel(_BaseCostModel):
     def __init__(self, opt):
         super().__init__(opt)
         self.token = ["gradient_accumulation", "recomputation"]
+        self.cnts = [0, 0]
 
     def init_search_space(self, candidates, dag, pkg):
         candidate_strategies = []
         candidate_weights = []
-        for strategy in self.token:
+        for i, strategy in enumerate(self.token):
             if strategy == "recomputation":
                 if has_recomputation(self.opt.memory_estimator.schedule):
                     continue
@@ -42,7 +43,7 @@ class MemoryCostModel(_BaseCostModel):
             if estimated_memory > self.opt.memory_budget:
                 continue
             candidate_strategies.append((strategy, None, None))
-            candidate_weights.append(1./estimated_time)
+            candidate_weights.append(1./(self.cnts[0] + 1))
 
         return candidate_strategies, candidate_weights
 
@@ -51,9 +52,11 @@ class MemoryCostModel(_BaseCostModel):
             if self.opt.memory_estimator.batch_size > 1:
                 self.opt.memory_estimator.batch_size /= 2
             get_gradient_accumulation_edited_graph(dag)
+            self.cnts[0] += 1
         elif s[0] == "recomputation":
             get_recomputation_edited_graph(
                 dag, self.opt.memory_estimator.schedule, "speed")
+            self.cnts[1] += 1
         else:
             raise NotImplementedError
         return True, [], []
@@ -101,6 +104,7 @@ class IncreasingBatchSizeCostModel(_BaseCostModel):
     def __init__(self, opt):
         super().__init__(opt)
         self.token = ["increase_batch_size"]
+        self.cnt = 0
 
     def init_search_space(self, candidates, dag, pkg):
         candidate_strategies = []
@@ -109,7 +113,7 @@ class IncreasingBatchSizeCostModel(_BaseCostModel):
             func = self.func_factory(strategy)
             estimated_time, estimated_memory = func(dag, self.opt.clct)
             candidate_strategies.append((strategy, None, None))
-            candidate_weights.append(1./estimated_time)
+            candidate_weights.append(1./(self.cnt + 1))
 
         return candidate_strategies, candidate_weights
 
@@ -118,6 +122,7 @@ class IncreasingBatchSizeCostModel(_BaseCostModel):
         if self.opt.memory_estimator.batch_size < 1024:
             self.opt.memory_estimator.batch_size *= 2
             self._update_dag(dag)
+            self.cnt += 1
         return True, [], []
 
     def func_factory(self, strategy):
@@ -126,7 +131,7 @@ class IncreasingBatchSizeCostModel(_BaseCostModel):
 
     def _update_dag(self, dag):
         computation_nodes = filter_out_comm_nodes(dag)
-        update_time_by_scale(dag.subgraph(computation_nodes), 0.75)
+        update_time_by_scale(dag.subgraph(computation_nodes), 0.8)
 
     def _get_estimated_time_and_memory_of_increase_batch_size(self, dag, clct):
         dag_copy = deepcopy(dag)
@@ -144,8 +149,8 @@ class IncreasingBatchSizeCostModel(_BaseCostModel):
         ))
         return estimated_time, estimated_memory
 
-    def load_init_ckpt(self):
-        return
+    def load_init_ckpt(self, G_prime=None):
+        return None, None, []
 
     def load_ckpt(self):
         return

@@ -705,8 +705,8 @@ class CostModelManager:
         self.cost_model_list = []
         # if "amp" in args_.sub_option:
         #     self.cost_model_list.append(_AMPCostModel(opt))
-        # if "tensor_fusion" in args_.sub_option:
-        #     self.cost_model_list.append(_TensorFusionCM(opt))
+        if "tensor_fusion" in args_.sub_option:
+            self.cost_model_list.append(_TensorFusionCM(opt))
         if "xla" in args_.sub_option:
             self.cost_model_list.append(_XLACostModel(opt))
         if len(self.cost_model_list) == 0:
@@ -714,7 +714,7 @@ class CostModelManager:
                 # _XLACostModel(opt),
                 # _AMPCostModel(opt),
             ]
-        self.cost_model_list = [IncreasingBatchSizeCostModel(opt)]
+        self.cost_model_list.append(IncreasingBatchSizeCostModel(opt))
         self.mem_model_list = [MemoryCostModel(opt)]
         self.strategy2model = {}
 
@@ -1051,15 +1051,15 @@ class MCMCOptimizer(Optimizer):
         PKG = PKGraph(G)
 
         self.trajectory = []
-        ### load init checkpoint
-        # G = None
-        # for _cost_model in self.cst_md_mng.cost_model_list:
-        #     _G, _PKG, _trajectory = _cost_model.load_init_ckpt(G_prime=G)
-        #     if _G is not None:
-        #         G = _G
-        #     if _PKG is not None:
-        #         PKG = _PKG
-        #     self.trajectory += _trajectory
+        ## load init checkpoint
+        G = None
+        for _cost_model in self.cst_md_mng.cost_model_list:
+            _G, _PKG, _trajectory = _cost_model.load_init_ckpt(G_prime=G)
+            if _G is not None:
+                G = _G
+            if _PKG is not None:
+                PKG = _PKG
+            self.trajectory += _trajectory
             
         ### load checkpoint
         if args_.ckpt and graph_cache is not None and os.path.isfile(graph_cache):
@@ -1235,8 +1235,10 @@ class MCMCOptimizer(Optimizer):
                         # proposed_candidates, G_star, PKG_star)
                 # forward_prob = 1 / (len(search_space)+1)
                 # backward_prob = 1 / len(proposed_search_space)
-
-                is_accept = self.accept_or_not(self.cur_cost, self.cost_star)
+                if strategy[0] in ["gradient_accumulation", "recomputation"]:
+                    is_accept = True
+                else:    
+                    is_accept = self.accept_or_not(self.cur_cost, self.cost_star)
                 ### update cost model internal states
                 self.cost_model_flush(is_accept)
                 if is_accept:
@@ -1289,11 +1291,11 @@ class MCMCOptimizer(Optimizer):
 
     def accept_or_not(self, cost, new_cost):
         # prob = min(1, (math.exp(beta * (cost - new_cost))))
-        # try:
-        #     prob = math.exp(MCMC_BETA*math.log(self.step+1) * (cost - new_cost))
-        # except OverflowError:
-        #     prob = float('inf')
-        prob = 1.2
+        try:
+            prob = math.exp(MCMC_BETA*math.log(self.step+1) * (cost - new_cost))
+        except OverflowError:
+            prob = float('inf')
+
         # if cost > new_cost:
         if prob > 1:
             SingleLogger().info(

@@ -12,7 +12,7 @@ def _apply_gradient_accumulation(dag, verbose):
 
 def _update_dag(dag, verbose):
     computation_nodes = filter_out_comm_nodes(dag)
-    update_time_by_scale(dag.subgraph(computation_nodes), 1.2)
+    update_time_by_scale(dag.subgraph(computation_nodes), 0.8)
 
     # TODO(yuchen): deal with other ranks
     filtered_nodes = get_forward_backward_nodes(dag.nodes)
