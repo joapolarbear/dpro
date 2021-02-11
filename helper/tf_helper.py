@@ -305,7 +305,7 @@ class TimelineHook(tf.train.ProfilerHook):
             # _t = multiprocessing.Process(target=self._save, args=(global_step, self._output_file.format(global_step),
             #          run_values.run_metadata.step_stats))
             # _t.start()
-            self.step_stats.append(copy.deepcopy(run_values.run_metadata.step_stats))
+            self.step_stats.append(run_values.run_metadata.step_stats)
             # self._save(global_step, self._output_file.format(global_step),
             #         run_values.run_metadata.step_stats)
             # get shapes from step_stats
