@@ -278,7 +278,7 @@ def preprocess_pcap(pcap_paths, process_names_list, node_ip_to_rank,
     chrome_json = meta_events + chrome_events
 
     with open(save_path, 'w') as f:
-        json.dump(chrome_json, f)
+        json.dump(chrome_json, f, indent=4)
         real_path = os.path.realpath(f.name)
     
     return real_path
@@ -299,6 +299,7 @@ def __parse_timestamp_logs(log_lines, key_to_tensor_name):
 
     logs = {}
     for line in log_lines:
+        line = line.strip()
         if line.startswith("role"):
             continue
         ts, is_start, is_push, is_req, tid, sender, recver = line.split()
@@ -433,11 +434,10 @@ def preprocess_comm_timestamp(file_paths, node_ip_to_rank,
     chrome_json = meta_events + chrome_events
 
     with open(save_path, 'w') as f:
-        json.dump(chrome_json, f)
+        json.dump(chrome_json, f, indent=4)
         real_path = os.path.realpath(f.name)
     
     return real_path
-    
 ############################# SERVER LOG PARSING ###############################
 
 def __parse_server_log(line):
@@ -568,7 +568,7 @@ def parse_server_logs(server_log_paths, node_rank_list, key_dict_path,
     chrome_json = meta_events + chrome_events
 
     with open(save_path, 'w') as f:
-        json.dump(chrome_json, f)
+        json.dump(chrome_json, f, indent=4)
         real_path = os.path.realpath(f.name)
 
     return real_path

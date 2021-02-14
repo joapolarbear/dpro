@@ -273,7 +273,7 @@ class Collector(object):
             if name not in dag_node_names_std or "Comm" in name:
                 ### Only collect nodes in the dag
                 ### TODO (huhanpeng): some trvial nodes may also be useful
-                if args_.trace_level == "trace":
+                if args_.trace_level == "debug":
                     trace["name"] = "%s.%d"%(trace["name"], index)
                     trace["tid"] = trace["cat"] = "debug"
                     if pid is not None:
@@ -959,7 +959,7 @@ class Collector(object):
                 else:
                     SingleLogger().info("Found BytePS server trace file in {}".format(byteps_server_trace_path))
                 # initialize BytePS graph helper
-                self.byteps_graph.init(byteps_comm_detail_path, byteps_server_trace_path)
+                self.byteps_graph.init(byteps_comm_detail_path, byteps_server_trace_path, van_type=args_.van_type)
 
         ### TODO (huhanpeng) dump it or not
         self.collect_para_dict()
