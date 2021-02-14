@@ -96,6 +96,9 @@ class MetaInfo:
             return wei*old_B*K*P*Q*C*R*S, wei*old_B*K*P*Q*(C*R*S-1), wei*old_B*H*W*C, wei*old_B*P*Q*K, R*S*C*K
         elif op_type == "MatMul":
             C_in, C_out, old_B = self.cache_hyper_para[op_name]
+            if old_B is None:
+                assert self.old_B is not None
+                old_B = self.old_B
             return wei*old_B*C_in*C_out, wei*old_B*(C_in-1)*C_out, wei*old_B*C_in, wei*old_B*C_out, C_in*C_out
         elif op_type == "BW_MatMul":
             C_in, C_out, old_B = self.cache_hyper_para[op_name]

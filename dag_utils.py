@@ -13,6 +13,8 @@ if args_.comm_backend == "NCCL":
 elif args_.comm_backend == "BYTEPS":
     from bps_helper.graph import *
 
+VIRTUAL_SYNC_OP = True
+
 def visualize_gml(graph, layout="circular"):
     if layout == "spectral":
         pos = nx.spectral_layout(graph, dim=2, scale=0.5)
@@ -543,10 +545,16 @@ class DAGManager:
                     raise ArgumentError("Unsupported platform {}.".format(self.platform))
                 try:
                     nccl_grp_name = self.nccl_graph.tensor2group_name(tensor_id)
-                    nccl_grp_name_sync = self.nccl_graph.tensor2group_name_sync(tensor_id)
                 except TypeError:
-                    ### some tensors do not have grads
+                    ### some tensors do not have grads, for MXNet
                     continue
+                
+                if VIRTUAL_SYNC_OP:
+                    nccl_grp_name_sync = nccl_grp_name
+                else:
+                    raise NotImplementedError("Need to 1. align the profiling range of Horovod;"
+                                              "2) check whether some tensor ids have no grads")
+                    nccl_grp_name_sync = self.nccl_graph.tensor2group_name_sync(tensor_id)
 
                 ### handle the edges from BW to Comm.xxx.Sync
                 sync_op = "Comm." + nccl_grp_name_sync + ".Sync"

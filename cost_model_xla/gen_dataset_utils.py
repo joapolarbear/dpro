@@ -378,14 +378,16 @@ class XlaKernelDataset(object):
     def construct_kernel_dataset(cls, trace_dir, result_dir, num_samples=2000,
                                 num_max_cluster_samples = 5, 
                                 min_subgraph_level = None, 
-                                max_subgraph_level = None):
+                                max_subgraph_level = None,
+                                xla_candidate_path = None):
         if not os.path.isdir(result_dir):
             os.makedirs(result_dir)    
         gen_kernel_dataset(trace_dir, result_dir, 
                             num_samples=num_samples, 
                             num_max_cluster_samples=num_max_cluster_samples,
                             min_subgraph_level=min_subgraph_level, 
-                            max_subgraph_level=max_subgraph_level)
+                            max_subgraph_level=max_subgraph_level,
+                            xla_candidate_path=xla_candidate_path)
 
 class XlaModuleTestSet():
     def __init__(self, test_dataset_path, training_dataset):
@@ -708,8 +710,8 @@ def parse_white_list():
                     white_list.add(op_type)
     return white_list
 
-def parse_xla_candidate_ops():
-    candidate_path = CMPaths.DEBUG_XLA_CANDIATES_FILE
+def parse_xla_candidate_ops(xla_candidate_path=None):
+    candidate_path = CMPaths.DEBUG_XLA_CANDIATES_FILE if xla_candidate_path is None else xla_candidate_path
     candidates = set()
     with open(candidate_path, "r") as f:
         for line in f:
@@ -717,7 +719,7 @@ def parse_xla_candidate_ops():
     return candidates
 
 def gen_kernel_dataset(trace_dir, result_dir, num_samples=2000, num_max_cluster_samples = 5,
-                min_subgraph_level=4, max_subgraph_level=800):
+                min_subgraph_level=4, max_subgraph_level=800, xla_candidate_path=None):
     # create directory structure
     if not os.path.isdir(result_dir):
         os.makedirs(result_dir)
@@ -745,7 +747,7 @@ def gen_kernel_dataset(trace_dir, result_dir, num_samples=2000, num_max_cluster_
             shape_dict[tensor_name] = shape_detail["shape"]
     # TF2XLA supported ops
     # white_list_ops = parse_white_list()
-    candidate_ops = parse_xla_candidate_ops()
+    candidate_ops = parse_xla_candidate_ops(xla_candidate_path=xla_candidate_path)
     # GraphDef
     # with open(os.path.join(trace_dir, CMPaths.RAW_GRAPH_DEF_FILE), "r") as f:
     graph_def_path = os.path.join(trace_dir, CMPaths.AFTER_OPT_TF_DAG_FILE)

@@ -93,7 +93,8 @@ class Device:
         ### Really start to execute
         avg = self.replayer.dag.nodes[name]["avg"]
         if "+" in name and "Comm" not in name:
-            pid, raw_name, cat, suffix = parse_allinfo_from_name(name.split("+")[0])
+            pid, _, cat, suffix = parse_allinfo_from_name(name.split("+")[0])
+            raw_name = "+".join([parse_allinfo_from_name(_name)[1] for _name in name.split("+")])
         else:
             pid, raw_name, cat, suffix = parse_allinfo_from_name(name)
         delay, ratio = self.get_delay_para(name)
@@ -178,7 +179,8 @@ class Device:
                     ## For BYTEPS and Horovod, Only apply BW->Comm gaps
                     ## Other gaps should be considered with the device time.
                     gap = 0
-                    if GAP_STR_OP2COMM in self.replayer.dag.nodes[name] and next_cat == CatName.COMM.value and this_cat == CatName.OPERATOR.value:
+                    if GAP_STR_OP2COMM in self.replayer.dag.nodes[name] and next_cat == CatName.COMM.value \
+                         and (this_cat == CatName.OPERATOR.value or "Sync" in name):
                     # if GAP_STR_OP2COMM in self.replayer.dag.nodes[name] and next_cat == "Comm":
                         gap += self.replayer.dag.nodes[name][GAP_STR_OP2COMM]
                         if self.replayer.dag.nodes[name][GAP_STR_OP2COMM] > 10000:
@@ -549,15 +551,14 @@ class Replayer:
         with open(dump_path, 'w') as f:
             json.dump(rst, f)
     
-    def paint_bw_comm_depend(self, one_pid = None):
+    def paint_bw_comm_depend(self, traceM=None, one_pid=None):
         ''' Paint the timeline to show the dependency between BW nodes and Comm nodes
         * E.g., if there is an edge from BW.A to Comm.1.Sync, BW.A would be renamed with Comm.1.Sync
         * This is useful when considering tensor fusion
         * NOTE: may not adapt to operator fusion
         '''
         final_trace = []
-        start_ts = None
-
+        
         def map_bw_2_comm(node_):
             ''' Some nodes may have not corresponding traces
             * E.g., BW.A -> BW.B --> Comm.1, but BW.B has no trace,
@@ -572,8 +573,33 @@ class Replayer:
                     assert "BW" in succ_
                     if self.dag.nodes[succ_]["avg"] == 0:
                         ret += map_bw_2_comm(succ_)
-            return ret
+            return list(set(ret))
         
+        if traceM is not None:
+            start_ts = None
+            for trace in traceM.traces:
+                if one_pid is None or trace["pid"] != one_pid or trace["args"]["step"] != traceM.opt_step:
+                    continue
+                if "BW" in trace["name"]:
+                    long_name = traceM.ret_unique_name(trace)
+                    comm_succs = map_bw_2_comm(long_name)
+                    assert len(comm_succs) <= 1, (trace["name"], comm_succs)
+                    if len(comm_succs) > 0:
+                        rawname = parse_rawname_from_name(comm_succs[0])
+                        trace["name"] = "BW." + rawname
+                    else:
+                        trace["name"] = "BW"
+                elif "Comm" in trace["name"]:
+                    pass
+                else:
+                    trace["name"] = "others"
+                trace["pid"] += ".real"
+                if start_ts is None:
+                    start_ts = trace["ts"]
+                trace["ts"] -= start_ts
+                final_trace.append(trace)
+
+        start_ts = None
         for trace in self.rst_traces:
             if one_pid is None or trace["pid"] != one_pid:
                 continue

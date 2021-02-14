@@ -16,7 +16,8 @@ if CMEnvs.CM_PROFILE_GPU in os.environ:
     try:
         BPF_PROFILE_GPU = int(os.environ[CMEnvs.CM_PROFILE_GPU])
     except:
-        print("[WARNING] Invalid BPF_COST_MODEL_PROFILE_GPU value (must be an integer).")
+        print("[WARNING] Invalid BPF_COST_MODEL_PROFILE_GPU value (must be an integer)."
+              " {} is given".format(CMEnvs.CM_PROFILE_GPU))
         exit(-1)
 else:
     print("[WARNING] Required environment BPF_COST_MODEL_PROFILE_GPU value not set.")

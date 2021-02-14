@@ -5,6 +5,7 @@ import pickle
 import numpy as np
 import ujson as json
 from tqdm import tqdm, trange
+from scipy.optimize import curve_fit
 
 import arg_utils
 from .base import _BaseCostModel
@@ -14,11 +15,15 @@ from cost_model_xla.pk_graph import PKGraph
 args_ = arg_utils.SingleArg().args
 ENABLE_PARTITION = False
 FUSION_RATIO = 1
+TRAIN_PERCENT = 0.9
 ### given a fused tensor, return N possible partition method
 # N <= MAX_PARTITION_NUM
 MAX_PARTITION_NUM = 5
 ROOT_PATH = os.path.join(args_.workspace, ".opt_ws")
 IGNORE_SYNC = True
+
+def func_tensor_size_to_time(s, k, b):
+    return k * s + b
 
 class _TensorFusionCM(_BaseCostModel):
     ''' This is a cost model for HOROVOD tensor fusion
@@ -28,13 +33,11 @@ class _TensorFusionCM(_BaseCostModel):
         super().__init__(opt)
         self.token = ["++", "--"]
         self.meta_info = self.opt.clct.para_dict
-        self.node_attr_cache = {}
         self.tensor_group_info = {}
         self.cur_tensor2group = {}
 
         for n in self.dag.nodes():
             if "Comm" in n:
-                self._cache_node_attr(n, self.dag.nodes[n])
                 ### Assume each host has the same tensor fusion pattern
                 if "host0.rank0" in n:
                     self._update_tensor2grp(n)
@@ -48,6 +51,9 @@ class _TensorFusionCM(_BaseCostModel):
             SingleLogger().info("Search the optimal number of tensor fusion groups")
         else:
             SingleLogger().info("Search the optimal tensor fusion strategies")
+
+        ### Store the cost model for tensor fusion/partition
+        self.pid_to_cm = None
 
     def _ret_weight_num_grp(self, num_grp):
         if num_grp not in self.history_num_grp:
@@ -250,37 +256,6 @@ class _TensorFusionCM(_BaseCostModel):
     def _wrap_gen_long_name(self, pid, op_name, layer_name, sub_op, suffix):
         return gen_long_name(pid, "{}.{}.{}".format(op_name, layer_name, sub_op), suffix)
 
-    def _cache_node_attr(self, n, attrs):
-        self.node_attr_cache[n] = attrs
-    
-    def _get_node_attr(self, n, attr_):
-        if attr_ in self.node_attr_cache[n]:
-            return self.node_attr_cache[n][attr_]
-        else:
-            raise ValueError(n, attr_)
-    
-    def _parse_node_attr(self, _dag, new_name, avg=None):
-        ''' Parse the fused tensor attribute corresponding to `new_name` and set _dag
-        * If new_name has been cached, directly set _dag with the cached attributes
-        * Otherwise, combine the attribution of all original nodes
-            * If avg is not given, query the cost model
-        Return
-        ------
-        avg: average time
-        '''
-        if new_name in self.node_attr_cache:
-            nx.set_node_attributes(_dag, {new_name: self.node_attr_cache[new_name]})
-            # _dag.add_node(new_name, **self.node_attr_cache[new_name])
-        else:
-            assert avg is not None, "avg must be given for new_name: {}".format(new_name)
-            # combine attr avg
-            attrs = {"avg": avg}
-            ### set and cache the attribute
-            nx.set_node_attributes(_dag, {new_name: attrs})
-            self._cache_node_attr(new_name, _dag.nodes[new_name])
-
-        return self.node_attr_cache[new_name]["avg"]
-
     def flush(self, is_accept):
         if is_accept:        
             for n in self.cache_change:
@@ -378,8 +353,11 @@ class _TensorFusionCM(_BaseCostModel):
                 _all_infos = [
                     self._wrap_parse_all_info(prev_fused_name),
                     self._wrap_parse_all_info(new_fused_name)]
-                if "Sync" in prev_fused_name and _all_infos[0][0] != _all_infos[1][0]:
-                    ### avoid repeatedly add edges for Sync -> other GPUs tensor op
+                if ("Sync" in prev_fused_name and _all_infos[0][0] != _all_infos[1][0]) or \
+                        ("RECV" in new_fused_name and "SEND" not in prev_fused_name):
+                    ### avoid repeatedly add following edges,
+                    #   *  Sync -> other GPUs tensor ops
+                    #   *  Sync -> MEMCPY -> RECV
                     pass
                 else:
                     last_comm = False
@@ -405,7 +383,7 @@ class _TensorFusionCM(_BaseCostModel):
                             update_list.append(succ_)
                             edges_to_rm.append((to_fuses[1], succ_))
                         for _update_op in update_list:
-                            edges_to_add.append((new_fused_name, _update_op))           
+                            edges_to_add.append((new_fused_name, _update_op))      
                         
         _dag.add_edges_from(edges_to_add)
         _dag.add_nodes_from(nodes_to_add)
@@ -429,11 +407,10 @@ class _TensorFusionCM(_BaseCostModel):
                     raise ValueError("{} is still in the dag: node {}".format(f, n))
 
     def _concat_name_avg(self, _dag, u_, v_, base_idx=0):
-        if u_ not in self.node_attr_cache and u_ in _dag.nodes:
-            self._cache_node_attr(u_, _dag.nodes[u_])
-        if v_ not in self.node_attr_cache and v_ in _dag.nodes:
-            self._cache_node_attr(v_, _dag.nodes[v_])
-        
+        ''' Concate u_ and v_ into a new tensor name and calculate the new tensor's time
+        * NOTE: u_/v_ may not exist in _dag, since two tensors needed to be fused may have 
+        * different loopid, channelid, and sliceid
+        '''
         all_infos = [
             self._wrap_parse_all_info(u_),
             self._wrap_parse_all_info(v_)]
@@ -445,29 +422,34 @@ class _TensorFusionCM(_BaseCostModel):
             self.tensor_group_info[new_raw_name] = self.tensor_group_info[all_infos[base_idx][2]].copy()
             self.tensor_group_info[new_raw_name]["size"] = \
                 self.tensor_group_info[all_infos[0][2]]["size"] + \
-                self.tensor_group_info[all_infos[0][2]]["size"]
+                self.tensor_group_info[all_infos[1][2]]["size"]
             # print("add new name {}".format(new_raw_name))
 
-        if new_name not in self.node_attr_cache:
-            if all_infos[0][3] in ["SEND", "RECV", "MEMCPY_IN_FUSION_BUFFER", "NCCL_ALLREDUCE", "MEMCPY_OUT_FUSION_BUFFER"]:
-                sizes = [
-                    self._parse_tensor_group_info(all_infos[0][2])["size"],
-                    self._parse_tensor_group_info(all_infos[1][2])["size"]]
-                fused_time = FUSION_RATIO * self._get_node_attr(
-                    [u_, v_][base_idx], "avg") * (sizes[0] + sizes[1]) / sizes[base_idx]
-            elif all_infos[0][3] in ["QUEUE"]:
-                fused_time = FUSION_RATIO * max(self._get_node_attr(u_, "avg"), self._get_node_attr(v_, "avg"))
-            elif all_infos[0][3] in ["Sync"]:
-                if IGNORE_SYNC:
-                    fused_time = 0
-                else:
-                    fused_time = FUSION_RATIO * max(self._get_node_attr(u_, "avg"), self._get_node_attr(v_, "avg"))
+        if all_infos[0][3] in ["SEND", "RECV"]:
+            grp_infos = [
+                self._parse_tensor_group_info(all_infos[0][2]),
+                self._parse_tensor_group_info(all_infos[1][2])]
+            sizes = [grp_info["size"] for grp_info in grp_infos]
+            fused_time = self.predict_comm_time(
+                (sizes[0] + sizes[1])/grp_infos[base_idx]["partNum"], all_infos[0][0], all_infos[0][3])
+            # if all_infos[0][0] == "host0.rank3" and "0_0_0_0" in u_:
+            #     print("Tensor Fusion Log")
+            #     print(" *** {} - total size={}, partnum={}".format(u_, sizes[0], grp_infos[0]["partNum"]))
+            #     print(" *** {} - total size={}, partnum={}".format(v_, sizes[1], grp_infos[1]["partNum"]))
+            #     print(" *** -> total size={}, partnum={}, size={}, pred={}".format(
+            #         self.tensor_group_info[new_raw_name]["size"],
+            #         self.tensor_group_info[new_raw_name]["partNum"],
+            #         (sizes[0] + sizes[1])/grp_infos[base_idx]["partNum"], fused_time))
+        elif all_infos[0][3] in ["QUEUE", "MEMCPY_IN_FUSION_BUFFER", "NCCL_ALLREDUCE", "MEMCPY_OUT_FUSION_BUFFER"]:
+            fused_time = FUSION_RATIO * max(_dag.nodes[u_]["avg"], _dag.nodes[v_]["avg"])
+        elif all_infos[0][3] in ["Sync"]:
+            if IGNORE_SYNC:
+                fused_time = 0
             else:
-                raise ValueError("Unrecognized sub op name {} ({})".format(
-                    all_infos[0][3], u_))
-            self._cache_node_attr(new_name, {"avg": fused_time})
+                fused_time = FUSION_RATIO * max(_dag.nodes[u_]["avg"], _dag.nodes[v_]["avg"])
         else:
-            fused_time = self.node_attr_cache[new_name]["avg"]
+            raise ValueError("Unrecognized sub op name {} ({})".format(
+                all_infos[0][3], u_))
         return new_name, fused_time
     
     def _op_defusion(self, _dag, _pkg: PKGraph, u, loc):
@@ -478,7 +460,6 @@ class _TensorFusionCM(_BaseCostModel):
         sorted_tensor_ids = sorted([int(n) for n in all_infos[2].split("+")])
         ids = [sorted_tensor_ids[:loc], sorted_tensor_ids[loc:]]
         rawnames = ["+".join([str(n) for n in _ids]) for _ids in ids]
-        grp_infos = [self._parse_tensor_group_info(n, ref=all_infos[2]) for n in rawnames]
 
         edges_to_add = []
         edges_to_rm = []
@@ -516,12 +497,11 @@ class _TensorFusionCM(_BaseCostModel):
                 prev_part_names, _prev, _cur = edges_to_handel.pop(0)
                 edges_to_rm += [(_prev, _cur)]
                 nodes_to_rm.add(_cur)
-
                 ### add new node
                 new_part_names, part_times = self._defuse_name_avg(_dag, _cur, rawnames)
                 for _name, _time in zip(new_part_names, part_times):
                     nodes_to_add.append((_name, {"avg": _time}))
-                
+
                 ### add new edges
                 edges_to_add += [(prev_part_names[0], new_part_names[0]),
                                  (prev_part_names[1], new_part_names[1])]
@@ -530,8 +510,12 @@ class _TensorFusionCM(_BaseCostModel):
                 _all_infos = [
                     self._wrap_parse_all_info(_prev),
                     self._wrap_parse_all_info(_cur)]
-                if "Sync" in _prev and _all_infos[0][0] != _all_infos[1][0]:
-                    ### avoid repeatedly add edges for Sync -> other GPUs tensor op
+
+                if ("Sync" in _prev and _all_infos[0][0] != _all_infos[1][0]) or \
+                        ("RECV" in _cur and "SEND" not in _prev):
+                    ### avoid repeatedly add following edges,
+                    #   *  Sync -> other GPUs tensor ops
+                    #   *  Sync ->Memcpy -> RECV
                     pass
                 else:
                     last_comm = False
@@ -582,9 +566,6 @@ class _TensorFusionCM(_BaseCostModel):
         return True, [n for n, _ in nodes_to_add], nodes_to_rm
 
     def _defuse_name_avg(self, _dag, u, rawnames):
-        if u not in self.node_attr_cache and u in _dag.nodes:
-            self._cache_node_attr(u, _dag.nodes[u])
-
         all_infos = self._wrap_parse_all_info(u)
         new_part_names = [self._wrap_gen_long_name(
             all_infos[0], all_infos[1], n, all_infos[3], all_infos[4]) for n in rawnames]
@@ -592,20 +573,16 @@ class _TensorFusionCM(_BaseCostModel):
 
         part_times = []
         for idx, new_name in enumerate(new_part_names):
-            if new_name not in self.node_attr_cache:
-                if all_infos[3] in ["SEND", "RECV", "MEMCPY_IN_FUSION_BUFFER", "NCCL_ALLREDUCE", "MEMCPY_OUT_FUSION_BUFFER"]:
-                    part_time = self._get_node_attr(u, "avg") * grp_infos[idx]["size"] \
-                        / ((grp_infos[0]["size"] + grp_infos[1]["size"]) * FUSION_RATIO)
-                elif all_infos[3] in ["QUEUE"]:
-                    part_time = self._get_node_attr(u, "avg") / FUSION_RATIO
-                elif all_infos[3] in ["Sync"]:
-                    part_time = self._get_node_attr(u, "avg") / FUSION_RATIO if not IGNORE_SYNC else 0
-                else:
-                    raise ValueError("Unrecognized sub op name {} ({})".format(
-                        all_infos[3], u))
-                self._cache_node_attr(new_name, {"avg": part_time})
+            if all_infos[3] in ["SEND", "RECV"]:
+                part_time = self.predict_comm_time(
+                    grp_infos[idx]["size"]/grp_infos[idx]["partNum"], all_infos[0], all_infos[3])
+            elif all_infos[3] in ["QUEUE", "MEMCPY_IN_FUSION_BUFFER", "NCCL_ALLREDUCE", "MEMCPY_OUT_FUSION_BUFFER"]:
+                part_time = _dag.nodes[u]["avg"] / FUSION_RATIO
+            elif all_infos[3] in ["Sync"]:
+                part_time = _dag.nodes[u]["avg"] / FUSION_RATIO if not IGNORE_SYNC else 0
             else:
-                part_time = self.node_attr_cache[new_name]["avg"]
+                raise ValueError("Unrecognized sub op name {} ({})".format(
+                    all_infos[3], u))
             part_times.append(part_time)
         return new_part_names, part_times
 
@@ -618,7 +595,8 @@ class _TensorFusionCM(_BaseCostModel):
                     "chunkNum": chunkNum,
                     "sliceNum": sliceNum,
                     "channelNum": channelNum,
-                    "loopNum": loopNum
+                    "loopNum": loopNum,
+                    "partNum": loopNum*channelNum*sliceNum*(chunkNum/2 + 1)
                 }
             else:
                 ### some group may not occur in the traces, ref to other groups
@@ -632,40 +610,63 @@ class _TensorFusionCM(_BaseCostModel):
         return self.tensor_group_info[raw_name]
 
     def checkpoint(self):
-        with open(self.ckpt_path, "wb") as f:
-            pickle.dump([self.node_attr_cache, self.tensor_group_info, self.cur_tensor2group, self.num_grp, self.history_num_grp], f)
-
+        try:
+            with open(self.ckpt_path, "wb") as f:
+                pickle.dump([self.tensor_group_info, self.cur_tensor2group, self.num_grp, self.history_num_grp], f)
+        except:
+            print(len(self.tensor_group_info), self.history_num_grp)
+            raise
+        
     def load_ckpt(self):
         if os.path.isfile(self.ckpt_path):
             with open(self.ckpt_path, "rb") as f:
-                self.node_attr_cache, self.tensor_group_info, self.cur_tensor2group, self.num_grp, self.history_num_grp = pickle.load(f)
+                self.tensor_group_info, self.cur_tensor2group, self.num_grp, self.history_num_grp = pickle.load(f)
         self.cache_change = []
 
-    def load_init_ckpt(self):
+    def predict_comm_time(self, _size, _pid, _sub_op):
+        params = self.pid_to_cm[_pid][_sub_op]["param"]
+        if params is None:
+            return 0
+        return func_tensor_size_to_time(_size, *(params[0]))
+    
+    def load_init_ckpt(self, G_prime=None):
+        ''' Other cost model may initialize the DFG, init DFG based on that
+        '''
         init_ckpt_path = os.path.join(ROOT_PATH, "tensor_fusion_init_ckpt.pickle")
+        re_load = False
         if os.path.isfile(init_ckpt_path):
-            with open(init_ckpt_path, "rb") as f:
-                G, PKG, trajectory, self.node_attr_cache, self.tensor_group_info, self.cur_tensor2group, self.num_grp, self.history_num_grp = pickle.load(f)
-            if self.num_grp is not None:
-                SingleLogger().info("Initialzed the graph with {} tensor group(s) ...".format(self.num_grp))
-            SingleLogger().info("Reading init state from cache.")
+            try:
+                with open(init_ckpt_path, "rb") as f:
+                    G, PKG, trajectory, self.tensor_group_info, self.cur_tensor2group,\
+                        self.num_grp, self.history_num_grp, self.pid_to_cm = pickle.load(f)
+                if self.num_grp is not None:
+                    SingleLogger().info("Initialzed the graph with {} tensor group(s) ...".format(self.num_grp))
+                SingleLogger().info("Reading init state from cache.")
+            except:
+                re_load = True
         else:
-            G = self.dag.copy()
-            PKG = PKGraph(G)
+            re_load = True
+            
+        if re_load:
+            G = self.dag.copy() if G_prime is None else G_prime
+            PKG = None
 
+            ### Check uncontinuous tensor groups, and split them for futher tensor fusion
+            ### Since Horovod 0.21.0 Tensor Group API requires tensors in a group to be continuous
             trajectory = []
             source_nodes = [n for n in G.nodes() if "Comm" in n]
-            for n in tqdm(source_nodes, total=len(source_nodes)):  
-                self._cache_node_attr(n, G.nodes[n])
+            self.pid_to_cm = {}
+            no_suffix_time = {}
+            for n in tqdm(source_nodes, total=len(source_nodes)):
+                all_info = self._wrap_parse_all_info(n)
                 ### Assume each host has the same tensor fusion pattern
-                if "host0.rank0" in n and "Sync" in n:
+                if "host0.rank0" == all_info[0] and "Sync" == all_info[3]:
                     self._update_tensor2grp(n)
-
                     ### check uncontinuous fusions
                     groups = []
                     cur_group = []
                     prev_id = None
-                    rawname = self._wrap_parse_all_info(n)[2]
+                    rawname = all_info[2]
                     for idx, tensor_id in enumerate(rawname.split("+")):
                         if prev_id is None or prev_id + 1 == int(tensor_id):
                             cur_group.append(int(tensor_id))
@@ -687,7 +688,55 @@ class _TensorFusionCM(_BaseCostModel):
                             _info = self._wrap_parse_all_info(name_to_split)
                             name_to_split = self._wrap_gen_long_name(
                                 _info[0], _info[1], "+".join(_info[2].split("+")[len(grp):]), _info[3], _info[4])
-                            print(grp, trajectory[-1])
+                            # print(grp, trajectory[-1])
+                
+                ### Collect data to fit tensor fusion cost model,
+                # TODO (hhp): only collect SEND operators now
+                if all_info[3] == "SEND" or all_info[3] == "RECV":
+                    name_no_suffix = self._wrap_gen_long_name(all_info[0], all_info[1], all_info[2], all_info[3], None)
+                    if name_no_suffix not in no_suffix_time:
+                        no_suffix_time[name_no_suffix] = []
+                    no_suffix_time[name_no_suffix].append(G.nodes[n]["avg"])
+
+            for n in no_suffix_time.keys():
+                all_info = self._wrap_parse_all_info(n)
+                if all_info[0] not in self.pid_to_cm:
+                    self.pid_to_cm[all_info[0]] = {
+                        "SEND": {"data":[], "param": None},
+                        "RECV": {"data":[], "param": None}}
+                grp_info = self._parse_tensor_group_info(all_info[2])
+                # assert grp_info["partNum"] < len(no_suffix_time[n]), (n, grp_info, len(no_suffix_time[n]))
+                _size = grp_info["size"] / grp_info["partNum"]
+                _avg = sum(no_suffix_time[n]) / len(no_suffix_time[n])
+                if _avg > 0:
+                    self.pid_to_cm[all_info[0]][all_info[3]]["data"].append([_size, _avg])
+            
+            ### Fit the cost model for each GPU
+            SingleLogger().info("Fit the cost model for each GPU...")
+            for pid in sorted(self.pid_to_cm.keys()):
+                for sub_op in sorted(self.pid_to_cm[pid].keys()):
+                    data_param_dict = self.pid_to_cm[pid][sub_op]
+                    if len(data_param_dict["data"]) == 0:
+                        continue
+
+                    ### data shape = (n_dim, n_samples)
+                    all_data = np.array(data_param_dict["data"]).T
+                    n_dim, n_samples = all_data.shape
+                    mask = np.zeros(n_samples, dtype=bool)
+                    train_idx = np.random.choice(n_samples, int(TRAIN_PERCENT * n_samples), replace=False)
+                    mask[train_idx] = True
+                    train_data = all_data[:, mask]
+                    test_data = all_data[:, ~mask]
+                    popt, pcov = curve_fit(func_tensor_size_to_time, train_data[0], train_data[1],
+                                        bounds=((0, -np.inf), (np.inf, np.inf)), p0=(1, 1), maxfev=100000)
+                    pred_ = func_tensor_size_to_time(test_data[0], *popt)
+                    mape = 100 * np.average(np.abs(pred_ - test_data[1]) / test_data[1])
+                    SingleLogger().info(" - Tensor Fusion CM for {} {}: {} % ({} training data, {} test data)".format(pid, sub_op,
+                                                                                                                mape, train_data.shape[1], test_data.shape[1]))
+                    data_param_dict["param"] = [popt, pcov]
+                    data_param_dict["data"] = None
+
+            ### applying strategies to make tensors in each group are continuous
             SingleLogger().info("Applying initialized strategies...")
             for st in tqdm(trajectory, total=len(trajectory)):
                 self.apply(st, G, PKG)
@@ -699,7 +748,8 @@ class _TensorFusionCM(_BaseCostModel):
                 self.flush(True)
 
             with open(init_ckpt_path, "wb") as f:
-                pickle.dump([G, PKG, trajectory, self.node_attr_cache, self.tensor_group_info, self.cur_tensor2group, self.num_grp, self.history_num_grp], f)
+                pickle.dump([G, PKG, trajectory, self.tensor_group_info,
+                    self.cur_tensor2group, self.num_grp, self.history_num_grp, self.pid_to_cm], f)
             SingleLogger().info("Graph cache dumped to {}.".format(init_ckpt_path))
         
         if IGNORE_SYNC:
@@ -709,8 +759,8 @@ class _TensorFusionCM(_BaseCostModel):
 
         self.dump_tensor_grp_mapping(_file_name="tensor_fusion_grp_mapping_init.json")
         self.cache_change = []
-        return G, PKG, []
-
+        return G, PKG, trajectory
+    
     def dump_tensor_grp_mapping(self, _file_name=None):
         file_name = 'tensor_fusion_grp_mapping.json' if _file_name is None else _file_name
 

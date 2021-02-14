@@ -21,7 +21,8 @@ from replay import Replayer
 from progress_utils import progressBar
 
 import debug_utils
-import optimizer
+if args.option == "optimize":
+    import optimizer
 
 QueueType("NCCL")
 debug_utils.DebugRecorder(is_enable=args.debug_traces)

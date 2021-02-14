@@ -1,7 +1,0 @@
-
-### Horovod + Tensorflow
-
-* Global step should be created to use `hvd.TimelineHook`. and call
-```opt = opt.minimize(loss, global_step=global_step)```
-
-* `hvd.TimelineHook` generates smaller trace files.
