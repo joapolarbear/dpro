@@ -38,11 +38,7 @@ export BPF_COST_MODEL_PROFILE_GPU="0"
 
 # modify these
 TRACE_DIR="$BYTEPS_TRACE_DIR/0"
-<<<<<<< HEAD:xla_run_generate_kernel_dataset.sh
-OUTPUT_DIR="/opt/tiger/xla/kernel_dataset"
-=======
 OUTPUT_DIR="/home/tiger/xla/kernel_dataset"
->>>>>>> e583e3fe4b869b1d6371cb724f0cd655a81b214d:run_generate_kernel_dataset.sh
 
 ### resnet
 NUM_RANDOM_SAMPLES=5000
@@ -55,10 +51,6 @@ NUM_RANDOM_SAMPLES=5000
 MAX_CLUSTER_SAMPLES=5
 MIN_CLUSTER_SIZE=4
 MAX_CLUSTER_SIZE=200
-<<<<<<< HEAD:xla_run_generate_kernel_dataset.sh
-
-cd /opt/tiger/byteprofile-analysis
-=======
 
 ### VGG19
 NUM_RANDOM_SAMPLES=2000
@@ -73,7 +65,6 @@ MIN_CLUSTER_SIZE=4
 MAX_CLUSTER_SIZE=800
 
 cd /home/tiger/byteprofile-analysis
->>>>>>> e583e3fe4b869b1d6371cb724f0cd655a81b214d:run_generate_kernel_dataset.sh
 python3 xla_generate_kernel_dataset.py --trace_dir ${TRACE_DIR} \
     --output_dir ${OUTPUT_DIR} \
     --num_samples ${NUM_RANDOM_SAMPLES} \
@@ -89,11 +80,7 @@ OUTPUT_DIR="/home/tiger/xla/cost_model"
 cp /home/tiger/xla/kernel_dataset/cleaned_graph.json /home/tiger/xla/kernel_dataset/dataset/
 cp /home/tiger/xla/kernel_dataset/tensor_shapes.json /home/tiger/xla/kernel_dataset/dataset/
 
-<<<<<<< HEAD:xla_run_generate_kernel_dataset.sh
-cd /opt/tiger/byteprofile-analysis
-=======
 cd /home/tiger/byteprofile-analysis
->>>>>>> e583e3fe4b869b1d6371cb724f0cd655a81b214d:run_generate_kernel_dataset.sh
 python3 xla_train_module_cm.py --dataset_dir ${DATASET_DIR} --output_dir ${OUTPUT_DIR} --batch_size 256
 
 

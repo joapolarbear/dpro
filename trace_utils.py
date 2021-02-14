@@ -473,18 +473,12 @@ class TraceManager:
             self.max_step = max(event["args"]["step"], self.max_step)
 
             ### calculate the iteration time
-<<<<<<< HEAD
-            if parse_cat_from_name(event["name"]) != CatName.OPERATOR.value:
-                ### only check the iteration time when current node is FW/BW/UPDATE op
-                continue    
-=======
             if parse_cat_from_name(event["name"]) != CatName.OPERATOR.value or \
                     not (prefix.startswith("host") or prefix.startswith("traces_")):
                 ### only check the iteration time when current node is FW/BW/UPDATE op
                 # * and for byteps traces, there exists pids in the form like server_3_t2....
                 #   do not need to calculate iteration time for those pids
                 continue
->>>>>>> e583e3fe4b869b1d6371cb724f0cd655a81b214d
             if pid_info["cur_step"] is None:
                 ### initialization
                 pid_info["step_start_ts"] = event['ts']
@@ -543,16 +537,12 @@ class TraceManager:
                 # pid_info["fw_list"].append((pid_info["fw_end"] - pid_info["step_start_ts"]) / 1000.0)
                 # pid_info["bw_list"].append((pid_info["bw_end"] - pid_info["bw_start"]) / 1000.0)
                 pid_info["fw_list"].append(pid_info["cat_cnt"]["operator.FW"])
-<<<<<<< HEAD
-                pid_info["bw_list"].append(pid_info["cat_cnt"]["operator.BW"])
-=======
                 try:
                     pid_info["bw_list"].append(pid_info["cat_cnt"]["operator.BW"])
                 except KeyError:
                     ### for fused op, there may be not BW nodes
                     # append -1 as abnormal cases
                     pid_info["bw_list"].append(-1)
->>>>>>> e583e3fe4b869b1d6371cb724f0cd655a81b214d
                 pid_info["update_list"].append(pid_info["cat_cnt"]["operator.UPDATE"])
                 pid_info["cat_cnt"]["operator.FW"] = pid_info["cat_cnt"]["operator.BW"] = pid_info["cat_cnt"]["operator.UPDATE"] = 0
                 SingleLogger().debug("%s - the %d th iteration: FW:%f, BW: %f, Iteration time: %f" % (prefix, len(pid_info["iter_list"]), pid_info["fw_list"][-1], pid_info["bw_list"][-1], pid_info["iter_list"][-1]))
@@ -564,10 +554,6 @@ class TraceManager:
             iter_list_all.append(pid_info["iter_list"])
             SingleLogger().info("<%s> fw : %f + bw: %f + update: %f -> time/it = %f ms" % (prefix,
                     fw_time, bw_time, update_time, iter_time))
-<<<<<<< HEAD
-
-        ### iter_list_all, shape = (n_GPUs, n_steps) ==> (n_steps)
-=======
             
             if min_step_num is None or len(pid_info["iter_list"]) < min_step_num:
                 min_step_num = len(pid_info["iter_list"])
@@ -575,7 +561,6 @@ class TraceManager:
         ### calculate the average iteration time
         # * iter_list_all, shape = (n_GPUs, n_steps) ==> (n_steps)
         iter_list_all = [_list[:min_step_num] for _list in iter_list_all]
->>>>>>> e583e3fe4b869b1d6371cb724f0cd655a81b214d
         iter_list_all = np.average(np.array(iter_list_all), axis=0)
         self.iter_time = np.average(iter_list_all)
         self.opt_step = np.argmin(np.abs(iter_list_all - self.iter_time))

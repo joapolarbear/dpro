@@ -7,10 +7,6 @@ data/data_*
 dist/dist/byteprofile_analysis-0.1-py3.8.egg
 byteprofile_analysis.egg-info
 dist/
-<<<<<<< HEAD
 cost_model_xla/.cost_model/
 cost_model/_mixed_precisoin/.cost_model
 .idea/
-=======
-cost_model_xla/.cost_model/
->>>>>>> e583e3fe4b869b1d6371cb724f0cd655a81b214d
