@@ -1,8 +1,10 @@
 from functools import partial
+import networkx as nx
 
 DEL = "->"
-RANK0_PREFIX = "traces_0.rank0"
+RANK0_PREFIX = "host0.rank0"
 FORWARD_CAT = "FW."
+BACKWARD_CAT = "BW."
 
 
 def remove_prefix(text, prefix):
@@ -11,9 +13,14 @@ def remove_prefix(text, prefix):
     return text
 
 
-def remove_node_prefix(nodes, prefix):
+def remove_nodes_prefix(nodes, prefix):
     func = partial(remove_prefix, prefix=prefix)
     return list(map(func, nodes))
+
+
+def remove_node_prefix(node, prefix):
+    func = partial(remove_prefix, prefix=prefix)
+    return func(node)
 
 
 def filter_out_comm_nodes(nodes):
@@ -58,9 +65,44 @@ def get_forward_nodes(nodes):
     return list(filter(_is_forward, nodes))
 
 
+def get_forward_backward_nodes(nodes):
+    # TODO(yuchen): Not expandable
+    def _is_forward(name):
+        if name.startswith(DEL.join([RANK0_PREFIX, FORWARD_CAT]) + "bert") or \
+                name.startswith(DEL.join([RANK0_PREFIX, BACKWARD_CAT]) + "bert"):
+            return True
+        return False
+
+    return list(filter(_is_forward, nodes))
+
+
 def get_input_nodes(dag):
     return [u for u, deg in dag.in_degree() if not deg]
 
 
 def get_output_nodes(dag):
     return [u for u, deg in dag.out_degree() if not deg]
+
+
+def insert_nodes(dag, subgraph, target):
+    if not target:
+        return
+    # copy subgraph
+    dag.add_nodes_from(subgraph.nodes.data())
+    dag.add_edges_from(subgraph.edges.data())
+
+    # remove previous nodes
+    prev_nodes = list(dag.predecessors(target))
+    for prev_node in prev_nodes:
+        dag.remove_edge(prev_node, target)
+
+    # connect subgraph output to target
+    outputs = get_output_nodes(subgraph)
+    dag.add_edge(outputs[0], target)
+
+
+def update_time_by_scale(dag, scale):
+    trace_times = nx.get_node_attributes(dag, "avg")
+    for k, v in trace_times.items():
+        trace_times[k] = v * scale
+    nx.set_node_attributes(dag, trace_times, "avg")
