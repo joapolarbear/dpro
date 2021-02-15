@@ -26,7 +26,7 @@ from memory import MemoryEstimator
 from memory.cost_model import IncreasingBatchSizeCostModel, MemoryCostModel
 
 from cost_model.base import _BaseCostModel
-# from cost_model.mixed_precision import _AMPCostModel
+from cost_model.mixed_precision import _AMPCostModel
 from cost_model.tensor_fusion import _TensorFusionCM
 
 class GraphExpand(Enum):
@@ -710,10 +710,11 @@ class CostModelManager:
         if "xla" in args_.sub_option:
             self.cost_model_list.append(_XLACostModel(opt))
         if len(self.cost_model_list) == 0:
-            self.cost_model_list = [
-                # _XLACostModel(opt),
-                # _AMPCostModel(opt),
-            ]
+            SingleLogger().warn("No optimization techniques for computation. ")
+            # self.cost_model_list = [
+            #    _XLACostModel(opt),
+            #    _AMPCostModel(opt),
+            # ]
         self.cost_model_list.append(IncreasingBatchSizeCostModel(opt))
         self.mem_model_list = [MemoryCostModel(opt)]
         self.strategy2model = {}
