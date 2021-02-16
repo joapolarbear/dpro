@@ -33,7 +33,8 @@ def get_concated_names(components):
         component_names.append(component_name)
     return component_names
 
-def defuse_nodes_inplace_nx(_dag: nx.DiGraph, pkg, target, components):
+def defuse_nodes_inplace_nx(_dag: nx.DiGraph, pkg, target, components, 
+                            succ_override=None):
     _dag.remove_node(target)
     # build a node -> component reverse index
     component_names = get_concated_names(components)
@@ -54,6 +55,12 @@ def defuse_nodes_inplace_nx(_dag: nx.DiGraph, pkg, target, components):
                     pred = pkg.nodename2fusednode[pred]
                 if pred != component_names[comp_idx]:
                     component_predecessors.add(pred)
+            if succ_override is not None:
+                succs = succ_override(node)
+                if succs:
+                    for succ in succs:
+                        component_succsessors.add(succ)
+                    continue
             for succ in pkg.nx_graph_reference.successors(node):
                 if succ in node2components:
                     succ = component_names[node2components[succ]]

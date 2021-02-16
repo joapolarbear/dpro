@@ -135,7 +135,21 @@ class _TensorFusionCM(_BaseCostModel):
             rst[2] += nodes_to_rm
         self.cache_change.append(num_grp)
         return rst
-        
+
+    def get_current_comm_from_unfused_bw(self, _node):
+        assert "+" not in _node
+        assert "BW" in _node
+        local_dag = self.opt.clct.dag
+        pid, raw_name, cat, suffix = parse_allinfo_from_name(_node)
+        unfused_comm_nodes = [n for n in local_dag.successors(raw_name) 
+                                if parse_cat_from_name(n) == CatName.COMM.value]
+        current_comm_nodes = set()
+        for comm_node in unfused_comm_nodes:
+            tensor_id = int(parse_rawname_from_name(comm_node))
+            group_name = self.cur_tensor2group[tensor_id]
+            current_comm_nodes.add(self._wrap_gen_long_name(pid, cat, group_name, "Sync", suffix))
+        return current_comm_nodes
+
     def init_search_space(self, candidates, _dag: nx.DiGraph, _pkg: PKGraph):
         if self.num_grp is not None:
             return self._init_search_space_num_grp(candidates, _dag, _pkg)
@@ -257,7 +271,7 @@ class _TensorFusionCM(_BaseCostModel):
         return gen_long_name(pid, "{}.{}.{}".format(op_name, layer_name, sub_op), suffix)
 
     def flush(self, is_accept):
-        if is_accept:        
+        if is_accept:
             for n in self.cache_change:
                 if isinstance(n, int):
                     self.history_num_grp[self.num_grp] = 1 if self.num_grp not in self.history_num_grp else self.history_num_grp[self.num_grp] + 1
@@ -265,7 +279,7 @@ class _TensorFusionCM(_BaseCostModel):
                 elif "host0.rank0" in n:
                     self._update_tensor2grp(n)
         self.cache_change = []
-        
+
     def _op_fusion(self, _dag, _pkg: PKGraph, u_, v_):
         # SingleLogger().info("Fusing Tensor {} & {}.".format(u_, v_))
         all_infos = [

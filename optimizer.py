@@ -267,7 +267,6 @@ class _XLACostModel(_BaseCostModel):
             # ignore BW nodes and communication nodes
             if XLA_INIT_NO_BW and "BW" in node:
                 self.initial_forbidden_list.add(node)
-                print(node)
 
             try:
                 orig_name, pid = self.opt._get_original_name_pid_from_index(node)
@@ -667,7 +666,19 @@ class _XLACostModel(_BaseCostModel):
             avg = self._get_node_avg(new_node_name)
             avgs.append(avg)
         _pkg.split_node(target, components)
-        defuse_nodes_inplace_nx(_dag, _pkg, target, components)
+
+        # override successors for BW nodes if searching along with tensor fusion
+        if "++" in self.opt.cst_md_mng.strategy2model:
+            def succ_overide_func(_node):
+                if "BW" not in _node:
+                    return None
+                else:
+                    assert "+" not in _node
+                    return self.opt.cst_md_mng.strategy2model["++"].get_current_comm_from_unfused_bw(_node)
+        else:
+            succ_overide_func = None
+
+        defuse_nodes_inplace_nx(_dag, _pkg, target, components, succ_override=succ_overide_func)
         for idx, new_node_name in enumerate(component_names):
             self._parse_node_attr(_dag, new_node_name, avgs[idx])
         return True, component_names
@@ -782,8 +793,6 @@ class Optimizer:
         self.cost_model_error = []
 
         self.cst_md_mng = CostModelManager(self)
-
-        
 
     def relabel_dag_node(self, _dag) -> nx.DiGraph:
         def relabel_func(old_label):
@@ -1052,7 +1061,7 @@ class MCMCOptimizer(Optimizer):
             if _PKG is not None:
                 PKG = _PKG
             self.trajectory += _trajectory
-            
+
         ### load checkpoint
         if args_.ckpt and graph_cache is not None and os.path.isfile(graph_cache):
             ### TODO (hhp): need to guarantee the consistence of checkpoints of both cost models and DFG states
@@ -1271,9 +1280,9 @@ class MCMCOptimizer(Optimizer):
                         if "++" in self.cst_md_mng.strategy2model:
                             self.cst_md_mng.strategy2model["++"].dump_tensor_grp_mapping()
                         # DEBUG: log best graph for debugging
-                        # self.evaluate(G, 
-                        #     _filename=os.path.join(ROOT_PATH, "best.json".format(self.step)),
-                        #     _crit_filename=os.path.join(ROOT_PATH, "best_crit.json".format(self.step)))
+                        self.evaluate(G, 
+                            _filename=os.path.join(ROOT_PATH, "best.json".format(self.step)),
+                            _crit_filename=os.path.join(ROOT_PATH, "best_crit.json".format(self.step)))
                     ### Init new search space
                     candidates, _ = self.candidate_selection(
                         G, topk=None, critical_path=self.wrap_critical_path(self.exct_dag))
