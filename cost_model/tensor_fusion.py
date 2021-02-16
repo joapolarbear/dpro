@@ -147,7 +147,7 @@ class _TensorFusionCM(_BaseCostModel):
         for comm_node in unfused_comm_nodes:
             tensor_id = int(parse_layer_name(comm_node))
             group_name = self.cur_tensor2group[tensor_id]
-            current_comm_nodes.add(self._wrap_gen_long_name(pid, cat, group_name, "Sync", suffix))
+            current_comm_nodes.add(self._wrap_gen_long_name(pid, CatName.COMM.value, group_name, "Sync", suffix))
         return current_comm_nodes
 
     def init_search_space(self, candidates, _dag: nx.DiGraph, _pkg: PKGraph):
