@@ -1,10 +1,8 @@
-from collections import deque
 import enum
 import networkx as nx
 import random
 import math
 import time
-from collections import deque
 from scipy.stats.mstats import gmean
 import numpy as np
 import code
@@ -139,7 +137,7 @@ class _XLACostModel(_BaseCostModel):
                 self.node_attr_cache = node_attr_cache
             SingleLogger().info("Reading init graph from cache.")
         else:
-            G = self.dag.copy() if G_prime is None else G_prime
+            G = self.dag.copy() if G_prime is None else G_prime.copy()
             PKG = PKGraph(G)
             # # randomly contract edges if possible
             # k = int(len(G.edges()) * init_edges_to_contract)
@@ -228,7 +226,7 @@ class _XLACostModel(_BaseCostModel):
 
         SingleLogger().info("Start to init partition graph ... ")
         for node_name in tqdm(partition_G.nodes()):
-            if node_name in self.initial_forbidden_list:
+            if node_name in self.initial_forbidden_list or "Comm" in node_name:
                 continue
             if "+" in node_name:
                 # fused node, test if compilable
@@ -374,8 +372,7 @@ class _XLACostModel(_BaseCostModel):
         search_space = []
         weights = []
         prun_cnt = 0
-        # time_spanning_trees = []
-        # time_st = []
+
         for n, l in candidates:
             # node heat
             heat = self.opt._get_heat_from_history(n)
@@ -390,7 +387,6 @@ class _XLACostModel(_BaseCostModel):
                 ns = set(ns)
                 subgraph = self.dag.subgraph(ns)
 
-                # st = time.time()
                 # randomly split edges using spanning tree
                 valid_split_plans = subgraph_partition_connected_nx_using_topo(subgraph)
                 split_weights = []
@@ -400,7 +396,6 @@ class _XLACostModel(_BaseCostModel):
                 for split_index, splits in enumerate(valid_split_plans):
                     search_space.append(("-", n, splits))
                     weights.append(self.opt._combine_weight(l, heat) * split_weights[split_index])
-                    # weights.append(1)
             else:
                 ### Nodes that have never been fused
                 cat = parse_cat_fine_grained(n)
@@ -416,7 +411,7 @@ class _XLACostModel(_BaseCostModel):
             candidate_names = [c[0] for c in candidates]
 
             for succ_ in _dag.successors(n):
-                if succ_ not in candidate_names:
+                if succ_ not in candidate_names or "Comm" in succ_:
                     continue
                 # some filters
                 if not _pkg.can_contract_edge(n, succ_):
@@ -959,13 +954,9 @@ class Optimizer:
                 ss_, wei_ = _cost_model.init_search_space(candidates, _dag, _pkg)
                 search_space += ss_
                 weights += wei_
-        # SingleLogger().info("Init search space len={} from {} candidates, prune {}".format(len(search_space), len(candidates), prun_cnt))
-        # SingleLogger().info("Time spent for spanning tree: {}".format(sum(time_spanning_trees)/ len(time_spanning_trees)))
-        # SingleLogger().info("Time spent for source/sink: {}".format(sum(time_st)/ len(time_st)))
         return search_space, weights
 
     def apply_strategies(self, _dag, _pkg: PKGraph, strategy):
-        # print(strategy)
         if isinstance(strategy, list):
             nodes_introduced = set()
             nodes_removed = set()
@@ -1184,7 +1175,14 @@ class MCMCOptimizer(Optimizer):
                         # if "+" in self.cst_md_mng.strategy2model:
                         #     self.cst_md_mng.strategy2model["+"]._dump_cluster_mapping(G, os.path.join(ROOT_PATH, "searched_graph/cluster_mapping_{}.txt".format(self.step)))
                     else:
-                        self.cost_star, self.exct_dag_star, self.mem_usage_star = self.evaluate(G_star)
+                        try:
+                            self.cost_star, self.exct_dag_star, self.mem_usage_star = self.evaluate(G_star)
+                        except:
+                            traceback.print_exc()
+                            print("~~~~~~~~~~~~~~FAILED TO RUN REPLAY~~~~~~~~~~~~~")
+                            import code
+                            code.interact(local=locals())
+                            exit(-1)
                     if successful_strategies < step_size:
                         candidates, _ = self.candidate_selection(
                             G_star, topk=None, critical_path=self.wrap_critical_path(self.exct_dag_star))

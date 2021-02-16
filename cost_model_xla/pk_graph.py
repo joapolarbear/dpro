@@ -126,6 +126,16 @@ def subgraph_partition_connected_nx_using_topo(subgraph, size=100):
     return list(split_plans)
 
 class PKGraph(object):
+    """
+    An auxiliary data structure for detecting cycles when modifying DAG.
+    The implementation follows the algorithm in the paper:
+        A Dynamic Topological Sort Algorithm for Directed Acyclic Graphs,
+        DAVID J. PEARCE and PAUL H. J. KELLY
+    PKGraph should be used along with the original graph, i.e. it does not 
+    directly apply modifications on the original DAG. All methods modify the
+    state of PKGraph only.
+    Works for networkx DiGraphs.
+    """
     def __init__(self, nx_graph=None, nx_graph_reference=None, _init_copy = False):
         if _init_copy:
             return
@@ -147,7 +157,7 @@ class PKGraph(object):
     def _get_node_order(self, u):
         idx = self.nodename2index[u]
         return self.ord[idx]
-    
+
     def add_edge(self, u, v, **kwargs):
         self.nx_graph.add_edge(u, v, **kwargs)
         if u not in self.nx_graph or v not in self.nx_graph:
