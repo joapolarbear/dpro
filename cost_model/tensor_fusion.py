@@ -145,7 +145,7 @@ class _TensorFusionCM(_BaseCostModel):
                                 if parse_cat_from_name(n) == CatName.COMM.value]
         current_comm_nodes = set()
         for comm_node in unfused_comm_nodes:
-            tensor_id = int(parse_rawname_from_name(comm_node))
+            tensor_id = int(parse_layer_name(comm_node))
             group_name = self.cur_tensor2group[tensor_id]
             current_comm_nodes.add(self._wrap_gen_long_name(pid, cat, group_name, "Sync", suffix))
         return current_comm_nodes
