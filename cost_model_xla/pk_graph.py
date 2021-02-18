@@ -34,7 +34,7 @@ def get_concated_names(components):
     return component_names
 
 def defuse_nodes_inplace_nx(_dag: nx.DiGraph, pkg, target, components, 
-                            succ_override=None):
+                            succ_override=None, pred_override=None):
     _dag.remove_node(target)
     # build a node -> component reverse index
     component_names = get_concated_names(components)
@@ -47,27 +47,37 @@ def defuse_nodes_inplace_nx(_dag: nx.DiGraph, pkg, target, components,
     for comp_idx, component in enumerate(components):
         component_predecessors = set()
         component_succsessors = set()
+        overridden_pred = False
+        overridden_succ = False
         for node in component:
-            for pred in pkg.nx_graph_reference.predecessors(node):
-                if pred in node2components:
-                    pred = component_names[node2components[pred]]
-                elif pred in pkg.nodename2fusednode:
-                    pred = pkg.nodename2fusednode[pred]
-                if pred != component_names[comp_idx]:
-                    component_predecessors.add(pred)
+            if pred_override is not None:
+                preds = pred_override(node)
+                if preds:
+                    overridden_pred = True
+                    for pred in preds:
+                        component_predecessors.add(pred)
+            if not overridden_pred:
+                for pred in pkg.nx_graph_reference.predecessors(node):
+                    if pred in node2components:
+                        pred = component_names[node2components[pred]]
+                    elif pred in pkg.nodename2fusednode:
+                        pred = pkg.nodename2fusednode[pred]
+                    if pred != component_names[comp_idx]:
+                        component_predecessors.add(pred)
             if succ_override is not None:
                 succs = succ_override(node)
                 if succs:
+                    overridden_succ = True
                     for succ in succs:
                         component_succsessors.add(succ)
-                    continue
-            for succ in pkg.nx_graph_reference.successors(node):
-                if succ in node2components:
-                    succ = component_names[node2components[succ]]
-                elif succ in pkg.nodename2fusednode:
-                    succ = pkg.nodename2fusednode[succ]
-                if succ != component_names[comp_idx]:
-                    component_succsessors.add(succ)
+            if not overridden_succ:
+                for succ in pkg.nx_graph_reference.successors(node):
+                    if succ in node2components:
+                        succ = component_names[node2components[succ]]
+                    elif succ in pkg.nodename2fusednode:
+                        succ = pkg.nodename2fusednode[succ]
+                    if succ != component_names[comp_idx]:
+                        component_succsessors.add(succ)
         for node in component_predecessors:
             _dag.add_edge(node, component_names[comp_idx])
         for node in component_succsessors:

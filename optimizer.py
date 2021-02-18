@@ -683,10 +683,19 @@ class _XLACostModel(_BaseCostModel):
                 else:
                     assert "+" not in _node
                     return self.opt.cst_md_mng.strategy2model["++"].get_current_comm_from_unfused_bw(_node)
+            def pred_override_func(_node):
+                if "UPDATE" not in _node:
+                    return None
+                else:
+                    assert "+" not in _node
+                    return self.opt.cst_md_mng.strategy2model["++"].get_current_comm_from_unfused_update(_node)
         else:
             succ_overide_func = None
+            pred_override_func = None
 
-        defuse_nodes_inplace_nx(_dag, _pkg, target, components, succ_override=succ_overide_func)
+        defuse_nodes_inplace_nx(_dag, _pkg, target, components, 
+                                succ_override=succ_overide_func,
+                                pred_override=pred_override_func)
         for idx, new_node_name in enumerate(component_names):
             self._parse_node_attr(_dag, new_node_name, avgs[idx])
         return True, component_names
