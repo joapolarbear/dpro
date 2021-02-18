@@ -384,7 +384,8 @@ class PKGraph(object):
         for i in range(len(L)):
             self.ord[L[i]] = all_orders[i]
 
-def postorder_contract_nx(_dag: nx.DiGraph, _pkg: PKGraph, source_node, visitied_nodes, forbidden_list = None, size_limit = None):
+def postorder_contract_nx(_dag: nx.DiGraph, _pkg: PKGraph, source_node, visitied_nodes, 
+                            forbidden_list = None, size_limit = None):
     # print("postorder_contract_nx for {}".format(source_node))
     graph_changed_outer = False
     while True:

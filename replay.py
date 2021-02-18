@@ -79,7 +79,6 @@ class Device:
         '''
         ### for debug
         debug_utils.DebugRecorder().debug_event_start()
-
         if not self.infi_para:
             start_t = self.real_start_t(_last_end_time)
         else:

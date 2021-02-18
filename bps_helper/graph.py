@@ -6,6 +6,7 @@ from intervaltree import IntervalTree
 import hashlib
 import json
 import pickle
+
 from logger_utils import *
 from trace_utils import *
 import arg_utils
@@ -308,9 +309,17 @@ class bytepsGraph:
                     end_ts.append(ev[1])
                 else:
                     raise RuntimeError("Cannot parse event ph: ".format(ev[0]))
+            start_ts = sorted(start_ts)
+            end_ts = sorted(end_ts)
+            if key[-1] == "PUSH_REQ" or key[-1] == "PUSH_RES":
+                start_ts = start_ts[self.PROFILE_ITER_START + 1:self.PROFILE_ITER_START+ 1 + self.PROFILE_ITER_DURATION]
+                end_ts = end_ts[self.PROFILE_ITER_START + 1:self.PROFILE_ITER_START+ 1 + self.PROFILE_ITER_DURATION]
+            else:
+                start_ts = start_ts[self.PROFILE_ITER_START:self.PROFILE_ITER_START+self.PROFILE_ITER_DURATION]
+                end_ts = end_ts[self.PROFILE_ITER_START:self.PROFILE_ITER_START+self.PROFILE_ITER_DURATION]
+
             assert len(start_ts) == len(end_ts)
-            # if len(start_ts) != len(end_ts):
-            #     print("!!!!!!!!! len(start_ts) != len(end_ts) !!!!!!!!!!!")
+            # if key[0] == "server_2" and key[1] == "worker_0" and key[2] == "DistributedGradientDescentOptimizer_Push_Pull/BytePSPushPull_gradients_resnet50_conv2_block2_1_conv_BiasAdd_grad_tuple_control_dependency_1_0" and key[-1] == "PULL_RES":
             #     import code
             #     code.interact(local=locals())
             durations = list(zip(start_ts, end_ts))
@@ -375,13 +384,14 @@ class bytepsGraph:
                 # if len(durations) != mode_len + 1:
                 if abs(len(durations) - mode_len) > 2:
                     self._ignored_tensors.add(key)
-                chopped_durations = durations[self.PROFILE_ITER_START + 1:self.PROFILE_ITER_START+ 1 + self.PROFILE_ITER_DURATION]
+                # chopped_durations = durations[self.PROFILE_ITER_START + 1:self.PROFILE_ITER_START+ 1 + self.PROFILE_ITER_DURATION]
             else:
                 # if len(durations) != mode_len:
                 if abs(len(durations) - mode_len) > 1:
                     self._ignored_tensors.add(key)
-                chopped_durations = durations[self.PROFILE_ITER_START:self.PROFILE_ITER_START+self.PROFILE_ITER_DURATION]
-            self.comm_durations[key] = chopped_durations
+                # chopped_durations = durations[self.PROFILE_ITER_START:self.PROFILE_ITER_START+self.PROFILE_ITER_DURATION]
+            # self.comm_durations[key] = chopped_durations
+            self.comm_durations[key] = durations
 
         for key, durations in self.comp_durations.items():
             if len(durations) != mode_len:
