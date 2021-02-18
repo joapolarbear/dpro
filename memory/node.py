@@ -2,7 +2,7 @@ import numpy as np
 
 
 class Node:
-    def __init__(self, name, op, input, dtype, shape):
+    def __init__(self, name, op, input, dtype, shape, time):
         self._name = name
         self._op = op
         self._input = input
@@ -10,14 +10,16 @@ class Node:
         self._shape = shape
         self._requires_grad = True
         self._inplace = False
+        self._time = time
 
     @classmethod
-    def from_metadata(cls, name, metadata):
+    def from_metadata(cls, name, metadata, time):
         """create node from metadata
 
         Args:
             name (str): node name
             metadata (dict): from metadata.json
+            time (float): execution time based on trace
 
         Returns:
             [Node]: created node
@@ -65,7 +67,8 @@ class Node:
                    _get_op(node_def),
                    _get_input(node_def),
                    _get_dtype(node_def),
-                   _get_shape(node_def))
+                   _get_shape(node_def),
+                   time)
 
     def is_valid(self):
         """check the node's validity 
@@ -121,8 +124,6 @@ class Node:
         Returns:
             [float]: size in Byte
         """
-        if self._inplace:
-            return 0
         return np.prod(self.shape) * self.dtype.itemsize
 
     def get_temp_size(self):
@@ -205,6 +206,10 @@ class Node:
     @inplace.setter
     def inplace(self, val):
         self._inplace = val
+
+    @property
+    def time(self):
+        return self._time
 
     def __repr__(self):
         return "Name: %s, op: %s, input: [%s], dtype: %s, shape: %s" % (

@@ -64,7 +64,7 @@ parser.add_argument("--relabel", action="store_true", help="If this arg is set, 
 parser.add_argument("--ckpt", action="store_true", help="If this arg is set, start from cached data")
 parser.add_argument("--workspace", type=str, default="/root/opt_workspace", help="Workerspace of the optimizer")
 parser.add_argument("--xla_candidate_path", type=str, default=None, help="XLA candidate path")
-parser.add_argument("--memory_budget", type=float, default=4, help="GPU Memory budget")
+parser.add_argument("--memory_budget", type=float, default=16, help="GPU Memory budget")
 parser.add_argument("--step_size", type=int, default=1, help="Step size used in MCMC optimizer.")
 
 args = parser.parse_args()
