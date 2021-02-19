@@ -1002,6 +1002,14 @@ class Optimizer:
         if not valid_search_space_idx:
             raise OptNoValidStrategyError
 
+        st_idx = self.select_one_stategy(valid_weights, valid_search_space_idx)
+        st = search_space[st_idx]
+        search_space.pop(st_idx)
+        if weights:
+            weights.pop(st_idx)
+        return st
+    
+    def select_one_stategy(self, valid_weights, valid_search_space_idx):
         if not valid_weights:
             st_idx = random.choice(valid_search_space_idx)
         else:
@@ -1013,11 +1021,42 @@ class Optimizer:
             except:
                 ### Adapt to python <3.6
                 st_idx = self.weighted_choice(valid_search_space_idx, valid_weights)
-        st = search_space[st_idx]
-        search_space.pop(st_idx)
-        if weights:
-            weights.pop(st_idx)
-        return st
+        return st_idx
+
+    def pick_strategies(self, search_space, weights=None, invalid_strategies=None):
+        valid_search_space_idx = []
+        valid_weights = []
+        grouped_sts = {}
+        for st_idx, st in enumerate(search_space):
+            if invalid_strategies and st not in invalid_strategies:
+                valid_search_space_idx.append(st_idx)
+                if weights is not None:
+                    valid_weights.append(weights[st_idx])
+                ### TODO (HHP): only consider operator fusion and tensor fusion here
+                token = "+" if st[0] == "+" or st[0] == "-" else "++"
+                if token not in grouped_sts:
+                    grouped_sts[token] = {"space": [], "weights": []}
+                grouped_sts[token]["space"].append(st_idx)
+                grouped_sts[token]["weights"].append(weights[st_idx])
+        if not valid_search_space_idx:
+            raise OptNoValidStrategyError
+        
+        st_list = [None for cm in self.cst_md_mng.cost_model_list]
+        while True:
+            st_idx = self.select_one_stategy(valid_weights, valid_search_space_idx)
+            is_exist_none = False
+            for cm_idx, cm in enumerate(self.cst_md_mng.cost_model_list):
+                st = search_space[st_idx]
+                if st_list[cm_idx] is None:
+                    if st[0] in cm.token:
+                        st_list[cm_idx] = st
+                        search_space.pop(st_idx)
+                        if weights:
+                            weights.pop(st_idx)
+                    is_exist_none = True
+            if not is_exist_none:
+                break
+        return [st for st in st_list if st is not None]
 
     def search(self):
         raise NotImplementedError()
@@ -1155,20 +1194,33 @@ class MCMCOptimizer(Optimizer):
                         search_space, weights = self.init_search_space(candidates, G_star, PKG_star)
                         invalid_strategies = set()
                         continue
-                    try:
-                        nodes_introduced, nodes_removed = self.apply_strategies(G_star, PKG_star, strategy)
-                    except OptApplyStrategyError:
-                        # strategy invalid
-                        # traceback.print_exc()
-                        SingleLogger().warn("Strategy invalid (will cause a cycle in the DAG).")
-                        invalid_strategies.add(strategy)
-                        continue
-                    except OptQueryCostModelError:
-                        SingleLogger().warn("Strategy invalid (failed to query cost model).")
-                        invalid_strategies.add(strategy)
+                    ### Apply strategies
+                    is_succ_apply = True
+                    nodes_introduced = []
+                    nodes_removed = []
+                    ### TODO (HHP): futher modify to allow apply mutliple stragtegies at one step
+                    strategies = [strategy]
+                    for st in strategies:
+                        try:
+                            _nodes_introduced, _nodes_removed = self.apply_strategies(G_star, PKG_star, st)
+                            nodes_introduced += _nodes_introduced
+                            nodes_removed += _nodes_removed
+                        except OptApplyStrategyError:
+                            # strategy invalid
+                            # traceback.print_exc()
+                            SingleLogger().warn("Strategy invalid (will cause a cycle in the DAG).")
+                            invalid_strategies.add(st)
+                            is_succ_apply = False
+                            break
+                        except OptQueryCostModelError:
+                            SingleLogger().warn("Strategy invalid (failed to query cost model).")
+                            invalid_strategies.add(st)
+                            is_succ_apply = False
+                            break
+                    if not is_succ_apply:
                         continue
                     successful_strategies += 1
-                    strategy_history_in_step.append(strategy)
+                    strategy_history_in_step += strategies
                     strategy_introduced_nodes.update(nodes_introduced)
                     strategy_removed_nodes.update(nodes_removed)
 

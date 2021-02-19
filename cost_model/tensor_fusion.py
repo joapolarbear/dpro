@@ -13,7 +13,7 @@ from trace_utils import *
 from cost_model_xla.pk_graph import PKGraph
 
 args_ = arg_utils.SingleArg().args
-ENABLE_PARTITION = False
+ENABLE_PARTITION = True
 FUSION_RATIO = 1
 TRAIN_PERCENT = 0.9
 ### given a fused tensor, return N possible partition method
@@ -174,7 +174,8 @@ class _TensorFusionCM(_BaseCostModel):
                     target_id = last_id - 1
 
                 if target_id is None:
-                    SingleLogger().info("{} is the last tensor, can not be further fused.".format(to_fuse_u))
+                    SingleLogger().info("{} is the last tensor (contains tensor id 0)"
+                        "can not be further fused.".format(to_fuse_u))
                 else:
                     grp_name = self.cur_tensor2group[target_id]
                     to_fuse_v = self._wrap_gen_long_name(
@@ -624,7 +625,10 @@ class _TensorFusionCM(_BaseCostModel):
         self.cache_change = []
 
     def predict_comm_time(self, _size, _pid, _sub_op):
-        params = self.pid_to_cm[_pid][_sub_op]["param"]
+        if _sub_op == "RECV" and _sub_op not in self.pid_to_cm[_pid]:
+            params = self.pid_to_cm[_pid]["SEND"]["param"]
+        else:
+            params = self.pid_to_cm[_pid][_sub_op]["param"]
         if params is None:
             return 0
         return func_tensor_size_to_time(_size, *(params[0]))
@@ -707,7 +711,13 @@ class _TensorFusionCM(_BaseCostModel):
                 grp_info = self._parse_tensor_group_info(all_info[2])
                 # assert grp_info["partNum"] < len(no_suffix_time[n]), (n, grp_info, len(no_suffix_time[n]))
                 _size = grp_info["size"] / grp_info["partNum"]
-                _avg = sum(no_suffix_time[n]) / len(no_suffix_time[n])
+
+                avg_list = [_avg for _avg in no_suffix_time[n] if _avg > 0]
+                if len(avg_list) == 0:
+                    continue
+                _avg = sum(avg_list) / len(avg_list)
+                ### use median instead of average
+                # _avg = sorted(avg_list)[int(len(avg_list)/2)]
                 if _avg > 0:
                     self.pid_to_cm[all_info[0]][all_info[3]]["data"].append([_size, _avg])
             
@@ -723,19 +733,29 @@ class _TensorFusionCM(_BaseCostModel):
                     all_data = np.array(data_param_dict["data"]).T
                     n_dim, n_samples = all_data.shape
                     mask = np.zeros(n_samples, dtype=bool)
-                    train_idx = np.random.choice(n_samples, int(TRAIN_PERCENT * n_samples), replace=False)
-                    mask[train_idx] = True
-                    train_data = all_data[:, mask]
-                    test_data = all_data[:, ~mask]
-                    popt, pcov = curve_fit(func_tensor_size_to_time, train_data[0], train_data[1],
-                                        bounds=((0, -np.inf), (np.inf, np.inf)), p0=(1, 1), maxfev=100000)
-                    pred_ = func_tensor_size_to_time(test_data[0], *popt)
-                    mape = 100 * np.average(np.abs(pred_ - test_data[1]) / test_data[1])
-                    SingleLogger().info(" - Tensor Fusion CM for {} {}: {} % ({} training data, {} test data)".format(pid, sub_op,
-                                                                                                                mape, train_data.shape[1], test_data.shape[1]))
-                    data_param_dict["param"] = [popt, pcov]
-                    data_param_dict["data"] = None
 
+                    try_cnt = 0
+                    while True:
+                        train_idx = np.random.choice(n_samples, int(TRAIN_PERCENT * n_samples), replace=False)
+                        mask[train_idx] = True
+                        train_data = all_data[:, mask]
+                        test_data = all_data[:, ~mask]
+                        popt, pcov = curve_fit(func_tensor_size_to_time, train_data[0], train_data[1],
+                                            bounds=((0, -np.inf), (np.inf, np.inf)), p0=(1, 1), maxfev=100000)
+                        pred_ = func_tensor_size_to_time(test_data[0], *popt)
+                        mape = 100 * np.average(np.abs(pred_ - test_data[1]) / test_data[1])  
+                        if mape < 60:
+                            SingleLogger().info(" - Tensor Fusion CM for {} {}: {} % "
+                                "({} training data, {} test data)".format(pid, sub_op, mape, train_data.shape[1], test_data.shape[1]))
+                            data_param_dict["param"] = [popt, pcov]
+                            data_param_dict["data"] = None
+                            break
+                        elif try_cnt < n_samples:
+                            try_cnt += 1
+                        else:
+                            SingleLogger().warn(" - Fail to fit a linear Tensor Fusion CM "
+                                "for {} {} after {} times mape > 60, data: {}".format(pid, sub_op, try_cnt, str(all_data)))
+                            break
             ### applying strategies to make tensors in each group are continuous
             SingleLogger().info("Applying initialized strategies...")
             for st in tqdm(trajectory, total=len(trajectory)):

@@ -22,9 +22,23 @@ python3 analyze.py --option optimize --sub_option tensor_fusion
 ### Search both tensor fusion and operator fusion strategies
 Sample commands
 ```
-python3 analyze.py --option optimize --sub_option tensor_fusion,xla 
+python3 analyze.py --option optimize --sub_option tensor_fusion,xla \
     --platform TENSORFLOW --comm_backend NCCL --nccl_algo RING --pretty \
     --path /root/data/20210125_05_hvd_tf_resnet50_tcp/ \
     --workspace /root/data/20210125_05_hvd_tf_resnet50_tcp/ \
     --xla_candidate_path /root/byteprofile-analysis/data/xla_candidates_resnet.txt
 ```
+
+### Generate tensor fusion strategies according to operator fusion strategies
+Sample commands
+```
+python3 analyze.py --option optimize --sub_optionfrom_opfs2tsfs \
+    --platform TENSORFLOW --comm_backend NCCL --nccl_algo RING --pretty \
+    --path /root/data/20210125_05_hvd_tf_resnet50_tcp/,<cluster_mapping_path>
+```
+where `<cluster_mapping_path>` denotes the path to the cluster_mapping.txt (operator fusion search result).
+
+### Mixed Precision Training
+`TF_AUTO_MIXED_PRECISION_GRAPH_REWRITE_PRIORLIST_FILE`: a file containing ops to force quantize, seperated by \n
+`TF_AUTO_MIXED_PRECISION_GRAPH_REWRITE_PRIORLIST_ADD`: ops to force quantize, seperated by comma
+`TF_AUTO_MIXED_PRECISION_GRAPH_REWRITE_FORCE`: clear the CLEARLIST and BCACKLIST if set

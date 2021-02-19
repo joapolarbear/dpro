@@ -281,7 +281,52 @@ if __name__ == '__main__':
         if args.sub_option == "train_amp":
             train_amp_model()
             raise NotImplementedError
-
+        
+        if args.sub_option == "from_opfs2tsfs":
+            xla_clst_mapping_path = path_list[1]
+            with open(xla_clst_mapping_path, 'r') as fp:
+                lines = [tuple(line.split(" ")) for line in fp.read().split("\n") if len(line) > 0]
+            
+            mapping = {}
+            
+            for line in lines:
+                (op, clust_id) = line
+                if clust_id not in mapping:
+                    mapping[clust_id] = []
+                mapping[clust_id].append(op)
+            
+            dag_path = clct.pm.search(FileName.DAG)
+            local_dfg, update_nodes_in_dag = wrap_read_gml(dag_path, platform=args.platform)
+            tensor_grps = set()
+            for clust_id, op_list in mapping.items():
+                tensor_ids = set()
+                for op in op_list:
+                    if op[-2:] == "/x":
+                        continue
+                    op_name = tf_relabel_func(op, update_nodes_in_dag=update_nodes_in_dag)
+                    if "BW" not in op_name:
+                        continue
+                    try:
+                        to_process = list(local_dfg.successors(op_name))
+                    except nx.exception.NetworkXError:
+                        continue
+                    # print(op_name, list(to_process))
+                    while len(to_process) > 0:
+                        succ = to_process.pop(0)
+                        if "_Switch" in succ:
+                            to_process += list(local_dfg.successors(succ))
+                        if "Comm" in succ:
+                            tensor_ids.add(int(succ.split("Comm.")[1]))
+                grp_name = "+".join([str(_id) for _id in sorted(list(tensor_ids))])
+                if len(grp_name) > 0:
+                    # print(grp_name)
+                    # print(op_list)
+                    tensor_grps.add(grp_name)
+            
+            with open(path_list[1].split(".txt")[0] + "_tensor_grp.txt", 'w') as f:
+                json.dump({"mapping": list(tensor_grps)}, f)
+            exit(0)
+                    
         # if not args.simulate and len(path_list) < 2:
         #     raise RuntimeError("optimize requires positional path arguments: profile data path & cost model path.")
 

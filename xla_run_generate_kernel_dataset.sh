@@ -77,8 +77,8 @@ python3 xla_generate_kernel_dataset.py --trace_dir ${TRACE_DIR} \
 DATASET_DIR="/home/tiger/xla/kernel_dataset"
 OUTPUT_DIR="/home/tiger/xla/cost_model"
 
-cp /home/tiger/xla/kernel_dataset/cleaned_graph.json /home/tiger/xla/kernel_dataset/dataset/
-cp /home/tiger/xla/kernel_dataset/tensor_shapes.json /home/tiger/xla/kernel_dataset/dataset/
+# cp /home/tiger/xla/kernel_dataset/cleaned_graph.json /home/tiger/xla/kernel_dataset/dataset/
+# cp /home/tiger/xla/kernel_dataset/tensor_shapes.json /home/tiger/xla/kernel_dataset/dataset/
 
 cd /home/tiger/byteprofile-analysis
 python3 xla_train_module_cm.py --dataset_dir ${DATASET_DIR} --output_dir ${OUTPUT_DIR} --batch_size 256
