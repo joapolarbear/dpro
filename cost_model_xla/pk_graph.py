@@ -33,7 +33,8 @@ def get_concated_names(components):
         component_names.append(component_name)
     return component_names
 
-def defuse_nodes_inplace_nx(_dag: nx.DiGraph, pkg, target, components):
+def defuse_nodes_inplace_nx(_dag: nx.DiGraph, pkg, target, components, 
+                            succ_override=None, pred_override=None):
     _dag.remove_node(target)
     # build a node -> component reverse index
     component_names = get_concated_names(components)
@@ -46,21 +47,37 @@ def defuse_nodes_inplace_nx(_dag: nx.DiGraph, pkg, target, components):
     for comp_idx, component in enumerate(components):
         component_predecessors = set()
         component_succsessors = set()
+        overridden_pred = False
+        overridden_succ = False
         for node in component:
-            for pred in pkg.nx_graph_reference.predecessors(node):
-                if pred in node2components:
-                    pred = component_names[node2components[pred]]
-                elif pred in pkg.nodename2fusednode:
-                    pred = pkg.nodename2fusednode[pred]
-                if pred != component_names[comp_idx]:
-                    component_predecessors.add(pred)
-            for succ in pkg.nx_graph_reference.successors(node):
-                if succ in node2components:
-                    succ = component_names[node2components[succ]]
-                elif succ in pkg.nodename2fusednode:
-                    succ = pkg.nodename2fusednode[succ]
-                if succ != component_names[comp_idx]:
-                    component_succsessors.add(succ)
+            if pred_override is not None:
+                preds = pred_override(node)
+                if preds:
+                    overridden_pred = True
+                    for pred in preds:
+                        component_predecessors.add(pred)
+            if not overridden_pred:
+                for pred in pkg.nx_graph_reference.predecessors(node):
+                    if pred in node2components:
+                        pred = component_names[node2components[pred]]
+                    elif pred in pkg.nodename2fusednode:
+                        pred = pkg.nodename2fusednode[pred]
+                    if pred != component_names[comp_idx]:
+                        component_predecessors.add(pred)
+            if succ_override is not None:
+                succs = succ_override(node)
+                if succs:
+                    overridden_succ = True
+                    for succ in succs:
+                        component_succsessors.add(succ)
+            if not overridden_succ:
+                for succ in pkg.nx_graph_reference.successors(node):
+                    if succ in node2components:
+                        succ = component_names[node2components[succ]]
+                    elif succ in pkg.nodename2fusednode:
+                        succ = pkg.nodename2fusednode[succ]
+                    if succ != component_names[comp_idx]:
+                        component_succsessors.add(succ)
         for node in component_predecessors:
             _dag.add_edge(node, component_names[comp_idx])
         for node in component_succsessors:
@@ -126,6 +143,16 @@ def subgraph_partition_connected_nx_using_topo(subgraph, size=100):
     return list(split_plans)
 
 class PKGraph(object):
+    """
+    An auxiliary data structure for detecting cycles when modifying DAG.
+    The implementation follows the algorithm in the paper:
+        A Dynamic Topological Sort Algorithm for Directed Acyclic Graphs,
+        DAVID J. PEARCE and PAUL H. J. KELLY
+    PKGraph should be used along with the original graph, i.e. it does not 
+    directly apply modifications on the original DAG. All methods modify the
+    state of PKGraph only.
+    Works for networkx DiGraphs.
+    """
     def __init__(self, nx_graph=None, nx_graph_reference=None, _init_copy = False):
         if _init_copy:
             return
@@ -147,7 +174,7 @@ class PKGraph(object):
     def _get_node_order(self, u):
         idx = self.nodename2index[u]
         return self.ord[idx]
-    
+
     def add_edge(self, u, v, **kwargs):
         self.nx_graph.add_edge(u, v, **kwargs)
         if u not in self.nx_graph or v not in self.nx_graph:
@@ -367,7 +394,8 @@ class PKGraph(object):
         for i in range(len(L)):
             self.ord[L[i]] = all_orders[i]
 
-def postorder_contract_nx(_dag: nx.DiGraph, _pkg: PKGraph, source_node, visitied_nodes, forbidden_list = None, size_limit = None):
+def postorder_contract_nx(_dag: nx.DiGraph, _pkg: PKGraph, source_node, visitied_nodes, 
+                            forbidden_list = None, size_limit = None):
     # print("postorder_contract_nx for {}".format(source_node))
     graph_changed_outer = False
     while True:

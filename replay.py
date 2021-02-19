@@ -79,8 +79,6 @@ class Device:
         '''
         ### for debug
         debug_utils.DebugRecorder().debug_event_start()
-
-        # TODO(chenyu): what if self.infi_para?
         if not self.infi_para:
             start_t = self.real_start_t(_last_end_time)
         else:
@@ -219,7 +217,7 @@ class Device:
 
 class CommKernelDevice(Device):
     '''For horovod Communication Kernels, can be occupied by a tensor'''
-    def __init__(self, device_name, _replayer, comm_delay = 0, comm_backend = "NCCL", infi_para=False):
+    def __init__(self, device_name, _replayer, comm_backend = "NCCL", infi_para=False):
         '''period: cycle time in ms'''
         super().__init__(device_name, _replayer, infi_para=infi_para, comm_backend = comm_backend)
         self.lock = None
@@ -255,7 +253,7 @@ class CommKernelDevice(Device):
 
 class PeriodicDevice(Device):
     '''For horovod negotiation, simulate cycles in Horovod'''
-    def __init__(self, device_name, _replayer, period=5, comm_delay = 0, comm_backend = "NCCL", infi_para=False):
+    def __init__(self, device_name, _replayer, period=5, comm_backend = "NCCL", infi_para=False):
         '''period: cycle time in ms'''
         super().__init__(device_name, _replayer, infi_para=infi_para, comm_backend = comm_backend)
         self.period = period * 1000
@@ -271,60 +269,39 @@ class PeriodicDevice(Device):
 
 class PSCommDevice(Device):
     '''Handles BytePS communication'''
-    def __init__(self, device_name, _replayer, op_counter, comm_delay = 0, comm_backend = "NCCL", infi_para=False):
+    def __init__(self, device_name, _replayer, op_counter, comm_backend = "NCCL", infi_para=False):
         super().__init__(device_name, _replayer, infi_para=infi_para, comm_backend = comm_backend)
         self.op_counter = op_counter
-        self.comm_delay = comm_delay
         self.source = device_name.split("::")[0]
         self.target = device_name.split("::")[1].split(DEL)[0]
 
-    # def exct(self, name, _last_end_time, step_idx):
-    # 	if "PUSH_REQ" in name:
-    # 		_last_end_time = max(_last_end_time + self.bw_delay, self.device_time)
-    # 	super().exct(name, _last_end_time, step_idx)
-    
     def mark_as_exct(self, name, _start_t, _end_time):
         next_name = self.op_counter.get_next_op(name)
         self._update_device_time(name, _end_time)
         self.replayer.node_status.pop(name)
-        for _succ in self.replayer.dag.successors(name):
+
+        this_cat = parse_cat_from_name(name)
+        actual_successors = list(self.replayer.dag.successors(name))
+        if next_name is not None:
+            actual_successors.append(next_name)
+            # add an edge from this name to next_name in exct dag
+            self.replayer.exct_dag.add_edge(name, next_name, weight=(_end_time - _start_t / 1000.0))
+
+        for _succ in actual_successors:
+            next_cat = parse_cat_from_name(_succ)
             if _succ in self.replayer.node_status:
                 _status = self.replayer.node_status[_succ]
                 _status["in_degree"] -= 1
-                if _status["ready"] is None:
-                    if self.comm_delay and (self.source, self.target) in self.comm_delay:
-                        _status["ready"] = _end_time + self.comm_delay[(self.source, self.target)]
-                    else:
-                        _status["ready"] = _end_time
-                else:
-                    if self.comm_delay and (self.source, self.target) in self.comm_delay:
-                        _status["ready"] = max(_end_time + self.comm_delay[(self.source, self.target)], _status["ready"])
-                    else:
-                        _status["ready"] = max(_end_time, _status["ready"])
+                # add GAPs
+                gap = 0
+                if GAP_STR_INTERNODE in self.replayer.dag.nodes[name] and \
+                        this_cat == CatName.COMM.value and \
+                        next_cat == CatName.COMM.value:
+                    gap += self.replayer.dag.nodes[name][GAP_STR_INTERNODE]
+                _status["ready"] = (_end_time + gap) if _status["ready"] is None else max(_end_time + gap, _status["ready"])
+
                 if _status["in_degree"] == 0:
                     self.replayer.insert_next_node(_succ, _status["ready"])
-
-        if next_name is not None:
-            if next_name in self.replayer.node_status:
-                _status = self.replayer.node_status[next_name]
-                _status["in_degree"] -= 1
-                if _status["ready"] is None:
-                    if self.comm_delay and (self.source, self.target) in self.comm_delay:
-                        _status["ready"] = _end_time + self.comm_delay[(self.source, self.target)]
-                    else:
-                        _status["ready"] = _end_time
-                else:
-                    if self.comm_delay and (self.source, self.target) in self.comm_delay:
-                        _status["ready"] = max(_end_time + self.comm_delay[(self.source, self.target)], _status["ready"])
-                    else:
-                        _status["ready"] = max(_end_time, _status["ready"])
-
-                if _status["in_degree"] == 0:
-                    pid = parse_pid_from_name(next_name)
-                    self.replayer.insert_next_node(next_name, _status["ready"])
-            else:
-                SingleLogger().error("{} not in status!".format(next_name))
-                exit(0)
 
 class Replayer:
     def __init__(self, dag, _step_num, leaf_dirs, dump_path, comm_backend, byteps_graph, 
@@ -539,7 +516,9 @@ class Replayer:
         return d
 
     def create_ps_comm_device(self, device_name, infi_para=False):
-        d = PSCommDevice(device_name, self, self.op_counter, comm_backend = self.comm_backend, infi_para=infi_para)
+        d = PSCommDevice(device_name, self, self.op_counter, 
+                        comm_backend = self.comm_backend,
+                        infi_para=infi_para)
         return d
 
     def reset_replayer(self):

@@ -26,7 +26,7 @@ elif args_.comm_backend == "BYTEPS":
 
 
 GAP_THRESHOLD_COMP = 1000
-GAP_THRESHOLD_COMM = 50000
+GAP_THRESHOLD_COMM = 1000
 
 class RunningSpan:
     def __init__(self):
@@ -273,7 +273,7 @@ class Collector(object):
             if name not in dag_node_names_std or "Comm" in name:
                 ### Only collect nodes in the dag
                 ### TODO (huhanpeng): some trvial nodes may also be useful
-                if args_.trace_level == "trace":
+                if args_.trace_level == "debug":
                     trace["name"] = "%s.%d"%(trace["name"], index)
                     trace["tid"] = trace["cat"] = "debug"
                     if pid is not None:
@@ -392,6 +392,26 @@ class Collector(object):
                         self.run_span[wk_prefix].init_end(_trace["ts"])
             else:
                 raise NotImplementedError("Unsupported platform {}.".format(self.platform))
+        
+        if args_.update_clip_overlapping:
+            # trim the overlapping parts of update nodes
+            # assume the end time of each event is accurate
+            update_nodes = []
+            for ev in rst_traces:
+                if "UPDATE" in ev["name"]:
+                    update_nodes.append(ev)
+            end_times = [ev["ts"] + ev["dur"] for ev in update_nodes]
+
+            sorted_end_times, sorted_update_nodes = zip(*sorted(zip(end_times, update_nodes), key=lambda x: x[0]))
+            for idx, ev in enumerate(sorted_update_nodes):
+                if idx == 0:
+                    continue
+                start_time = ev["ts"]
+                if start_time < sorted_end_times[idx - 1]:
+                    # needs clipping
+                    ev["ts"] = sorted_end_times[idx - 1]
+                    ev["dur"] = sorted_end_times[idx] - ev["ts"]
+
         SingleLogger().debug("Comp traces length: {}.".format(len(rst_traces)))
         return rst_traces
 
@@ -940,7 +960,7 @@ class Collector(object):
                 else:
                     SingleLogger().info("Found BytePS server trace file in {}".format(byteps_server_trace_path))
                 # initialize BytePS graph helper
-                self.byteps_graph.init(byteps_comm_detail_path, byteps_server_trace_path)
+                self.byteps_graph.init(byteps_comm_detail_path, byteps_server_trace_path, van_type=args_.van_type)
 
         ### TODO (huhanpeng) dump it or not
         self.collect_para_dict()
@@ -1191,11 +1211,16 @@ class Collector(object):
             else:
                 ## Add BW -> Comm delays using byteps_graph
                 ## inter node delays are directly added in replayer
+                pid = parse_pid_from_name(node_)
+                node_rank = pid.split(".")[0].split("_")[-1]
                 if "BW" in node_:
-                    pid = parse_pid_from_name(node_)
-                    node_rank = pid.split(".")[0].split("_")[-1]
                     gap = self.byteps_graph.bw_delays["worker_"+node_rank]
                     self.trail_dag.nodes[node_][GAP_STR_OP2COMM] = gap
+                elif "PUSH_REQ" in node_ or "PULL_REQ" in node_ \
+                        or "PUSH_RES" in node_ or "PULL_RES" in node_:
+                    source, target, _, _= self.byteps_graph.parse_comm_event_name(parse_rawname_from_name(node_))
+                    gap = self.byteps_graph.comm_delays[(source, target)]
+                    self.trail_dag.nodes[node_][GAP_STR_INTERNODE] = gap
 
     def clip_recv_events(self):
         SingleLogger().info("Clip RECV events...")

@@ -72,6 +72,7 @@ class FileName(Enum):
 
 class CatName(Enum):
     OPERATOR="operator"
+    PS_SERVER_OPERATOR="ServerOp"
     COMM="Comm"
     IO="I/O"
     DEBUG="virtual"
@@ -83,6 +84,8 @@ class PlatformName(Enum):
 GAP_STR_OP2OP = "%sGAP%s"%(CatName.OPERATOR.value, CatName.OPERATOR.value)
 GAP_STR_COMM2COMM = "%sGAP%s"%(CatName.COMM.value, CatName.COMM.value)
 GAP_STR_OP2COMM = "%sGAP%s"%(CatName.OPERATOR.value, CatName.COMM.value)
+GAP_STR_COMM2SVOP = "%sGAP%s"%(CatName.COMM.value, CatName.PS_SERVER_OPERATOR.value)
+GAP_STR_SVOP2COMM = "%sGAP%s"%(CatName.PS_SERVER_OPERATOR.value, CatName.COMM.value)
 GAP_STR_INTERNODE = "INTERNODEGAP"
 
 # GAP_INTERDEVICE = "INTERDEVICE"
@@ -237,8 +240,10 @@ def parse_cat_from_name(name):
         return CatName.IO.value
     elif "Comm" in name or "PUSH" in name or "PULL" in name:
         return CatName.COMM.value
-    elif "FW" in name or "BW" in name or "COMP" in name or "UPDATE" in name or "OUTPUT" in name or "COPY_FIRST" in name or "SUM" in name or "COPY_MERGED" in name:
+    elif "FW" in name or "BW" in name or "COMP" in name or "UPDATE" in name or "OUTPUT" in name:
         return CatName.OPERATOR.value
+    elif "COPY_FIRST" in name or "SUM" in name or "COPY_MERGED" in name:
+        return CatName.PS_SERVER_OPERATOR.value
     elif name == "END":
         return CatName.DEBUG.value
     else:
@@ -246,7 +251,7 @@ def parse_cat_from_name(name):
 
 ### CATs that will be affected if we change the GPU/CPU rate
 COMP_CAT = ["operator.FW", "operator.BW", "operator.UPDATE",
-    "operator.OUTPUT", "operator.SERVERCOMP"]
+    "operator.OUTPUT", "ServerOp"]
 ### CATs that will be affected if we change the bandwidth
 ### TODO (huhanpeng): check whether it is correct for BytePS
 COMM_CAT = ["Comm.SEND", "Comm.RECV", "Comm.PUSH_REQ",
@@ -287,7 +292,7 @@ def parse_cat_fine_grained(name_):
     elif name_ == "END":
         ret_cat = "virtual"
     elif "COPY_FIRST" in name_ or "SUM" in name_ or "COPY_MERGED" in name_:
-        return "operator.SERVERCOMP"
+        return "ServerOp"
     else:
         raise ValueError("Can not decide the cat of %s" % name_)
 
@@ -458,7 +463,9 @@ class TraceManager:
                 #     print("Minus step to {} for {}, before: {}".format(
                 #         pid_info["step_cnt"], event, pid_info["cat_cursor"]))
             event["args"]["step"] = pid_info["step_cnt"]
-            if parse_cat_from_name(event["name"]) in [CatName.OPERATOR.value, CatName.IO.value]:
+            if parse_cat_from_name(event["name"]) in [CatName.OPERATOR.value,
+                                                        CatName.IO.value,
+                                                        CatName.PS_SERVER_OPERATOR.value]:
                 pid_info["cat_cursor"] = cat
                 if cat not in pid_info["cat_cnt"]:
                     pid_info["cat_cnt"][cat] = 0
@@ -520,8 +527,8 @@ class TraceManager:
                 continue
             pid_info = prefix_dict[prefix]
             ### Check and statistic the laste step
-            if pid_info["fw_end"] is None or pid_info["bw_end"] is None or pid_info["bw_start"] is None:
-                pass
+            if not pid_info["fw_end"] or not pid_info["bw_end"] or not pid_info["bw_start"]:
+                continue
             elif len(pid_info["iter_list"]) > 0:
                 ### TODO (hhp): ignore the last step now
                 pass
