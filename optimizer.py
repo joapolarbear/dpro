@@ -1,10 +1,8 @@
-from collections import deque
 import enum
 import networkx as nx
 import random
 import math
 import time
-from collections import deque
 from scipy.stats.mstats import gmean
 import numpy as np
 import code
@@ -117,7 +115,7 @@ class _XLACostModel(_BaseCostModel):
         self.cost_models = self._load_cm()
         self.forbidden_list = set()
         self.initial_forbidden_list = set()
-        self._init_forbidden_list()
+        # self._init_forbidden_list()
         self.token = ["+", "-"]
 
         ### Need to cache
@@ -139,8 +137,9 @@ class _XLACostModel(_BaseCostModel):
                 self.node_attr_cache = node_attr_cache
             SingleLogger().info("Reading init graph from cache.")
         else:
-            G = self.dag.copy() if G_prime is None else G_prime
+            G = self.dag.copy() if G_prime is None else G_prime.copy()
             PKG = PKGraph(G)
+            self._init_forbidden_list(G_prime=G)
             # # randomly contract edges if possible
             # k = int(len(G.edges()) * init_edges_to_contract)
             initial_partitions_formed = 0
@@ -197,6 +196,8 @@ class _XLACostModel(_BaseCostModel):
         ret_G = nx.DiGraph()
         edges_to_add = []
         for u, v in G.edges:
+            if u == v:
+                continue
             if (u.startswith("host0.rank0") and v.startswith("host0.rank0")) \
                 or (u.startswith("traces_0.rank0") and v.startswith("traces_0.rank0")):
                 # we also remove FW -> UPDATE egdes here since now we have 
@@ -226,7 +227,7 @@ class _XLACostModel(_BaseCostModel):
 
         SingleLogger().info("Start to init partition graph ... ")
         for node_name in tqdm(partition_G.nodes()):
-            if node_name in self.initial_forbidden_list:
+            if node_name in self.initial_forbidden_list or "Comm" in node_name:
                 continue
             if "+" in node_name:
                 # fused node, test if compilable
@@ -247,7 +248,7 @@ class _XLACostModel(_BaseCostModel):
                         initial_partitions_formed += 1
         return G, initial_partitions_formed
 
-    def _init_forbidden_list(self):
+    def _init_forbidden_list(self, G_prime=None):
         xla_candidates = parse_xla_candidate_ops(xla_candidate_path=args_.xla_candidate_path)
         # limit the range of nodes during search
         IGNORE_OP_TYPES = ["ShapeN", "_Arg", "_Send", "_Recv", "VarIsInitializedOp", "ReadVariableOp", "VarHandleOp",
@@ -263,11 +264,11 @@ class _XLACostModel(_BaseCostModel):
             if not should_ignore:
                 filtered_xla_candidates.add(op)
 
-        for node in self.dag.nodes:
+        dag = self.dag if G_prime is None else G_prime
+        for node in dag.nodes:
             # ignore BW nodes and communication nodes
             if XLA_INIT_NO_BW and "BW" in node:
                 self.initial_forbidden_list.add(node)
-                print(node)
 
             try:
                 orig_name, pid = self.opt._get_original_name_pid_from_index(node)
@@ -372,8 +373,7 @@ class _XLACostModel(_BaseCostModel):
         search_space = []
         weights = []
         prun_cnt = 0
-        # time_spanning_trees = []
-        # time_st = []
+
         for n, l in candidates:
             # node heat
             heat = self.opt._get_heat_from_history(n)
@@ -388,7 +388,6 @@ class _XLACostModel(_BaseCostModel):
                 ns = set(ns)
                 subgraph = self.dag.subgraph(ns)
 
-                # st = time.time()
                 # randomly split edges using spanning tree
                 valid_split_plans = subgraph_partition_connected_nx_using_topo(subgraph)
                 split_weights = []
@@ -398,7 +397,6 @@ class _XLACostModel(_BaseCostModel):
                 for split_index, splits in enumerate(valid_split_plans):
                     search_space.append(("-", n, splits))
                     weights.append(self.opt._combine_weight(l, heat) * split_weights[split_index])
-                    # weights.append(1)
             else:
                 ### Nodes that have never been fused
                 cat = parse_cat_fine_grained(n)
@@ -414,7 +412,7 @@ class _XLACostModel(_BaseCostModel):
             candidate_names = [c[0] for c in candidates]
 
             for succ_ in _dag.successors(n):
-                if succ_ not in candidate_names:
+                if succ_ not in candidate_names or "Comm" in succ_:
                     continue
                 # some filters
                 if not _pkg.can_contract_edge(n, succ_):
@@ -482,6 +480,12 @@ class _XLACostModel(_BaseCostModel):
             len(search_space), len(candidates), prun_cnt))
         # SingleLogger().info("Time spent for spanning tree: {}".format(sum(time_spanning_trees)/ len(time_spanning_trees)))
         # SingleLogger().info("Time spent for source/sink: {}".format(sum(time_st)/ len(time_st)))
+        # normalize weights
+        min_weight = min(weights)
+        max_weight = max(weights)
+        for idx in range(len(weights)):
+            weights[idx] -= min_weight
+            weights[idx] /= max_weight - min_weight
         return search_space, weights
 
     def _concat_name(self, u_, v_):
@@ -670,7 +674,28 @@ class _XLACostModel(_BaseCostModel):
             avg = self._get_node_avg(new_node_name)
             avgs.append(avg)
         _pkg.split_node(target, components)
-        defuse_nodes_inplace_nx(_dag, _pkg, target, components)
+
+        # override successors for BW nodes if searching along with tensor fusion
+        if "++" in self.opt.cst_md_mng.strategy2model:
+            def succ_overide_func(_node):
+                if "BW" not in _node:
+                    return None
+                else:
+                    assert "+" not in _node
+                    return self.opt.cst_md_mng.strategy2model["++"].get_current_comm_from_unfused_bw(_node)
+            def pred_override_func(_node):
+                if "UPDATE" not in _node:
+                    return None
+                else:
+                    assert "+" not in _node
+                    return self.opt.cst_md_mng.strategy2model["++"].get_current_comm_from_unfused_update(_node)
+        else:
+            succ_overide_func = None
+            pred_override_func = None
+
+        defuse_nodes_inplace_nx(_dag, _pkg, target, components, 
+                                succ_override=succ_overide_func,
+                                pred_override=pred_override_func)
         for idx, new_node_name in enumerate(component_names):
             self._parse_node_attr(_dag, new_node_name, avgs[idx])
         return True, component_names
@@ -787,8 +812,6 @@ class Optimizer:
         self.cost_model_error = []
 
         self.cst_md_mng = CostModelManager(self)
-
-        
 
     def relabel_dag_node(self, _dag) -> nx.DiGraph:
         def relabel_func(old_label):
@@ -955,17 +978,35 @@ class Optimizer:
             SingleLogger().info("Estimated memory usage does not exceed memory budget: {:.2f}GB < {:.2f}GB".format(
                 self.mem_usage, self.memory_budget))
 
+            cm_types = []
+            cm_start_end = []
+            cm_weight_dict = {}
             for _cost_model in self.cst_md_mng.cost_model_list:
+                if isinstance(_cost_model, _XLACostModel):
+                    model_type = "xla"
+                elif isinstance(_cost_model, _TensorFusionCM):
+                    model_type = "tensor_fusion"
+                else:
+                    raise NotImplementedError
+                cm_types.append(model_type)
                 ss_, wei_ = _cost_model.init_search_space(candidates, _dag, _pkg)
                 search_space += ss_
+                cm_start_end.append((len(weights), len(weights)+len(wei_)))
+                cm_weight_dict[model_type] = sum(wei_)
+                SingleLogger().info("Weight sum for {}: {}".format(model_type, sum(wei_)))
                 weights += wei_
-        # SingleLogger().info("Init search space len={} from {} candidates, prune {}".format(len(search_space), len(candidates), prun_cnt))
-        # SingleLogger().info("Time spent for spanning tree: {}".format(sum(time_spanning_trees)/ len(time_spanning_trees)))
-        # SingleLogger().info("Time spent for source/sink: {}".format(sum(time_st)/ len(time_st)))
+            # assign a specific portion to each strategy, according to step size
+            # TEMP: xla : tensor_fusion = 2:1
+            if len(cm_weight_dict) >= 2:
+                for idx, cm_type in enumerate(cm_types):
+                    if cm_type == "xla":
+                        scale_factor = cm_weight_dict["tensor_fusion"] / cm_weight_dict["xla"] * 2
+                        SingleLogger().info("Scale factor: {}".format(scale_factor))
+                        for i in range(*cm_start_end[idx]):
+                            weights[i] *= scale_factor
         return search_space, weights
 
     def apply_strategies(self, _dag, _pkg: PKGraph, strategy):
-        # print(strategy)
         if isinstance(strategy, list):
             nodes_introduced = set()
             nodes_removed = set()
@@ -1086,7 +1127,9 @@ class MCMCOptimizer(Optimizer):
         else:
             self.heat_window_size = 5
 
-    def search(self, graph_cache=os.path.join(ROOT_PATH, "graph_cache.pickle"), step_size=1):
+    def search(self, graph_cache=os.path.join(ROOT_PATH, "graph_cache.pickle")):
+        step_size = args_.step_size
+
         G = self.dag.copy()
         PKG = PKGraph(G)
 
@@ -1100,7 +1143,7 @@ class MCMCOptimizer(Optimizer):
             if _PKG is not None:
                 PKG = _PKG
             self.trajectory += _trajectory
-            
+
         ### load checkpoint
         if args_.ckpt and graph_cache is not None and os.path.isfile(graph_cache):
             ### TODO (hhp): need to guarantee the consistence of checkpoints of both cost models and DFG states
@@ -1173,9 +1216,9 @@ class MCMCOptimizer(Optimizer):
         raise
         '''
         
-        while len(search_space) > 0:
+        while True:
             invalid_strategies = set()
-            while True and len(search_space) > 0:
+            while len(search_space) > 0:
                 G_star = G.copy()
                 PKG_star = PKG.copy()
                 successful_strategies = 0
@@ -1236,7 +1279,14 @@ class MCMCOptimizer(Optimizer):
                         # if "+" in self.cst_md_mng.strategy2model:
                         #     self.cst_md_mng.strategy2model["+"]._dump_cluster_mapping(G, os.path.join(ROOT_PATH, "searched_graph/cluster_mapping_{}.txt".format(self.step)))
                     else:
-                        self.cost_star, self.exct_dag_star, self.mem_usage_star = self.evaluate(G_star)
+                        try:
+                            self.cost_star, self.exct_dag_star, self.mem_usage_star = self.evaluate(G_star)
+                        except:
+                            traceback.print_exc()
+                            print("~~~~~~~~~~~~~~FAILED TO RUN REPLAY~~~~~~~~~~~~~")
+                            import code
+                            code.interact(local=locals())
+                            exit(-1)
                     if successful_strategies < step_size:
                         candidates, _ = self.candidate_selection(
                             G_star, topk=None, critical_path=self.wrap_critical_path(self.exct_dag_star))
@@ -1327,9 +1377,9 @@ class MCMCOptimizer(Optimizer):
                         if "++" in self.cst_md_mng.strategy2model:
                             self.cst_md_mng.strategy2model["++"].dump_tensor_grp_mapping()
                         # DEBUG: log best graph for debugging
-                        # self.evaluate(G, 
-                        #     _filename=os.path.join(ROOT_PATH, "best.json".format(self.step)),
-                        #     _crit_filename=os.path.join(ROOT_PATH, "best_crit.json".format(self.step)))
+                        self.evaluate(G, 
+                            _filename=os.path.join(ROOT_PATH, "best.json".format(self.step)),
+                            _crit_filename=os.path.join(ROOT_PATH, "best_crit.json".format(self.step)))
                     ### Init new search space
                     candidates, _ = self.candidate_selection(
                         G, topk=None, critical_path=self.wrap_critical_path(self.exct_dag))
@@ -1340,6 +1390,12 @@ class MCMCOptimizer(Optimizer):
                     # weights = proposed_weights
                     break
             display_and_ckpt()
+            if len(search_space) == 0:
+                ### Init new search space
+                candidates, _ = self.candidate_selection(
+                    G, topk=None, critical_path=self.wrap_critical_path(self.exct_dag))
+                search_space, weights = self.init_search_space(
+                    candidates, G, PKG)
         display_and_ckpt()
 
     def accept_or_not(self, cost, new_cost):

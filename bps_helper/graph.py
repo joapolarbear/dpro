@@ -1,3 +1,4 @@
+from argparse import ArgumentError
 from enum import Enum
 import numpy as np
 import networkx as nx
@@ -5,22 +6,23 @@ from intervaltree import IntervalTree
 import hashlib
 import json
 import pickle
+
 from logger_utils import *
 from trace_utils import *
 import arg_utils
-from bps_helper.preprocess import preprocess_pcap, parse_server_logs
+from bps_helper.preprocess import parse_server_logs #,preprocess_pcap
 
 import cvxpy as cp
 
 args_ = arg_utils.SingleArg().args
 
-class COMM_OPS(object):
+class COMM_OPS():
     PUSH_REQ = "PUSH_REQ"
     PULL_REQ = "PULL_REQ"
     PUSH_RES = "PUSH_RES"
     PULL_RES = "PULL_RES"
 
-class COMP_OPS(object):
+class COMP_OPS():
     COPY_FIRST = "COPY_FIRST"
     SUM = "SUM"
     COPY_MERGED = "COPY_MERGED"
@@ -141,17 +143,16 @@ class bytepsGraph:
         self._ignored_tensors = set()
         self._inited = False
 
-    def init(self, comm_trace_path, server_trace_path):
-        try:
-            SingleLogger().info("Reading comm trace from {}".format(comm_trace_path))
-            with open(comm_trace_path, "r") as f:
-                comm_trace = json.load(f)
-            SingleLogger().info("Reading server trace from {}".format(server_trace_path))
-            with open(server_trace_path, "r") as f:
-                server_trace = json.load(f)
-        except:
-            SingleLogger().error("Cannot open trace files.")
-            return
+    def init(self, comm_trace_path, server_trace_path, van_type="ZMQ"):
+        if van_type not in ["ZMQ", "RDMA"]:
+            raise ArgumentError("Unknown van type: {}".format(van_type))
+        self.van_type = van_type
+        SingleLogger().info("Reading comm trace from {}".format(comm_trace_path))
+        with open(comm_trace_path, "r") as f:
+            comm_trace = json.load(f)
+        SingleLogger().info("Reading server trace from {}".format(server_trace_path))
+        with open(server_trace_path, "r") as f:
+            server_trace = json.load(f)
         self.comm_trace_ = comm_trace
         self.server_trace_ = server_trace
         if isinstance(comm_trace, dict):
@@ -159,20 +160,20 @@ class bytepsGraph:
         elif isinstance(comm_trace, list):
             self.comm_trace_content_ = comm_trace
         else:
-            SingleLogger().error("Cannot parse BytePS comm trace.")
-            return
+            raise RuntimeError("Cannot parse BytePS comm trace.")
         if isinstance(server_trace, dict):
             self.server_trace_content_ = server_trace["traceEvents"]
         elif isinstance(server_trace, list):
             self.server_trace_content_ = server_trace
         else:
-            # SingleLogger().error("Cannot parse BytePS comm trace.")
-            print("Cannot parse BytePS server trace.")
-            return
+            raise RuntimeError("Cannot parse BytePS server trace.")
         # parse tensor assignment information
         self._parse_trace()
         self._build_comm_graph()
-        self._align_traces_zmq()
+        if van_type == "ZMQ":
+            self._align_traces_zmq()
+        else:
+            self._align_traces_rdma()
         self._calc_comm_delays()
         self._dump_cache()
         self._inited = True
@@ -184,7 +185,8 @@ class bytepsGraph:
          self.comm_durations, self.comp_durations,
          self.servers_threads, self.partition_dict,
          self.comp_ops_tid, self.workers, self.graph,
-         self.master_host_id, self.time_drift, self.comm_delays, self.bw_delays) = state
+         self.master_host_id, self.time_drift, 
+         self.comm_delays, self.bw_delays) = state
         self._inited = True
     
     def _dump_cache(self, cache_path=None):
@@ -194,7 +196,8 @@ class bytepsGraph:
                  self.comm_durations, self.comp_durations,
                  self.servers_threads, self.partition_dict,
                  self.comp_ops_tid, self.workers, self.graph,
-                 self.master_host_id, self.time_drift, self.comm_delays, self.bw_delays)
+                 self.master_host_id, self.time_drift, 
+                 self.comm_delays, self.bw_delays)
         with open(cache_path, "wb") as f:
             pickle.dump(state, f)
 
@@ -296,29 +299,64 @@ class bytepsGraph:
                 self.comm_ops_dict[(source, target, tensor_name, op)].append((event["ph"], event["ts"]))
             
         for key, events in self.comm_ops_dict.items():
-            durations = []
-            last_start = -1
-            for index, ev in enumerate(events):
+            # durations = []
+            start_ts = []
+            end_ts = []
+            for ev in events:
                 if ev[0] == "B":
-                    last_start = ev[1]
+                    start_ts.append(ev[1])
+                elif ev[0] == "E":
+                    end_ts.append(ev[1])
                 else:
-                    if last_start != -1:
-                        durations.append((last_start, ev[1]))
-                        last_start = -1
+                    raise RuntimeError("Cannot parse event ph: ".format(ev[0]))
+            start_ts = sorted(start_ts)
+            end_ts = sorted(end_ts)
+            if key[-1] == "PUSH_REQ" or key[-1] == "PUSH_RES":
+                start_ts = start_ts[self.PROFILE_ITER_START + 1:self.PROFILE_ITER_START+ 1 + self.PROFILE_ITER_DURATION]
+                end_ts = end_ts[self.PROFILE_ITER_START + 1:self.PROFILE_ITER_START+ 1 + self.PROFILE_ITER_DURATION]
+            else:
+                start_ts = start_ts[self.PROFILE_ITER_START:self.PROFILE_ITER_START+self.PROFILE_ITER_DURATION]
+                end_ts = end_ts[self.PROFILE_ITER_START:self.PROFILE_ITER_START+self.PROFILE_ITER_DURATION]
+
+            assert len(start_ts) == len(end_ts)
+            # if key[0] == "server_2" and key[1] == "worker_0" and key[2] == "DistributedGradientDescentOptimizer_Push_Pull/BytePSPushPull_gradients_resnet50_conv2_block2_1_conv_BiasAdd_grad_tuple_control_dependency_1_0" and key[-1] == "PULL_RES":
+            #     import code
+            #     code.interact(local=locals())
+            durations = list(zip(start_ts, end_ts))
+            # last_start = -1
+            # for index, ev in enumerate(events):
+            #     if ev[0] == "B":
+            #         last_start = ev[1]
+            #     else:
+            #         if last_start != -1:
+            #             durations.append((last_start, ev[1]))
+            #             last_start = -1
             if key not in self.comm_durations:
                 self.comm_durations[key] = {}
             self.comm_durations[key] = durations
         
         for key, events in self.comp_ops_dict.items():
             durations = []
-            last_start = -1
-            for index, ev in enumerate(events):
+            start_ts = []
+            end_ts = []
+
+            for ev in events:
                 if ev[0] == "B":
-                    last_start = ev[1]
+                    start_ts.append(ev[1])
+                elif ev[0] == "E":
+                    end_ts.append(ev[1])
                 else:
-                    if last_start != -1:
-                        durations.append((last_start, ev[1]))
-                        last_start = -1
+                    raise RuntimeError("Cannot parse event ph: ".format(ev[0]))
+            assert len(start_ts) == len(end_ts)
+            durations = list(zip(start_ts, end_ts))
+            # last_start = -1
+            # for index, ev in enumerate(events):
+            #     if ev[0] == "B":
+            #         last_start = ev[1]
+            #     else:
+            #         if last_start != -1:
+            #             durations.append((last_start, ev[1]))
+            #             last_start = -1
             if key not in self.comp_durations:
                 self.comp_durations[key] = {}
             self.comp_durations[key] = durations
@@ -346,13 +384,14 @@ class bytepsGraph:
                 # if len(durations) != mode_len + 1:
                 if abs(len(durations) - mode_len) > 2:
                     self._ignored_tensors.add(key)
-                chopped_durations = durations[self.PROFILE_ITER_START + 1:self.PROFILE_ITER_START+ 1 + self.PROFILE_ITER_DURATION]
+                # chopped_durations = durations[self.PROFILE_ITER_START + 1:self.PROFILE_ITER_START+ 1 + self.PROFILE_ITER_DURATION]
             else:
                 # if len(durations) != mode_len:
                 if abs(len(durations) - mode_len) > 1:
                     self._ignored_tensors.add(key)
-                chopped_durations = durations[self.PROFILE_ITER_START:self.PROFILE_ITER_START+self.PROFILE_ITER_DURATION]
-            self.comm_durations[key] = chopped_durations
+                # chopped_durations = durations[self.PROFILE_ITER_START:self.PROFILE_ITER_START+self.PROFILE_ITER_DURATION]
+            # self.comm_durations[key] = chopped_durations
+            self.comm_durations[key] = durations
 
         for key, durations in self.comp_durations.items():
             if len(durations) != mode_len:
@@ -439,6 +478,49 @@ class bytepsGraph:
     def _get_node_from_dev_name(self, s):
         return int(s.split("_")[-1])
     
+    def _apply_shift_on_trace(self, master_node, trace_shifts, van_type="ZMQ"):
+        SingleLogger().info("# Aligning BPS traces")
+        SingleLogger().info("Aligning time based on node {}".format(master_node))
+        # for key, item in send_delays.items():
+        for key, item in trace_shifts.items():
+            SingleLogger().info("Shifting traces of node {} {} by {} us.".format(key, "forward" if item >= 0 else "backward", np.abs(item)))
+        
+        for key, durations in self.comm_durations.items():
+            source, target, tensor_name, op = key
+            if van_type == "ZMQ":
+                if self._get_node_from_dev_name(target) in trace_shifts:
+                    delay = trace_shifts[self._get_node_from_dev_name(target)]
+                    new_durations = []
+                    for st, ed in durations:
+                        new_durations.append((st+delay, ed+delay))
+                    self.comm_durations[key] = new_durations
+            else:
+                source_rank = self._get_node_from_dev_name(source)
+                target_rank = self._get_node_from_dev_name(target)
+                source_delay = 0
+                target_delay = 0
+                if source_rank in trace_shifts:
+                    source_delay = trace_shifts[source_rank]
+                if target_rank in trace_shifts:
+                    target_delay = trace_shifts[target_rank]
+                new_durations = []
+                for st, ed in durations:
+                    assert st+source_delay <= ed+target_delay
+                    new_durations.append((st+source_delay, ed+target_delay))
+                self.comm_durations[key] = new_durations
+
+        for key, durations in self.comp_durations.items():
+            server, tensor_name, op, tid = key
+            if self._get_node_from_dev_name(server) in trace_shifts:
+                delay = trace_shifts[self._get_node_from_dev_name(server)]
+                new_durations = []
+                for st, ed in durations:
+                    new_durations.append((st+delay, ed+delay))
+                self.comp_durations[key] = new_durations
+        
+        self.time_drift = trace_shifts
+        self.master_host_id = master_node
+    
     def _align_traces_zmq(self):
         # comm_key is in format (source, target, tensor_name, op)
         worker_ranks = set()
@@ -468,20 +550,6 @@ class bytepsGraph:
                     intervals[(source, target)][st:ed] = True
             durations_dict[source_rank][key] = durations
 
-        # for key, durations in self.comp_durations.items():
-        #     # comp_key is in format 
-        #     server, tensor_name, op, tid = key
-        #     unique_tensors.add(tensor_name)
-        #     if op != COMP_OPS.COPY_FIRST:
-        #         continue
-        #     if server not in push_req_ops:
-        #         push_req_ops[server] = {}
-        #     # if server not in intervals:
-        #     #     intervals[server] = IntervalTree()
-        #     # for st, ed in durations:
-        #     #     intervals[server][st:ed] = True
-        #     push_req_ops[server][tensor_name] = durations
-        
         send_delays = {}
         send_delay_keys = {}
 
@@ -489,24 +557,10 @@ class bytepsGraph:
             for r1 in worker_ranks:
                 if r0 != r1:
                     send_delays[(r0, r1)] = float('inf')
-
-        # self.master_host_id = master_node
-
-        # def _before_align_is_first_push(key, index):
-        #     source, target, tensor_name, op = key
-        #     my_rank = self._get_node_from_dev_name(source)
-        #     tg_rank = self._get_node_from_dev_name(target)
-        #     my_st, my_ed = durations_dict[my_rank][key][index]
-        #     for source_rank in source_ranks:
-        #         st, ed = durations_dict[source_rank][("worker_"+str(source_rank), "server_" + str(tg_rank), tensor_name, op)][index]
-        #         if st < my_st:
-        #             return False
-        #     return True
+                    send_delays[(r1, r0)] = float('inf')
 
         trace_shifts = {}
         for source_rank, key_dict in durations_dict.items():
-            # if source_rank == master_node:
-            #     continue
             for key, durations in key_dict.items():
                 source, target, tensor_name, op = key
                 if target.startswith("worker") and op == COMM_OPS.PUSH_RES:
@@ -520,67 +574,73 @@ class bytepsGraph:
                     if source_rank == target_node_id:
                         continue
                     for index in range(len(durations)):
-                        # find the corresponding copy_merged
-                        pres_st, _ = durations[index]
-                        _, preq_ed = durations_dict[target_node_id] \
+                        # find the corresponding push_req
+                        push_res_st, push_res_ed = durations[index]
+                        _, push_req_ed = durations_dict[target_node_id] \
                                                     [(target, source, tensor_name, COMM_OPS.PUSH_REQ)] \
                                                     [index]
-                        if not intervals[(source, target)].overlap(pres_st-500, pres_st-1):
-                            if pres_st - preq_ed < send_delays[(source_rank, target_node_id)]:
+                        # if push_response not queued on server->worker
+                        if not intervals[(source, target)].overlap(push_res_st-500, push_res_st-1):
+                            if push_res_st - push_req_ed < send_delays[(source_rank, target_node_id)]:
                                 send_delay_keys[(source_rank, target_node_id)] = (key, index)
-                                send_delays[(source_rank, target_node_id)] = pres_st - preq_ed 
+                                send_delays[(source_rank, target_node_id)] = push_res_st - push_req_ed
+                        # find the corresponding pull_req
+                        pull_req_st, pull_req_ed = durations_dict[target_node_id] \
+                                                    [(target, source, tensor_name, COMM_OPS.PULL_REQ)] \
+                                                    [index]
+                        # if pull_req not queued on worker->server
+                        if not intervals[(target, source)].overlap(pull_req_st - 500, pull_req_st-1):
+                            if pull_req_st - push_res_ed < send_delays[(target_node_id, source_rank)]:
+                                send_delay_keys[(target_node_id, source_rank)] = (key, index)
+                                send_delays[(target_node_id, source_rank)] = pull_req_st - push_res_ed
 
-                        # if not _before_align_is_first_push(key, index):
-                        #     tg_key = ("server_" + str(target_node_id), source, tensor_name, "PUSH_RES")
-                        #     tg_st, tg_ed = durations_dict[target_node_id][tg_key][index]
-                        #     if not intervals[tg_key].overlap(tg_st-500, tg_st):
-                        #         if tg_st - durations[index][1] < send_delays[(source_rank, target_node_id)]:
-                        #             send_delay_keys[(source_rank, target_node_id)] = (key, index, "RES")
-                        #             send_delays[(source_rank, target_node_id)] = tg_st - durations[index][1]
-                        # else:
-                        #     # need to consult first_copy
-                        #     fc_st, fc_ed = copy_first_ops["server_"+str(target_node_id)][tensor_name][index]
-                        #     if not intervals["server_"+str(target_node_id)].overlap(fc_st-500, fc_st):
-                        #         if fc_st - durations[index][1] < send_delays[(source_rank, target_node_id)]:
-                        #         # send_delays[(source_rank, target_node_id)] = min(send_delays[(source_rank, target_node_id)], fc_st - durations[index][1])
-                        #             send_delay_keys[(source_rank, target_node_id)] = (key, index, "COPY_FIRST")
-                        #             send_delays[(source_rank, target_node_id)] = fc_st - durations[index][1]
-
-        print(send_delays)
         master_node, trace_shifts = optimize_time_shift(send_delays)
 
-        SingleLogger().info("# Aligning BPS traces")
-        SingleLogger().info("Aligning time based on node {}".format(master_node))
-        # for key, item in send_delays.items():
-        for key, item in trace_shifts.items():
-            SingleLogger().info("Shifting traces of node {} {} by {} us.".format(key, "forward" if item >= 0 else "backward", np.abs(item)))
+        self._apply_shift_on_trace(master_node, trace_shifts, van_type="ZMQ")
+
+    def _align_traces_rdma(self):
+        # comm_key is in format (source, target, tensor_name, op)
+        worker_ranks = set()
+        server_ranks = set()
+        unique_tensors = set()
         
         for key, durations in self.comm_durations.items():
             source, target, tensor_name, op = key
-            if self._get_node_from_dev_name(target) in trace_shifts:
-                delay = trace_shifts[self._get_node_from_dev_name(target)]
-                new_durations = []
-                for st, ed in durations:
-                    new_durations.append((st+delay, ed+delay))
-                self.comm_durations[key] = new_durations
+            unique_tensors.add(tensor_name)
+            source_rank = self._get_node_from_dev_name(source)
+            if source.startswith("server"):
+                server_ranks.add(source_rank)
+            else:
+                worker_ranks.add(source_rank)
         
-        for key, durations in self.comp_durations.items():
-            server, tensor_name, op, tid = key
-            if self._get_node_from_dev_name(server) in trace_shifts:
-                delay = trace_shifts[self._get_node_from_dev_name(server)]
-                new_durations = []
-                for st, ed in durations:
-                    new_durations.append((st+delay, ed+delay))
-                self.comp_durations[key] = new_durations
-        
-        self.time_drift = trace_shifts
-        self.master_host_id = master_node
+        node_delays = {}
+
+        for r0 in server_ranks:
+            for r1 in worker_ranks:
+                if r0 != r1:
+                    node_delays[(r0, r1)] = float('inf')
+                    node_delays[(r1, r0)] = float('inf')
+
+        for key, durations in self.comm_durations.items():
+            source, target, tensor_name, op = key
+            source_rank  = self._get_node_from_dev_name(source)
+            target_rank = self._get_node_from_dev_name(target)
+            for (st, ed) in durations:
+                node_delays[(source_rank, target_rank)] = min(node_delays[(source_rank, target_rank)], ed - st)
+
+        master_node, trace_shifts = optimize_time_shift(node_delays)
+        self._apply_shift_on_trace(master_node, trace_shifts, van_type="RDMA")
 
     def _calc_comm_delays(self):
         intervals = {}
         network_delays = {}
+
         push_req_ops = {}
         push_res_ops = {}
+        pull_req_ops = {}
+
+        # copy_first_ops = {}
+        # sum_ops = {}
 
         source_ranks = set()
 
@@ -606,108 +666,124 @@ class bytepsGraph:
                 if (source, target) not in push_res_ops:
                     push_res_ops[(source, target)] = {}
                 push_res_ops[(source, target)][key] = durations
+            elif op == COMM_OPS.PULL_REQ:
+                if (source, target) not in pull_req_ops:
+                    pull_req_ops[(source, target)] = {}
+                pull_req_ops[(source, target)][key] = durations
+
 
         # for key, durations in self.comp_durations.items():
-        #     # comp_key is in format 
         #     server, tensor_name, op, tid = key
-        #     if server not in intervals:
-        #         intervals[server] = IntervalTree()
+        #     if server+str(tid) not in intervals:
+        #         intervals[server+str(tid)] = IntervalTree()
         #     unique_tensors.add(tensor_name)
-        #     if op != COMP_OPS.COPY_FIRST:
+        #     if op != COMP_OPS.COPY_FIRST and op != COMP_OPS.SUM:
         #         continue
         #     for st, ed in durations:
-        #         intervals[server][st:ed] = (tensor_name, op)
-        #     if server not in copy_first_ops:
-        #         copy_first_ops[server] = {}
-        #     copy_first_ops[server][tensor_name] = durations
+        #         intervals[server+str(tid)][st:ed] = (tensor_name, op)
+        #     if op == COMP_OPS.COPY_FIRST:
+        #         if server not in copy_first_ops:
+        #             copy_first_ops[server] = {}
+        #         copy_first_ops[server][tensor_name] = (durations, tid)
+        #     elif op == COMP_OPS.SUM:
+        #         if server not in sum_ops:
+        #             sum_ops[server] = {}
+        #         sum_ops[server][tensor_name] = (durations, tid)
 
-        # ops_name = ["push_res_ops", "push_res_ops", "pull_req_ops", "copy_first_ops"]
-        # for index, ops in enumerate([push_res_ops, push_res_ops, pull_req_ops, copy_first_ops]):
-        #     print("\n{}:\n".format(ops_name[index]))
-        #     for k, v in ops.items():
-        #         for kk, vv in v.items():
-        #             if len(vv) != 30:
-        #                 print(k, kk, len(vv))
-        # exit(0)
-
-        # def _is_first_push(key, index):
-        #     source, target, tensor_name, _ = key
-        #     min_ts = []
-        #     my_end = push_req_ops[(source, target)][key][index][1]
-        #     for (s, t) in push_req_ops.keys():
-        #         for key, durations in push_req_ops[(s, t)].items():
-        #             try:
-        #                 if durations[index][1] < my_end:
-        #                     return False
-        #             except:
-        #                 return False
-        #     return True
+        def _is_first_push(key, index):
+            source, target, tensor_name, _ = key
+            min_ts = []
+            my_end = push_req_ops[(source, target)][key][index][1]
+            for (s, t) in push_req_ops.keys():
+                for key, durations in push_req_ops[(s, t)].items():
+                    try:
+                        if durations[index][1] < my_end:
+                            return False
+                    except:
+                        return False
+            return True
 
         for (source, target) in push_req_ops.keys():
-            # for each push req, get delay for its push res or copy first
+            # source: worker, target: server
+            # for each push req, get delay for its corresponding copy first or sum
             for key, durations in push_req_ops[(source, target)].items():
                 _, _, tensor_name, _ = key
                 if key in self._ignored_tensors:
                     continue
-                # copy_first_op_durations = copy_first_ops[target][tensor_name]
+                # copy_first_op_durations, tid_cp = copy_first_ops[target][tensor_name]
+                # sum_op_durations, tid_sum = sum_ops[target][tensor_name]
                 push_res_op_durations = push_res_ops[(target, source)][(target, source, tensor_name, COMM_OPS.PUSH_RES)]
                 for index, (st, ed) in enumerate(durations):
                     # if _is_first_push(key, index):
                     #     # get copy_first
-                    #     cp_st, cp_ed = copy_first_op_durations[index]
-                    #     # if not queued
-                    #     if not intervals[target].overlap(st - 500, st + 500) and not intervals[target].overlap(cp_st - 500, cp_st - 5):
+                    #     cp_st, sv_ed = copy_first_op_durations[index]
+                    #     # if not queued in server process thread
+                    #     if not intervals[target+str(tid_cp)].overlap(cp_st - 500, cp_st - 5):
                     #         latency = cp_st - ed
-                    #         # if latency < 0:
-                    #         #     print(source, target, key)
-                    #         #     input()
                     #         if (source, target) not in network_delays:
                     #             network_delays[(source, target)] = []
                     #         network_delays[(source, target)].append(latency)
                     # else:
-                    # get push_response
-                    rs_st, rs_ed = push_res_op_durations[index]
-                    # if not queued
-                    if not intervals[(target, source)].overlap(rs_st-500, rs_st - 5):
-                        latency = rs_st - ed
+                    #     # get sum
+                    #     sm_st, sv_ed = sum_op_durations[index]
+                    #     # if not queued in server process thread
+                    #     if not intervals[target+str(tid_sum)].overlap(sm_st-500, sm_st - 5):
+                    #         latency = sm_st - ed
+                    #         if (source, target) not in network_delays:
+                    #             network_delays[(source, target)] = []
+                    #         network_delays[(source, target)].append(latency)
 
+                    pres_st, pres_ed = push_res_op_durations[index]
+                    # if not queued in server->worker communication queue
+                    if not intervals[(target, source)].overlap(pres_st - 500, pres_st - 5):
+                        latency = pres_st - ed
+                        # add to worker -> server network delay
                         if (source, target) not in network_delays:
                             network_delays[(source, target)] = []
                         network_delays[(source, target)].append(latency)
 
-        # for (source, target) in push_res_ops.keys():
-        #     for key, durations in push_res_ops[(source, target)].items():
-        #         _, _, tensor_name, _ = key
-        #         if key in self._ignored_tensors:
-        #             continue
-        #         pull_req_op_durations = pull_req_ops[(target, source)][(target, source, tensor_name, COMM_OPS.PULL_REQ)]
-        #         for index, (st, ed) in enumerate(durations):
-        #             # get pull request
-        #             rq_st, rq_ed = pull_req_op_durations[index]
-        #             # if not queued
-        #             if not intervals[target].overlap(st - 500, st + 500) and not intervals[target].overlap(rq_st - 500, rq_st):
-        #                 latency = rq_st - ed
-        #                 if (source, target) not in network_delays:
-        #                     network_delays[(source, target)] = []
-        #                 network_delays[(source, target)].append(latency)
-        
+        for (source, target) in push_res_ops.keys():
+            # source: server, target: worker
+            for key, durations in push_res_ops[(source, target)].items():
+                _, _, tensor_name, _ = key
+                if key in self._ignored_tensors:
+                    continue
+                pull_req_op_durations = pull_req_ops[(target, source)][(target, source, tensor_name, COMM_OPS.PULL_REQ)]
+                for index, (st, ed) in enumerate(durations):
+                    # get pull request
+                    rq_st, rq_ed = pull_req_op_durations[index]
+                    # if not queued in worker -> server communication queue
+                    if not intervals[(target, source)].overlap(rq_st - 500, rq_st - 5):
+                        latency = rq_st - ed
+                        # add to server -> worker network delay
+                        if (source, target) not in network_delays:
+                            network_delays[(source, target)] = []
+                        network_delays[(source, target)].append(latency)
+
         for key, items in network_delays.items():
-            avg_delay = np.average(items)
-            network_delays[key] = avg_delay
-            SingleLogger().info("Comm delay for {} is {} us.".format(key, avg_delay))
+            if items:
+                avg_delay = np.average(items)
+                network_delays[key] = avg_delay
+                SingleLogger().info("Comm delay for {} is {} us.".format(key, avg_delay))
+            else:
+                network_delays[key] = 0
+                SingleLogger().info("Cannot determine comm delay for {}.".format(key))
 
         self.comm_delays = network_delays
 
     def gen_compatible_trace(self, dump_path=None):
         self._check_inited()
         trace = []
+        comm_pids = set()
         for key, durations in self.comm_durations.items():
             for index, (st, ed) in enumerate(durations):
                 json_event = {}
                 json_event["name"] = self.gen_comm_event_name(key)
                 json_event["ph"] = "X"
                 json_event["ts"] = st
-                json_event["pid"] = self.gen_comm_unique_pid(key)
+                comm_uid = self.gen_comm_unique_pid(key)
+                comm_pids.add(comm_uid)
+                json_event["pid"] = comm_uid
                 json_event["tid"] = 0
                 json_event["dur"] = ed - st
                 json_event["cat"] = "Comm"
@@ -726,7 +802,7 @@ class bytepsGraph:
                         json_event["pid"] = self.gen_comp_unique_pid(key)
                         json_event["tid"] = 0
                         json_event["dur"] = ed - st
-                        json_event["cat"] = "operator"
+                        json_event["cat"] = CatName.PS_SERVER_OPERATOR.value
                         json_event["args"] = {}
                         trace.append(json_event)
                 else:
@@ -737,9 +813,28 @@ class bytepsGraph:
                     json_event["pid"] = self.gen_comp_unique_pid(key)
                     json_event["tid"] = 0
                     json_event["dur"] = ed - st
-                    json_event["cat"] = "operator"
+                    json_event["cat"] = CatName.PS_SERVER_OPERATOR.value
                     json_event["args"] = {}
                     trace.append(json_event)
+        
+        # clip comm events for RDMA
+        if self.van_type == "RDMA":
+            pid2events = {}
+            for ev in trace:
+                if ev["pid"] in comm_pids:
+                    if ev["pid"] not in pid2events:
+                        pid2events[ev["pid"]] = []
+                    pid2events[ev["pid"]].append(ev)
+            for pid, events in pid2events.items():
+                sorted_events = sorted(events, key=lambda x: x["ts"]+x["dur"])
+                for idx, ev in enumerate(sorted_events):
+                    if idx == 0:
+                        continue
+                    ev_end_time = ev["ts"] + ev["dur"]
+                    prev_ev = sorted_events[idx-1]
+                    if ev["ts"] < prev_ev["ts"] + prev_ev["dur"]:
+                        ev["ts"] = prev_ev["ts"] + prev_ev["dur"]
+                        ev["dur"] = ev_end_time - ev["ts"]
 
         if dump_path is not None:
             try:

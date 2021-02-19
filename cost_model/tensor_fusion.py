@@ -135,7 +135,35 @@ class _TensorFusionCM(_BaseCostModel):
             rst[2] += nodes_to_rm
         self.cache_change.append(num_grp)
         return rst
-        
+
+    def get_current_comm_from_unfused_bw(self, _node):
+        assert "+" not in _node
+        assert "BW" in _node
+        local_dag = self.opt.clct.dag
+        pid, raw_name, cat, suffix = parse_allinfo_from_name(_node)
+        unfused_comm_nodes = [n for n in local_dag.successors(raw_name) 
+                                if parse_cat_from_name(n) == CatName.COMM.value]
+        current_comm_nodes = set()
+        for comm_node in unfused_comm_nodes:
+            tensor_id = int(parse_layer_name(comm_node))
+            group_name = self.cur_tensor2group[tensor_id]
+            current_comm_nodes.add(self._wrap_gen_long_name(pid, CatName.COMM.value, group_name, "Sync", suffix))
+        return current_comm_nodes
+    
+    def get_current_comm_from_unfused_update(self, _node):
+        assert "+" not in _node
+        assert "UPDATE" in _node
+        local_dag = self.opt.clct.dag
+        pid, raw_name, cat, suffix = parse_allinfo_from_name(_node)
+        unfused_comm_nodes = [n for n in local_dag.predecessors(raw_name) 
+                                if parse_cat_from_name(n) == CatName.COMM.value]
+        current_comm_nodes = set()
+        for comm_node in unfused_comm_nodes:
+            tensor_id = int(parse_layer_name(comm_node))
+            group_name = self.cur_tensor2group[tensor_id]
+            current_comm_nodes.add(self._wrap_gen_long_name(pid, CatName.COMM.value, group_name, "MEMCPY_OUT_FUSION_BUFFER", suffix))
+        return current_comm_nodes
+
     def init_search_space(self, candidates, _dag: nx.DiGraph, _pkg: PKGraph):
         if self.num_grp is not None:
             return self._init_search_space_num_grp(candidates, _dag, _pkg)
@@ -258,7 +286,7 @@ class _TensorFusionCM(_BaseCostModel):
         return gen_long_name(pid, "{}.{}.{}".format(op_name, layer_name, sub_op), suffix)
 
     def flush(self, is_accept):
-        if is_accept:        
+        if is_accept:
             for n in self.cache_change:
                 if isinstance(n, int):
                     self.history_num_grp[self.num_grp] = 1 if self.num_grp not in self.history_num_grp else self.history_num_grp[self.num_grp] + 1
@@ -266,8 +294,9 @@ class _TensorFusionCM(_BaseCostModel):
                 elif "host0.rank0" in n:
                     self._update_tensor2grp(n)
         self.cache_change = []
-        
+
     def _op_fusion(self, _dag, _pkg: PKGraph, u_, v_):
+        # SingleLogger().info("Fusing Tensor {} & {}.".format(u_, v_))
         all_infos = [
             self._wrap_parse_all_info(u_),
             self._wrap_parse_all_info(v_)]
@@ -385,7 +414,7 @@ class _TensorFusionCM(_BaseCostModel):
                             edges_to_rm.append((to_fuses[1], succ_))
                         for _update_op in update_list:
                             edges_to_add.append((new_fused_name, _update_op))      
-                        
+
         _dag.add_edges_from(edges_to_add)
         _dag.add_nodes_from(nodes_to_add)
         _dag.remove_edges_from(edges_to_rm)
@@ -477,13 +506,23 @@ class _TensorFusionCM(_BaseCostModel):
 
             ### Handle BW->Sync edges
             ### each sync may have multiple input bw nodes
+            def remap_fused_bw_nodes(_node):
+                if "+" in self.opt.cst_md_mng.strategy2model and _pkg is not None:
+                    # has XLA fusion, needs to get fused node names from PKG
+                    if _node in _pkg.nodename2fusednode:
+                        return _pkg.nodename2fusednode[_node]
+                    else:
+                        return _node
+                else:
+                    return _node
+
             def parse_bw_dependency(_node, edges_to_add, edges_to_rm, _old_node):
                 _info = self._wrap_parse_all_info(_node)
                 for tensor_id in _info[2].split("+"):
                     op_type_and_name = "{}.{}".format(_info[1], tensor_id)
-                    _bw_list = [gen_long_name(_info[0], n, None) for n, _ in local_dfg.in_edges(op_type_and_name)]
-                    edges_to_add += [(_bw, _node) for _bw in _bw_list]
-                    edges_to_rm += [(_bw, _old_node) for _bw in _bw_list]
+                    _bw_set = set([remap_fused_bw_nodes(gen_long_name(_info[0], n, None)) for n, _ in local_dfg.in_edges(op_type_and_name)])
+                    edges_to_add += [(_bw, _node) for _bw in _bw_set]
+                    edges_to_rm += [(_bw, _old_node) for _bw in _bw_set]
             
             parse_bw_dependency(new_part_names[0], edges_to_add, edges_to_rm, _pid_sync)
             parse_bw_dependency(new_part_names[1], edges_to_add, edges_to_rm, _pid_sync)
@@ -506,7 +545,7 @@ class _TensorFusionCM(_BaseCostModel):
                 ### add new edges
                 edges_to_add += [(prev_part_names[0], new_part_names[0]),
                                  (prev_part_names[1], new_part_names[1])]
-                
+
                 ### add successors to handle
                 _all_infos = [
                     self._wrap_parse_all_info(_prev),
@@ -652,7 +691,7 @@ class _TensorFusionCM(_BaseCostModel):
             re_load = True
             
         if re_load:
-            G = self.dag.copy() if G_prime is None else G_prime
+            G = self.dag.copy() if G_prime is None else G_prime.copy()
             PKG = None
 
             ### Check uncontinuous tensor groups, and split them for futher tensor fusion

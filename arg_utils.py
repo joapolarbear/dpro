@@ -33,6 +33,7 @@ parser.add_argument("--server_log_path", type=str, default=None, help="Path to t
 parser.add_argument("--profile_start_step", type=int, default=None, help="The start step of computation profiling. Used for truncating BytePS comm trace.")
 parser.add_argument("--profile_duration", type=int, default=None, help="The duration (in steps) of computation profiling. Used for truncating BytePS comm trace.")
 parser.add_argument("--nccl_algo", type=str, default=None, help="NCCL algorithm, Tree or Ring")
+parser.add_argument("--van_type", type=str, choices=["ZMQ", "RDMA"], default=None, help="Type of protocol used in BytePS.")
 parser.add_argument("--trace_level", type=str, choices=["debug", "info"], default="info", help="if set to debug, show some trival traces")
 parser.add_argument("--disable_revise", action="store_true", help="By default, revise traecs according to SEND-RECV dependency, set to disable this argument to disable")
 parser.add_argument("--force", action="store_true", help="Force to re-generate traces, graphs")
@@ -41,7 +42,8 @@ parser.add_argument("--metadata_path", type=str, default=None,
 
 ### replay
 parser.add_argument("--update_barrier", action="store_true", default=False, help="If true, add a barrier before all UPDATE ops.")
-parser.add_argument("--update_infi_para", type=bool, default=False, help="If true, UPDATE nodes will be replayed in parallel.")
+parser.add_argument("--update_infi_para", action="store_true", help="If true, UPDATE nodes will be replayed in parallel.")
+parser.add_argument("--update_clip_overlapping", action="store_true", help="If true, clip overlapping UPDATE nodes in the timeline.")
 parser.add_argument("--step_num", type=int, default="1", help="Default step numbers to replay.")
 parser.add_argument("--delay_ratio", type=float, default=1.1, help="delay ratio")
 parser.add_argument("--full_trace", action="store_true", help="If this arg is set, simulate traces with detailed dependency info.")
@@ -63,6 +65,7 @@ parser.add_argument("--ckpt", action="store_true", help="If this arg is set, sta
 parser.add_argument("--workspace", type=str, default="/root/opt_workspace", help="Workerspace of the optimizer")
 parser.add_argument("--xla_candidate_path", type=str, default=None, help="XLA candidate path")
 parser.add_argument("--memory_budget", type=float, default=16, help="GPU Memory budget")
+parser.add_argument("--step_size", type=int, default=1, help="Step size used in MCMC optimizer.")
 
 args = parser.parse_args()
 
