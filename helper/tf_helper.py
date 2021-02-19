@@ -261,7 +261,6 @@ class TimelineHook(tf.train.ProfilerHook):
         assert self.batch_size is not None
 
     def before_run(self, run_context):
-        t = time.time()
         if not self._end_trace:
             self._request_summary = (
                 self._next_step is not None and
@@ -286,12 +285,9 @@ class TimelineHook(tf.train.ProfilerHook):
         opts = (tf.RunOptions(trace_level=tf.RunOptions.FULL_TRACE, output_partition_graphs=True)
             if self._request_summary else None)
 
-        t = time.time() - t
-        print("Before run takes: {} seconds".format(t))
         return tf.train.SessionRunArgs(requests, options=opts)
 
     def after_run(self, run_context, run_values):
-        t = time.time()
         stale_global_step = run_values.results["global_step"]
         if self._next_step is None:
         # Update the timer so that it does not activate until N steps or seconds
@@ -330,8 +326,6 @@ class TimelineHook(tf.train.ProfilerHook):
                 self._file_writer.add_run_metadata(run_values.run_metadata,
                                          "step_%d" % global_step)
         self._next_step = global_step + 1
-        t = time.time() - t
-        print("After run takes: {} seconds".format(t))
 
     def output_traces(self, ops, partition_graphs):
         self.traces = {"traceEvents":[]}
