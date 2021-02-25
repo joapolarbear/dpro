@@ -297,6 +297,19 @@ if __name__ == '__main__':
             
             dag_path = clct.pm.search(FileName.DAG)
             local_dfg, update_nodes_in_dag = wrap_read_gml(dag_path, platform=args.platform)
+
+            def find_bw_depend(comm):
+                return [u for u, _ in local_dfg.in_edges(comm)]
+            comm2bw = {}
+            for node in local_dfg.nodes():
+                if "Comm" not in node:
+                    continue
+                if node not in comm2bw:
+                    comm2bw[node] = set()
+                comm2bw[node].union(find_bw_depend(node))
+            for comm, bws in comm2bw.items():
+                print(comm, bws)
+            raise
             tensor_grps = set()
             for clust_id, op_list in mapping.items():
                 tensor_ids = set()
@@ -310,6 +323,7 @@ if __name__ == '__main__':
                         to_process = list(local_dfg.successors(op_name))
                     except nx.exception.NetworkXError:
                         continue
+                    has_comm = False
                     # print(op_name, list(to_process))
                     while len(to_process) > 0:
                         succ = to_process.pop(0)
@@ -317,6 +331,9 @@ if __name__ == '__main__':
                             to_process += list(local_dfg.successors(succ))
                         if "Comm" in succ:
                             tensor_ids.add(int(succ.split("Comm.")[1]))
+                            has_comm = True
+                    if not has_comm:
+                        print("{} has no comm".format(op_name))
                 grp_name = "+".join([str(_id) for _id in sorted(list(tensor_ids))])
                 if len(grp_name) > 0:
                     # print(grp_name)
