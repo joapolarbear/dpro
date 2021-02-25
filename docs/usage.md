@@ -32,7 +32,7 @@ python3 analyze.py --option optimize --sub_option tensor_fusion,xla \
 ### Generate tensor fusion strategies according to operator fusion strategies
 Sample commands
 ```
-python3 analyze.py --option optimize --sub_optionfrom_opfs2tsfs \
+python3 analyze.py --option optimize --sub_option from_opfs2tsfs \
     --platform TENSORFLOW --comm_backend NCCL --nccl_algo RING --pretty \
     --path /root/data/20210125_05_hvd_tf_resnet50_tcp/,<cluster_mapping_path>
 ```
