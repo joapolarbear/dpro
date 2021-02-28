@@ -13,7 +13,7 @@
 ### Search tensor fusion strategies
 Sample commands
 ```
-python3 analyze.py --option optimize --sub_option tensor_fusion 
+python3 analyze.py --option optimize --sub_option tensor_fusion \
     --platform TENSORFLOW --comm_backend NCCL --nccl_algo RING --pretty \
     --path /root/data/20210125_05_hvd_tf_resnet50_tcp/ \
     --workspace /root/data/20210125_05_hvd_tf_resnet50_tcp/

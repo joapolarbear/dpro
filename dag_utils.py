@@ -82,6 +82,8 @@ def tf_relabel_func(_name, update_nodes_in_dag):
         _name = _name[:last_slash_pos]
     if "BytePSPushPull" in _name and "tensor" not in _name:
         _name = "Comm." + _name
+    elif "input_barrier" in _name:
+        _name = "FW." + _name
     elif "allreduce" in _name.lower():
         if "." in _name:
             _, tensor_name = _name.split(".")
@@ -125,8 +127,8 @@ def wrap_read_gml(gml_path, platform="MXNET"):
                     recursive_add_succs("^"+succ_)
         # mygraph.add_edges_from([(n[1:], n) for n in mygraph.nodes if n.startswith("^")])
         for node in mygraph.nodes:
-            if "allreduce" in node.lower() or "bytepspushpull" in node.lower() \
-                                            and "switch" not in node.lower():
+            if ("allreduce" in node.lower() or "bytepspushpull" in node.lower()) \
+                    and "switch" not in node.lower() and "input_barrier" not in node.lower():
                 ### node is the Comm node, add its downstream nodes as update operators
                 recursive_add_succs(node)
             # if "apply" in node.lower() or ("gradientdescent" in node.lower() and "learning_rate" not in node.lower()):
