@@ -643,6 +643,8 @@ class Collector(object):
                 else:
                     tensor_id_str = process_name.split(".")[1]
                 if self.platform == "TENSORFLOW" and "_" in tensor_id_str:
+                    if "input_barrier" in tensor_id_str:
+                        continue
                     tensor_id_str = tensor_id_str.split("_")[0]
 
                 input0 = None

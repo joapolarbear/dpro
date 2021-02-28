@@ -740,8 +740,11 @@ class CostModelManager:
             #    _XLACostModel(opt),
             #    _AMPCostModel(opt),
             # ]
-        self.cost_model_list.append(IncreasingBatchSizeCostModel(opt))
-        self.mem_model_list = [MemoryCostModel(opt)]
+        if "^memory" in args_.sub_option:
+            self.mem_model_list = []
+        else:
+            self.cost_model_list.append(IncreasingBatchSizeCostModel(opt))
+            self.mem_model_list = [MemoryCostModel(opt)]
         self.strategy2model = {}
 
         ### Register Thoughput-oriented Cost Models
