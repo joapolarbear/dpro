@@ -799,6 +799,136 @@ class DAGManager:
         SingleLogger().info(len(self.topo_sorts))
 
 
+class SmallDAGManager(DAGManager):
+    def __init__(self, nrank, rank, traceM, nccl_graph=None, byteps_graph=None, platform="TENSORFLOW", single=False):
+        self.platform = platform
+        ### traceM's DirLevel = TRAIL
+        self.traceM = traceM
+        self.dag = []
+        self.nodes = set()
+        self._fw_bw_dag = None
 
+        # TODO: delete
+        self._topo_sort = []
+        self.topo_sorts = []
 
+        ### For fine-grained communication dependency
+        # one and only one of NCCL_GRAPH or BYTEPS_GRAPH can be set at a time
+        assert (nccl_graph or byteps_graph) and not (nccl_graph and byteps_graph)
+        self.nccl_graph = nccl_graph
+        self.byteps_graph = byteps_graph
+
+        ### is the dag for single rank
+        self.single = single
+
+        self.nrank, self.rank = nrank, rank
+        self.wk_prefix, self.rank_prefix = "host{}".format(self.rank), "rank0"
+        self.prefix = "%s.%s" % (self.wk_prefix, self.rank_prefix)
+        self.all_prefix = ["host{}.rank0".format(_id) for _id in range(self.nrank)]
+    
+    def _process_edge_nccl(self, graph, queue_type_list, u, v, para_dict=None, pre_nodes=[], post_nodes=[]):
+        ''' Handel one edge in the original depedency graph
+        Parameters
+        ----------
+        graph: class nx.Graph, the original depedency graph
+        queue_type_list: str list
+        '''
+        if "Comm" in u:
+            if self.single:
+                ### add virtual Comm edges for single rank casts
+                self.wrap_add_dag(self.add_prefix(u), self.add_prefix(v))
+                return
+            elif self.nccl_graph is not None and self.nccl_graph.algo == NCCL_ALGO.RING:
+                ### Combine chunkId, sliceId and channelId into the graph for RING algorithm
+                _, sliceNum, channelNum, loopNum = self.nccl_graph.get_IDnum(u)
+                chunkNum = 2 * (self.nrank - 1)
+                for loopId in range(loopNum):
+                    for chunkId in range(chunkNum):
+                        for sliceId in range(sliceNum):
+                            for channelId in range(channelNum):
+                                if chunkId == 0:
+                                    ### The first step
+                                    ### Connect BW nodes to Sync, if this is a fused tensor, there should be multiple BW nodes
+                                    # next_rawname = gen_long_name(None, "%s.%s"%(u, queue_type_list[0]), suffix=None)
+                                    # for pre_node in pre_nodes:
+                                    #     self.wrap_add_dag(self.add_prefix(pre_node), self.add_prefix(next_rawname))
+
+                                    next_rawname = pre_nodes[0]
+                                    
+                                    ### Connect all ranks' Sync to the first Send
+                                    prev_rawname = next_rawname
+                                    next_rawname = "%s.%s"%(u, queue_type_list[1])
+                                    for _prefix in self.all_prefix:
+                                        prev_name = self.add_prefix(prev_rawname, _prefix=_prefix)
+                                        self.wrap_add_dag(prev_name, self.add_prefix(next_rawname))
+
+                                    ### Queue --> MEMCPY_IN_FUSION_BUFFER
+                                    prev_rawname = next_rawname 
+                                    comm_in_name = "%s.%s"%(u, queue_type_list[2])
+                                    self.wrap_add_dag(self.add_prefix(prev_rawname), self.add_prefix(comm_in_name))
+
+                                    ### MEMCPY_IN_FUSION_BUFFER to the first Send
+                                    next_rawname = gen_long_name(None, "%s.SEND"%u, suffix="%d_%d_%d_%d"%(loopId, channelId, chunkId, sliceId))
+                                    self.wrap_add_dag(self.add_prefix(comm_in_name), self.add_prefix(next_rawname))
+                                    ### TODO (huhanpeng) MEMCPY_IN_FUSION_BUFFER to the first RECV
+                                    next_rawname = gen_long_name(None, "%s.RECV"%u, suffix="%d_%d_%d_%d"%(loopId, channelId, chunkId, sliceId))
+                                    self.wrap_add_dag(self.add_prefix(comm_in_name), self.add_prefix(next_rawname))
+                                else:
+                                    ### normal steps
+                                    ### Connect Memory copy in to Send and Recv
+                                    comm_in_name = gen_long_name(None, "%s.%s"%(u, queue_type_list[2]), suffix=None)                                    
+                                    last_chunkId = chunkId - 1
+                                    prev_rawname = gen_long_name(None, "%s.RECV"%u, suffix="%d_%d_%d_%d"%(loopId, channelId, last_chunkId, sliceId))
+                                    next_rawname = gen_long_name(None, "%s.SEND"%u, suffix="%d_%d_%d_%d"%(loopId, channelId, chunkId, sliceId))
+                                    self.wrap_add_dag(self.add_prefix(comm_in_name), self.add_prefix(prev_rawname))
+                                    self.wrap_add_dag(self.add_prefix(comm_in_name), self.add_prefix(next_rawname))
+                                    ### Connect from Recv to Send
+                                    self.wrap_add_dag(self.add_prefix(prev_rawname), self.add_prefix(next_rawname))
+
+                                ### Connect from Send to Recv
+                                next_rank_prefix = "host{}.rank0".format((self.rank + 1) % self.nrank)
+                                next_chunkId = chunkId
+                                prev_rawname = gen_long_name(None, "%s.SEND"%u, suffix="%d_%d_%d_%d"%(loopId, channelId, chunkId, sliceId))
+                                next_rawname = gen_long_name(None, "%s.RECV"%u, suffix="%d_%d_%d_%d"%(loopId, channelId, next_chunkId, sliceId))
+                                self.wrap_add_dag(self.add_prefix(prev_rawname), self.add_prefix(next_rawname, _prefix=next_rank_prefix))
+
+                                if chunkId >= (2 * (self.nrank - 1) - 1):
+                                    ### last RECV --> MEMCPY_OUT_FUSION_BUFFER
+                                    prev_name = self.add_prefix(next_rawname, _prefix=next_rank_prefix)
+                                    next_name = gen_long_name(next_rank_prefix, "%s.%s"%(u, queue_type_list[-1]), suffix=None)
+                                    self.wrap_add_dag(prev_name, next_name)
+
+                                    ### MEMCPY_OUT_FUSION_BUFFER --> UPDATE_CAL
+                                    prev_name = next_name
+                                    if self.platform == "MXNET":
+                                        update_name = self.add_prefix("UPDATE_CAL", _prefix=next_rank_prefix)
+                                        self.wrap_add_dag(prev_name, update_name)
+                                    elif self.platform == "TENSORFLOW":
+                                        if args_.update_barrier:
+                                            update_name = self.add_prefix("UPDATE_CAL", _prefix=next_rank_prefix)
+                                            self.wrap_add_dag(prev_name, update_name)
+                                            prev_name = update_name
+                                        for post_node in post_nodes:
+                                            update_name = self.add_prefix(post_node, _prefix=next_rank_prefix)
+                                            self.wrap_add_dag(prev_name, update_name)
+                                            self.add_update_downstream(graph, post_node, _prefix=next_rank_prefix)
+                                    else:
+                                        raise NotImplementedError()
+                ### end for loop
+            else:
+                ### Normal Horovod, corse-grained (Including NEGOTIATE_..., ALL_REDUCE, etc )
+                raise NotImplementedError("Remove following todo first")
+        elif "BW" in u and "Comm" in v:
+            if self.single:
+                self.wrap_add_dag(
+                    self.add_prefix(u), self.add_prefix(v))
+            else:
+                ### delete edges from BW to Comm main task.
+                return
+        elif "UPDATE" in u or "UPDATE" in v:
+            ### ignore nodes from UPDATE to FW, avoid cycles
+            return
+        else:
+            self.wrap_add_dag(self.add_prefix(u), self.add_prefix(v))
+    
 

@@ -1459,3 +1459,118 @@ class Collector(object):
 
     def all_pid(self):
         return list(self.nccl_graph.prefix2rank.keys())
+    
+    def collect_trial_dag_v2(self, nrank=4):
+        SingleLogger().info("Convert Large DFG to smaller one ...")
+        ts_ = time.time()
+        
+        if self.comm_backend == "NCCL":
+            critical_path = [None] * nrank
+            worker_dag_list = [None] * nrank
+        else:
+            raise NotImplementedError()
+        
+        if self.dag is None:
+            dag_path = self.pm.search(FileName.DAG)
+            self.dag, self.update_nodes_in_dag = wrap_read_gml(dag_path, platform=self.platform)
+            
+        if self.single:
+            raise ValueError("Single Machine Case")
+        else:
+            threads = []
+            for rank in range(nrank):
+                assert rank == len(threads)
+                t = threading.Thread(target=self._collect_rank_dag_v2, args=(nrank, worker_dag_list, critical_path, len(threads)))
+                t.start()
+                threads.append(t)
+            for t in threads:
+                t.join()
+
+        ### Combine all worker_dag_list on one worker, build the dependency
+        SingleLogger().info("Compose all {} gpu DAGs together ... ".format(len(worker_dag_list)))
+        all_edges = []
+        for _edges in worker_dag_list:
+            all_edges += _edges
+        composed_dag = nx.DiGraph()
+        composed_dag.add_edges_from(all_edges)
+        if self.comm_backend == "BYTEPS":
+            raise NotImplementedError() 
+
+        self.trail_dag = composed_dag
+        SingleLogger().info("Take {} s construct the DAG with {} nodes".format(time.time() - ts_, len(self.trail_dag.nodes)))
+
+    def _collect_rank_dag_v2(self, nrank, worker_dag_list, critical_path, index):
+        SingleLogger().info("- Collect {} th DAG in ...".format(index))
+        dagmanager = SmallDAGManager(nrank, index, self.traceM, self.nccl_graph, self.byteps_graph, platform=self.platform)
+        max_para_degree, _critical_path = dagmanager.gen_gpu_dag(self.dag, _pretty=args_.pretty, para_dict=self.para_dict)
+        worker_dag_list[index] = dagmanager.dag
+        critical_path[index] = _critical_path
+
+    def add_avg_to_nodes_v2(self, nrank):
+        SingleLogger().info("Add avg to nodes ...")
+        send_ref_pid = recv_ref_pid = None
+        base_ref_pid = "host0.rank0"
+        ### simulate_time * simulate_nchunk = real_time * real_nchunk ==>
+        ### simulate_time = real_time * (rank - 1) / (simulate_nrank - 1)
+        scale_ratio = float(len(self.all_pid) - 1) / float(nrank - 1)
+        for node_ in self.trail_dag.nodes:
+            ### Add duration to the node as an attribute
+            cat = parse_cat_fine_grained(node_)
+            # pid, raw_name, cat, suffix
+            allinfo = parse_allinfo_from_name(node_)
+            if "Comm" in cat:
+                if cat == "Comm.other":
+                    op_type, op_name, sub_op = allinfo[1].split(".")
+                    if "Sync" in node_:
+                        ### TODO (hphu): estimate sync time
+                        # ref_node = gen_long_name("host0.rank0", rawname, suffix)
+                        # self.trail_dag.nodes[node_]["avg"] = self.traceM.lookup_stat(None, None, ref_node) 
+                        # assert self.trail_dag.nodes[node_]["avg"] > 0, (node_)
+                        self.trail_dag.nodes[node_]["avg"] = 0
+                    else:
+                        ### for Queue|MEMCPY_IN_FUSION_BUFFER|MEMCPY_OUT_FUSION_BUFFER sub operators
+                        ### there are not corresponding fused traces, instead, each tensor has its own sub operator traces
+                        ### when building the graph, use the average duration of corresponding tensor as the fused operator time 
+                        tensor_list = re.findall("[0-9]+", op_name)
+                        ### this tensor_list has been sorted
+                        # tensor_list = sorted([int(e) for e in tensor_list])
+                        avgs = []
+                        for tensor_id_str in tensor_list:
+                            tensor_id = int(tensor_id_str)
+                            org_name = gen_long_name(base_ref_pid, "{}.{}.{}".format(op_type, tensor_id, sub_op))
+                            avgs.append(self.traceM.lookup_stat(None, None, org_name))
+                        assert len(avgs) > 0
+                        self.trail_dag.nodes[node_]["avg"] = sum(avgs) / len(avgs)
+                elif "SEND" in cat:
+                    if send_ref_pid is None:
+                        for _pid in self.all_pid():
+                            ref_name = gen_long_name(_pid, allinfo[1], allinfo[3])
+                            avg = self.traceM.lookup_stat(None, None, ref_name)
+                            if avg > 0.010:
+                                send_ref_pid = _pid
+                                break
+                        assert send_ref_pid is not None
+                    ref_name = gen_long_name(send_ref_pid, allinfo[1], allinfo[3])
+                    self.trail_dag.nodes[node_]["avg"] = scale_ratio * self.traceM.lookup_stat(None, None, ref_name)
+                elif "RECV" in cat:
+                    if recv_ref_pid is None:
+                        for _pid in self.all_pid():
+                            ref_name = gen_long_name(_pid, allinfo[1], allinfo[3])
+                            avg = self.traceM.lookup_stat(None, None, ref_name)
+                            if avg > 0.010:
+                                recv_ref_pid = _pid
+                                break
+                        assert recv_ref_pid is not None
+                    ref_name = gen_long_name(recv_ref_pid, allinfo[1], allinfo[3])
+                    self.trail_dag.nodes[node_]["avg"] = scale_ratio * self.traceM.lookup_stat(None, None, ref_name)
+            else:
+                ref_name = gen_long_name(base_ref_pid, allinfo[1], allinfo[3])
+                self.trail_dag.nodes[node_]["avg"] = self.traceM.lookup_stat(None, None, ref_name) 
+
+
+    def init_v2(self, nrank):
+        self.collect_trial_dag_v2(nrank)
+        self.add_avg_to_nodes_v2(nrank)
+        self.add_gap_to_nodes()
+        if self.comm_backend == "NCCL":
+            self.clip_recv_events()

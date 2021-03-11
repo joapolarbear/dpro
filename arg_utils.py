@@ -35,7 +35,7 @@ parser.add_argument("--profile_duration", type=int, default=None, help="The dura
 parser.add_argument("--nccl_algo", type=str, default=None, help="NCCL algorithm, Tree or Ring")
 parser.add_argument("--van_type", type=str, choices=["ZMQ", "RDMA"], default=None, help="Type of protocol used in BytePS.")
 parser.add_argument("--trace_level", type=str, choices=["debug", "info"], default="info", help="if set to debug, show some trival traces")
-parser.add_argument("--disable_revise", action="store_true", help="By default, revise traecs according to SEND-RECV dependency, set to disable this argument to disable")
+parser.add_argument("--disable_revise", action="store_true", help="By default, revise traces according to SEND-RECV dependency, set to disable this argument to disable")
 parser.add_argument("--force", action="store_true", help="Force to re-generate traces, graphs")
 parser.add_argument("--metadata_path", type=str, default=None,
                     help="Paths to Model metadata")
