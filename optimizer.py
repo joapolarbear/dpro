@@ -112,7 +112,8 @@ class GraphState:
 class _XLACostModel(_BaseCostModel):
     def __init__(self, opt):
         super().__init__(opt)
-        self.cost_models = self._load_cm()
+        if not args_.simulate:
+            self.cost_models = self._load_cm()
         self.forbidden_list = set()
         self.initial_forbidden_list = set()
         # self._init_forbidden_list()
@@ -337,7 +338,10 @@ class _XLACostModel(_BaseCostModel):
             return predicted_time / 1000, brkdn_dict
 
     def _wrap_xla_need_fuse(self, pid, orig_name, long_name):
-        return (orig_name in self._wrap_xla_operation_names(pid)) and long_name not in self.forbidden_list
+        if args_.simulate:
+            return long_name not in self.forbidden_list
+        else:
+            return (orig_name in self._wrap_xla_operation_names(pid)) and long_name not in self.forbidden_list
 
     def _wrap_xla_operation_names(self, pid):
         return self.cost_models["default"].graph_def_util.operation_names

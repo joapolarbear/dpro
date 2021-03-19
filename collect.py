@@ -789,7 +789,9 @@ class Collector(object):
         traces_list, ref_name_list, ref_time_list, raw_name2IDnum_list = zip(*rst)
 
         host_ids = None
-        if not self.single and self.comm_backend == "NCCL":
+        if self.single:
+            host_ids = [self.nccl_graph.host_prefix2id[host_id_str] for _, _, host_id_str in arg_list]
+        elif self.comm_backend == "NCCL":
             host_ids = [self.nccl_graph.host_prefix2id[host_id_str] for _, _, host_id_str in arg_list]
             self.nccl_graph.init_host_drift(zip(host_ids, ref_time_list))
             ### Since some GPU may have no comm detailed traces, select the first non-empty file to parse chunk num...

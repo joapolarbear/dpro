@@ -32,6 +32,10 @@ DEL = "->"
 DDEL = "~>"
 
 MAX_CNT = None
+ITER_GAP_LOWER_BOUND_US = 5000
+### based on the assumption that FW or IO is the start of a step
+AS_START_CAT = ["I/O", "operator.FW"]
+
 
 @Singleton
 class QueueType:
@@ -390,20 +394,19 @@ class TraceManager:
             2. add step field
             3. iteration time
         """
-
-        ### based on the assumption that FW or IO is the start of a step
-        AS_START_CAT = ["I/O", "operator.FW"]
-
         self.name2sta = {}
         self.cat2sta = {}
         prefix_dict = {}
+
         for event in self.traces:
             if self._is_ignore_for_sta(event):
                 continue
             prefix = event["pid"]
             if prefix not in prefix_dict:
                 prefix_dict[prefix] = {
-                    "cat_cursor": None, 
+                    "cat_cursor": None,
+                    "trace_name_cursor": None,
+                    "time_cursor": None,
                     "step_cnt": 0,
                     ### used for calculating iteration time, and fw time
                     "cur_step": None,
@@ -416,7 +419,7 @@ class TraceManager:
                     "fw_end": None,
                     "bw_start": None,
                     "bw_end": None,
-                    "cat_cnt": {}
+                    "cat_cnt": {},
                 }
             cat = parse_cat_fine_grained(event["name"])
 
@@ -448,28 +451,19 @@ class TraceManager:
 
             ### Add the `step` field
             pid_info = prefix_dict[prefix]
-            if pid_info["cat_cursor"] is None:
+            if pid_info["time_cursor"] is None:
                 pass
-            elif pid_info["cat_cursor"] == "operator.UPDATE" and cat in AS_START_CAT:
-                ### last op is update, cur op is in (IO, FW), increase the step_cnt
+            elif event["ts"] - pid_info["time_cursor"] > ITER_GAP_LOWER_BOUND_US and \
+                    cat in AS_START_CAT:
                 pid_info["step_cnt"] += 1
-                # if prefix in ["host0.rank1", "trace_0.rank1"]:
-                #     print("Add step to {} for {}, before: {}".format(
-                #         pid_info["step_cnt"], event, pid_info["cat_cursor"]))
-            elif (pid_info["cat_cursor"] in AS_START_CAT) and cat == "operator.UPDATE":
-                ### handle the overlapping cases between UPDATE and (IO, FW)
-                pid_info["step_cnt"] -= 1
-                # if prefix == "host0.rank4":
-                #     print("Minus step to {} for {}, before: {}".format(
-                #         pid_info["step_cnt"], event, pid_info["cat_cursor"]))
             event["args"]["step"] = pid_info["step_cnt"]
             if parse_cat_from_name(event["name"]) in [CatName.OPERATOR.value,
                                                         CatName.IO.value,
                                                         CatName.PS_SERVER_OPERATOR.value]:
-                pid_info["cat_cursor"] = cat
                 if cat not in pid_info["cat_cnt"]:
                     pid_info["cat_cnt"][cat] = 0
                 pid_info["cat_cnt"][cat] += event["dur"] / 1000.0
+
             self.max_step = max(event["args"]["step"], self.max_step)
 
             ### Calculate the iteration time
@@ -521,6 +515,12 @@ class TraceManager:
             
             if "input_barrier" in unique_name:
                 pid_info["step_start_ts"] = None
+            
+            if parse_cat_from_name(event["name"]) in [CatName.OPERATOR.value,
+                                                      CatName.IO.value,
+                                                      CatName.PS_SERVER_OPERATOR.value]:
+                pid_info["trace_name_cursor"] = event["name"]
+                pid_info["time_cursor"] = event["ts"] + event["dur"]
 
         ### Aggregate duration of all iterations
         iter_list_all = []

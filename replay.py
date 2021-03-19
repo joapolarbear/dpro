@@ -101,7 +101,7 @@ class Device:
         if self.comm_backend == "BYTEPS" and "UPDATE_CAL" in name:
             duration = 0
 
-        if duration == 0:
+        if duration == 0 and not args_.full_trace:
             self.prev_name_dur = (name, 0)
         else:
             event = {
