@@ -99,7 +99,8 @@ def tf_relabel_func(_name, update_nodes_in_dag):
             _name = "UPDATE_." + _name
     else:
         if update_nodes_in_dag is not None and _name in update_nodes_in_dag \
-            or _name == "GradientDescent":
+                or _name == "GradientDescent" or ("GradientDescent" in _name and "update" in _name) \
+                or _name.startswith("Assign_") or ("cond" in _name and "Assign" in _name):
             _name = "UPDATE_." + _name
         elif _name.startswith("gradients"):
             _name = "BW." + _name

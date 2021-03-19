@@ -404,22 +404,24 @@ class TraceManager:
             prefix = event["pid"]
             if prefix not in prefix_dict:
                 prefix_dict[prefix] = {
-                    "cat_cursor": None,
+                    "cat_cnt": {},
+                    "step_cnt": 0,
+                    "time_base": None,
+
                     "trace_name_cursor": None,
                     "time_cursor": None,
-                    "step_cnt": 0,
-                    ### used for calculating iteration time, and fw time
-                    "cur_step": None,
-                    "fw_list": [],
-                    "bw_list": [],
-                    "update_list": [],
-                    "iter_list": [],
                     "step_start_ts": None,
-                    "cur_iter_time": 0,
                     "fw_end": None,
                     "bw_start": None,
                     "bw_end": None,
-                    "cat_cnt": {},
+
+                    ### used for calculating iteration time, and fw time
+                    "cur_step": None,
+
+                    "fw_multi_steps": [],
+                    "bw_multi_steps": [],
+                    "update_multi_steps": [],
+                    "iter_multi_steps": [],                    
                 }
             cat = parse_cat_fine_grained(event["name"])
 
@@ -451,19 +453,23 @@ class TraceManager:
 
             ### Add the `step` field
             pid_info = prefix_dict[prefix]
+            if pid_info["time_base"] is None:
+                pid_info["time_base"] = event["ts"]
+            
             if pid_info["time_cursor"] is None:
                 pass
-            elif event["ts"] - pid_info["time_cursor"] > ITER_GAP_LOWER_BOUND_US and \
+            elif event["ts"] - pid_info["time_cursor"] - pid_info["time_base"] > ITER_GAP_LOWER_BOUND_US and \
                     cat in AS_START_CAT:
                 pid_info["step_cnt"] += 1
             event["args"]["step"] = pid_info["step_cnt"]
+
+            ### Statistic time grouped by fine-grained cat
             if parse_cat_from_name(event["name"]) in [CatName.OPERATOR.value,
                                                         CatName.IO.value,
                                                         CatName.PS_SERVER_OPERATOR.value]:
                 if cat not in pid_info["cat_cnt"]:
                     pid_info["cat_cnt"][cat] = 0
                 pid_info["cat_cnt"][cat] += event["dur"] / 1000.0
-
             self.max_step = max(event["args"]["step"], self.max_step)
 
             ### Calculate the iteration time
@@ -475,8 +481,8 @@ class TraceManager:
                 continue
             if pid_info["cur_step"] is None:
                 ### initialization
-                pid_info["step_start_ts"] = event['ts']
-                pid_info["cur_iter_time"] = event['ts'] + event['dur']
+                pid_info["step_start_ts"] = event['ts'] - pid_info["time_base"]
+                pid_info["time_cursor"] = event['ts'] + event['dur'] - pid_info["time_base"]
                 pid_info["cur_step"] = event["args"]["step"]
             elif pid_info["cur_step"] != event["args"]["step"]:
                 ### a new iteration
@@ -484,34 +490,34 @@ class TraceManager:
                 if pid_info["cur_step"] == -1:
                     continue
                 assert event["args"]["step"] > pid_info["cur_step"], (event, pid_info)
-                pid_info["iter_list"].append((pid_info["cur_iter_time"] - pid_info["step_start_ts"]) / 1000.0)
+                pid_info["iter_multi_steps"].append((pid_info["time_cursor"] - pid_info["step_start_ts"]) / 1000.0)
                 try:
-                    pid_info["fw_list"].append(pid_info["cat_cnt"]["operator.FW"])
-                    pid_info["bw_list"].append(pid_info["cat_cnt"]["operator.BW"])
-                    pid_info["update_list"].append(pid_info["cat_cnt"]["operator.UPDATE"])
+                    pid_info["fw_multi_steps"].append(pid_info["cat_cnt"]["operator.FW"])
+                    pid_info["bw_multi_steps"].append(pid_info["cat_cnt"]["operator.BW"])
+                    pid_info["update_multi_steps"].append(pid_info["cat_cnt"]["operator.UPDATE"])
                     pid_info["cat_cnt"]["operator.FW"] = pid_info["cat_cnt"]["operator.BW"] = pid_info["cat_cnt"]["operator.UPDATE"] = 0
                 except:
                     print(event, pid_info)
                     raise
-                SingleLogger().debug("%s - the %d th iteration: FW: %f, BW: %f, Iteration time: %f" % (prefix, len(pid_info["iter_list"]), pid_info["fw_list"][-1], pid_info["bw_list"][-1], pid_info["iter_list"][-1]))
-                pid_info["step_start_ts"] = event['ts']
+                SingleLogger().debug("%s - the %d th iteration: FW: %f, BW: %f, Iteration time: %f" % (prefix, len(pid_info["iter_multi_steps"]), pid_info["fw_multi_steps"][-1], pid_info["bw_multi_steps"][-1], pid_info["iter_multi_steps"][-1]))
+                pid_info["step_start_ts"] = event['ts'] - pid_info["time_base"]
                 pid_info["bw_start"] = None
-                pid_info["cur_iter_time"] = event['ts'] + event['dur']
+                pid_info["time_cursor"] = event['ts'] + event['dur'] - pid_info["time_base"]
                 pid_info["cur_step"] = event["args"]["step"]
             else:
                 ### during an iteration
-                pid_info["cur_iter_time"] = event['ts'] + event['dur']
+                pid_info["time_cursor"] = event['ts'] + event['dur'] - pid_info["time_base"]
 
                 ### TODO (huhanpeng): change after fine-tune update
                 ### here we assume UPDATE is following the last BP op.
                 if "FW" in event["name"]:
                     if pid_info["step_start_ts"] is None:
-                        pid_info["step_start_ts"] = event['ts']
-                    pid_info["fw_end"] = pid_info["cur_iter_time"]
+                        pid_info["step_start_ts"] = event['ts'] - pid_info["time_base"]
+                    pid_info["fw_end"] = pid_info["time_cursor"]
                 if "BW" in event["name"]:
                     if pid_info["bw_start"] is None:
-                        pid_info["bw_start"] = event['ts']
-                    pid_info["bw_end"] = pid_info["cur_iter_time"]
+                        pid_info["bw_start"] = event['ts'] - pid_info["time_base"]
+                    pid_info["bw_end"] = pid_info["time_cursor"]
             
             if "input_barrier" in unique_name:
                 pid_info["step_start_ts"] = None
@@ -520,7 +526,6 @@ class TraceManager:
                                                       CatName.IO.value,
                                                       CatName.PS_SERVER_OPERATOR.value]:
                 pid_info["trace_name_cursor"] = event["name"]
-                pid_info["time_cursor"] = event["ts"] + event["dur"]
 
         ### Aggregate duration of all iterations
         iter_list_all = []
@@ -533,38 +538,38 @@ class TraceManager:
             ### Check and statistic the last iteration
             if not pid_info["fw_end"] or not pid_info["bw_end"] or not pid_info["bw_start"]:
                 continue
-            elif len(pid_info["iter_list"]) > 0:
+            elif len(pid_info["iter_multi_steps"]) > 0:
                 ### TODO (hhp): ignore the last iteration now, since sometimes the last iteration
                 #   is not complete
                 pass
             else:
-                pid_info["iter_list"].append((pid_info["cur_iter_time"] - pid_info["step_start_ts"]) / 1000.0)
-                pid_info["fw_list"].append(pid_info["cat_cnt"]["operator.FW"])
+                pid_info["iter_multi_steps"].append((pid_info["time_cursor"] - pid_info["step_start_ts"]) / 1000.0)
+                pid_info["fw_multi_steps"].append(pid_info["cat_cnt"]["operator.FW"])
                 try:
-                    pid_info["bw_list"].append(pid_info["cat_cnt"]["operator.BW"])
+                    pid_info["bw_multi_steps"].append(pid_info["cat_cnt"]["operator.BW"])
                 except KeyError:
                     ### for fused op, there may be not BW nodes
                     # append -1 as abnormal cases
-                    pid_info["bw_list"].append(-1)
-                pid_info["update_list"].append(pid_info["cat_cnt"]["operator.UPDATE"])
+                    pid_info["bw_multi_steps"].append(-1)
+                pid_info["update_multi_steps"].append(pid_info["cat_cnt"]["operator.UPDATE"])
                 pid_info["cat_cnt"]["operator.FW"] = pid_info["cat_cnt"]["operator.BW"] = pid_info["cat_cnt"]["operator.UPDATE"] = 0
-                SingleLogger().debug("%s - the %d th iteration: FW:%f, BW: %f, Iteration time: %f" % (prefix, len(pid_info["iter_list"]), pid_info["fw_list"][-1], pid_info["bw_list"][-1], pid_info["iter_list"][-1]))
+                SingleLogger().debug("%s - the %d th iteration: FW:%f, BW: %f, Iteration time: %f" % (prefix, len(pid_info["iter_multi_steps"]), pid_info["fw_multi_steps"][-1], pid_info["bw_multi_steps"][-1], pid_info["iter_multi_steps"][-1]))
 
-            iter_time_multi_steps = np.array(pid_info["iter_list"])
+            iter_time_multi_steps = np.array(pid_info["iter_multi_steps"])
             iter_time_avg, iter_time_std = np.average(iter_time_multi_steps), np.std(iter_time_multi_steps)
             SingleLogger().info("<%s> average iter time %f (\u00B1 %f): %s" % (
-                prefix, iter_time_avg, iter_time_std, str(pid_info["iter_list"])))
+                prefix, iter_time_avg, iter_time_std, str(pid_info["iter_multi_steps"])))
 
-            fw_time = sum(pid_info["fw_list"]) / float(len(pid_info["fw_list"]))
-            bw_time = sum(pid_info["bw_list"]) / float(len(pid_info["bw_list"]))
-            update_time = sum(pid_info["update_list"]) / float(len(pid_info["update_list"]))
-            iter_time = sum(pid_info["iter_list"]) / float(len(pid_info["iter_list"]))
-            iter_list_all.append(pid_info["iter_list"])
+            fw_time = sum(pid_info["fw_multi_steps"]) / float(len(pid_info["fw_multi_steps"]))
+            bw_time = sum(pid_info["bw_multi_steps"]) / float(len(pid_info["bw_multi_steps"]))
+            update_time = sum(pid_info["update_multi_steps"]) / float(len(pid_info["update_multi_steps"]))
+            iter_time = sum(pid_info["iter_multi_steps"]) / float(len(pid_info["iter_multi_steps"]))
+            iter_list_all.append(pid_info["iter_multi_steps"])
             SingleLogger().info("<%s> fw : %f + bw: %f + update: %f -> time/it = %f ms" % (prefix,
                     fw_time, bw_time, update_time, iter_time))
             
-            if min_step_num is None or len(pid_info["iter_list"]) < min_step_num:
-                min_step_num = len(pid_info["iter_list"])
+            if min_step_num is None or len(pid_info["iter_multi_steps"]) < min_step_num:
+                min_step_num = len(pid_info["iter_multi_steps"])
     
         ### calculate the average iteration time
         # * iter_list_all, shape = (n_GPUs, n_steps) ==> (n_steps)

@@ -27,6 +27,8 @@ AVG_THREHOLD = 0
 TRAIN_PERCENT = 0.9
 FP32_OR_FP16 = (True, True)
 
+SYSNAME = "dPRO"
+
 ## the first two dim are avg, G.
 METANAME = FULL_HEADERS["base"][2:]
 # METANAME = ["S_mul", "S_add", "S_in", "S_out", "S_wei"]
@@ -177,8 +179,8 @@ class DataLoader(BasicLoader):
             lines = fp.read().split("\n")
             idx = 0
             while idx < len(lines):
-                if "byteprofiler" in lines[idx]:
-                    if idx+1 < len(lines) and ("byteprofiler" in lines[idx+1] or lines[idx+1]==""):
+                if SYSNAME in lines[idx]:
+                    if idx+1 < len(lines) and (SYSNAME in lines[idx+1] or lines[idx+1]==""):
                         ### avoid add addition batch size to self.BATCH_LIST_VALUE
                         idx += 1
                         continue
@@ -193,12 +195,12 @@ class DataLoader(BasicLoader):
                     else:
                         raise
                     idx += 1
-                    if idx >= len(lines) or "byteprofiler" not in lines[idx]:
+                    if idx >= len(lines) or SYSNAME not in lines[idx]:
                         _DATA["B=%d"%batchsize] = str2list(lines[idx], dtype=float)
                     else:
                         continue
                     idx += 1
-                    if idx >= len(lines) or "byteprofiler" not in lines[idx]:
+                    if idx >= len(lines) or SYSNAME not in lines[idx]:
                         _VAR["B=%d"%batchsize] = str2list(lines[idx], dtype=float)
                     else:
                         continue

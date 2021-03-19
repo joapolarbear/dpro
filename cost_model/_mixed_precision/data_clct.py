@@ -5,7 +5,7 @@
 import sys, os
 
 class TraceFilter:
-    def __init__(self, save_names=None, model=None, platform=None):
+    def __init__(self, save_names=None, model=None, platform=None, showall=None):
         self.save_names = save_names
         self.platform = platform
         self.model = model
@@ -26,8 +26,12 @@ class TraceFilter:
             self._CANDIDATES = ["_dense", "MatMul", "Mat", "Cast"]
         else:
             self._CANDIDATES = None
+        
+        self.showall = showall.lower() in ["true", "t", "1"]
 
     def _is_ignore_for_sta(self, name):
+        if self.showall:
+            return False
         ### store the pid for computation
         if self._CANDIDATES is None:
             return False
@@ -42,7 +46,8 @@ class TraceFilter:
         var = []
         for name, statistic in sorted(name2sta.items()):
             if self._is_ignore_for_sta(name):
-                continue    
+                continue
+            name = ".".join(name.split("->")[1].split(".")[1:])
             nameL.append(name)
             avg.append(statistic["avg"])
             var.append(statistic["var"])
