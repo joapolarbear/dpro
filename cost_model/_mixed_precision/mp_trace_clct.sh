@@ -34,7 +34,7 @@ function funcConfigBaseCMD {
 	if [ "$MODEL" = "ResNet50" ] || [ "$MODEL" = "VGG16" ] || [ "$MODEL" = "InceptionV3" ]; then
 		FILE_PATH="/home/tiger/horovod_examples/tensorflow/tensorflow_synthetic_benchmark.py"
 	else
-		FILE_PATH="/home/tiger/bert/run_pretraining.py"
+		FILE_PATH="/home/tiger/bert/run_pretraining_single_machine.py"
 	fi
 
 	if [ "$MODEL" = "ResNet50" ]; then
@@ -82,7 +82,7 @@ function funcRunAndTest {
 		nohup ${BPF_CMD} --sub_option amp_data_clct,save_names=fp32,model=resnet,platform=tf,showall=True
 		mv $BYTEPS_TRACE_DIR/host0/0 $BYTEPS_TRACE_DIR/.metadata/
 		nvidia-smi >> $BYTEPS_TRACE_DIR/.metadata/config.txt
-		echo "$bs_to_try" >> $BYTEPS_TRACE_DIR/.metadata/config.txt
+		# echo "$bs_to_try" >> $BYTEPS_TRACE_DIR/.metadata/config.txt
 	else
 		nohup ${BPF_CMD} --sub_option amp_data_clct,save_names=None,model=resnet,platform=tf,showall=True
 	fi
