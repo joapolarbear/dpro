@@ -73,10 +73,10 @@ FIRST_RUN=1
 function funcRunAndTest {
 	funcReset
 	BYTEPS_TRACE_DIR=$BYTEPS_TRACE_DIR/host0 BYTEPS_TRACE_START_STEP=50 BYTEPS_TRACE_END_STEP=60 \
-		nohup ${BASE_CMD} $@	
-	echo "dPRO fp32: $@" >> ${BYTEPS_TRACE_DIR}/avg.txt
-	echo "dPRO fp32: $@"
-	echo "Run the command: ${BASE_CMD} $@"
+		nohup ${BASE_CMD}	
+	echo "dPRO fp32 BS=$batch_size: " >> ${BYTEPS_TRACE_DIR}/avg.txt
+	echo "dPRO fp32 BS=$batch_size: "
+	echo "Run the command: ${BASE_CMD}"
 	if [ ${FIRST_RUN} == "1" ]; then
 		echo "${BPF_CMD} --sub_option amp_data_clct,save_names=fp32,model=resnet,platform=tf,showall=True"
 		nohup ${BPF_CMD} --sub_option amp_data_clct,save_names=fp32,model=resnet,platform=tf,showall=True
@@ -89,10 +89,10 @@ function funcRunAndTest {
 
 	funcReset
 	BYTEPS_TRACE_DIR=$BYTEPS_TRACE_DIR/host0 BYTEPS_TRACE_START_STEP=50 BYTEPS_TRACE_END_STEP=60 \
-		nohup ${BASE_CMD} --amp $@	
-	echo "dPRO fp16: $@" >> ${BYTEPS_TRACE_DIR}/avg.txt
-	echo "dPRO fp16: $@"
-	echo "Run the command: ${BASE_CMD} --amp$@"
+		nohup ${BASE_CMD} --amp	
+	echo "dPRO fp16 BS=$batch_size: " >> ${BYTEPS_TRACE_DIR}/avg.txt
+	echo "dPRO fp16 BS=$batch_size: "
+	echo "Run the command: ${BASE_CMD} --amp"
 	if [ ${FIRST_RUN} == "1" ]; then
 		nohup ${BPF_CMD} --sub_option amp_data_clct,save_names=fp16,model=resnet,platform=tf,showall=True
 		FIRST_RUN=0
@@ -106,7 +106,7 @@ bs_to_try=(4 8 16 32 64 128 256 512 1024 2048)
 for(( id=0; id < "${#bs_to_try[@]}"; id++ ))
 do
 	batch_size=${bs_to_try[$id]}
-	funcRunAndTest
+	funcRunAndTest 
 done
 
 
