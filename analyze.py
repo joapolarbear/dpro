@@ -1,3 +1,4 @@
+from tqdm import tqdm
 import os 
 import ujson as json
 import networkx as nx
@@ -18,7 +19,6 @@ from trace_utils import *
 from dag_utils import *
 from collect import Collector
 from replay import Replayer
-from progress_utils import progressBar
 
 import debug_utils
 if args.option == "optimize":
@@ -186,16 +186,16 @@ if __name__ == '__main__':
             # TODO(CY): What is wk_dag here?
             node_lists = list(wk_dag.nodes())
             total_len = len(node_lists)
-            pgsbar = progressBar(start=0, end=total_len)
+            pgsbar = tqdm(total=total_len)
             idx = 0
             while idx < total_len:
                 nodename = node_lists[idx]
                 delay_dict = {nodename: {"delay": 10, "ratio": 1.0}}
                 step_end_time = replayer.replayAndDelay(delay_dict, _ouput=False)
                 logger.info("Delay %s ==> %s ==> %s critical path." % (nodename, str(step_end_time), "in" if nodename in critical_path else "not in"))
-                if args.progress:
-                    pgsbar.showBar(idx)
+                pgsbar.update(idx)
                 idx += 10
+            pgsbar.close()
         elif args.sub_option == "bottleneck":
             ''' Replay and add delays to some of the node on the critical path respectively.'''
             ### Get the execution graph first
@@ -205,7 +205,7 @@ if __name__ == '__main__':
             critical_path = dag_longest_path(replayer.exct_dag, clct.pm, weight="cost", default_weight=0, _debug_level=2)
             critical_path = sorted(critical_path, key=lambda x: x[1], reverse=True)
             total_len = len(critical_path)
-            pgsbar = progressBar(start=0, end=total_len)
+            pgsbar = tqdm(total=total_len)
             idx = 0
             max_diff = 0
             bottleneckt_ = None
@@ -225,11 +225,11 @@ if __name__ == '__main__':
                 if diff_ > max_diff:
                     max_diff = diff_
                     bottleneckt_ = nodename
-                if args.progress:
-                    pgsbar.showBar(idx)
+                pgsbar.update(idx)
                 ### TODO (huhanpeng): how to pick these nodes
                 idx += 10
             logger.info("bottleneckt: %s" % bottleneckt_)
+            pgsbar.close()
         elif args.sub_option == "compare":
             rst = []
             idx = 0
@@ -269,18 +269,22 @@ if __name__ == '__main__':
         elif args.sub_option == "gap":
             clct.list_max_gap(args.head)
         elif args.sub_option.startswith("amp_data_clct"):
-            from cost_model._mixed_precision import data_clct
+            from cost_model import trace_filter
             ### E.g. args.sub_option = amp_data_clct,save_names=fp32,model=resnet,platform=tf
             kvs = dict([tuple(kv.split("="))for kv in args.sub_option.split(",")[1:]])
-            trace_filter = data_clct.TraceFilter(**kvs)
+            trace_filter = trace_filter.TraceFilter(**kvs)
             trace_filter.dump_for_cost_model(clct.traceM.name2sta, clct.pm.path)
 
     if args.option == "optimize":
-        from cost_model._mixed_precision.amp_pred import AMPPredictor, train_amp_model
-        from cost_model_xla.xla_module_cost_model import XLAModuleCostModel
+        # from cost_model_xla.xla_module_cost_model import XLAModuleCostModel
         if args.sub_option == "train_amp":
+            from cost_model._mixed_precision.amp_pred import AMPPredictor, train_amp_model
             train_amp_model()
-            raise NotImplementedError
+            exit(0)
+        elif args.sub_option == "train_gpu":
+            from cost_model._gpu_predict.gpu_pred import train_gpu_model
+            train_gpu_model()
+            exit(0)
         
         if args.sub_option == "from_opfs2tsfs":
             xla_clst_mapping_path = path_list[1]
@@ -344,25 +348,6 @@ if __name__ == '__main__':
                 json.dump({"mapping": list(tensor_grps)}, f)
             exit(0)
                     
-        # if not args.simulate and len(path_list) < 2:
-        #     raise RuntimeError("optimize requires positional path arguments: profile data path & cost model path.")
-
-        # cost_models = {}
-        # if not args.simulate:
-        #     models_dir = path_list[1]
-        #     shape_dict_path = path_list[2]
-        #     logger.info("Searching for model dumps in {}".format(models_dir))
-        #     for model_dump_dir in os.listdir(models_dir):
-        #         model_path = os.path.join(models_dir, model_dump_dir)
-        #         p = Path(model_path)
-        #         if p.is_dir():
-        #             node_name = p.name
-        #             cm = XLAModuleCostModel(model_path, tmp_dir=os.path.join(args.cost_model_tmp_dir, node_name))
-        #             cost_models[node_name] = cm
-        #             logger.info("Added cost model for {}".format(node_name))
-        #         else:
-        #             logger.warn("{} not a directory.".format(model_path))
-
         if args.optimizer == "MCTS":
             opt = optimizer.MCTSOptimizer(clct)
         elif args.optimizer == "MCMC":

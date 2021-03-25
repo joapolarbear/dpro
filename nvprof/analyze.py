@@ -1,3 +1,4 @@
+from tqdm import tqdm
 import os 
 import json
 import argparse
@@ -8,7 +9,6 @@ import sys
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import logger_utils
-from progress_utils import progressBar
 
 parser = argparse.ArgumentParser(description="Trace Analysis",
 		formatter_class=argparse.ArgumentDefaultsHelpFormatter)

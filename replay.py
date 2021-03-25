@@ -9,7 +9,7 @@ import re
 
 from dag_utils import QueueType
 from trace_utils import *
-from progress_utils import progressBar
+from tqdm import tqdm
 import logger_utils
 import debug_utils
 import arg_utils
