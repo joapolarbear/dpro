@@ -17,14 +17,14 @@ elif args_.platform == "TENSORFLOW":
     SingleLogger().info("Use TENSORFLOW metadata")
 else:
     raise NotImplementedError()
-from cost_model.gpu_models_info import ret_gpu_config
+from cost_model.gpu_models_info import ret_gpu_config, gpu_filter
 
 BATCHSIZE_THESHOLD = 4
 BATCHSIZE_UPPER = 1e6
 STDDEV_THREHOLD = 0.2
 AVG_THREHOLD = 0
 TRAIN_PERCENT = 0.9
-FP32_OR_FP16 = (True, True)
+FP32_OR_FP16 = (False, True)
 
 SYSNAME = "dPRO"
 
@@ -556,7 +556,7 @@ class MultiDataLoader(BasicLoader):
         for _data_loader in self.dataloaders:
             # print(_data_loader.gpu_config.name)
             op_names_ = _data_loader.pick_opnames_by_op_type(target_optype_)
-            if len(op_names_) > 0:
+            if len(op_names_) > 0 and gpu_filter(_data_loader.gpu_config.name):
                 _data_loader.collect_all_data(op_names_, multi_data_dict=_all_data_dict)
 
         self.all_data_dict = _all_data_dict

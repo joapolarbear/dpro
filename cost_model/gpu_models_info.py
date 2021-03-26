@@ -1,6 +1,7 @@
 import numpy as np
 ALL_GPU_MODELS = ["v100", "a100", "p100", "1080ti", "t4"]
 CONFIG_NAMES = ["flops_fp32", "flops_fp16"]
+ALL_GPU_MODELS_FILTER = [True, True, True, True, True]
 
 ### refer to https://www.microway.com/knowledge-center-articles/comparison-of-nvidia-geforce-gpus-and-nvidia-tesla-gpus/
 ### in tflops
@@ -21,3 +22,8 @@ def ret_gpu_config(gpu_model):
     if gpu_model not in ALL_GPU_MODELS:
         raise ValueError("Invalid GPU Model name: {}".format(gpu_model))
     return GPUConfig(gpu_model, GPU_CONFIG[ALL_GPU_MODELS.index(gpu_model)])
+
+def gpu_filter(gpu_model):
+    if gpu_model not in ALL_GPU_MODELS:
+        raise ValueError("Invalid GPU Model name: {}".format(gpu_model))
+    return ALL_GPU_MODELS_FILTER[ALL_GPU_MODELS.index(gpu_model)]

@@ -325,7 +325,8 @@ def train_gpu_model():
                             op_type=target_optype, max_of_each_dim=data_ld.max_of_each_dim)
     grp.divide_by_len(train_x, train_y, test_x, test_y)
     grp.train_all()
-    grp.test_all(visual=False)
+    fitting_error = grp.test_all(visual=True, dump_path=os.path.join(args_.path, "mg_{}.png".format(target_optype)))
+    SingleLogger().info("\033[94m Overall fitting error: {} %% \033[0m".format(fitting_error))
     grp.dump()
 
 def dump2xlsx():

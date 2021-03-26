@@ -152,7 +152,7 @@ class Grouper:
             except RuntimeError:
                 SingleLogger().warn("[WARNING] RuntimeError")
 
-    def test_all(self, visual=True):
+    def test_all(self, visual=True, dump_path=None):
         if not isinstance(self.dels, list):
             self.dels = [self.dels]
         plots = [[], [], [], []]
@@ -171,8 +171,9 @@ class Grouper:
                 plots[2].append(self.fitter_table[grp_id]["test_x"].shape[0])
                 plots[3].append(error)
 
+        fitting_error = sum(plots[3])/len(plots[3])
         if visual:
-            plt.figure(num=1, figsize=(8, 6))
+            plt.figure(num=1, figsize=(8, 4))
             clrs = sns.color_palette("husl", 5)
             xaxis = np.arange(len(plots[0]))
             bar_width = 0.4
@@ -185,7 +186,7 @@ class Grouper:
             plt.legend(loc=2)
             
             ax = ax.twinx()
-            ax.plot(plots[0], plots[3], '.-', label='fitting error = %6.4f %%'%(sum(plots[3])/len(plots[3])))
+            ax.plot(plots[0], plots[3], '.-', label='fitting error = %6.4f %%'%(fitting_error))
             ax.set_ylabel("Fitting error (%)")
             plt.legend(loc=1)
 
@@ -193,7 +194,11 @@ class Grouper:
             plt.title("Data size and fitting error of each group \n{}".format(self.print_dels(self.dels)))
 
             fig.tight_layout()  # otherwise the right y-label is slightly clipped
-            plt.show()
+            if dump_path is None:
+                plt.show()
+            else:
+                plt.savefig(dump_path)
+        return fitting_error
 
     def predict(self, xdata, normalized=False):
         ### normalized 
