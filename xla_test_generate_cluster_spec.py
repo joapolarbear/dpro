@@ -16,7 +16,7 @@ except:
 
 # from collect import Collector
 from cost_model_xla.pk_graph import PKGraph, postorder_contract_nx
-from trace_utils import parse_layer_name, parse_pid_from_name
+from trace_utils import parse_op_name, parse_pid_from_name
 
 TRACE_PATH = "/root/capture_file/run_0_dec8"
 OUTPUT_PATH = "/root/cluster_spec_test.txt"
@@ -88,7 +88,7 @@ def wrap_read_graphdef(graphdef_path):
 def relabel_dag_node(_dag) -> nx.DiGraph:
     def relabel_func(old_label):
         if ("BW" in old_label or "FW" in old_label or "Comm" in old_label or "UPDATE" in old_label) and "^" not in old_label:
-            layer_name = parse_layer_name(old_label)     
+            layer_name = parse_op_name(old_label)
             layer_pid = parse_pid_from_name(old_label)
             # if layer_pid not in self.cost_models or layer_name not in self.cost_models[layer_pid].graph_def_util.operation_names:
             #     return "DEL~"+old_label

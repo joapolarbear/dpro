@@ -20,11 +20,12 @@ python3 /home/tiger/byteprofile-analysis/analyze.py \
 ### Search operator fusion strategies
 Sample commands, put the XLA cost model in the path of  `./cost_model_xla/.cost_model`
 ```
-python3 analyze.py --option optimize --sub_option xla \
+python3 analyze.py --option optimize --sub_option xla,^memory \
     --platform TENSORFLOW --comm_backend NCCL --nccl_algo RING --pretty \
     --path /root/data/20210125_05_hvd_tf_resnet50_tcp/ \
     --workspace /root/data/20210125_05_hvd_tf_resnet50_tcp/ \
-    --xla_candidate_path data/xla_candidates_resnet.txt
+    --xla_candidate_path data/xla_candidates_resnet.txt \
+    --update_infi_para
 ```
 If you do not have a XLA cost model, run the following command to search with simulation
 ```
@@ -32,7 +33,8 @@ python3 analyze.py --option optimize --sub_option xla \
     --platform TENSORFLOW --comm_backend NCCL --nccl_algo RING --pretty --simulate \
     --path /root/data/20210125_05_hvd_tf_resnet50_tcp/ \
     --workspace /root/data/20210125_05_hvd_tf_resnet50_tcp/ \
-    --xla_candidate_path data/xla_candidates_resnet.txt
+    --xla_candidate_path data/xla_candidates_resnet.txt \
+    --update_infi_para
 ```
 
 ### Search tensor fusion strategies

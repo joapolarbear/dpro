@@ -212,10 +212,6 @@ class DAGManager:
         self.traceM = traceM
         self.dag = []
         self.nodes = set()
-
-        self.nodes_to_rm = set()
-        self.nodes_to_keep = set()
-
         self._fw_bw_dag = None
 
         self.wk_prefix, self.rank_prefix = self.pm.ret_prefix()
@@ -526,18 +522,6 @@ class DAGManager:
                 self.add_prefix(standard_name(u, platform=self.platform)), 
                 self.add_prefix(standard_name(v, platform=self.platform)))
 
-    def all_post_nodes(self, mygraph, co_comm_op):
-        post_nodes = set(mygraph.successors(co_comm_op))
-        nodes_to_process = set(mygraph.successors(co_comm_op))
-        while len(nodes_to_process):
-            cur_node = nodes_to_process.pop()
-            if "cond_" not in cur_node:
-                continue
-            succ_ = set(mygraph.successors(cur_node))
-            post_nodes = post_nodes.union(succ_)
-            nodes_to_process = nodes_to_process.union(succ_)
-        return post_nodes
-
     def gen_dag_with_prefix_weight(self, old_graph, para_dict=None):
         ''' Gen a dag from the original graph with weighted edges.
         Return: A dag, which
@@ -598,7 +582,7 @@ class DAGManager:
                 if u in done_comm:
                     continue
                 pre_nodes =[sync_op]
-                _first = True
+                first = True
                 for _id in nccl_grp_name.split("+"):
                     if self.platform == "MXNET":
                         # e.g., from tensor 256 to update 140
@@ -608,20 +592,11 @@ class DAGManager:
                         ### TODO (hphu): for a fused tensor, it corresponds to multiple updates which run cocurrently
                         # Current, only select one as the update operator
                         co_comm_op = "Comm.{}".format(_id)
-                        if _first:
+                        if args_.update_infi_para or first:
                             post_update_nodes = list(mygraph.successors(co_comm_op))
                             post_nodes += post_update_nodes
-                            if "host0.rank0" in self.prefix:
-                                print(post_nodes)
-                            _first = False
-
-                            post_nodes = self.all_post_nodes(mygraph, co_comm_op)
-                            self.nodes_to_keep = self.nodes_to_keep.union(post_nodes)
-                        else:
-                            ### For the remaining comm_op in the fused tensor, all downstream
-                            ### ops should be removed
-                            post_nodes = self.all_post_nodes(mygraph, co_comm_op)
-                            self.nodes_to_rm = self.nodes_to_rm.union(post_nodes)
+                            first = False
+                  
                 done_comm.append(u)
                 
             
@@ -646,37 +621,6 @@ class DAGManager:
                 self.wrap_add_dag(self.add_prefix("UPDATE_CAL"), update_name)
                 ### Connect all UPDATE nodes to an END node
                 self.wrap_add_dag(update_name, "END")
-        
-        if "host0.rank0" in self.prefix:
-            print(len(self.nodes_to_rm), len(self.nodes_to_keep))
-        self.nodes_to_rm.difference_update(self.nodes_to_keep)
-        if "host0.rank0" in self.prefix:
-            print(len(self.nodes_to_rm), len(self.nodes_to_keep))
-        edges = []
-        for u, v in self.dag:
-            ru = parse_rawname_from_name(u)
-            rv = parse_rawname_from_name(v)
-            # if "UPDATE" in rv and "host0.rank0" in v:
-            #     print(rv)
-            if ru in self.nodes_to_rm or rv in self.nodes_to_rm:
-                # if "host0.rank0" in self.prefix:
-                #     print(ru, rv)
-                if "Comm" in ru:
-                    edges.append((u, v))
-                else:
-                    continue
-            else:
-                edges.append((u, v))
-        self.dag = edges
-        
-        if "host0.rank0" in self.prefix:
-            cond_nodes = set()
-            for u, v in self.dag:
-                if "cond_1" in u:
-                    cond_nodes.add(u)
-                if "cond_1" in v:
-                    cond_nodes.add(v)
-            print("{} cond nodes".format(len(cond_nodes)))
 
         # visualize_gml(self.dag, layout="circular")
 

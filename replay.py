@@ -82,7 +82,8 @@ class Device:
         if not self.infi_para:
             start_t = self.real_start_t(_last_end_time)
         else:
-            raise NotImplementedError("Infi para is not yet implemented.")
+            # raise NotImplementedError("Infi para is not yet implemented.")
+            start_t = _last_end_time
 
         if name == "END":
             #! No event is generated, but has successors
@@ -226,9 +227,9 @@ class CommKernelDevice(Device):
     def acquire_lock(self, name):
         if self.lock is None:
             ### prefix->op_type.op_name.sub_op~>suffix
-            self.lock = parse_rawname_from_name(name).split(".")[1]
+            self.lock = parse_op_name(n)
             return True
-        elif self.lock == parse_rawname_from_name(name).split(".")[1]:
+        elif self.lock == parse_op_name(n):
             return True
         else:
             return False
@@ -308,7 +309,7 @@ class Replayer:
                 infi_para_update=False, show_queue=False):
         self.dag = dag
         self.infi_para_update = infi_para_update
-        self.preprocess_dag()
+        # self.preprocess_dag()
         self.step_num = _step_num
         self.leaf_dirs = leaf_dirs
         self.dump_path = dump_path
@@ -486,7 +487,7 @@ class Replayer:
                     device_id = gen_long_name(pid, cat)
         elif "UPDATE" in n and self.infi_para_update:
             # update node, generate a new device
-            device_id = n
+            device_id = gen_long_name(pid, cat, "INFI_PARA_UPDATE")
         else:
             device_id = gen_long_name(pid, cat)
 
@@ -498,6 +499,9 @@ class Replayer:
                 # self.device_dict[device_id] = self.create_periodic_device(device_id)
             elif cat == CatName.COMM.value and "Kernel" in device_id:
                 self.device_dict[device_id] = self.create_comm_kernel_device(device_id)
+            elif "INFI_PARA_UPDATE" in device_id:
+                self.device_dict[device_id] = self.create_device(
+                    device_id, infi_para=True)
             else:
                 self.device_dict[device_id] = self.create_device(device_id)
 
@@ -584,7 +588,7 @@ class Replayer:
                     comm_succs = map_bw_2_comm(long_name)
                     assert len(comm_succs) <= 1, (trace["name"], comm_succs)
                     if len(comm_succs) > 0:
-                        rawname = parse_rawname_from_name(comm_succs[0])
+                        rawname = parse_rawname(comm_succs[0])
                         trace["name"] = "BW." + rawname
                     else:
                         trace["name"] = "BW"
@@ -607,7 +611,7 @@ class Replayer:
                 comm_succs = map_bw_2_comm(long_name)
                 assert len(comm_succs) <= 1, (trace["name"], comm_succs)
                 if len(comm_succs) > 0:
-                    rawname = parse_rawname_from_name(comm_succs[0])
+                    rawname = parse_rawname(comm_succs[0])
                     trace["name"] = "BW." + rawname
                 else:
                     trace["name"] = "BW"

@@ -1222,7 +1222,7 @@ class Collector(object):
                     self.trail_dag.nodes[node_][GAP_STR_OP2COMM] = gap
                 elif "PUSH_REQ" in node_ or "PULL_REQ" in node_ \
                         or "PUSH_RES" in node_ or "PULL_RES" in node_:
-                    source, target, _, _= self.byteps_graph.parse_comm_event_name(parse_rawname_from_name(node_))
+                    source, target, _, _= self.byteps_graph.parse_comm_event_name(parse_rawname(node_))
                     gap = self.byteps_graph.comm_delays[(source, target)]
                     self.trail_dag.nodes[node_][GAP_STR_INTERNODE] = gap
 

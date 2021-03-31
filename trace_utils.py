@@ -215,29 +215,25 @@ def parse_pid_from_name(name):
     else:
         return name.split(DEL)[0]
 
-def parse_rawname_from_name(name):
+def parse_rawname(name):
     if DEL not in name:
         return name
     else:
         return name.split(DEL)[1]
 
-warned = False
-def parse_layer_name(name):
-    global warned
-    if not warned:
-        SingleLogger().warn("parse_layer_name() may not be safe")
-        warned = True
+def parse_op_name(name):
     if DEL in name:
         name = name.split(DEL)[1]
     if DDEL in name:
         name = name.split(DDEL)[0]
     if "." in name:
         name = name.split(".")[1]
-    name_split = name.split("_")
-    if name_split[-1] in ["gamma", "beta", "weight", "bias"]:
-        return "_".join(name_split[:-1])
-    else:
-        return name
+    # name_split = name.split("_")
+    # if name_split[-1] in ["gamma", "beta", "weight", "bias"]:
+    #     return "_".join(name_split[:-1])
+    # else:
+    #     return name
+    return name
 
 def parse_cat_from_name(name):
     if "I/O" in name:
@@ -404,7 +400,7 @@ class TraceManager:
             prefix = event["pid"]
             if prefix not in prefix_dict:
                 prefix_dict[prefix] = {
-                    "cat_cnt": {},
+                    "cat_cnt": {"operator.FW": 0, "operator.BW": 0, "operator.UPDATE": 0},
                     "step_cnt": 0,
                     "time_base": None,
 
@@ -459,7 +455,9 @@ class TraceManager:
             if pid_info["time_cursor"] is None:
                 pass
             elif event["ts"] - pid_info["time_cursor"] - pid_info["time_base"] > ITER_GAP_LOWER_BOUND_US and \
-                    cat in AS_START_CAT:
+                    cat in AS_START_CAT and \
+                    pid_info["cat_cnt"]["operator.BW"] > 0 and \
+                    pid_info["cat_cnt"]["operator.UPDATE"] > 0:
                 pid_info["step_cnt"] += 1
             event["args"]["step"] = pid_info["step_cnt"]
 

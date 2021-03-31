@@ -5,7 +5,7 @@ import seaborn as sns
 import math
 
 from logger_utils import Singleton, SingleLogger
-from trace_utils import parse_rawname_from_name
+from trace_utils import parse_op_name
 import arg_utils
 args_ = arg_utils.SingleArg().args
 
@@ -170,11 +170,11 @@ class DataLoader(BasicLoader):
                 if "fp32" in line:
                     self.NAMELIST_32 = str2list(line.split(":")[1])
                     if "->" in self.NAMELIST_32[0] and "." in "->" in self.NAMELIST_32[0]:
-                        self.NAMELIST_32 = [parse_rawname_from_name(n).split(".")[1] for n in self.NAMELIST_32]
+                        self.NAMELIST_32 = [parse_op_name(n) for n in self.NAMELIST_32]
                 elif "fp16" in line:
                     self.NAMELIST_16 = str2list(line.split(":")[1])
                     if "->" in self.NAMELIST_16[0] and "." in "->" in self.NAMELIST_16[0]:
-                        self.NAMELIST_16 = [parse_rawname_from_name(n).split(".")[1] for n in self.NAMELIST_16]
+                        self.NAMELIST_16 = [parse_op_name(n) for n in self.NAMELIST_16]
                 else:
                     raise
 

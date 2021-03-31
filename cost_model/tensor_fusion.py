@@ -145,7 +145,7 @@ class _TensorFusionCM(_BaseCostModel):
                                 if parse_cat_from_name(n) == CatName.COMM.value]
         current_comm_nodes = set()
         for comm_node in unfused_comm_nodes:
-            tensor_id = int(parse_layer_name(comm_node))
+            tensor_id = int(parse_op_name(comm_node))
             group_name = self.cur_tensor2group[tensor_id]
             current_comm_nodes.add(self._wrap_gen_long_name(pid, CatName.COMM.value, group_name, "Sync", suffix))
         return current_comm_nodes
@@ -159,7 +159,7 @@ class _TensorFusionCM(_BaseCostModel):
                                 if parse_cat_from_name(n) == CatName.COMM.value]
         current_comm_nodes = set()
         for comm_node in unfused_comm_nodes:
-            tensor_id = int(parse_layer_name(comm_node))
+            tensor_id = int(parse_op_name(comm_node))
             group_name = self.cur_tensor2group[tensor_id]
             current_comm_nodes.add(self._wrap_gen_long_name(pid, CatName.COMM.value, group_name, "MEMCPY_OUT_FUSION_BUFFER", suffix))
         return current_comm_nodes

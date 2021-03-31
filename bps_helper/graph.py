@@ -43,7 +43,7 @@ class ServerOpCounter(object):
 			self.server_op_counter[server] = {}
 	
 	def get_next_op(self, name):
-		raw_name = parse_rawname_from_name(name)
+		raw_name = parse_rawname(name)
 		source, target, tensor_name, op = self.byteps_graph.parse_comm_event_name(raw_name)
 		if target in self.server_op_counter:
 			# is a push or pull request to servers
@@ -1006,7 +1006,7 @@ class bytepsGraph:
         bw_delay_dict = {}
 
         def get_tensor_name_from_full_name(n):
-            _, _, tensor_name, _ = self.parse_comm_event_name(parse_rawname_from_name(n))
+            _, _, tensor_name, _ = self.parse_comm_event_name(parse_rawname(n))
             return tensor_name
 
         for process_name, tensor_dict in bw_durations.items():

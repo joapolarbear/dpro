@@ -20,9 +20,9 @@ if CMEnvs.CM_PROFILE_GPU in os.environ:
               " {} is given".format(CMEnvs.CM_PROFILE_GPU))
         exit(-1)
 else:
-    print("[WARNING] Required environment BPF_COST_MODEL_PROFILE_GPU value not set.")
-    BPF_PROFILE_GPU = None
-    exit(-1)
+    print("[WARNING] Required environment BPF_COST_MODEL_PROFILE_GPU value not set. Set it as 0 by default")
+    BPF_PROFILE_GPU = 0
+    # exit(-1)
 
 def _check_file_available_for_writing(path):
     p = Path(path)
