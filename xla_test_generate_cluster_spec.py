@@ -15,7 +15,7 @@ except:
     GraphDef = tf.compat.v1.GraphDef
 
 # from collect import Collector
-from cost_model_xla.pk_graph import PKGraph, postorder_contract_nx
+from cost_model._xla.pk_graph import PKGraph, postorder_contract_nx
 from trace_utils import parse_op_name, parse_pid_from_name
 
 TRACE_PATH = "/root/capture_file/run_0_dec8"

@@ -1,5 +1,5 @@
 import argparse
-from cost_model_xla.xla_module_cost_model import XLAModuleCostModel
+from cost_model._xla.xla_module_cost_model import XLAModuleCostModel
 
 parser = argparse.ArgumentParser(description="Script to train the XLA module cost model.",
 		formatter_class=argparse.ArgumentDefaultsHelpFormatter)

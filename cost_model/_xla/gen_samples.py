@@ -17,7 +17,7 @@ import scipy
 from scipy.special import softmax
 from tqdm import trange, tqdm
 from multiprocessing import Pool
-from .pk_graph import PKGraph, PKGraphCycleError, contract_nodes_nx, \
+from .pk_graph import PKGraph, contract_nodes_nx, \
                         defuse_nodes_inplace_nx, postorder_contract_nx, \
                         subgraph_partition_connected_nx
 from .constant_utils import *

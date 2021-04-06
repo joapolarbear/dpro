@@ -17,8 +17,10 @@ python3 /home/tiger/byteprofile-analysis/analyze.py \
 
 ---
 # Optimizer
+
+## Operator Fusion
 ### Search operator fusion strategies
-Sample commands, put the XLA cost model in the path of  `./cost_model_xla/.cost_model`
+Sample commands, put the XLA cost model in the path of  `./cost_model/_xla/.cost_model`
 ```
 python3 analyze.py --option optimize --sub_option xla,^memory \
     --platform TENSORFLOW --comm_backend NCCL --nccl_algo RING --pretty \
@@ -37,6 +39,17 @@ python3 analyze.py --option optimize --sub_option xla \
     --update_infi_para
 ```
 
+### Sample some example strategies
+Fuse operators layer by layer, below is an exmple where each 2 layers' operators are fused.
+```
+python3 analyze.py --option optimize --sub_option xla,^memory \
+    --platform TENSORFLOW --comm_backend NCCL --nccl_algo RING --pretty  \
+    --path path/to/trace/directory \
+    --xla_candidate_path path/to/candidate/file/ \
+    --update_infi_para --simulate --layer_num_limit 2
+```
+
+## Tensor Fusion
 ### Search tensor fusion strategies
 Sample commands
 ```
@@ -46,6 +59,7 @@ python3 analyze.py --option optimize --sub_option tensor_fusion \
     --workspace /root/data/20210125_05_hvd_tf_resnet50_tcp/
 ```
 
+## Combine Tensor Fusion and Operator Fusion
 ### Search both tensor fusion and operator fusion strategies
 Sample commands
 ```
@@ -65,13 +79,15 @@ python3 analyze.py --option optimize --sub_option from_opfs2tsfs \
 ```
 where `<cluster_mapping_path>` denotes the path to the cluster_mapping.txt (operator fusion search result).
 
-### Mixed Precision Training
+
+## Mixed Precision Training
 `TF_AUTO_MIXED_PRECISION_GRAPH_REWRITE_PRIORLIST_FILE`: a file containing ops to force quantize, seperated by \n
 `TF_AUTO_MIXED_PRECISION_GRAPH_REWRITE_PRIORLIST_ADD`: ops to force quantize, seperated by comma
 `TF_AUTO_MIXED_PRECISION_GRAPH_REWRITE_FORCE`: clear the CLEARLIST and BCACKLIST if set
 
-## Train Cost Model
-### Cost Model for MultiGPU
+---
+# Train Cost Model
+## Cost Model for MultiGPU
 
 ```
 python3 mg_generate_dataset.py --option optimize --sub_option train_gpu --platform TENSORFLOW --comm_backend NCCL --nccl_algo RING --path /path/to/traces

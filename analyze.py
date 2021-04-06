@@ -276,7 +276,6 @@ if __name__ == '__main__':
             trace_filter.dump_for_cost_model(clct.traceM.name2sta, clct.pm.path)
 
     if args.option == "optimize":
-        # from cost_model_xla.xla_module_cost_model import XLAModuleCostModel
         if args.sub_option == "train_amp":
             from cost_model._mixed_precision.amp_pred import AMPPredictor, train_amp_model
             train_amp_model()

@@ -10,7 +10,7 @@ from scipy.optimize import curve_fit
 import arg_utils
 from .base import _BaseCostModel
 from trace_utils import *
-from cost_model_xla.pk_graph import PKGraph
+from cost_model._xla.pk_graph import PKGraph
 
 args_ = arg_utils.SingleArg().args
 ENABLE_PARTITION = True
@@ -19,7 +19,8 @@ TRAIN_PERCENT = 0.9
 ### given a fused tensor, return N possible partition method
 # N <= MAX_PARTITION_NUM
 MAX_PARTITION_NUM = 5
-ROOT_PATH = os.path.join(args_.workspace, ".opt_ws")
+ROOT_PATH = os.path.join(
+    args_.workspace if args_.workspace else args_.path, ".opt_ws")
 IGNORE_SYNC = True
 
 def func_tensor_size_to_time(s, k, b):

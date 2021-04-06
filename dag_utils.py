@@ -181,6 +181,7 @@ def standard_name(_name, platform="TENSORFLOW", update_nodes_in_dag=None):
         _name = tf_relabel_func(_name, update_nodes_in_dag)
     return _name
 
+
 class DAGManager:
     ''' Maintain a dependency graph for one GPU
     Parameters

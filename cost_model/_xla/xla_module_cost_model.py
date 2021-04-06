@@ -19,11 +19,11 @@ try:
     GraphDef = tf.GraphDef
 except:
     GraphDef = tf.compat.v1.GraphDef
-from cost_model_xla.xlatools import compile_to_hlo, extract_kernel_features_from_hlo, replay_and_generate_kernel_sample, BPF_PROFILE_GPU
+from cost_model._xla.xlatools import compile_to_hlo, extract_kernel_features_from_hlo, replay_and_generate_kernel_sample, BPF_PROFILE_GPU
 from google.protobuf.json_format import Parse
-from cost_model_xla.gen_dataset_utils import XlaKernelDataset, XlaModuleTestSet
-from cost_model_xla.gen_samples import GraphDefUtil, GSInternalErrors
-from cost_model_xla.constant_utils import *
+from cost_model._xla.gen_dataset_utils import XlaKernelDataset, XlaModuleTestSet
+from cost_model._xla.gen_samples import GraphDefUtil, GSInternalErrors
+from cost_model._xla.constant_utils import *
 from tqdm import tqdm, trange
 from collections import defaultdict
 import traceback

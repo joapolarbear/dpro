@@ -1,6 +1,6 @@
 import argparse
 
-from cost_model_xla.gen_dataset_utils import XlaKernelDataset
+from cost_model._xla.gen_dataset_utils import XlaKernelDataset
 
 parser = argparse.ArgumentParser(description="Script to launch the kernel dataset generator.",
 		formatter_class=argparse.ArgumentDefaultsHelpFormatter)

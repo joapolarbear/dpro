@@ -227,9 +227,9 @@ class CommKernelDevice(Device):
     def acquire_lock(self, name):
         if self.lock is None:
             ### prefix->op_type.op_name.sub_op~>suffix
-            self.lock = parse_op_name(n)
+            self.lock = parse_op_name(name)
             return True
-        elif self.lock == parse_op_name(n):
+        elif self.lock == parse_op_name(name):
             return True
         else:
             return False

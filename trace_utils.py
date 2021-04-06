@@ -745,6 +745,7 @@ class TraceManager:
         assert self.has_prefix(name) or name == "END", name
         return self.name2sta[name]["step_ids"]
 
+
 class BiasRange:
     def __init__(self, _l, _r):
         self.l = _l

@@ -7,5 +7,6 @@ data/data_*
 dist/dist/byteprofile_analysis-0.1-py3.8.egg
 byteprofile_analysis.egg-info
 dist/
-cost_model_xla/.cost_model/
+cost_model/_xla/.cost_model/
+cost_model/_gpu_predict/.cost_model/
 .idea/

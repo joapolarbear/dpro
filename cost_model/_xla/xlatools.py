@@ -4,7 +4,7 @@ import subprocess
 import os
 import re
 
-from cost_model_xla.constant_utils import *
+from cost_model._xla.constant_utils import *
 
 if CMEnvs.TF_PATH in os.environ:
     BPF_TF_PREFIX = os.environ[CMEnvs.TF_PATH]

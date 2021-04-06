@@ -9,7 +9,7 @@ from tqdm import tqdm
 import arg_utils
 from .base import _BaseCostModel
 from trace_utils import *
-from cost_model_xla.pk_graph import PKGraph
+from cost_model._xla.pk_graph import PKGraph
 from ._mixed_precision.amp_pred import AMPPredictor
 
 args_ = arg_utils.SingleArg().args

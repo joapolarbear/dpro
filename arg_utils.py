@@ -1,7 +1,7 @@
 import argparse
 from base import Singleton
 
-parser = argparse.ArgumentParser(description="Trace Analysis",
+parser = argparse.ArgumentParser(description="dPRO Arguments",
 		formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 # parser.add_argument("-s", action="store_true", help="sort the output result")
 parser.add_argument("--option", type=str, 
@@ -25,47 +25,57 @@ parser.add_argument("--progress", action="store_true", help="Show the progress b
 parser.add_argument("--debug_traces", action="store_true", help="If set, output traces profiled for the analysis process")
 
 ### collect
-parser.add_argument("--comm_backend", type=str, default="NCCL", choices=["NCCL", "BYTEPS"], help="Communication backend")
-parser.add_argument("--platform", type=str, default="TENSORFLOW", choices=["TENSORFLOW", "MXNET"], help="Platform used to run the model")
-parser.add_argument("--pcap_file_path", type=str, default=None, help="Path to the directory containing BytePS communication pcap files.")
-parser.add_argument("--zmq_log_path", type=str, default=None, help="Path to the directory containing BytePS communication zmq log files.")
-parser.add_argument("--server_log_path", type=str, default=None, help="Path to the directory containing BytePS server log files.")
-parser.add_argument("--profile_start_step", type=int, default=None, help="The start step of computation profiling. Used for truncating BytePS comm trace.")
-parser.add_argument("--profile_duration", type=int, default=None, help="The duration (in steps) of computation profiling. Used for truncating BytePS comm trace.")
-parser.add_argument("--nccl_algo", type=str, default=None, help="NCCL algorithm, Tree or Ring")
-parser.add_argument("--van_type", type=str, choices=["ZMQ", "RDMA"], default=None, help="Type of protocol used in BytePS.")
-parser.add_argument("--trace_level", type=str, choices=["debug", "info"], default="info", help="if set to debug, show some trival traces")
-parser.add_argument("--disable_revise", action="store_true", help="By default, revise traces according to SEND-RECV dependency, set to disable this argument to disable")
-parser.add_argument("--force", action="store_true", help="Force to re-generate traces, graphs")
-parser.add_argument("--metadata_path", type=str, default=None,
+group_clct = parser.add_argument_group('Trace Collection')
+group_clct.add_argument("--comm_backend", type=str, default="NCCL", choices=["NCCL", "BYTEPS"], help="Communication backend")
+group_clct.add_argument("--platform", type=str, default="TENSORFLOW", choices=["TENSORFLOW", "MXNET"], help="Platform used to run the model")
+group_clct.add_argument("--pcap_file_path", type=str, default=None, help="Path to the directory containing BytePS communication pcap files.")
+group_clct.add_argument("--zmq_log_path", type=str, default=None, help="Path to the directory containing BytePS communication zmq log files.")
+group_clct.add_argument("--server_log_path", type=str, default=None, help="Path to the directory containing BytePS server log files.")
+group_clct.add_argument("--profile_start_step", type=int, default=None, help="The start step of computation profiling. Used for truncating BytePS comm trace.")
+group_clct.add_argument("--profile_duration", type=int, default=None, help="The duration (in steps) of computation profiling. Used for truncating BytePS comm trace.")
+group_clct.add_argument("--nccl_algo", type=str, default=None, help="NCCL algorithm, Tree or Ring")
+group_clct.add_argument("--van_type", type=str, choices=["ZMQ", "RDMA"], default=None, help="Type of protocol used in BytePS.")
+group_clct.add_argument("--trace_level", type=str, choices=["debug", "info"], default="info", help="if set to debug, show some trival traces")
+group_clct.add_argument("--disable_revise", action="store_true", help="By default, revise traces according to SEND-RECV dependency, set to disable this argument to disable")
+group_clct.add_argument("--force", action="store_true", help="Force to re-generate traces, graphs")
+group_clct.add_argument("--metadata_path", type=str, default=None,
                     help="Paths to Model metadata")
 
 ### replay
-parser.add_argument("--update_barrier", action="store_true", default=False, help="If true, add a barrier before all UPDATE ops.")
-parser.add_argument("--update_infi_para", action="store_true", help="If true, UPDATE nodes will be replayed in parallel.")
-parser.add_argument("--update_clip_overlapping", action="store_true", help="If true, clip overlapping UPDATE nodes in the timeline.")
-parser.add_argument("--step_num", type=int, default="1", help="Default step numbers to replay.")
-parser.add_argument("--delay_ratio", type=float, default=1.1, help="delay ratio")
-parser.add_argument("--full_trace", action="store_true", help="If this arg is set, simulate traces with detailed dependency info.")
-parser.add_argument("--show_queue", action="store_true", help="If this arg is set, record the queue status of each device during replaying.")
+group_replay = parser.add_argument_group('Replayer')
+group_replay.add_argument("--update_barrier", action="store_true", default=False, help="If true, add a barrier before all UPDATE ops.")
+group_replay.add_argument("--update_infi_para", action="store_true", help="If true, UPDATE nodes will be replayed in parallel.")
+group_replay.add_argument("--update_clip_overlapping", action="store_true", help="If true, clip overlapping UPDATE nodes in the timeline.")
+group_replay.add_argument("--step_num", type=int, default="1", help="Default step numbers to replay.")
+group_replay.add_argument("--delay_ratio", type=float, default=1.1, help="delay ratio")
+group_replay.add_argument("--full_trace", action="store_true", help="If this arg is set, simulate traces with detailed dependency info.")
+group_replay.add_argument("--show_queue", action="store_true", help="If this arg is set, record the queue status of each device during replaying.")
 
 ### Optimize
-parser.add_argument("--optimizer", type=str, default="MCMC", choices=["MCTS", "MCMC"], help="The algorithm used to search the optimal optimzation strategy")
-parser.add_argument("--ucb_type", type=str, default="AVG", choices=["MAX", "AVG"], help="The type of quanlity value used in the UCB euqation")
-parser.add_argument("--no_mutation", action="store_true", help="If this arg is set, the default policy of MCTS will not rollout")
-parser.add_argument("--ucb_gamma", type=float, default=0.1, help="Hyper Parameter used in UCB to control the exploration rate.")
-parser.add_argument("--ucb_visual", action="store_true", help="If this arg is set, visualize the MCTS search process")
-parser.add_argument("--mcmc_beta", type=float, default=100, help="Hyper Parameter used in MCMC/SA to control the exploration rate")
-parser.add_argument("--cost_model_tmp_dir", type=str, default="./", help="Tmp directory for cost model to store intermediate files.")
-parser.add_argument("--heat_window_size", type=int, default=5, help="Window size for the heat based search heuristic.")
-parser.add_argument("--simulate", action="store_true", help="If this arg is set, simulate the XLA cost model,"
+group_opt = parser.add_argument_group('Optimal Strategies Search')
+group_opt.add_argument("--optimizer", type=str, default="MCMC", choices=["MCTS", "MCMC"], help="The algorithm used to search the optimal optimzation strategy")
+group_opt.add_argument("--ucb_type", type=str, default="AVG", choices=["MAX", "AVG"], help="The type of quanlity value used in the UCB euqation")
+group_opt.add_argument("--no_mutation", action="store_true", help="If this arg is set, the default policy of MCTS will not rollout")
+group_opt.add_argument("--ucb_gamma", type=float, default=0.1, help="Hyper Parameter used in UCB to control the exploration rate.")
+group_opt.add_argument("--ucb_visual", action="store_true", help="If this arg is set, visualize the MCTS search process")
+
+group_opt.add_argument("--mcmc_beta", type=float, default=100, help="Hyper Parameter used in MCMC/SA to control the exploration rate")
+group_opt.add_argument("--step_size", type=int, default=1, help="Step size used in MCMC optimizer.")
+
+group_opt.add_argument("--heat_window_size", type=int, default=5, help="Window size for the heat based search heuristic.")
+group_opt.add_argument("--relabel", action="store_true", help="If this arg is set, relabel the dag with indexes.")
+group_opt.add_argument("--ckpt", action="store_true", help="If this arg is set, start from cached data")
+group_opt.add_argument("--workspace", type=str, default=None, help="Workerspace of the optimizer")
+group_opt.add_argument("--memory_budget", type=float, default=16, help="GPU Memory budget")
+
+### Operator fusion
+group_xla = parser.add_argument_group('Operator Fusion')
+group_xla.add_argument("--simulate", action="store_true", help="If this arg is set, simulate the XLA cost model,"
 						" but still use its rule to determine which operators to fuse.")
-parser.add_argument("--relabel", action="store_true", help="If this arg is set, relabel the dag with indexes.")
-parser.add_argument("--ckpt", action="store_true", help="If this arg is set, start from cached data")
-parser.add_argument("--workspace", type=str, default="/root/opt_workspace", help="Workerspace of the optimizer")
-parser.add_argument("--xla_candidate_path", type=str, default=None, help="XLA candidate path")
-parser.add_argument("--memory_budget", type=float, default=16, help="GPU Memory budget")
-parser.add_argument("--step_size", type=int, default=1, help="Step size used in MCMC optimizer.")
+group_xla.add_argument("--xla_candidate_path", type=str, default=None, help="XLA candidate path")
+group_xla.add_argument("--layer_num_limit", type=int, default=None, help="Sample some operator fusion strategies, "
+		"where BW operators are fused layer by layer."
+		"This argument specifies the maximum number of layers that can be fused")
 
 args = parser.parse_args()
 

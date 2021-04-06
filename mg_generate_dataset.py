@@ -1,3 +1,5 @@
+''' Generate Dataset to train the Cost Model
+'''
 from tqdm import tqdm
 import os,sys
 
@@ -11,7 +13,6 @@ logger = logger_utils.SingleLogger(args.path.split(',')[0],
 logger.info(args)
 
 if args.option == "optimize":
-    # from cost_model_xla.xla_module_cost_model import XLAModuleCostModel
     if args.sub_option == "train_amp":
         from cost_model._mixed_precision.amp_pred import AMPPredictor, train_amp_model
         train_amp_model()
