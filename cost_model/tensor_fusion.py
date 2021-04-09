@@ -8,7 +8,7 @@ from tqdm import tqdm, trange
 from scipy.optimize import curve_fit
 
 import arg_utils
-from .base import _BaseCostModel
+from .base import _BaseGraphPass
 from trace_utils import *
 from cost_model._xla.pk_graph import PKGraph
 
@@ -26,7 +26,8 @@ IGNORE_SYNC = True
 def func_tensor_size_to_time(s, k, b):
     return k * s + b
 
-class _TensorFusionCM(_BaseCostModel):
+
+class TensorFusionGraphPass(_BaseGraphPass):
     ''' This is a cost model for HOROVOD tensor fusion
     '''
 

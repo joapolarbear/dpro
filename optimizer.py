@@ -13,13 +13,11 @@ from trace_utils import *
 from dag_utils import *
 
 from memory import MemoryEstimator
-from memory.cost_model import IncreasingBatchSizeCostModel, MemoryCostModel
+from memory.cost_model import IncreasingBatchSizeCostModel, MemoryGraphPass
 
 from cost_model._xla.pk_graph import PKGraph
-from cost_model.base import _BaseCostModel
-from cost_model.mixed_precision import _AMPCostModel
-from cost_model.tensor_fusion import _TensorFusionCM
-from cost_model.op_fusion import _XLACostModel
+from cost_model.mixed_precision import AMPGraphPass
+from cost_model.tensor_fusion import TensorFusionGraphPass
 
 class GraphExpand(Enum):
     NOT = 0
@@ -28,7 +26,7 @@ class GraphExpand(Enum):
 
 args_ = arg_utils.SingleArg().args
 if args_.option == "optimize" and args_.sub_option not in ["amp", "tensor_fusion"]:
-    from cost_model._xla.xla_module_cost_model import XLAModuleCostModel
+    from cost_model.op_fusion import XLAGraphPass
     # import horovod.tensorflow as hvd
 
 MAX_TREE_DEPTH = 1000
@@ -81,22 +79,22 @@ class CostModelManager:
     def __init__(self, opt):
         self.cost_model_list = []
         # if "amp" in args_.sub_option:
-        #     self.cost_model_list.append(_AMPCostModel(opt))
+        #     self.cost_model_list.append(AMPGraphPass(opt))
         if "tensor_fusion" in args_.sub_option:
-            self.cost_model_list.append(_TensorFusionCM(opt))
+            self.cost_model_list.append(TensorFusionGraphPass(opt))
         if "xla" in args_.sub_option:
-            self.cost_model_list.append(_XLACostModel(opt))
+            self.cost_model_list.append(XLAGraphPass(opt))
         if len(self.cost_model_list) == 0:
             SingleLogger().warn("No optimization techniques for computation. ")
             # self.cost_model_list = [
-            #    _XLACostModel(opt),
-            #    _AMPCostModel(opt),
+            #    XLAGraphPass(opt),
+            #    AMPGraphPass(opt),
             # ]
         if "^memory" in args_.sub_option:
             self.mem_model_list = []
         else:
             self.cost_model_list.append(IncreasingBatchSizeCostModel(opt))
-            self.mem_model_list = [MemoryCostModel(opt)]
+            self.mem_model_list = [MemoryGraphPass(opt)]
         self.strategy2model = {}
 
         ### Register Thoughput-oriented Cost Models
@@ -337,9 +335,9 @@ class Optimizer:
             cm_start_end = []
             cm_weight_dict = {}
             for _cost_model in self.cst_md_mng.cost_model_list:
-                if isinstance(_cost_model, _XLACostModel):
+                if isinstance(_cost_model, XLAGraphPass):
                     model_type = "xla"
-                elif isinstance(_cost_model, _TensorFusionCM):
+                elif isinstance(_cost_model, TensorFusionGraphPass):
                     model_type = "tensor_fusion"
                 else:
                     raise NotImplementedError

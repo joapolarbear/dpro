@@ -1,7 +1,7 @@
 from functools import partial
 from memory.gradient_accumulation import get_gradient_accumulation_edited_graph
 from logger_utils import SingleLogger
-from cost_model.base import _BaseCostModel
+from cost_model.base import _BaseGraphPass
 from .recomputation import get_recomputation_edited_graph
 from replay import Replayer
 from copy import deepcopy
@@ -24,7 +24,7 @@ def has_recomputation(schedule):
             return True
     return False
 
-class MemoryCostModel(_BaseCostModel):
+class MemoryGraphPass(_BaseGraphPass):
     def __init__(self, opt):
         super().__init__(opt)
         self.token = ["gradient_accumulation", "recomputation"]
@@ -100,7 +100,7 @@ class MemoryCostModel(_BaseCostModel):
         return estimated_time, estimated_memory
 
 
-class IncreasingBatchSizeCostModel(_BaseCostModel):
+class IncreasingBatchSizeCostModel(_BaseGraphPass):
     def __init__(self, opt):
         super().__init__(opt)
         self.token = ["increase_batch_size"]

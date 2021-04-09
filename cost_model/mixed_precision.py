@@ -7,14 +7,14 @@ import ujson as json
 from tqdm import tqdm
 
 import arg_utils
-from .base import _BaseCostModel
+from .base import _BaseGraphPass
 from trace_utils import *
 from cost_model._xla.pk_graph import PKGraph
 from ._mixed_precision.amp_pred import AMPPredictor
 
 args_ = arg_utils.SingleArg().args
 
-class _AMPCostModel(_BaseCostModel):
+class AMPGraphPass(_BaseGraphPass):
     def __init__(self, opt):
         super().__init__(opt)
         ### AMP predictor

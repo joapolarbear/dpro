@@ -394,31 +394,7 @@ class PKGraph(object):
         for i in range(len(L)):
             self.ord[L[i]] = all_orders[i]
 
-from trace_utils import parse_op_name
-def _parse_tf_layer_names(name):
-    layer_names = []
-    if "+" in name:
-        for _name in name.split("+"):
-            layer_names += _parse_tf_layer_names(_name)
-        return layer_names
-    op_name_split = parse_op_name(name).split("/")
-    op_type = "FW"
-    idx = 0
-    if op_name_split[idx] == "gradients":
-        op_type = "BW"
-        idx += 1
-    if op_name_split[idx].lower() in ["inception_v3", "resnet50", "vgg16", "bert"]:
-        idx += 1
-
-    if idx >= len(op_name_split) - 2:
-        layer_names.append("{}.{}".format(op_type, op_name_split[idx]))
-    elif op_name_split[idx-1].lower() == "bert":
-        layer_names.append(
-            "{}.{}/{}".format(op_type, op_name_split[idx], op_name_split[idx+1]))
-    else:
-        layer_names.append("{}.{}".format(op_type, op_name_split[idx]))
-    return layer_names
-
+from trace_utils import _parse_tf_layer_names
 
 def postorder_contract_nx(_dag: nx.DiGraph, _pkg: PKGraph, source_node, visitied_nodes, 
                             forbidden_list = None, size_limit = None, layer_num_limit = None):
@@ -452,7 +428,7 @@ def postorder_contract_nx(_dag: nx.DiGraph, _pkg: PKGraph, source_node, visitied
         
         ### fuse BW layer by layer
         ### only operators in the same `layer_num_limit` layer(s) can be contracted
-        if layer_num_limit and "BW" in source_node and "BW" in succ:
+        if layer_num_limit is not None and "BW" in source_node and "BW" in succ:
             u_layer_names = _parse_tf_layer_names(source_node)
             v_layer_names = _parse_tf_layer_names(succ)
             fused_layer_names = set(u_layer_names).union(v_layer_names)

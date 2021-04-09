@@ -235,6 +235,30 @@ def parse_op_name(name):
     #     return name
     return name
 
+def _parse_tf_layer_names(name):
+    layer_names = []
+    if "+" in name:
+        for _name in name.split("+"):
+            layer_names += _parse_tf_layer_names(_name)
+        return layer_names
+    op_name_split = parse_op_name(name).split("/")
+    op_type = "FW"
+    idx = 0
+    if op_name_split[idx] == "gradients":
+        op_type = "BW"
+        idx += 1
+    if op_name_split[idx].lower() in ["inception_v3", "resnet50", "vgg16", "bert"]:
+        idx += 1
+
+    if idx >= len(op_name_split) - 2:
+        layer_names.append("{}.{}".format(op_type, op_name_split[idx]))
+    elif op_name_split[idx-1].lower() == "bert":
+        layer_names.append(
+            "{}.{}/{}".format(op_type, op_name_split[idx], op_name_split[idx+1]))
+    else:
+        layer_names.append("{}.{}".format(op_type, op_name_split[idx]))
+    return layer_names
+    
 def parse_cat_from_name(name):
     if "I/O" in name:
         return CatName.IO.value

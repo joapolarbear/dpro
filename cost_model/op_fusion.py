@@ -10,11 +10,12 @@ import arg_utils
 from trace_utils import parse_cat_from_name, parse_pid_from_name, \
     CatName, parse_cat_fine_grained, SingleLogger
 
-from cost_model.base import _BaseCostModel
+from cost_model.base import _BaseGraphPass
 from cost_model._xla.gen_dataset_utils import parse_xla_candidate_ops
 from cost_model._xla.pk_graph import PKGraph, contract_nodes_nx, \
     defuse_nodes_inplace_nx, postorder_contract_nx, \
     subgraph_partition_connected_nx_using_topo, get_concated_names
+from cost_model._xla.xla_module_cost_model import XLAModuleCostModel
 
 args_ = arg_utils.SingleArg().args
 XLA_INIT_NO_BW = True
@@ -47,7 +48,8 @@ class AttrCache():
     def __len__(self):
         return len(self._cache)
 
-class _XLACostModel(_BaseCostModel):
+
+class XLAGraphPass(_BaseGraphPass):
     def __init__(self, opt):
         super().__init__(opt)
         if not args_.simulate:
@@ -143,7 +145,8 @@ class _XLACostModel(_BaseCostModel):
         return ret_G
 
     def _sample_strategies(self, G, layer_num_limit):
-        ''' Sample some operator fusion strategies and generate cluster mapping files
+        ''' Sample some operator fusion strategies by fusing operators layer by layer
+            and generate cluster mapping files
         '''
         SingleLogger().info("Start to sample strategies, ... ")
         layer_num_list = layer_num_limit if layer_num_limit >= 0 else [1, 3, 5, 10, 20]

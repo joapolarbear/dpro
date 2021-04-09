@@ -1,4 +1,4 @@
-class _BaseCostModel:
+class _BaseGraphPass:
     def __init__(self, opt):
         self.opt = opt
         self.dag = self.opt.dag
