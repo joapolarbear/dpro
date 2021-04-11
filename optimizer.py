@@ -15,6 +15,7 @@ from dag_utils import *
 from memory import MemoryEstimator
 from memory.cost_model import IncreasingBatchSizeCostModel, MemoryGraphPass
 
+from cost_model.base import OptApplyStrategyError, OptNoValidStrategyError, OptQueryCostModelError
 from cost_model._xla.pk_graph import PKGraph
 from cost_model.mixed_precision import AMPGraphPass
 from cost_model.tensor_fusion import TensorFusionGraphPass
@@ -35,18 +36,6 @@ UCB_GAMMA = args_.ucb_gamma
 MCMC_BETA = args_.mcmc_beta
 ROOT_PATH = os.path.join(
     args_.workspace if args_.workspace else args_.path, ".opt_ws")
-
-
-class OptApplyStrategyError(Exception):
-    pass
-
-
-class OptNoValidStrategyError(Exception):
-    pass
-
-
-class OptQueryCostModelError(Exception):
-    pass
 
 class GraphState:
     def __init__(self, depth):
@@ -153,7 +142,7 @@ class Optimizer:
         # else:
         #     bpf_dump_init_graph_to = None
         self.base_cost, self.exct_dag, self.base_mem_usage = self.evaluate(
-            self.dag, _filename=os.path.join(ROOT_PATH, "searched_graph/base.json"))
+            self.dag, _path=os.path.join(ROOT_PATH, "searched_graph/base.json"))
 
         ### Budget, in GB
         self.memory_budget = args_.memory_budget
@@ -233,11 +222,11 @@ class Optimizer:
         else:
             return parse_op_name(name_), parse_pid_from_name(name_)
 
-    def evaluate(self, _dag, _filename=None, _crit_filename = None):
+    def evaluate(self, _dag, _path=None, _crit_filename=None):
         # t = time.time()
         ### input _dag is a dependency graph, using the replayer to get the simulated traces and execution graph
         ### Return the iteration time and the execution graph
-        _output = False if _filename is None else True
+        _output = False if _path is None else True
         replayer = Replayer(dag=_dag, _step_num=1,
                             leaf_dirs=self.clct.all_prefix_list(),
                             dump_path=self.clct.pm.path,
@@ -245,7 +234,7 @@ class Optimizer:
                             byteps_graph=self.clct.byteps_graph,
                             infi_para_update=args_.update_infi_para)
         step_end_time_ms = [t / 1000 for t in replayer.replayAndDelay(
-            None, _output=_output, _filename=_filename).values()]
+            None, _output=_output, _path=_path).values()]
         # print("Evaluate time {}".format(time.time() - t))
         if _crit_filename is not None:
             prefix, crit_file_name = os.path.split(_crit_filename)
@@ -506,13 +495,13 @@ class MCMCOptimizer(Optimizer):
                 G, PKG, self.heat_window_size, self.heat_history, self.best_cost, self.best_strategy, self.best_step, self.step, self.trajectory = pickle.load(f)
             SingleLogger().info("Loading checkpoint of step {}".format(self.step))
             self.cur_cost, self.exct_dag, self.mem_usage = self.evaluate(
-                G, _filename=os.path.join(ROOT_PATH, "searched_graph/init.json"))
+                G, _path=os.path.join(ROOT_PATH, "searched_graph/init.json"))
             self.cost_star = self.exct_dag_star = self.mem_usage_star = None
         else:
             for node in G.nodes:
                 self.heat_history[node] = [(0, 0)] * self.heat_window_size
             self.cur_cost, self.exct_dag, self.mem_usage = self.evaluate(
-                G, _filename=os.path.join(ROOT_PATH, "searched_graph/init.json"))
+                G, _path=os.path.join(ROOT_PATH, "searched_graph/init.json"))
             self.cost_star = self.exct_dag_star = self.mem_usage_star = None
             self.best_cost = self.cur_cost
             self.best_strategy = self.trajectory
@@ -625,7 +614,7 @@ class MCMCOptimizer(Optimizer):
                     if self.step % 100 == 0:
                         self.cost_star, self.exct_dag_star, self.mem_usage_star = \
                             self.evaluate(G_star, 
-                            _filename=os.path.join(ROOT_PATH, "searched_graph/{}.json".format(self.step)),
+                            _path=os.path.join(ROOT_PATH, "searched_graph/{}.json".format(self.step)),
                             _crit_filename=os.path.join(ROOT_PATH, "searched_graph/{}_crit.json".format(self.step)))
                         # dump cluster mapping
                         ### TODO (HHP): we should only dump cluster mapping for the best strategy 
@@ -731,7 +720,7 @@ class MCMCOptimizer(Optimizer):
                             self.cst_md_mng.strategy2model["++"].dump_tensor_grp_mapping()
                         # DEBUG: log best graph for debugging
                         self.evaluate(G, 
-                            _filename=os.path.join(ROOT_PATH, "best.json".format(self.step)),
+                            _path=os.path.join(ROOT_PATH, "best.json".format(self.step)),
                             _crit_filename=os.path.join(ROOT_PATH, "best_crit.json".format(self.step)))
                     ### Init new search space
                     candidates, _ = self.candidate_selection(

@@ -419,12 +419,12 @@ class Replayer:
         if _output:
             self.output_traces()
         
-    def replayAndDelay(self, delay_dict_, _output=False, _filename=None):
+    def replayAndDelay(self, delay_dict_, _output=False, _path=None):
         self.reset_replayer()
         self.delay_dict = delay_dict_
         self.replay_one_iter(0)
         if _output:
-            self.output_traces(_filename=_filename)
+            self.output_traces(_path=_path)
         return self.step_end_time
 
     def insert_next_node(self, n, t):
@@ -627,7 +627,7 @@ class Replayer:
         with open(os.path.join(self.dump_path, "compare_replay_real.json"), 'w') as f:
             json.dump(final_trace, f)
 
-    def output_traces(self, _filename=None):
+    def output_traces(self, _path=None):
         #! Output the synthetic traces.
         rst = {
             "traceEvents": [],
@@ -636,8 +636,9 @@ class Replayer:
         for trace in self.rst_traces:
             rst["traceEvents"].append(trace)
         TraceManager(self.rst_traces, DirLevel.TRIAL).get_iter_time()
-        filename = "synthetic.json" if _filename is None else _filename
-        with open(os.path.join(self.dump_path, filename), 'w') as f:
+        filename = os.path.join(self.dump_path,
+                    "synthetic.json") if _path is None else _path
+        with open(filename, 'w') as f:
             json.dump(rst, f)
         if self.show_queue:
             with open(os.path.join(self.dump_path, 'queue_status.json'), 'w') as f:

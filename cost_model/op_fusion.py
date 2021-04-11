@@ -8,9 +8,9 @@ from tqdm import tqdm, trange
 
 import arg_utils
 from trace_utils import parse_cat_from_name, parse_pid_from_name, \
-    CatName, parse_cat_fine_grained, SingleLogger
-
-from cost_model.base import _BaseGraphPass
+    CatName, parse_cat_fine_grained, SingleLogger, GAP_STR_OP2OP, GAP_STR_OP2COMM
+ 
+from cost_model.base import _BaseGraphPass, OptApplyStrategyError, OptNoValidStrategyError, OptQueryCostModelError
 from cost_model._xla.gen_dataset_utils import parse_xla_candidate_ops
 from cost_model._xla.pk_graph import PKGraph, contract_nodes_nx, \
     defuse_nodes_inplace_nx, postorder_contract_nx, \
@@ -119,7 +119,7 @@ class XLAGraphPass(_BaseGraphPass):
     def _load_cm(self):
         cost_models = {}
         models_dir = os.path.join(os.path.dirname(os.path.abspath(
-            __file__)), "cost_model/_xla/.cost_model")
+            __file__)), "_xla/.cost_model")
 
         cost_model_tmp_dir = os.path.join(ROOT_PATH, "cost_model_tmp")
         if not os.path.exists(cost_model_tmp_dir):
@@ -175,17 +175,31 @@ class XLAGraphPass(_BaseGraphPass):
             By default, this function tries to fuse all operators and avoids cycles
         '''
         # partition_G = G.copy()
+
         partition_G = self._reduce_nx_size(G)
         partition_PKG = PKGraph(partition_G)
 
-        source_nodes = sorted([node for node in partition_G.nodes if node not in self.initial_forbidden_list and "Comm" not in node], key=lambda x: partition_G.in_degree(x))
+        if args_.layer_by_layer:
+            source_nodes = sorted(
+                [node for node in partition_G.nodes if node not in self.forbidden_list and "Comm" not in node], key=lambda x: partition_G.in_degree(x))
+        else:
+            source_nodes = sorted(
+                [node for node in partition_G.nodes if node not in self.initial_forbidden_list and "Comm" not in node], key=lambda x: partition_G.in_degree(x))
 
         # Run post order traversal on partition_G
         visited_nodes = set()
         SingleLogger().info("Start to postorder_contract_nx ... ")
         for source in tqdm(source_nodes, total=len(source_nodes)):
             if source not in visited_nodes and source in partition_G.nodes:
-                _, _, partition_G = postorder_contract_nx(partition_G, partition_PKG, source, visited_nodes, forbidden_list=self.initial_forbidden_list)
+                if args_.layer_by_layer:
+                    _, _, partition_G = postorder_contract_nx(
+                        partition_G, partition_PKG, source, visited_nodes,
+                        forbidden_list=self.forbidden_list,
+                        layer_num_limit=1)
+                else:
+                    _, _, partition_G = postorder_contract_nx(
+                        partition_G, partition_PKG, source, visited_nodes,
+                        forbidden_list=self.initial_forbidden_list)
 
         self._dump_cluster_mapping(partition_G, os.path.join(
                 ROOT_PATH, "cluster_mapping_after_initialization.txt"))
@@ -220,6 +234,7 @@ class XLAGraphPass(_BaseGraphPass):
         '''
         xla_candidates = parse_xla_candidate_ops(xla_candidate_path=args_.xla_candidate_path)
         # limit the range of nodes during search
+        ### TODO(huhanpeng): ResourceApplyGradientDescent should not be ignored
         IGNORE_OP_TYPES = ["ShapeN", "_Arg", "_Send", "_Recv", "VarIsInitializedOp", "ReadVariableOp", "VarHandleOp",
                     "IsVariableInitialized", "ResourceApplyGradientDescent",
                     "IteratorToStringHandle", "IteratorGetNext", "MakeIterator", "IteratorV2"]
@@ -252,7 +267,7 @@ class XLAGraphPass(_BaseGraphPass):
                     or orig_name not in filtered_xla_candidates:
                 self.forbidden_list.add(node)
                 self.initial_forbidden_list.add(node)
-
+                
     def _get_node_attr(self, n, attr_):
         if attr_ in self.node_attr_cache[n]:
             return self.node_attr_cache[n][attr_]

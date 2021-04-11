@@ -76,6 +76,8 @@ group_xla.add_argument("--xla_candidate_path", type=str, default=None, help="XLA
 group_xla.add_argument("--layer_num_limit", type=int, default=None, help="Sample some operator fusion strategies, "
 		"where BW operators are fused layer by layer."
 		"This argument specifies the maximum number of layers that can be fused")
+group_xla.add_argument("--layer_by_layer", action="store_true", help="Fuse operators layer by layer, if set ture")
+
 
 args = parser.parse_args()
 

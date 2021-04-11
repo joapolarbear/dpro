@@ -65,13 +65,14 @@ MIN_CLUSTER_SIZE=4
 MAX_CLUSTER_SIZE=800
 
 cd /home/tiger/byteprofile-analysis
+XLA_CANDIDATE_PATH="/home/tiger/byteprofile-analysis/data/xla_candidates_inceptionv3.txt"
 python3 xla_generate_kernel_dataset.py --trace_dir ${TRACE_DIR} \
     --output_dir ${OUTPUT_DIR} \
     --num_samples ${NUM_RANDOM_SAMPLES} \
     --max_cluster_samples ${MAX_CLUSTER_SAMPLES} \
     --min_cluster_size ${MIN_CLUSTER_SIZE} \
     --max_cluster_size ${MAX_CLUSTER_SIZE} \
-    --xla_candidate_path /home/tiger/byteprofile-analysis/data/xla_candidates_inceptionv3.txt
+    --xla_candidate_path ${XLA_CANDIDATE_PATH}
 
 # modify these
 DATASET_DIR="/home/tiger/xla/kernel_dataset"

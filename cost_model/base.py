@@ -1,3 +1,15 @@
+
+class OptApplyStrategyError(Exception):
+    pass
+
+
+class OptNoValidStrategyError(Exception):
+    pass
+
+
+class OptQueryCostModelError(Exception):
+    pass
+
 class _BaseGraphPass:
     def __init__(self, opt):
         self.opt = opt

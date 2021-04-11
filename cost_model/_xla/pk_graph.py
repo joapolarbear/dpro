@@ -128,18 +128,39 @@ def subgraph_partition_connected_nx(subgraph, size_limit=100):
             valid_split_plans.append(splits)
     return valid_split_plans
 
-def subgraph_partition_connected_nx_using_topo(subgraph, size=100):
+def subgraph_partition_connected_nx_using_topo(subgraph, size=100, layer_by_layer=False):
     split_plans = set()
     topo_order_nodes = list(nx.topological_sort(subgraph))
-    size = min(size, len(topo_order_nodes) - 1)
+    
+    
+    valid_split_point = []
+    for idx, node in enumerate(topo_order_nodes):
+        if idx == 0:
+            continue
+        prev_node = topo_order_nodes[idx-1]
+        # layer-by-layer fusion is only applied to BW operators
+        if layer_by_layer and "BW" in node and "BW" in prev_node:
+            _cur_layer = _parse_tf_layer_names(node)
+            _prev_layer = _parse_tf_layer_names(prev_node)
+            assert len(_cur_layer) == 1
+            if _cur_layer[0] != _prev_layer[0]:
+                valid_split_point.append(idx)
+        else:
+            valid_split_point.append(idx)
+
+    size = min(size, len(valid_split_point) - 1)
     for _ in range(size):
-        sp_idx = random.randint(1, len(topo_order_nodes) - 1)
+        # sp_idx = random.randint(1, len(topo_order_nodes) - 1)
+        sp_idx = valid_split_point[random.randint(
+            1, len(valid_split_point) - 1)]
+        
         part_a = topo_order_nodes[:sp_idx]
         # part_b = topo_order_nodes[sp_idx:], but we do not care about that part
         subgraph_a = subgraph.subgraph(part_a)
         nodes_in_a = max(nx.weakly_connected_components(subgraph_a), key=len)
         nodes_in_b = [node for node in subgraph.nodes if node not in nodes_in_a]
         split_plans.add((tuple(nodes_in_a), tuple(nodes_in_b)))
+        
     return list(split_plans)
 
 class PKGraph(object):

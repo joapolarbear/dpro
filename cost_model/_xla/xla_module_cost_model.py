@@ -28,6 +28,16 @@ from tqdm import tqdm, trange
 from collections import defaultdict
 import traceback
 
+### Compatible with trained cost model after modify the file structure
+#      refer to: https://stackoverflow.com/questions/3073211/how-to-substitute-module-class-to-locally-defined-class-when-loading-with-py
+class MyUnpickler(pickle.Unpickler):
+    def find_class(self, module, name):
+        if "cost_model_xla" in module:
+            return pickle.Unpickler.find_class(self, module.replace(
+                "cost_model_xla", "cost_model._xla"), name)
+        else:
+            return pickle.Unpickler.find_class(self, module, name)
+
 gpus = tf.config.experimental.list_physical_devices('GPU')
 if gpus:
   # Restrict TensorFlow to use other GPUS
@@ -392,7 +402,8 @@ class XLAModuleOverheadModel():
             self.b, self.b_normed, self.b_normed_large, self.b_normed_small, 
             self.elem_op_cache, self.dataset, self._dataset_path, 
             self.module_details_dict, self.module_time_dict, 
-            self.row_dim, self.column_dim) = pickle.load(f)
+             self.row_dim, self.column_dim) = MyUnpickler(f).load()
+            # pickle.load(f)
 
 class FusionKernelModel(Model):
     def __init__(self, op_code_vocab_size, op_code_embed_dim, subop_vocab_size, 

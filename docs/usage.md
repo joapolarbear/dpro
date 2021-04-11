@@ -12,7 +12,8 @@ python3 /home/tiger/byteprofile-analysis/analyze.py \
             --option replay \
             --platform TENSORFLOW \
             --comm_backend NCCL --nccl_algo RING --pretty \
-            --path $GLOBAL_TRACE_PATH
+            --path $GLOBAL_TRACE_PATH \
+            --update_infi_para
 ```
 
 ---
