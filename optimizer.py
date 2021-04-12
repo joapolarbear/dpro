@@ -619,7 +619,9 @@ class MCMCOptimizer(Optimizer):
                         # dump cluster mapping
                         ### TODO (HHP): we should only dump cluster mapping for the best strategy 
                         # if "+" in self.cst_md_mng.strategy2model:
-                        #     self.cst_md_mng.strategy2model["+"]._dump_cluster_mapping(G, os.path.join(ROOT_PATH, "searched_graph/cluster_mapping_{}.txt".format(self.step)))
+                        #     self.cst_md_mng.strategy2model["+"]._dump_cluster_mapping(G, 
+                        #          os.path.join(ROOT_PATH, "searched_graph/cluster_mapping_{}.txt".format(self.step)),
+                        #           partition=True)
                     else:
                         try:
                             self.cost_star, self.exct_dag_star, self.mem_usage_star = self.evaluate(G_star)
@@ -714,7 +716,7 @@ class MCMCOptimizer(Optimizer):
                         self.best_step = self.step - 1
                         if "+" in self.cst_md_mng.strategy2model:
                             self.cst_md_mng.strategy2model["+"]._dump_cluster_mapping(
-                                G, os.path.join(ROOT_PATH, "cluster_mapping.txt"))
+                                G, os.path.join(ROOT_PATH, "cluster_mapping.txt"), partition=True)
                         
                         if "++" in self.cst_md_mng.strategy2model:
                             self.cst_md_mng.strategy2model["++"].dump_tensor_grp_mapping()

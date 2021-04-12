@@ -74,7 +74,8 @@ class XLAGraphPass(_BaseGraphPass):
         trajectory = []
         if os.path.isfile(init_ckpt_path):
             with open(init_ckpt_path, "rb") as f:
-                G, PKG, node_attr_cache, initial_partitions_formed = pickle.load(f)
+                G, PKG, node_attr_cache, initial_partitions_formed, self.forbidden_list = pickle.load(
+                    f)
                 self.node_attr_cache = node_attr_cache
             SingleLogger().info("Reading init graph from cache.")
         else:
@@ -95,11 +96,11 @@ class XLAGraphPass(_BaseGraphPass):
 
             G, initial_partitions_formed = self._init_partition(G, PKG, initial_partitions_formed)
             with open(init_ckpt_path, "wb") as f:
-                pickle.dump([G, PKG, self.node_attr_cache, initial_partitions_formed], f)
+                pickle.dump([G, PKG, self.node_attr_cache, initial_partitions_formed, self.forbidden_list], f)
             SingleLogger().info("Graph cache dumped to {}.".format(init_ckpt_path))
 
         if "BPF_DUMP_INIT_CLUSTER_TO" in os.environ:
-            self._dump_cluster_mapping(G, os.environ["BPF_DUMP_INIT_CLUSTER_TO"])
+            self._dump_cluster_mapping(G, os.environ["BPF_DUMP_INIT_CLUSTER_TO"], partition=True)
         SingleLogger().info("Successfully initialized {} partitions.".format(initial_partitions_formed))
 
         # self._check_dag_avg(G)
@@ -278,7 +279,12 @@ class XLAGraphPass(_BaseGraphPass):
         ### TODO (huhanpeng): need .copy() ???
         self.node_attr_cache[n] = attrs
 
-    def _dump_cluster_mapping(self, dag, output_path):
+    def _dump_cluster_mapping(self, dag, output_path, partition=False):
+        ''' Dump cluster mapping in `dag` at `output_path`
+            If `partition` is set True, the dag will be partitioned
+        '''
+        if partition:
+            dag = self._reduce_nx_size(dag)
         cluster_index = 0
         with open(output_path, "w") as f:
             for node in dag.nodes():
@@ -369,6 +375,8 @@ class XLAGraphPass(_BaseGraphPass):
 
             if "+" in n:
                 ### This a fused node
+                if args_.layer_by_layer and "FW" in n and "BW" not in n:
+                    continue
                 ns = n.split("+")
                 cat = parse_cat_fine_grained(ns[0])
                 pid = parse_pid_from_name(ns[0])
@@ -376,7 +384,8 @@ class XLAGraphPass(_BaseGraphPass):
                 subgraph = self.dag.subgraph(ns)
 
                 # randomly split edges using spanning tree
-                valid_split_plans = subgraph_partition_connected_nx_using_topo(subgraph)
+                valid_split_plans = subgraph_partition_connected_nx_using_topo(
+                    subgraph, layer_by_layer=args_.layer_by_layer)
                 split_weights = []
                 for splits in valid_split_plans:
                     split_weights.append(gmean([len(nodes) for nodes in splits]))
