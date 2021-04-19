@@ -281,6 +281,9 @@ class Collector(object):
                     rst_traces.append(trace)
                 # print(trace)
                 continue
+            ### TODO (huhanpeng): TF profiles CUDA kernels and lables kernels in the same 
+            ### operator with the same operator name. To make trace name unique, we combine
+            ### kernel-level traces to operator level traces
             if pre_event is not None and "args" in pre_event and pre_event["args"]["name"] == name:
                 pre_event["dur"] = trace["ts"] + trace["dur"] - pre_event["ts"]
             else:

@@ -209,8 +209,10 @@ class XLAGraphPass(_BaseGraphPass):
         for node_name in tqdm(partition_G.nodes()):
             if node_name in self.initial_forbidden_list or "Comm" in node_name:
                 continue
+            
             if "+" in node_name:
                 # fused node, test if compilable
+                # print("hhp: {}".format(node_name))
                 try:
                     avg = self._get_node_avg(node_name)
                     self._parse_node_attr(partition_G, node_name, avg)
@@ -336,6 +338,7 @@ class XLAGraphPass(_BaseGraphPass):
         return self.cost_models["default"].graph_def_util.operation_names
 
     def _query_cost_model(self, fused_u_):
+        assert "+" in fused_u_
         # query cost model for exec time of a fused node u
         nodes_in_u, u_pid = self._get_original_name_pid_from_fused_node(fused_u_)
         nodes_to_fuse = set(nodes_in_u)
@@ -347,11 +350,13 @@ class XLAGraphPass(_BaseGraphPass):
                 "[COST MODEL QUERY] {} Nodes to fuse ...".format(len(nodes_to_fuse)))
 
         predicted_time, _ = self._wrap_xla_predict(u_pid, nodes_to_fuse, fused_u_)
-        SingleLogger().info(
-            "[COST MODEL QUERY] Exec time predicted: {}".format(predicted_time))
         if predicted_time < 0:
+            SingleLogger().info("[COST MODEL QUERY] Exec time predicted: {}".format(
+                predicted_time))
             raise OptQueryCostModelError("Failed to query cost model.")
         else:
+            SingleLogger().info("[COST MODEL QUERY] Exec time predicted: {} (Avg. sum of origin: {}".format(
+                predicted_time, sum([self._get_node_avg(n) for n in fused_u_.split("+")])))
             # self.cost_model_error.append(np.abs(predicted_time - executed_time) / executed_time)
             # SingleLogger().info("[COST MODEL QUERY] Average prediction accuracy: {}".format(np.average(self.cost_model_error)))
             # if len(self.cost_model_error) > 20:

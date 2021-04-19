@@ -288,17 +288,64 @@ class Optimizer:
         # print("critical path time {}".format(time.time() - t))
         return ret
 
-    def _combine_weight(self, l: float, heat: float) -> float:
+    def _combine_weight(self, weight: float, heat: float) -> float:
+        ''' Tune the weight of a strategy with the heat of involved nodes
+        '''
         # return l * (0.05 + heat)
         return heat + 0.01
         # return 1
 
     def _get_heat_from_history(self, node):
+        '''
+            Return heat based on the heat history
+            A node's heat decreases as the seach process goes on
+        '''
         heat = 0
+        # HEAT_DECREASE_RATE = 0.5
+        HEAT_DECREASE_RATE = 10
         for (h, t) in self.heat_history[node]:
             if h is not None:
-                heat += h * np.exp(-0.5*(self.step - t - 1))
+                heat += h * np.exp(-1 * HEAT_DECREASE_RATE *(self.step - t - 1))
         return heat
+
+    def update_heat_history(self, is_accept, nodes_to_rm, nodes_to_add):
+        ''' Update heat history for origal nodes and introduced nodes
+        '''
+        ### Update heat history
+        combined_history_list = [None] * self.heat_window_size
+        for node in nodes_to_rm:
+            if node in self.heat_history:
+                node_history = self.heat_history[node]
+                for idx, (h, _) in enumerate(node_history):
+                    if combined_history_list[idx] is None:
+                        combined_history_list[idx] = [h]
+                    elif h is None:
+                        continue
+                    else:
+                        combined_history_list[idx].append(h)
+                ### update the heat of the original nodes
+                node_history.insert(0, (self.cur_cost - self.cost_star, self.step))
+                node_history.pop()
+        combined_history = []
+        for h_list in combined_history_list:
+            if h_list is not None:
+                h_avg = np.average(h_list)
+                combined_history.append((h_avg, self.step))
+            else:
+                combined_history.append((None, None))
+        
+        if is_accept:
+            ### generate history for new nodes
+            combined_history.insert(0, (self.cur_cost - self.cost_star, self.step))
+            combined_history.pop()
+            for node in nodes_to_add:
+                self.heat_history[node] = combined_history.copy()
+        
+            ### clean up heat history for removed nodes
+            for node in nodes_to_rm:
+                if node in self.heat_history:
+                    self.heat_history.pop(node)
+
 
     def init_search_space(self, candidates, _dag: nx.DiGraph, _pkg: PKGraph):
         ### Based on the candidates, init the search space for the new dependency graph `_dag`
@@ -316,9 +363,13 @@ class Optimizer:
             if len(search_space) == 0:
                 SingleLogger().warn("No optimization strategy to reduce memory usage: {:.2f}GB > {:.2f}GB".format(
                     self.mem_usage, self.memory_budget))
-        else:
-            SingleLogger().info("Estimated memory usage does not exceed memory budget: {:.2f}GB < {:.2f}GB".format(
-                self.mem_usage, self.memory_budget))
+
+        if len(search_space) == 0:
+            if self.mem_usage > self.memory_budget:
+                SingleLogger().warn("Ignore OOM, still optimize the training speed")
+            else:
+                SingleLogger().info("Estimated memory usage does not exceed memory budget: {:.2f}GB < {:.2f}GB".format(
+                    self.mem_usage, self.memory_budget))
 
             cm_types = []
             cm_start_end = []
@@ -404,6 +455,7 @@ class Optimizer:
             try:
                 st_idx = random.choices(valid_search_space_idx, weights=valid_weights, k=1)[0]
             except:
+                raise
                 ### Adapt to python <3.6
                 st_idx = self.weighted_choice(valid_search_space_idx, valid_weights)
         return st_idx
@@ -646,68 +698,29 @@ class MCMCOptimizer(Optimizer):
                 #     MCMC_BETA = 1
                 # else:
                 #     MCMC_BETA = args.mcmc_beta
+
                 SingleLogger().info("\033[94m Step: {} - cost from {} -> {} \033[0m".format(
                     self.step, self.cur_cost, self.cost_star))
                 self.step += 1
 
-                ### Update heat history
-                combined_history_list = [None] * self.heat_window_size
-                for node in strategy_removed_nodes:
-                    if node in self.heat_history:
-                        node_history = self.heat_history[node]
-                        for idx, (h, _) in enumerate(node_history):
-                            if combined_history_list[idx] is None:
-                                combined_history_list[idx] = [h]
-                            elif h is None:
-                                continue
-                            else:
-                                combined_history_list[idx].append(h)
-                        node_history.insert(0, (self.cur_cost - self.cost_star, self.step))
-                        node_history.pop()
-                        # print("node: {}".format(node))
-                        # print("node_history: {}".format(node_history))
-                        # input()
-                combined_history = []
-                for h_list in combined_history_list:
-                    if h_list is not None:
-                        h_avg = np.average(h_list)
-                        combined_history.append((h_avg, self.step))
-                    else:
-                        combined_history.append((None, None))
-                
-                # calculate the proposal probability q here
-                # proposed_candidates, _ = self.candidate_selection(
-                        # G_star, topk=None, critical_path=self.wrap_critical_path(self.exct_dag))
-                # proposed_search_space, proposed_weights = self.init_search_space(
-                        # proposed_candidates, G_star, PKG_star)
-                # forward_prob = 1 / (len(search_space)+1)
-                # backward_prob = 1 / len(proposed_search_space)
                 if strategy[0] in ["gradient_accumulation", "recomputation"]:
                     is_accept = True
                 else:    
                     is_accept = self.accept_or_not(self.cur_cost, self.cost_star)
-                ### update cost model internal states
+
+                ### update Graph Pass internal states
                 self.cost_model_flush(is_accept)
+                ### update heat history 
+                self.update_heat_history(is_accept, strategy_removed_nodes, strategy_introduced_nodes)
+
                 if is_accept:
                     invalid_strategies = set()
-
-                    ### generate history for new nodes
-                    combined_history.insert(0, (self.cur_cost - self.cost_star, self.step))
-                    combined_history.pop()
-                    for node in strategy_introduced_nodes:
-                        self.heat_history[node] = combined_history.copy()
-
                     G = G_star
                     PKG = PKG_star
                     self.trajectory += strategy_history_in_step
                     self.cur_cost = self.cost_star
                     self.exct_dag = self.exct_dag_star
                     self.mem_usage = self.mem_usage_star
-
-                    ### clean up heat history for removed nodes
-                    for node in strategy_removed_nodes:
-                        if node in self.heat_history:
-                            self.heat_history.pop(node)
 
                     ### Cache the best strategy
                     if self.cur_cost < self.best_cost:
@@ -720,18 +733,15 @@ class MCMCOptimizer(Optimizer):
                         
                         if "++" in self.cst_md_mng.strategy2model:
                             self.cst_md_mng.strategy2model["++"].dump_tensor_grp_mapping()
-                        # DEBUG: log best graph for debugging
+                        # DEBUG: log the best graph for debugging
                         self.evaluate(G, 
                             _path=os.path.join(ROOT_PATH, "best.json".format(self.step)),
                             _crit_filename=os.path.join(ROOT_PATH, "best_crit.json".format(self.step)))
-                    ### Init new search space
+                    ### Init the new search space
                     candidates, _ = self.candidate_selection(
                         G, topk=None, critical_path=self.wrap_critical_path(self.exct_dag))
                     search_space, weights = self.init_search_space(
                         candidates, G, PKG)
-                    # candidates = proposed_candidates
-                    # search_space = proposed_search_space
-                    # weights = proposed_weights
                     break
             display_and_ckpt()
             if len(search_space) == 0:
@@ -741,7 +751,7 @@ class MCMCOptimizer(Optimizer):
                 search_space, weights = self.init_search_space(
                     candidates, G, PKG)
         display_and_ckpt()
-
+    
     def accept_or_not(self, cost, new_cost):
         # prob = min(1, (math.exp(beta * (cost - new_cost))))
         try:
