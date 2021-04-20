@@ -20,6 +20,9 @@ export PATH=/usr/local/cuda/bin:/usr/local/nvidia/bin:${PATH} \
 cd /root/tensorflow
 ./build_bpf_tf_modules.sh
 
+pip3 uninstall -y h5py
+pip3 install h5py==2.10.0
+
 ### collect traces
 ## Set enviroment variables related to profiling
 export BYTEPS_TRACE_ON="${BYTEPS_TRACE_ON:-1}"

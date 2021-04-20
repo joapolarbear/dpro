@@ -8,8 +8,10 @@ from tqdm import tqdm, trange
 
 import arg_utils
 from trace_utils import parse_cat_from_name, parse_pid_from_name, \
-    CatName, parse_cat_fine_grained, SingleLogger, GAP_STR_OP2OP, GAP_STR_OP2COMM
- 
+    CatName, parse_cat_fine_grained, _parse_tf_layer_names, \
+    SingleLogger, GAP_STR_OP2OP, GAP_STR_OP2COMM
+from base import bcolors
+
 from cost_model.base import _BaseGraphPass, OptApplyStrategyError, OptNoValidStrategyError, OptQueryCostModelError
 from cost_model._xla.gen_dataset_utils import parse_xla_candidate_ops
 from cost_model._xla.pk_graph import PKGraph, contract_nodes_nx, \
@@ -19,6 +21,7 @@ from cost_model._xla.xla_module_cost_model import XLAModuleCostModel
 
 args_ = arg_utils.SingleArg().args
 XLA_INIT_NO_BW = True
+SIMULATE_FUSION_RATIO = 0.8
 ROOT_PATH = os.path.join(
     args_.workspace if args_.workspace else args_.path, ".opt_ws")
 
@@ -84,17 +87,16 @@ class XLAGraphPass(_BaseGraphPass):
             self._init_forbidden_list(G_prime=G)
             # # randomly contract edges if possible
             # k = int(len(G.edges()) * init_edges_to_contract)
-            initial_partitions_formed = 0
             for node in G.nodes():
                 if node not in self.node_attr_cache:
                     self._cache_node_attr(node, G.nodes[node])
 
             if args_.layer_num_limit:
                 self._sample_strategies(
-                    G, layer_num_limit=args_.layer_num_limit)
+                    G, PKG, layer_num_limit=args_.layer_num_limit)
                 exit(0)
 
-            G, initial_partitions_formed = self._init_partition(G, PKG, initial_partitions_formed)
+            G, initial_partitions_formed = self._init_partition(G, PKG)
             with open(init_ckpt_path, "wb") as f:
                 pickle.dump([G, PKG, self.node_attr_cache, initial_partitions_formed, self.forbidden_list], f)
             SingleLogger().info("Graph cache dumped to {}.".format(init_ckpt_path))
@@ -145,18 +147,34 @@ class XLAGraphPass(_BaseGraphPass):
         ret_G.add_edges_from(edges_to_add)
         return ret_G
 
-    def _sample_strategies(self, G, layer_num_limit):
+    def _sample_strategies(self, G, PKG, layer_num_limit):
         ''' Sample some operator fusion strategies by fusing operators layer by layer
             and generate cluster mapping files
         '''
         SingleLogger().info("Start to sample strategies, ... ")
-        layer_num_list = layer_num_limit if layer_num_limit >= 0 else [1, 3, 5, 10, 20]
+        if layer_num_limit.isdigit():
+            layer_num_limit = int(layer_num_limit)
+            layer_num_list = layer_num_limit if layer_num_limit >= 0 else [1, 3, 5, 10, 20]
+        else:
+            layer_num_list = [int(n) for n in layer_num_limit.split(",")]
+
+        first = True
         for _layer_num_limit in layer_num_list:
             partition_G = self._reduce_nx_size(G)
             partition_PKG = PKGraph(partition_G)
             source_nodes = sorted(
                 [node for node in partition_G.nodes if node not in self.forbidden_list and "Comm" not in node], key=lambda x: partition_G.in_degree(x))
             # print(source_nodes)
+
+            if first:
+                layer_set = set()
+                for n in partition_G.nodes():
+                    if "BW" not in n:
+                        continue
+                    layer_name = _parse_tf_layer_names(n)
+                    layer_set.add(layer_name[0])
+                SingleLogger().info(bcolors.CYELLOWBG + "There are {} BW layers in total".format(len(layer_set)) + bcolors.ENDC)
+                first = False
 
             # Run post order traversal on partition_G
             visited_nodes = set()
@@ -169,9 +187,17 @@ class XLAGraphPass(_BaseGraphPass):
                     )
             self._dump_cluster_mapping(partition_G, os.path.join(
                 ROOT_PATH, "cluster_mapping_layer_num_limit_{}.txt".format(_layer_num_limit)))
+            
+            G_copy = G.copy()
+            PKG_copy = PKG.copy()
+            G_copy, _ = self._cluster_mapping_to_partition(G_copy, PKG_copy, partition_G)
+            cost, _, _ = self.opt.evaluate(G_copy)
+            SingleLogger().info(bcolors.CYELLOWBG +
+                                "_layer_num_limit: {} ==> cost: {}".format(_layer_num_limit, cost) + bcolors.ENDC)
+
         SingleLogger().info("Done. Strategies are stored at {}".format(ROOT_PATH))
 
-    def _init_partition(self, G, PKG, initial_partitions_formed):
+    def _init_partition(self, G, PKG):
         ''' Initialize the graph with a default operator fusion strategy
             By default, this function tries to fuse all operators and avoids cycles
         '''
@@ -206,6 +232,13 @@ class XLAGraphPass(_BaseGraphPass):
                 ROOT_PATH, "cluster_mapping_after_initialization.txt"))
 
         SingleLogger().info("Start to init partition graph ... ")
+        return self._cluster_mapping_to_partition(G, PKG, partition_G)
+
+    def _cluster_mapping_to_partition(self, G, PKG, partition_G):
+        ''' Init partition on `G` based on the the pre-partitioned DFG `partition_G`
+            **NOTE**: this modification is in place
+        '''
+        initial_partitions_formed = 0
         for node_name in tqdm(partition_G.nodes()):
             if node_name in self.initial_forbidden_list or "Comm" in node_name:
                 continue
@@ -214,7 +247,7 @@ class XLAGraphPass(_BaseGraphPass):
                 # fused node, test if compilable
                 # print("hhp: {}".format(node_name))
                 try:
-                    avg = self._get_node_avg(node_name)
+                    avg = self._get_node_avg(node_name, verbose=False)
                     self._parse_node_attr(partition_G, node_name, avg)
                     compilable=True
                 except (OptQueryCostModelError, ValueError):
@@ -313,20 +346,20 @@ class XLAGraphPass(_BaseGraphPass):
     def _get_defused_node_names(self, fused_node_):
         return fused_node_.split("+")
 
-    def _wrap_xla_predict(self, pid, nodes_to_fuse, fused_u_):
-        '''
+    def _wrap_xla_predict(self, pid, nodes_to_fuse, fused_u_, simulate=False):
+        ''' 
         nodes_to_fuse: a list of layer names to fuse
         fused_u_: a str of fused names with layer index
         '''
-        if args_.simulate:
+        if simulate:
             _sum = 0
             for name_ in self._get_defused_node_names(fused_u_):
                 _sum += self.node_attr_cache[name_]["avg"]
-            return _sum * 0.8, None
+            return _sum * SIMULATE_FUSION_RATIO
         else:
             # return self.cost_models[pid].predict(nodes_to_fuse)
             predicted_time, brkdn_dict = self.cost_models["default"].predict(nodes_to_fuse)
-            return predicted_time / 1000, brkdn_dict
+            return predicted_time / 1000
 
     def _wrap_xla_need_fuse(self, pid, orig_name, long_name):
         if args_.simulate:
@@ -337,26 +370,31 @@ class XLAGraphPass(_BaseGraphPass):
     def _wrap_xla_operation_names(self, pid):
         return self.cost_models["default"].graph_def_util.operation_names
 
-    def _query_cost_model(self, fused_u_):
+    def _query_cost_model(self, fused_u_, verbose=True):
         assert "+" in fused_u_
         # query cost model for exec time of a fused node u
         nodes_in_u, u_pid = self._get_original_name_pid_from_fused_node(fused_u_)
         nodes_to_fuse = set(nodes_in_u)
-        if len(nodes_to_fuse) < 10:
-            SingleLogger().info("[COST MODEL QUERY] {} Nodes to fuse: {}".format(
-                len(nodes_to_fuse), nodes_to_fuse))
-        else:
-            SingleLogger().info(
-                "[COST MODEL QUERY] {} Nodes to fuse ...".format(len(nodes_to_fuse)))
+        if verbose:
+            if len(nodes_to_fuse) < 10:
+                SingleLogger().info("[COST MODEL QUERY] {} Nodes to fuse: {}".format(
+                    len(nodes_to_fuse), nodes_to_fuse))
+            else:
+                SingleLogger().info(
+                    "[COST MODEL QUERY] {} Nodes to fuse ...".format(len(nodes_to_fuse)))
 
-        predicted_time, _ = self._wrap_xla_predict(u_pid, nodes_to_fuse, fused_u_)
+        predicted_time = self._wrap_xla_predict(u_pid, nodes_to_fuse, fused_u_, simulate=args_.simulate)
         if predicted_time < 0:
-            SingleLogger().info("[COST MODEL QUERY] Exec time predicted: {}".format(
-                predicted_time))
-            raise OptQueryCostModelError("Failed to query cost model.")
+            predicted_time = self._wrap_xla_predict(
+                u_pid, nodes_to_fuse, fused_u_, simulate=True)
+            if verbose:
+                SingleLogger().warn(
+                    "[COST MODEL QUERY] Exec time {}SIMULATED{}: {}".format(bcolors.CYELLOWBG, bcolors.ENDC, predicted_time))
+            # raise OptQueryCostModelError("Failed to query cost model.")
         else:
-            SingleLogger().info("[COST MODEL QUERY] Exec time predicted: {} (Avg. sum of origin: {}".format(
-                predicted_time, sum([self._get_node_avg(n) for n in fused_u_.split("+")])))
+            if verbose:
+                SingleLogger().info("[COST MODEL QUERY] Exec time predicted: {} (Avg. sum of origin: {}".format(
+                    predicted_time, sum([self._get_node_avg(n) for n in fused_u_.split("+")])))
             # self.cost_model_error.append(np.abs(predicted_time - executed_time) / executed_time)
             # SingleLogger().info("[COST MODEL QUERY] Average prediction accuracy: {}".format(np.average(self.cost_model_error)))
             # if len(self.cost_model_error) > 20:
@@ -477,16 +515,23 @@ class XLAGraphPass(_BaseGraphPass):
                 search_space.append(("+", n, succ_))
                 weights.append(self.opt._combine_weight(l, heat_combined))
                 # weights.append(1)
+        
         SingleLogger().info("Init search space len={} from {} candidates, prune {}".format(
             len(search_space), len(candidates), prun_cnt))
-        # SingleLogger().info("Time spent for spanning tree: {}".format(sum(time_spanning_trees)/ len(time_spanning_trees)))
-        # SingleLogger().info("Time spent for source/sink: {}".format(sum(time_st)/ len(time_st)))
-        # normalize weights
-        min_weight = min(weights)
-        max_weight = max(weights)
-        for idx in range(len(weights)):
-            weights[idx] -= min_weight
-            weights[idx] /= max_weight - min_weight
+
+        if len(search_space) > 0:
+            min_weight = min(weights)
+            max_weight = max(weights)
+            for idx in range(len(weights)):
+                weights[idx] -= min_weight
+                weights[idx] /= max_weight - min_weight
+
+        ### TODO (huhanpeng) delete
+        bw_num_in_critical_path = len([n for n, _ in candidates if "BW" in n])
+        bw_num_in_g = len([n for n in _dag.nodes() if "BW" in n and "host0.rank0" in n])
+        SingleLogger().info(bcolors.CSELECTED +
+                            "{}/{} BW nodes in the critical path".format(bw_num_in_critical_path, bw_num_in_g) + bcolors.ENDC)
+
         return search_space, weights
 
     def _concat_name(self, u_, v_):
@@ -528,11 +573,11 @@ class XLAGraphPass(_BaseGraphPass):
         elif GAP_STR_OP2COMM in attr1 and GAP_STR_OP2COMM not in attr2:
             target[GAP_STR_OP2COMM] = self._combine_gap(attr1[GAP_STR_OP2COMM], 0)
 
-    def _get_node_avg(self, new_name):
+    def _get_node_avg(self, new_name, verbose=True):
         if new_name in self.node_attr_cache:
             return self.node_attr_cache[new_name]["avg"]
         else:
-            return self._query_cost_model(new_name)
+            return self._query_cost_model(new_name, verbose=verbose)
 
     def _parse_node_attr(self, _dag, new_name, avg):
         ''' Parse the fused node attribute corresponding to `new_name` and set _dag
@@ -600,7 +645,6 @@ class XLAGraphPass(_BaseGraphPass):
     def _fuse_pair(self, _dag, u_, v_, avg=None):
         # print("fuse {} {}".format(u_, v_))
         ### Cache the node attributes in case they will be used when de-fuse
-        # SingleLogger().info("\033[94m Fusing pair: {}, {}\033[0m".format(u_, v_))
         if u_ not in self.node_attr_cache:
             self._cache_node_attr(u_, _dag.nodes[u_])
         if v_ not in self.node_attr_cache:

@@ -73,9 +73,10 @@ group_xla = parser.add_argument_group('Operator Fusion')
 group_xla.add_argument("--simulate", action="store_true", help="If this arg is set, simulate the XLA cost model,"
 						" but still use its rule to determine which operators to fuse.")
 group_xla.add_argument("--xla_candidate_path", type=str, default=None, help="XLA candidate path")
-group_xla.add_argument("--layer_num_limit", type=int, default=None, help="Sample some operator fusion strategies, "
-		"where BW operators are fused layer by layer."
-		"This argument specifies the maximum number of layers that can be fused")
+group_xla.add_argument("--layer_num_limit", type=str, default=None, help="Sample some operator fusion strategies, "
+                       "where BW operators are fused layer by layer."
+                       "This argument specifies the maximum number of layers that can be fused."
+                       "Test multiple values by separating them with commas")
 group_xla.add_argument("--layer_by_layer", action="store_true", help="Fuse operators layer by layer, if set ture")
 
 

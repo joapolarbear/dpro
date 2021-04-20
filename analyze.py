@@ -19,6 +19,7 @@ from trace_utils import *
 from dag_utils import *
 from collect import Collector
 from replay import Replayer
+from base import bcolors
 
 import debug_utils
 if args.option == "optimize":
@@ -164,12 +165,12 @@ if __name__ == '__main__':
 
         if args.sub_option is None:
             ''' Directly replay '''
-            SingleLogger().info("\033[92m" + "="*10 + " Replayer " + "="*10 + "\033[0m")
+            SingleLogger().info(bcolors.CGREEN + "="*10 + " Replayer " + "="*10 + bcolors.ENDC)
             replayer.replay()
             cal_edge_cost(replayer.exct_dag)
             critical_path = dag_longest_path(replayer.exct_dag, clct.pm, weight="cost", default_weight=0, _debug_level=1)
             # replayer.dump_critical_path("critical_path.json", [n for (n, e) in critical_path])
-            SingleLogger().info("\033[92m" + "="*10 + " Daydream " + "="*10 + "\033[0m")
+            SingleLogger().info(bcolors.CGREEN + "="*10 + " Daydream " + "="*10 + bcolors.ENDC)
             replayer.daydream_dag(clct.para_dict)
             replayer.replayAndDelay(None, _output=True, _path=os.path.join(clct.pm.path, "replay_daydream.json"))
         elif args.sub_option == "smlt_delay_cmp":

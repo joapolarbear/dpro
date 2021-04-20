@@ -11,6 +11,7 @@ import ujson as json
 from replay import Replayer
 from trace_utils import *
 from dag_utils import *
+from base import bcolors
 
 from memory import MemoryEstimator
 from memory.cost_model import IncreasingBatchSizeCostModel, MemoryGraphPass
@@ -292,6 +293,8 @@ class Optimizer:
         ''' Tune the weight of a strategy with the heat of involved nodes
         '''
         # return l * (0.05 + heat)
+        if heat < -0.01:
+            SingleLogger().warn(bcolors.CRED + "Return negative weight {}".format(heat) + bcolors.ENDC)
         return heat + 0.01
         # return 1
 
@@ -301,11 +304,11 @@ class Optimizer:
             A node's heat decreases as the seach process goes on
         '''
         heat = 0
-        # HEAT_DECREASE_RATE = 0.5
-        HEAT_DECREASE_RATE = 10
+        HEAT_DECREASE_RATE = 0.5
+        # HEAT_DECREASE_RATE = 10
         for (h, t) in self.heat_history[node]:
             if h is not None:
-                heat += h * np.exp(-1 * HEAT_DECREASE_RATE *(self.step - t - 1))
+                heat += np.exp(HEAT_DECREASE_RATE * h - 1 * (1 - HEAT_DECREASE_RATE) * (self.step - t - 1))
         return heat
 
     def update_heat_history(self, is_accept, nodes_to_rm, nodes_to_add):
@@ -563,19 +566,19 @@ class MCMCOptimizer(Optimizer):
             SingleLogger().info("No checkpoint found, search from scratch")
 
         SingleLogger().info("="*20 + " Search Starts " + "="*20)
-        SingleLogger().info("\033[92m" + "Start to search, the original iteration time is %f, init cost is %f" %
-                            (self.base_cost, self.cur_cost) + "\033[0m")
+        SingleLogger().info(bcolors.CGREEN + "Start to search, the original iteration time is %f, init cost is %f" %
+                            (self.base_cost, self.cur_cost) + bcolors.ENDC)
         candidates, _ = self.candidate_selection(
             G, topk=None, critical_path=self.wrap_critical_path(self.exct_dag))
         search_space, weights = self.init_search_space(candidates, G, PKG)
-        SingleLogger().info("\033[94m # of candidates: {}, space: {}\033[0m".format(
-            len(candidates), len(search_space)))
+        SingleLogger().info(bcolors.CBLUE + "# of candidates: {}, space: {}".format(
+            len(candidates), len(search_space)) + bcolors.ENDC)
 
         def display_and_ckpt():
-            SingleLogger().info("\033[94m" + "Current speedup to the origin: %6.4f %%" % (
-                100 * (self.base_cost - self.cur_cost) / self.base_cost) + "'\033[0m'")
-            SingleLogger().info("\033[94m" + "Best speedup: %d th step, speed up to the origin: %6.4f %%" % (
-                self.best_step, 100 * (self.base_cost - self.best_cost) / self.base_cost) + "'\033[0m'\n")
+            SingleLogger().info(bcolors.CBLUE + "Current speedup to the origin: %6.4f %%" % (
+                100 * (self.base_cost - self.cur_cost) / self.base_cost) + bcolors.ENDC)
+            SingleLogger().info(bcolors.CBLUE + "Best speedup: %d th step, speed up to the origin: %6.4f %%" % (
+                self.best_step, 100 * (self.base_cost - self.best_cost) / self.base_cost) + bcolors.ENDC + "\n")
 
             with open(os.path.join(ROOT_PATH, "search_trajectory.txt"), "a") as f:
                 f.write(str(time.time()) + ": {},{},{}".format(
@@ -604,8 +607,8 @@ class MCMCOptimizer(Optimizer):
             nodes_introduced, nodes_removed = self.apply_strategies(G_star, PKG_star, st)
             self.cost_star, self.exct_dag_star, self.mem_usage_star = self.evaluate(
                 G_star, _filename=os.path.join(ROOT_PATH, "searched_graph/grp_num_{}.json".format(st[1])))
-            SingleLogger().info("\033[94m Group Num: {}: default fusion: {} ms, Cur cost: {} ms \033[0m".format(
-                st[1], self.cur_cost, self.cost_star))
+            SingleLogger().info(bcolors.CBLUE + "Group Num: {}: default fusion: {} ms, Cur cost: {} ms".format(
+                st[1], self.cur_cost, self.cost_star) + bcolors.ENDC)
             self.cost_model_flush(False)
         raise
         '''
@@ -622,13 +625,13 @@ class MCMCOptimizer(Optimizer):
                 while successful_strategies < step_size:
                     try:
                         strategy = self.pick_strategy(search_space, weights=weights, invalid_strategies=invalid_strategies)
-                        msg = "\033[94m" + "Picked strategy ({}, {}, {}).".format(*strategy)
+                        msg = bcolors.CBLUE + "Picked strategy ({}, {}, {}).".format(*strategy)
                         if len(msg) > 200:
                             msg = msg[:200] + "..."
-                        SingleLogger().info(msg + "\033[0m")
+                        SingleLogger().info(msg + bcolors.ENDC)
                     except OptNoValidStrategyError:
                         # no valid strategies available, refresh search space
-                        SingleLogger().info("\033[94m Search space exhausted. \033[0m")
+                        SingleLogger().info(bcolors.CBLUE + "Search space exhausted." + bcolors.ENDC)
                         candidates, _ = self.candidate_selection(G_star, topk=None, critical_path=None)
                         search_space, weights = self.init_search_space(candidates, G_star, PKG_star)
                         invalid_strategies = set()
@@ -689,18 +692,18 @@ class MCMCOptimizer(Optimizer):
                         search_space, weights = self.init_search_space(
                             candidates, G_star, PKG_star)
                     invalid_strategies = set()
-                    msg = "\033[94m" + "Strategy ({}, {}, {}) successfully applied.".format(*strategy)
+                    msg = bcolors.CBLUE + "Strategy ({}, {}, {}) successfully applied.".format(*strategy)
                     if len(msg) > 200:
                         msg = msg[:200] + "... successfully applied."
-                    SingleLogger().info(msg + "\033[0m")
+                    SingleLogger().info(msg + bcolors.ENDC)
 
                 # if step < 200:
                 #     MCMC_BETA = 1
                 # else:
                 #     MCMC_BETA = args.mcmc_beta
 
-                SingleLogger().info("\033[94m Step: {} - cost from {} -> {} \033[0m".format(
-                    self.step, self.cur_cost, self.cost_star))
+                SingleLogger().info(bcolors.CBLUE + "Step: {} - cost from {} -> {}".format(
+                    self.step, self.cur_cost, self.cost_star) + bcolors.ENDC)
                 self.step += 1
 
                 if strategy[0] in ["gradient_accumulation", "recomputation"]:
@@ -755,25 +758,25 @@ class MCMCOptimizer(Optimizer):
     def accept_or_not(self, cost, new_cost):
         # prob = min(1, (math.exp(beta * (cost - new_cost))))
         try:
-            prob = math.exp(MCMC_BETA*math.log(self.step+1) * (cost - new_cost))
+            prob = math.exp(MCMC_BETA * math.log(self.step + 1) * (cost - new_cost))
         except OverflowError:
             prob = float('inf')
 
         # if cost > new_cost:
         if prob > 1:
             SingleLogger().info(
-                "\033[92m" + "Accept a better action, orig cost: {}, new cost: {}".format(cost, new_cost) + "\033[0m")
+                bcolors.CGREEN + "Accept a better action, orig cost: {}, new cost: {}".format(cost, new_cost) + bcolors.ENDC)
             return True
         else:
             # prob = math.exp(MCMC_BETA * (cost - new_cost))
             r = random.random()
             if r < prob:
                 SingleLogger().info(
-                    "\033[92m" + "Accept a worse action with random value: {} < {} ".format(r, prob) + "\033[0m")
+                    bcolors.CGREEN + "Accept a worse action with random value: {} < {} ".format(r, prob) + bcolors.ENDC)
                 return True
             else:
                 SingleLogger().info(
-                    "\033[93m" + "Rejected a worse action with random value: {} >= {} ".format(r, prob) + "\033[0m")
+                    bcolors.CYELLOW + "Rejected a worse action with random value: {} >= {} ".format(r, prob) + bcolors.ENDC)
                 return False
 
 
