@@ -202,7 +202,7 @@ if __name__ == '__main__':
             ### Get the execution graph first
             replayer.replay()
             cal_edge_cost(replayer.exct_dag)
-
+            
             critical_path = dag_longest_path(replayer.exct_dag, clct.pm, weight="cost", default_weight=0, _debug_level=2)
             critical_path = sorted(critical_path, key=lambda x: x[1], reverse=True)
             total_len = len(critical_path)

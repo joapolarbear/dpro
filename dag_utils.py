@@ -34,23 +34,30 @@ def visualize_gml(graph, layout="circular"):
 
 def cal_edge_cost(G):
     for u, v in G.edges:
-        gap = 0
-        prev_cat = parse_cat_from_name(u)
-        next_cat = parse_cat_from_name(v)
-        for key, value in G.nodes[u].items():
-            if "GAP" in key:
-                if key == GAP_STR_INTERNODE:
-                    prev_cat_finegrained = parse_cat_fine_grained(u)
-                    next_cat_finegrained = parse_cat_fine_grained(v)
-                    if prev_cat_finegrained == "Comm.PUSH_RES" and next_cat_finegrained == "Comm.PULL_REQ":
-                        gap += value
-                else:
-                    ### e.g. "gap.operator.operator"
-                    key_s = key.split("GAP")
-                    if prev_cat == key_s[0] and next_cat == key_s[1]:
-                        gap += value
-        G.edges[u, v]["cost"] = G.nodes[u]["avg"] + gap / 1000.0
-
+        if "weight" in G.edges[u, v]:
+            # print(u, v, G.edges[u, v]["weight"])
+            G.edges[u, v]["cost"] = G.edges[u, v]["weight"]
+        else:
+            gap = 0
+            prev_cat = parse_cat_from_name(u)
+            next_cat = parse_cat_from_name(v)
+            for key, value in G.nodes[u].items():
+                if "GAP" in key:
+                    if key == GAP_STR_INTERNODE:
+                        prev_cat_finegrained = parse_cat_fine_grained(u)
+                        next_cat_finegrained = parse_cat_fine_grained(v)
+                        if prev_cat_finegrained == "Comm.PUSH_RES" and next_cat_finegrained == "Comm.PULL_REQ":
+                            gap += value
+                    # elif key == GAP_STR_OP2COMM and "Sync" in u:
+                    #     ### TODO (huhanpeng): should be GAP_STR_COMM2COMM
+                    #     gap += value
+                    else:
+                        ### e.g. "gap.operator.operator"
+                        key_s = key.split("GAP")
+                        if prev_cat == key_s[0] and next_cat == key_s[1]:
+                            gap += value
+            G.edges[u, v]["cost"] = G.nodes[u]["avg"] + gap / 1000.0
+        
 def dag_longest_path(G, pathM=None, weight='weight', default_weight=0, _debug_level=0):
     critical_path = nx.algorithms.dag.dag_longest_path(G, weight=weight, default_weight=default_weight)
     prefix = "Critical Path of " + (pathM.ret_id_in_trial() if pathM is not None else "none")
@@ -62,7 +69,7 @@ def dag_longest_path(G, pathM=None, weight='weight', default_weight=0, _debug_le
         weight_ = G[u][v].get(weight, default_weight)
         path_length += weight_
         if _debug_level > 1:
-            SingleLogger().info("%-80s: %f ms" % (u, weight_))
+            SingleLogger().info("%-80s: %.3f/%.3f ms" % (u, weight_, path_length))
         len_list.append(weight_)
     len_list.append(0)
     # SingleLogger().info(prefix + str(critical_path) + " => " + prefix + "%12.4f ms" % path_length)

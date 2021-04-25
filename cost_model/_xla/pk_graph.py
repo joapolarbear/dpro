@@ -131,7 +131,7 @@ def subgraph_partition_connected_nx(subgraph, size_limit=100):
 def subgraph_partition_connected_nx_using_topo(subgraph, size=100, layer_by_layer=False):
     split_plans = set()
     topo_order_nodes = list(nx.topological_sort(subgraph))
-    
+   
     
     valid_split_point = []
     for idx, node in enumerate(topo_order_nodes):

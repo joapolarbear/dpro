@@ -235,7 +235,7 @@ class Optimizer:
                             byteps_graph=self.clct.byteps_graph,
                             infi_para_update=args_.update_infi_para)
         step_end_time_ms = [t / 1000 for t in replayer.replayAndDelay(
-            None, _output=_output, _path=_path).values()]
+            None, _output=_output, _path=_path, verbose=False).values()]
         # print("Evaluate time {}".format(time.time() - t))
         if _crit_filename is not None:
             prefix, crit_file_name = os.path.split(_crit_filename)
@@ -656,7 +656,7 @@ class MCMCOptimizer(Optimizer):
                             break
                         except OptQueryCostModelError:
                             SingleLogger().warn("Strategy invalid (failed to query cost model).")
-                            invalid_strategies.add(st)
+                            # invalid_strategies.add(st)
                             is_succ_apply = False
                             break
                     if not is_succ_apply:

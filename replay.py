@@ -101,9 +101,16 @@ class Device:
         duration = (1000.0 * max(avg + delay, 0)) * ratio
         if self.comm_backend == "BYTEPS" and "UPDATE_CAL" in name:
             duration = 0
-
+        
+        ### Construct execution graphs
+        ### 1. Add new edges according to the execution order
+        if not self.infi_para and self.prev_name_dur is not None:
+            if (self.prev_name_dur[0], name) not in self.replayer.exct_dag.edges:
+                self.replayer.exct_dag.add_edge(self.prev_name_dur[0], name, weight=(
+                    (start_t - self.prev_name_dur[2]) / 1000.0))
+                    
         if duration == 0 and not args_.full_trace:
-            self.prev_name_dur = (name, 0)
+            self.prev_name_dur = (name, 0, start_t)
         else:
             event = {
                         "name": raw_name,
@@ -124,12 +131,8 @@ class Device:
                 for prev, _ in self.replayer.dag.in_edges(name):
                     event["args"]["input%d"%_id] = prev
                     _id += 1
-            ### Construct execution graphs
-            ### 1. Add new edges according to the execution order
-            if self.prev_name_dur is not None:
-                if (self.prev_name_dur[0], name) not in self.replayer.exct_dag.edges:
-                    self.replayer.exct_dag.add_edge(self.prev_name_dur[0], name, weight=(self.prev_name_dur[1] / 1000.0))
-            self.prev_name_dur = (event["args"]["name"], event['dur'])
+            
+            self.prev_name_dur = (event["args"]["name"], event['dur'], event['ts'])
             # ### 2. Update edge weight
             # for next_ in self.replayer.exct_dag.successors(name):
             # 	self.replayer.exct_dag.edges[name, next_]["weight"] = duration / 1000.0
@@ -410,21 +413,21 @@ class Replayer:
             self.queue_status = {"names": list(self.device_dict.keys()), 'data': []}
         self.queue_status['data'].append([cur_time] + [len(self.device_dict[name].queue) for name in self.queue_status['names']])
 
-    def replay(self, _output=True):
+    def replay(self, _output=True, verbose=True):
         self.reset_replayer()
         _ts = time.time()
         for step_idx in range(self.step_num):
             self.replay_one_iter(step_idx)
         self.logger.info("Take %f s to replay one iteration" % ((time.time() - _ts)/float(self.step_num)))
         if _output:
-            self.output_traces()
+            self.output_traces(verbose=verbose)
         
-    def replayAndDelay(self, delay_dict_, _output=False, _path=None):
+    def replayAndDelay(self, delay_dict_, _output=False, _path=None, verbose=True):
         self.reset_replayer()
         self.delay_dict = delay_dict_
         self.replay_one_iter(0)
         if _output:
-            self.output_traces(_path=_path)
+            self.output_traces(_path=_path, verbose=verbose)
         return self.step_end_time
 
     def insert_next_node(self, n, t):
@@ -627,7 +630,7 @@ class Replayer:
         with open(os.path.join(self.dump_path, "compare_replay_real.json"), 'w') as f:
             json.dump(final_trace, f)
 
-    def output_traces(self, _path=None):
+    def output_traces(self, _path=None, verbose=True):
         #! Output the synthetic traces.
         rst = {
             "traceEvents": [],
@@ -635,7 +638,8 @@ class Replayer:
         }
         for trace in self.rst_traces:
             rst["traceEvents"].append(trace)
-        TraceManager(self.rst_traces, DirLevel.TRIAL).get_iter_time()
+        if verbose:
+            TraceManager(self.rst_traces, DirLevel.TRIAL).get_iter_time()
         filename = os.path.join(self.dump_path,
                     "synthetic.json") if _path is None else _path
         with open(filename, 'w') as f:
