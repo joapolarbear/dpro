@@ -293,9 +293,9 @@ class Optimizer:
         ''' Tune the weight of a strategy with the heat of involved nodes
         '''
         # return l * (0.05 + heat)
-        if heat < -0.01:
-            SingleLogger().warn(bcolors.CRED + "Return negative weight {}".format(heat) + bcolors.ENDC)
-        return heat + 0.01
+        if heat <= -1:
+            SingleLogger().error(bcolors.CRED + "Return negative weight {}".format(heat) + bcolors.ENDC)
+        return heat + 1
         # return 1
 
     def _get_heat_from_history(self, node):
@@ -304,16 +304,20 @@ class Optimizer:
             A node's heat decreases as the seach process goes on
         '''
         heat = 0
-        HEAT_DECREASE_RATE = 0.5
-        # HEAT_DECREASE_RATE = 10
-        for (h, t) in self.heat_history[node]:
-            if h is not None:
-                heat += np.exp(HEAT_DECREASE_RATE * h - 1 * (1 - HEAT_DECREASE_RATE) * (self.step - t - 1))
+        HEAT_DECREASE_RATE = 1
+        if len(self.heat_history) > 0:
+            for (h, t) in self.heat_history[node]:
+                if h is not None:
+                    heat += (np.exp(h) - 1) / (HEAT_DECREASE_RATE * (self.step - t))
+            heat = heat / float(len(self.heat_history[node]))
         return heat
 
-    def update_heat_history(self, is_accept, nodes_to_rm, nodes_to_add):
+    def update_fusion_heat_history(self, is_accept, nodes_to_rm, nodes_to_add, fusion=True):
         ''' Update heat history for origal nodes and introduced nodes
+            * The heat is for operator fusion
+            ** Record `Delta T` as heat for fusion, `- Delta T` for de-fusion
         '''
+        new_heat = self.cur_cost - self.cost_star if fusion else self.cost_star - self.cur_cost
         ### Update heat history
         combined_history_list = [None] * self.heat_window_size
         for node in nodes_to_rm:
@@ -327,7 +331,7 @@ class Optimizer:
                     else:
                         combined_history_list[idx].append(h)
                 ### update the heat of the original nodes
-                node_history.insert(0, (self.cur_cost - self.cost_star, self.step))
+                node_history.insert(0, (new_heat, self.step))
                 node_history.pop()
         combined_history = []
         for h_list in combined_history_list:
@@ -339,7 +343,7 @@ class Optimizer:
         
         if is_accept:
             ### generate history for new nodes
-            combined_history.insert(0, (self.cur_cost - self.cost_star, self.step))
+            combined_history.insert(0, (new_heat, self.step))
             combined_history.pop()
             for node in nodes_to_add:
                 self.heat_history[node] = combined_history.copy()
@@ -575,9 +579,9 @@ class MCMCOptimizer(Optimizer):
             len(candidates), len(search_space)) + bcolors.ENDC)
 
         def display_and_ckpt():
-            SingleLogger().info(bcolors.CBLUE + "Step: {} - Current speedup to the origin: %6.4f %%" % (self.step,
+            SingleLogger().info(bcolors.CBLUE + "Step: %d - Current speedup to the origin: %6.4f %%" % (self.step,
                 100 * (self.base_cost - self.cur_cost) / self.base_cost) + bcolors.ENDC)
-            SingleLogger().info(bcolors.CBLUE + "Step: {} - Best speedup: %d th step, speed up to the origin: %6.4f %%" % (self.step,
+            SingleLogger().info(bcolors.CBLUE + "Step: %d - Best speedup: %d th step, speed up to the origin: %6.4f %%" % (self.step,
                 self.best_step, 100 * (self.base_cost - self.best_cost) / self.base_cost) + bcolors.ENDC + "\n")
 
             with open(os.path.join(ROOT_PATH, "search_trajectory.txt"), "a") as f:
@@ -718,7 +722,8 @@ class MCMCOptimizer(Optimizer):
                 ### update Graph Pass internal states
                 self.cost_model_flush(is_accept)
                 ### update heat history 
-                self.update_heat_history(is_accept, strategy_removed_nodes, strategy_introduced_nodes)
+                self.update_fusion_heat_history(is_accept, strategy_removed_nodes, 
+                    strategy_introduced_nodes, fusion=(strategy[0]!="-"))
 
                 if is_accept:
                     invalid_strategies = set()

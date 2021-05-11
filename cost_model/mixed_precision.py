@@ -27,7 +27,7 @@ class AMPGraphPass(_BaseGraphPass):
         weights = []
         for n, l in candidates:
             # node heat
-            heat = self.opt._get_heat_from_history(n)
+            # heat = self.opt._get_heat_from_history(n)
             # ### Nodes that have never been fused
             # cat = parse_cat_fine_grained(n)
             # pid = parse_pid_from_name(n)

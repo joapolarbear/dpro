@@ -391,7 +391,7 @@ class XLAGraphPass(_BaseGraphPass):
                 u_pid, nodes_to_fuse, fused_u_, simulate=True)
             if verbose:
                 SingleLogger().warn(
-                    "[COST MODEL QUERY] Exec time {}SIMULATED{}: {}".format(bcolors.CYELLOWBG, bcolors.ENDC, predicted_time))
+                    "[COST MODEL QUERY] Exec time {}ESTIMATED{}: {}".format(bcolors.CYELLOWBG, bcolors.ENDC, predicted_time))
             # raise OptQueryCostModelError("Failed to query cost model.")
         else:
             if verbose:
@@ -412,7 +412,7 @@ class XLAGraphPass(_BaseGraphPass):
         weights = []
         prun_cnt = 0
 
-        # TODO 
+        # TODO (huhanpeng): below code forces to search without the limitation of critical paths.
         # candidates = [(n, _dag.nodes[n]["avg"]) for n in _dag.nodes() if "BW" in n and "host0.rank0" in n]
 
         for n, l in candidates:
@@ -441,7 +441,7 @@ class XLAGraphPass(_BaseGraphPass):
                 split_weights = np.exp(5e-4*(len(ns) - 80)) * (np.array(split_weights) / np.sum(split_weights))
                 for split_index, splits in enumerate(valid_split_plans):
                     search_space.append(("-", n, splits))
-                    weights.append(self.opt._combine_weight(l, heat) * split_weights[split_index])
+                    weights.append(self.opt._combine_weight(l, -heat) * split_weights[split_index])
             else:
                 ### Nodes that have never been fused
                 cat = parse_cat_fine_grained(n)
@@ -645,7 +645,7 @@ class XLAGraphPass(_BaseGraphPass):
                     succs = [s for s in _dag.successors(
                         u_+"+"+v_) if _pkg.can_contract_edge(u_+"+"+v_, s)] 
                     if len(succs) > 0:
-                        heats = [self.opt._get_heat_from_history(s)+0.1 for s in succs]
+                        heats = [self.opt._combine_weight(self.opt._get_heat_from_history(s)) for s in succs]
                         u_ = u_+"+"+v_
                         st_idx = self.opt.select_one_stategy(heats, range(len(succs)))
                         v_ = succs[st_idx]

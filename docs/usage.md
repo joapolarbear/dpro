@@ -28,16 +28,16 @@ python3 analyze.py --option optimize --sub_option xla,^memory \
     --path /root/data/20210125_05_hvd_tf_resnet50_tcp/ \
     --workspace /root/data/20210125_05_hvd_tf_resnet50_tcp/ \
     --xla_candidate_path data/xla_candidates_resnet.txt \
-    --update_infi_para
+    --update_infi_para --layer_by_layer
 ```
-If you do not have a XLA cost model, run the following command to search with simulation
+If you do not have a XLA cost model, run the following command to search with estimated fusion time:
 ```
 python3 analyze.py --option optimize --sub_option xla \
     --platform TENSORFLOW --comm_backend NCCL --nccl_algo RING --pretty --simulate \
     --path /root/data/20210125_05_hvd_tf_resnet50_tcp/ \
     --workspace /root/data/20210125_05_hvd_tf_resnet50_tcp/ \
     --xla_candidate_path data/xla_candidates_resnet.txt \
-    --update_infi_para
+    --update_infi_para --layer_by_layer
 ```
 
 ### Sample some example strategies
@@ -94,3 +94,29 @@ where `<cluster_mapping_path>` denotes the path to the cluster_mapping.txt (oper
 python3 mg_generate_dataset.py --option optimize --sub_option train_gpu --platform TENSORFLOW --comm_backend NCCL --nccl_algo RING --path /path/to/traces
 ```
 `--path` specifies where traces are stored, organized by the GPU model name and ML model name
+
+---
+
+### Heat-based Search Algorithm for Operator Fusion
+#### Requirements of Weights
+1. Initially, each strategy has a weight of 1
+2. If fuse(a, b) generating c brings speedup,
+  1. The weights of fusion strategies involving a, b, c > 1
+  2. The weights of de-fusion strategies involving a, b, c < 1
+3. If fuse(a, b) generating c leads to worse performance,
+  3. The weights of fusion strategies involving a, b, c < 1
+  4. The weights of de-fusion strategies involving a, b, c > 1
+4. If defuse(c) generating a, b is better, the same as item 3
+5. If defuse(c) generating a, b is worse, the same as item 2
+6. 
+#### Solution
+- The heat is directional, i.e., a large heat means an operator is expected to participate in operator fusion, but not in operator partition
+  - After applying a strategy, if it's a fusion strategy, record  Delta T at the heat history list, otherwise, ecord  - Delta T at the heat history list. 
+  - To calculate the final heat H of one operator, if the heat history list is empty, return 0, otherwise, return ..., k > 1, thus H > -1
+        $$H = \frac{1}{n}\sum_i^{n}\frac{e^{\Delta T_i} - 1}{k \Delta t_i}$$
+  - With the heat H, calculate the final weight W as follows
+        $$W = \left\{
+        \begin{array}{rcl}
+        1 + H & &, fusion \quad strategy\\
+        1 - H & & , partition \quad strategy\\
+        \end{array} \right.$$
