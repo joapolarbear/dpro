@@ -603,6 +603,7 @@ class TraceManager:
 
         """calculate the avg """
         for name, statistic in self.name2sta.items():
+            ### TODO (huhanpeng), var can be calculated directly with avg list
             if cal_median:
                 statistic["avg"] = sum(statistic["time"]) / statistic["cnt"]
                 statistic["median"] = sorted(statistic["time"])[int(statistic["cnt"]/2)]

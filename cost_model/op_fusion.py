@@ -22,6 +22,7 @@ from cost_model._xla.xla_module_cost_model import XLAModuleCostModel
 args_ = arg_utils.SingleArg().args
 XLA_INIT_NO_BW = True
 SIMULATE_FUSION_RATIO = 0.8
+FORCE_SIMULATE_CM = False
 ROOT_PATH = os.path.join(
     args_.workspace if args_.workspace else args_.path, ".opt_ws")
 
@@ -351,11 +352,12 @@ class XLAGraphPass(_BaseGraphPass):
         nodes_to_fuse: a list of layer names to fuse
         fused_u_: a str of fused names with layer index
         '''
-        if simulate:
+        if FORCE_SIMULATE_CM or simulate:
             _sum = 0
-            for name_ in self._get_defused_node_names(fused_u_):
-                _sum += self.node_attr_cache[name_]["avg"]
-            return _sum * SIMULATE_FUSION_RATIO
+            origin_nodes = self._get_defused_node_names(fused_u_)
+            for idx in range(len(origin_nodes) - 1):
+                _sum += self.node_attr_cache[origin_nodes[idx]]["avg"]
+            return _sum * SIMULATE_FUSION_RATIO + self.node_attr_cache[origin_nodes[-1]]["avg"]
         else:
             # return self.cost_models[pid].predict(nodes_to_fuse)
             predicted_time, brkdn_dict = self.cost_models["default"].predict(nodes_to_fuse)
@@ -410,6 +412,9 @@ class XLAGraphPass(_BaseGraphPass):
         weights = []
         prun_cnt = 0
 
+        # TODO 
+        # candidates = [(n, _dag.nodes[n]["avg"]) for n in _dag.nodes() if "BW" in n and "host0.rank0" in n]
+
         for n, l in candidates:
             # node heat
             heat = self.opt._get_heat_from_history(n)
@@ -427,6 +432,7 @@ class XLAGraphPass(_BaseGraphPass):
                 subgraph = self.dag.subgraph(ns)
 
                 # randomly split edges using spanning tree
+                ### a list of tupe(nodes_in_a, nodes_in_b)
                 valid_split_plans = subgraph_partition_connected_nx_using_topo(
                     subgraph, layer_by_layer=args_.layer_by_layer)
                 split_weights = []
@@ -451,7 +457,7 @@ class XLAGraphPass(_BaseGraphPass):
             candidate_names = [c[0] for c in candidates]
 
             for succ_ in _dag.successors(n):
-                if succ_ not in candidate_names or "Comm" in succ_:
+                if "Comm" in succ_:
                     continue
                 # some filters
                 if not _pkg.can_contract_edge(n, succ_):
@@ -536,12 +542,7 @@ class XLAGraphPass(_BaseGraphPass):
 
     def _concat_name(self, u_, v_):
         return "%s+%s" % (u_, v_)
-
-    def _combine_avg(self, u, v):
-        ### call cost model to obtain the combined time
-        fused_name = self._concat_name(u, v)
-        return self._get_node_avg(fused_name)
-
+        
     def _combine_gap(self, ug, vg):
         ### TODO (huhanpeng): key component
         ### Use max to avoid one input is zero,
@@ -557,7 +558,6 @@ class XLAGraphPass(_BaseGraphPass):
 
     def _combine_attr_except_avg(self, target, attr1, attr2):
         ### In graph _dag, combine the attributes of u_ and v_, store the results in _dag as the attributes of target
-        # target["avg"] = self._combine_avg(attr1["avg"], attr2["avg"])
 
         if GAP_STR_OP2OP in attr1 and GAP_STR_OP2OP in attr2:
             target[GAP_STR_OP2OP] = self._combine_gap(attr1[GAP_STR_OP2OP], attr2[GAP_STR_OP2OP])
@@ -617,28 +617,44 @@ class XLAGraphPass(_BaseGraphPass):
         if _pkg.can_contract_edge(u_, v_):
             nodes_to_add = []
             nodes_to_remove = []
+            MAX_FUSION_EXLPORE_DEPTH = 20
+            for explore_idx in range(MAX_FUSION_EXLPORE_DEPTH):
+                # pkg must contract after calling _fuse_pair since it can
+                # throw errors
+                SingleLogger().info(bcolors.CBLUE + "The {} th exploration...".format(explore_idx) + bcolors.ENDC)
+                avg = self._fuse_pair(_dag, u_, v_)
+                _pkg.contract_edge(u_, v_)
 
-            # pkg must contract after calling _fuse_pair since it can
-            # throw errors
-            avg = self._fuse_pair(_dag, u_, v_)
-            _pkg.contract_edge(u_, v_)
+                nodes_to_add.append(u_+"+"+v_)
+                nodes_to_remove += [u_, v_]
 
-            nodes_to_add.append(u_+"+"+v_)
-            nodes_to_remove += [u_, v_]
-
-            ### apply the same strategy to other GPUs
-            ul = self.opt._debug_convert_to_other_machines(u_)
-            vl = self.opt._debug_convert_to_other_machines(v_)
-            for u__, v__ in zip(ul, vl):
-                assert _pkg.can_contract_edge(u__, v__)
-                ### TODO (huhanpeng): since we assume data parallel
-                ### use the same avg for the fused operators
-                self._fuse_pair(_dag, u__, v__, avg=avg)
-                _pkg.contract_edge(u__, v__)
-                nodes_to_add.append(u__+"+"+v__)
-                nodes_to_remove += [u__, v__]
-
-            return True, nodes_to_add, nodes_to_remove
+                ### apply the same strategy to other GPUs
+                ul = self.opt._debug_convert_to_other_machines(u_)
+                vl = self.opt._debug_convert_to_other_machines(v_)
+                for u__, v__ in zip(ul, vl):
+                    assert _pkg.can_contract_edge(u__, v__)
+                    ### TODO (huhanpeng): since we assume data parallel
+                    ### use the same avg for the fused operators
+                    self._fuse_pair(_dag, u__, v__, avg=avg)
+                    _pkg.contract_edge(u__, v__)
+                    nodes_to_add.append(u__+"+"+v__)
+                    nodes_to_remove += [u__, v__]
+                
+                is_end = True
+                if avg > self._get_node_avg(u_) + self._get_node_avg(v_):
+                    succs = [s for s in _dag.successors(
+                        u_+"+"+v_) if _pkg.can_contract_edge(u_+"+"+v_, s)] 
+                    if len(succs) > 0:
+                        heats = [self.opt._get_heat_from_history(s)+0.1 for s in succs]
+                        u_ = u_+"+"+v_
+                        st_idx = self.opt.select_one_stategy(heats, range(len(succs)))
+                        v_ = succs[st_idx]
+                        is_end = False
+                if is_end:
+                    break
+            nodes_to_add = set(nodes_to_add)
+            nodes_to_remove = set(nodes_to_remove)
+            return True, nodes_to_add.difference(nodes_to_remove), nodes_to_remove.difference(nodes_to_add)
         else:
             return False, None, None
 
@@ -662,7 +678,7 @@ class XLAGraphPass(_BaseGraphPass):
             if avg is None:
                 # an error is thrown here if cannot combine
                 # we must put all modification of dag after this line
-                avg = self._combine_avg(u_, v_)
+                avg = self._get_node_avg(new_name, verbose=False)
             _dag.add_node(new_name)
             self._combine_nodes_attr(_dag, new_name, u_, v_, avg)
             ### cache the attribute
