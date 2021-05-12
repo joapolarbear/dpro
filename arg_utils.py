@@ -64,7 +64,7 @@ group_opt.add_argument("--step_size", type=int, default=1, help="Step size used 
 
 group_opt.add_argument("--heat_window_size", type=int, default=5, help="Window size for the heat based search heuristic.")
 group_opt.add_argument("--relabel", action="store_true", help="If this arg is set, relabel the dag with indexes.")
-group_opt.add_argument("--ckpt", action="store_true", help="If this arg is set, start from cached data")
+group_opt.add_argument("--ckpt", action="store_true", help="If this arg is set, start search from checkpoint")
 group_opt.add_argument("--workspace", type=str, default=None, help="Workerspace of the optimizer")
 group_opt.add_argument("--memory_budget", type=float, default=16, help="GPU Memory budget")
 

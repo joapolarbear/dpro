@@ -217,6 +217,7 @@ class Optimizer:
             return ["+".join(ns) for ns in new_names]
 
     def _get_original_name_pid_from_index(self, name_):
+        assert "+" not in name_, name_
         if args_.relabel:
             index = self._parse_index_from_name(name_)
             return self.index2name[index], self.index2pid[index]
@@ -305,11 +306,15 @@ class Optimizer:
         '''
         heat = 0
         HEAT_DECREASE_RATE = 1
-        if len(self.heat_history) > 0:
-            for (h, t) in self.heat_history[node]:
-                if h is not None:
-                    heat += (np.exp(h) - 1) / (HEAT_DECREASE_RATE * (self.step - t))
-            heat = heat / float(len(self.heat_history[node]))
+        cnt = 0
+        for (h, t) in self.heat_history[node]:
+            if h is not None and h != 0:
+                heat += (np.exp(h) - 1) / (HEAT_DECREASE_RATE * (self.step + 1 - t))
+                cnt += 1
+        if cnt > 0:
+            heat = heat / float(cnt)
+        if heat < -1:
+            raise ValueError(self.heat_history[node])
         return heat
 
     def update_fusion_heat_history(self, is_accept, nodes_to_rm, nodes_to_add, fusion=True):
@@ -457,8 +462,9 @@ class Optimizer:
             st_idx = random.choice(valid_search_space_idx)
         else:
             valid_weights = np.array(valid_weights)
-            valid_weights = valid_weights - np.min(valid_weights)
-            valid_weights = valid_weights / np.sum(valid_weights)
+            valid_weights = valid_weights  / np.linalg.norm(valid_weights)
+            # valid_weights = valid_weights - np.min(valid_weights)
+            # valid_weights = valid_weights / np.sum(valid_weights)
             try:
                 st_idx = random.choices(valid_search_space_idx, weights=valid_weights, k=1)[0]
             except:
@@ -593,13 +599,13 @@ class MCMCOptimizer(Optimizer):
             with open(os.path.join(ROOT_PATH, "best_strategy.txt"), "w") as f:
                 json.dump({"best_strategy": self.best_strategy}, f)
 
-            ### checkpints
-            if args_.ckpt:
-                for _cost_model in self.cst_md_mng.cost_model_list:
-                    _cost_model.checkpoint()
-                with open(graph_cache, "wb") as f:
-                    pickle.dump([G, PKG, self.heat_window_size, self.heat_history,
-                                 self.best_cost, self.best_strategy, self.best_step, self.step, self.trajectory], f)
+            # if args_.ckpt:
+            ### Save checkpoints by default
+            for _cost_model in self.cst_md_mng.cost_model_list:
+                _cost_model.checkpoint()
+            with open(graph_cache, "wb") as f:
+                pickle.dump([G, PKG, self.heat_window_size, self.heat_history,
+                                self.best_cost, self.best_strategy, self.best_step, self.step, self.trajectory], f)
 
         '''
         ### Test some strategies

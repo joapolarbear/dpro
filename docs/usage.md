@@ -118,5 +118,5 @@ python3 mg_generate_dataset.py --option optimize --sub_option train_gpu --platfo
         $$W = \left\{
         \begin{array}{rcl}
         1 + H & &, fusion \quad strategy\\
-        1 - H & & , partition \quad strategy\\
+        1  + \frac{1}{H+1} - 1 = \frac{1}{H+1} & & , partition \quad strategy\\
         \end{array} \right.$$

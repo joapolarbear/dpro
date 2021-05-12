@@ -363,7 +363,11 @@ class XLAGraphPass(_BaseGraphPass):
             predicted_time, brkdn_dict = self.cost_models["default"].predict(nodes_to_fuse)
             return predicted_time / 1000
 
-    def _wrap_xla_need_fuse(self, pid, orig_name, long_name):
+    def _wrap_xla_need_fuse(self, long_name):
+        try:
+            orig_name, pid = self.opt._get_original_name_pid_from_index(long_name)
+        except (IndexError, KeyError):
+            return False
         if args_.simulate:
             return long_name not in self.forbidden_list
         else:
@@ -411,6 +415,8 @@ class XLAGraphPass(_BaseGraphPass):
         search_space = []
         weights = []
         prun_cnt = 0
+        fusion_cnt = 0
+        defusion_cnt = 0
 
         # TODO (huhanpeng): below code forces to search without the limitation of critical paths.
         # candidates = [(n, _dag.nodes[n]["avg"]) for n in _dag.nodes() if "BW" in n and "host0.rank0" in n]
@@ -441,20 +447,15 @@ class XLAGraphPass(_BaseGraphPass):
                 split_weights = np.exp(5e-4*(len(ns) - 80)) * (np.array(split_weights) / np.sum(split_weights))
                 for split_index, splits in enumerate(valid_split_plans):
                     search_space.append(("-", n, splits))
-                    weights.append(self.opt._combine_weight(l, -heat) * split_weights[split_index])
+                    defusion_cnt += 1
+                    weights.append(self.opt._combine_weight(l, 1 / (heat + 1) - 1) * split_weights[split_index])
             else:
                 ### Nodes that have never been fused
                 cat = parse_cat_fine_grained(n)
                 pid = parse_pid_from_name(n)
-            try:
-                n_orig_name, n_pid = self.opt._get_original_name_pid_from_index(n)
-            except (IndexError, KeyError):
-                continue
-
-            if not self._wrap_xla_need_fuse(n_pid, n_orig_name, n):
-                continue
             
-            candidate_names = [c[0] for c in candidates]
+            if "+" not in n and not self._wrap_xla_need_fuse(n):
+                continue
 
             for succ_ in _dag.successors(n):
                 if "Comm" in succ_:
@@ -462,14 +463,8 @@ class XLAGraphPass(_BaseGraphPass):
                 # some filters
                 if not _pkg.can_contract_edge(n, succ_):
                     continue
-                if "+" not in succ_:
-                    try:
-                        succ_orig_name, succ_pid = self.opt._get_original_name_pid_from_index(succ_)
-                    except (IndexError, KeyError):
-                        continue
-
-                    if not self._wrap_xla_need_fuse(succ_pid, succ_orig_name, succ_):
-                        continue
+                if "+" not in succ_ and not self._wrap_xla_need_fuse(succ_):
+                    continue
 
                 _pid = parse_pid_from_name(succ_)
                 _cat = parse_cat_fine_grained(succ_)
@@ -519,11 +514,12 @@ class XLAGraphPass(_BaseGraphPass):
                 heat_combined = (heat + heat_succ) / 2
 
                 search_space.append(("+", n, succ_))
+                fusion_cnt += 1
                 weights.append(self.opt._combine_weight(l, heat_combined))
                 # weights.append(1)
         
-        SingleLogger().info("Init search space len={} from {} candidates, prune {}".format(
-            len(search_space), len(candidates), prun_cnt))
+        SingleLogger().info("Init search space from {} candidates, prune {}: {} fusion strategies, {} defusion strategies".format(
+            len(candidates), prun_cnt, fusion_cnt, defusion_cnt))
 
         if len(search_space) > 0:
             min_weight = min(weights)
@@ -645,7 +641,7 @@ class XLAGraphPass(_BaseGraphPass):
                     succs = [s for s in _dag.successors(
                         u_+"+"+v_) if _pkg.can_contract_edge(u_+"+"+v_, s)] 
                     if len(succs) > 0:
-                        heats = [self.opt._combine_weight(self.opt._get_heat_from_history(s)) for s in succs]
+                        heats = [self.opt._combine_weight(None, self.opt._get_heat_from_history(s)) for s in succs]
                         u_ = u_+"+"+v_
                         st_idx = self.opt.select_one_stategy(heats, range(len(succs)))
                         v_ = succs[st_idx]
