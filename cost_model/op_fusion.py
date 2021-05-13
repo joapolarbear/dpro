@@ -23,6 +23,7 @@ args_ = arg_utils.SingleArg().args
 XLA_INIT_NO_BW = True
 SIMULATE_FUSION_RATIO = 0.8
 FORCE_SIMULATE_CM = False
+ENABLE_PRUNING = False
 ROOT_PATH = os.path.join(
     args_.workspace if args_.workspace else args_.path, ".opt_ws")
 
@@ -368,9 +369,18 @@ class XLAGraphPass(_BaseGraphPass):
             orig_name, pid = self.opt._get_original_name_pid_from_index(long_name)
         except (IndexError, KeyError):
             return False
+        
+        ### TODO (huhanpeng)
+        # if orig_name.endswith("_Switch"):
+        #     return True
+
         if args_.simulate:
             return long_name not in self.forbidden_list
         else:
+            # if "_Switch" in orig_name and orig_name not in self._wrap_xla_operation_names(pid):
+            #     print("{} not in xla_operation_names".format(orig_name))
+            # if "_Switch" in orig_name and long_name in self.forbidden_list:
+            #     print("{} in the forbidden list".format(orig_name))
             return (orig_name in self._wrap_xla_operation_names(pid)) and long_name not in self.forbidden_list
 
     def _wrap_xla_operation_names(self, pid):
@@ -407,6 +417,22 @@ class XLAGraphPass(_BaseGraphPass):
             # self.cost_model_error = []
             pass
         return predicted_time
+        
+    def _wrap_can_fuse_to_b(self, _pkg: PKGraph, a, b):
+        ''' Return whether a can be fused with b
+        '''
+        if "Comm" in b or not _pkg.can_contract_edge(a, b):
+            return False
+
+        if "+" not in b and not self._wrap_xla_need_fuse(b):
+            # if 'BW' in succ_:
+            #     print("Ignore succ {}".format(succ_))
+            return False
+        
+        if parse_pid_from_name(a) != parse_pid_from_name(b) or parse_cat_from_name(a) != parse_cat_from_name(b):
+            return False
+
+        return True
 
     def init_search_space(self, candidates, _dag: nx.DiGraph, _pkg: PKGraph):
         ### Based on the candidates, init the search space for the new dependency graph `_dag`
@@ -419,7 +445,8 @@ class XLAGraphPass(_BaseGraphPass):
         defusion_cnt = 0
 
         # TODO (huhanpeng): below code forces to search without the limitation of critical paths.
-        # candidates = [(n, _dag.nodes[n]["avg"]) for n in _dag.nodes() if "BW" in n and "host0.rank0" in n]
+        if args_.no_crit:
+            candidates = [(n, _dag.nodes[n]["avg"]) for n in _dag.nodes() if "BW" in n and "host0.rank0" in n]
 
         for n, l in candidates:
             # node heat
@@ -454,21 +481,16 @@ class XLAGraphPass(_BaseGraphPass):
                 cat = parse_cat_fine_grained(n)
                 pid = parse_pid_from_name(n)
             
-            if "+" not in n and not self._wrap_xla_need_fuse(n):
+            ### TODO (huhanpeng): !!! NOTE: should modify below code back
+            if args_.fusion_once and not self._wrap_xla_need_fuse(n):
+                continue
+            elif not args_.fusion_once and "+" not in n and not self._wrap_xla_need_fuse(n):
+                # if 'BW' in n:
+                #     print("Ignore {}".format(n))
                 continue
 
             for succ_ in _dag.successors(n):
-                if "Comm" in succ_:
-                    continue
-                # some filters
-                if not _pkg.can_contract_edge(n, succ_):
-                    continue
-                if "+" not in succ_ and not self._wrap_xla_need_fuse(succ_):
-                    continue
-
-                _pid = parse_pid_from_name(succ_)
-                _cat = parse_cat_fine_grained(succ_)
-                if pid != _pid or cat != _cat:
+                if not self._wrap_can_fuse_to_b(_pkg, n, succ_):
                     continue
 
                 ### Assumption: for edge bw_u->bw_v, if comm_bw_u > bw_v, it can not bring any speedup if fusing u and v.
@@ -479,38 +501,37 @@ class XLAGraphPass(_BaseGraphPass):
                         if "Comm" in __succ and pid == _pid:
                             __ret += ret_comm_time(__succ)
                     return __ret
-
-                comm_t = 0
-                effective_succ_bw = set()
-                # for bw_u_succ in _dag.successors(bw_u):
-                for bw_u_succ in _dag.successors(n):
-                    if "Comm" in bw_u_succ:
-                        if self.opt.comm_backend == "NCCL":
-                            # check if the comm node's predecessor includes succ_
-                            if succ_ in _dag.predecessors(bw_u_succ):
-                                # OK to fuse
-                                continue
-                            else:
-                                succ_bws = [node for node in _dag.predecessors(bw_u_succ) if "BW" in node]
-                                effective_succ_bw.union(set(succ_bws))
-                                comm_t += ret_comm_time(bw_u_succ)
-                        else:
-                            ### TODO (huhanpeng): is there only one comm sub operator ???
-                            comm_t += _dag.nodes[bw_u_succ]["avg"]
-                            effective_succ_bw.add(succ_)
-                effective_bw_size = 0
-                for node in effective_succ_bw:
-                    effective_bw_size += _dag.nodes[node]["avg"]
-
                 # if comm_t >= _dag.nodes[bw_v]["avg"]:
-                if comm_t > effective_bw_size:
-                    prun_cnt += 1
-                    SingleLogger().debug("Prune fusing {} and {} with comm time {}".format(n, succ_, comm_t))
-                    continue
+                if ENABLE_PRUNING:
+                    comm_t = 0
+                    effective_succ_bw = set()
+                    # for bw_u_succ in _dag.successors(bw_u):
+                    for bw_u_succ in _dag.successors(n):
+                        if "Comm" in bw_u_succ:
+                            if self.opt.comm_backend == "NCCL":
+                                # check if the comm node's predecessor includes succ_
+                                if succ_ in _dag.predecessors(bw_u_succ):
+                                    # OK to fuse
+                                    continue
+                                else:
+                                    succ_bws = [node for node in _dag.predecessors(bw_u_succ) if "BW" in node]
+                                    effective_succ_bw.union(set(succ_bws))
+                                    comm_t += ret_comm_time(bw_u_succ)
+                            else:
+                                ### TODO (huhanpeng): is there only one comm sub operator ???
+                                comm_t += _dag.nodes[bw_u_succ]["avg"]
+                                effective_succ_bw.add(succ_)
+                    effective_bw_size = 0
+                    for node in effective_succ_bw:
+                        effective_bw_size += _dag.nodes[node]["avg"]
+
+                    if comm_t > effective_bw_size:
+                        prun_cnt += 1
+                        SingleLogger().debug("Prune fusing {} and {} with comm time {}".format(n, succ_, comm_t))
+                        continue
 
                 # calculate heat using max(heat(n), heat(succ_))
                 heat_succ = self.opt._get_heat_from_history(succ_)
-
                 heat_combined = (heat + heat_succ) / 2
 
                 search_space.append(("+", n, succ_))
@@ -519,8 +540,8 @@ class XLAGraphPass(_BaseGraphPass):
                 # weights.append(1)
         
         SingleLogger().info("Init search space from {} candidates, prune {}: {} fusion strategies, {} defusion strategies".format(
-            len(candidates), prun_cnt, fusion_cnt, defusion_cnt))
-
+            len(candidates), prun_cnt if ENABLE_PRUNING else "(disabled)", fusion_cnt, defusion_cnt))
+        # raise
         if len(search_space) > 0:
             min_weight = min(weights)
             max_weight = max(weights)
@@ -639,7 +660,7 @@ class XLAGraphPass(_BaseGraphPass):
                 is_end = True
                 if avg > self._get_node_avg(u_) + self._get_node_avg(v_):
                     succs = [s for s in _dag.successors(
-                        u_+"+"+v_) if _pkg.can_contract_edge(u_+"+"+v_, s)] 
+                        u_+"+"+v_) if (self._wrap_can_fuse_to_b(_pkg, u_+"+"+v_, s))] 
                     if len(succs) > 0:
                         heats = [self.opt._combine_weight(None, self.opt._get_heat_from_history(s)) for s in succs]
                         u_ = u_+"+"+v_
@@ -728,7 +749,7 @@ class XLAGraphPass(_BaseGraphPass):
         avgs = []
         component_names = get_concated_names(components)
         for new_node_name in component_names:
-            avg = self._get_node_avg(new_node_name)
+            avg = self._get_node_avg(new_node_name, verbose=False)
             avgs.append(avg)
         _pkg.split_node(target, components)
 

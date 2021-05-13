@@ -58,8 +58,9 @@ group_opt.add_argument("--ucb_type", type=str, default="AVG", choices=["MAX", "A
 group_opt.add_argument("--no_mutation", action="store_true", help="If this arg is set, the default policy of MCTS will not rollout")
 group_opt.add_argument("--ucb_gamma", type=float, default=0.1, help="Hyper Parameter used in UCB to control the exploration rate.")
 group_opt.add_argument("--ucb_visual", action="store_true", help="If this arg is set, visualize the MCTS search process")
+group_opt.add_argument("--no_crit", action="store_true", help="If this arg is set, relax the critical path constaint")
 
-group_opt.add_argument("--mcmc_beta", type=float, default=100, help="Hyper Parameter used in MCMC/SA to control the exploration rate")
+group_opt.add_argument("--mcmc_beta", type=float, default=10, help="Hyper Parameter used in MCMC/SA to control the exploration rate")
 group_opt.add_argument("--step_size", type=int, default=1, help="Step size used in MCMC optimizer.")
 
 group_opt.add_argument("--heat_window_size", type=int, default=5, help="Window size for the heat based search heuristic.")
@@ -78,7 +79,8 @@ group_xla.add_argument("--layer_num_limit", type=str, default=None, help="Sample
                        "This argument specifies the maximum number of layers that can be fused."
                        "Test multiple values by separating them with commas")
 group_xla.add_argument("--layer_by_layer", action="store_true", help="Fuse operators layer by layer, if set ture")
-
+group_xla.add_argument("--fusion_once", action="store_true",
+                       help="If set, one op can be fused only once")
 
 args = parser.parse_args()
 

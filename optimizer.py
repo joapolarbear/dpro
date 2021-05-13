@@ -217,7 +217,7 @@ class Optimizer:
             return ["+".join(ns) for ns in new_names]
 
     def _get_original_name_pid_from_index(self, name_):
-        assert "+" not in name_, name_
+        # assert "+" not in name_, name_
         if args_.relabel:
             index = self._parse_index_from_name(name_)
             return self.index2name[index], self.index2pid[index]
@@ -717,7 +717,7 @@ class MCMCOptimizer(Optimizer):
                         msg = msg[:200] + "... successfully applied."
                     SingleLogger().info(msg + bcolors.ENDC)
 
-                SingleLogger().info(bcolors.CBLUE + "Step: {} - cost from {} -> {}".format(
+                SingleLogger().info(bcolors.CBLUE + "Step: {} - cost from {:.5f} -> {:.5f}".format(
                     self.step, self.cur_cost, self.cost_star) + bcolors.ENDC)
                 
                 if strategy[0] in ["gradient_accumulation", "recomputation"]:
@@ -785,18 +785,18 @@ class MCMCOptimizer(Optimizer):
         # if cost > new_cost:
         if prob > 1:
             SingleLogger().info(
-                bcolors.CGREEN + "Accept a better action, orig cost: {}, new cost: {}".format(cost, new_cost) + bcolors.ENDC)
+                bcolors.CGREEN + "Accept a better action, orig cost: {:.5f}, new cost: {:.5f}".format(cost, new_cost) + bcolors.ENDC)
             return True
         else:
             # prob = math.exp(MCMC_BETA * (cost - new_cost))
             r = random.random()
             if r < prob:
                 SingleLogger().info(
-                    bcolors.CGREEN + "Accept a worse action with random value: {} < {} ".format(r, prob) + bcolors.ENDC)
+                    bcolors.CGREEN + "Accept a worse action with random value: {:.5f} < {:.5f} ".format(r, prob) + bcolors.ENDC)
                 return True
             else:
                 SingleLogger().info(
-                    bcolors.CYELLOW + "Rejected a worse action with random value: {} >= {} ".format(r, prob) + bcolors.ENDC)
+                    bcolors.CYELLOW + "Rejected a worse action with random value: {:.5f} >= {:.5f} ".format(r, prob) + bcolors.ENDC)
                 return False
 
 
