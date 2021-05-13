@@ -134,9 +134,9 @@ class Optimizer:
         self.forbidden_list = []
 
         if not os.path.exists(ROOT_PATH):
-            os.mkdir(ROOT_PATH)
+            os.makedirs(ROOT_PATH)
         if not os.path.exists(os.path.join(ROOT_PATH, "searched_graph")):
-            os.mkdir(os.path.join(ROOT_PATH, "searched_graph"))
+            os.makedirs(os.path.join(ROOT_PATH, "searched_graph"))
 
         # if "BPF_DUMP_INIT_GRAPH_TO" in os.environ:
         #     bpf_dump_init_graph_to = os.environ["BPF_DUMP_INIT_GRAPH_TO"]
