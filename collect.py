@@ -924,7 +924,7 @@ class Collector(object):
         if self.comm_backend == "BYTEPS":
             rst_traces += self.byteps_graph.gen_compatible_trace(dump_path=os.path.join(self.pm.path, FileName.BPS_ALIGNED_TRACE.value))
 
-        SingleLogger().info("Take {} s to combine all traces of length {}".format(time.time() - ts_, len(rst_traces)))
+        SingleLogger().info("Take {:.3f} s to combine all traces of length {}".format(time.time() - ts_, len(rst_traces)))
         # rst_traces = sorted(rst_traces, key=lambda x: (x["pid"], x["tid"]))
         # with open(os.path.join(self.pm.path, FileName.TRACE.value), 'w') as f:
         #     json.dump(rst_traces, f)
@@ -956,7 +956,7 @@ class Collector(object):
                 nrank += len(worker_dirs)
             critical_path = [None] * nrank
             worker_dag_list = [None] * nrank
-            
+
         if self.single:
             worker_path = os.path.join(self.pm.path, self.pm.dirs[0])
             gpu_path = os.path.join(worker_path, first_valid_dir(worker_path))
@@ -989,7 +989,7 @@ class Collector(object):
             composed_dag = nx.compose(composed_dag, self.byteps_graph.get_comm_graph())
 
         self.trail_dag = composed_dag
-        SingleLogger().info("Take {} s construct the DAG with {} nodes".format(time.time() - ts_, len(self.trail_dag.nodes)))
+        SingleLogger().info("Take {:.3f} s construct the DAG with {} nodes".format(time.time() - ts_, len(self.trail_dag.nodes)))
 
     def iter_time(self):
         if self.traceM is None:
@@ -1607,7 +1607,7 @@ class Collector(object):
             raise NotImplementedError() 
 
         self.trail_dag = composed_dag
-        SingleLogger().info("Take {} s construct the DAG with {} nodes".format(time.time() - ts_, len(self.trail_dag.nodes)))
+        SingleLogger().info("Take {:.3f} s construct the DAG with {} nodes".format(time.time() - ts_, len(self.trail_dag.nodes)))
 
     def _collect_rank_dag_v2(self, nrank, worker_dag_list, critical_path, index):
         SingleLogger().info("- Collect {} th DAG in ...".format(index))
@@ -1676,7 +1676,6 @@ class Collector(object):
             else:
                 ref_name = gen_long_name(base_ref_pid, allinfo[1], allinfo[3])
                 self.trail_dag.nodes[node_]["avg"] = self.traceM.lookup_stat(None, None, ref_name) 
-
 
     def init_v2(self, nrank):
         self.collect_trial_dag_v2(nrank)

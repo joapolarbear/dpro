@@ -489,7 +489,7 @@ class DAGManager:
             else:
                 ### delete edges from BW to Comm main task.
                 return
-        elif "UPDATE" in u or "UPDATE" in v:
+        elif "UPDATE" in u and "FW" in v:
             ### ignore nodes from UPDATE to FW, avoid cycles
             return
         else:
@@ -607,7 +607,6 @@ class DAGManager:
                   
                 done_comm.append(u)
                 
-            
             if self.byteps_graph is not None:
                 self._process_edge_byteps(mygraph, queue_type_list, u, v)
             elif self.nccl_graph is not None:

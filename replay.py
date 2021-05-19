@@ -648,7 +648,7 @@ class Replayer:
             with open(os.path.join(self.dump_path, 'queue_status.json'), 'w') as f:
                 json.dump(self.queue_status, f, indent=4)
 
-    def daydream_dag(self, metadata):
+    def daydream_dag(self, metadata, single = False):
         ''' Convert the DFG to that described in Daydream
             1. Only keep operators on one GPU, i.e. host0.rank0
             2. Use Coarse-grained Comm operators
@@ -710,7 +710,7 @@ class Replayer:
                     fused_size += tensor_size
                 SingleLogger().debug("Fused Tensor Size for {}: {} MB".format(op_name, fused_size / (1024.0 * 1024.0)))
             else:
-                if "BW" in u and "UPDATE_" in v:
+                if not single and "BW" in u and "UPDATE_" in v:
                     raise ValueError(u, v)
                 wrap_add_edge(u, v)
         # _dag.add_edges_from(edges_to_add)

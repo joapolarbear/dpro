@@ -563,22 +563,21 @@ class TraceManager:
 
             ### Check and statistic the LAST iteration
             if not pid_info["fw_end"] or not pid_info["bw_end"] or not pid_info["bw_start"]:
-                if len(pid_info["iter_multi_steps"]) > 0:
-                    ### TODO (hhp): ignore the last iteration now, since sometimes the last iteration
-                    #   is not completed
-                    pass
-                else:
-                    pid_info["iter_multi_steps"].append((pid_info["time_cursor"] - pid_info["step_start_ts"]) / 1000.0)
-                    pid_info["fw_multi_steps"].append(pid_info["cat_cnt"]["operator.FW"])
-                    try:
-                        pid_info["bw_multi_steps"].append(pid_info["cat_cnt"]["operator.BW"])
-                    except KeyError:
-                        ### for fused op, there may be not BW nodes
-                        # append -1 as abnormal cases
-                        pid_info["bw_multi_steps"].append(-1)
-                    pid_info["update_multi_steps"].append(pid_info["cat_cnt"]["operator.UPDATE"])
-                    pid_info["cat_cnt"]["operator.FW"] = pid_info["cat_cnt"]["operator.BW"] = pid_info["cat_cnt"]["operator.UPDATE"] = 0
-                    SingleLogger().debug("%s - the %d th iteration: FW:%f, BW: %f, Iteration time: %f" % (prefix, len(pid_info["iter_multi_steps"]), pid_info["fw_multi_steps"][-1], pid_info["bw_multi_steps"][-1], pid_info["iter_multi_steps"][-1]))
+                ### TODO (hhp): ignore the last iteration now, since sometimes the last iteration
+                #   is not completed
+                pass
+            else:
+                pid_info["iter_multi_steps"].append((pid_info["time_cursor"] - pid_info["step_start_ts"]) / 1000.0)
+                pid_info["fw_multi_steps"].append(pid_info["cat_cnt"]["operator.FW"])
+                try:
+                    pid_info["bw_multi_steps"].append(pid_info["cat_cnt"]["operator.BW"])
+                except KeyError:
+                    ### for fused op, there may be not BW nodes
+                    # append -1 as abnormal cases
+                    pid_info["bw_multi_steps"].append(-1)
+                pid_info["update_multi_steps"].append(pid_info["cat_cnt"]["operator.UPDATE"])
+                pid_info["cat_cnt"]["operator.FW"] = pid_info["cat_cnt"]["operator.BW"] = pid_info["cat_cnt"]["operator.UPDATE"] = 0
+                SingleLogger().debug("%s - the %d th iteration: FW:%f, BW: %f, Iteration time: %f" % (prefix, len(pid_info["iter_multi_steps"]), pid_info["fw_multi_steps"][-1], pid_info["bw_multi_steps"][-1], pid_info["iter_multi_steps"][-1]))
 
             ### Statistic the iteration time
             iter_time_multi_steps = np.array(pid_info["iter_multi_steps"])
