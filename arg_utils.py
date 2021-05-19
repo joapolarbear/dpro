@@ -81,6 +81,8 @@ group_xla.add_argument("--layer_num_limit", type=str, default=None, help="Sample
 group_xla.add_argument("--layer_by_layer", action="store_true", help="Fuse operators layer by layer, if set ture")
 group_xla.add_argument("--fusion_once", action="store_true",
                        help="If set, one op can be fused only once")
+group_xla.add_argument("--disable_estimate", action="store_true",
+                       help="If set, disable estimate the fused time when failed, instead, raise an error")
 
 args = parser.parse_args()
 

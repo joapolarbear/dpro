@@ -401,12 +401,14 @@ class XLAGraphPass(_BaseGraphPass):
 
         predicted_time = self._wrap_xla_predict(u_pid, nodes_to_fuse, fused_u_, simulate=args_.simulate)
         if predicted_time < 0:
-            predicted_time = self._wrap_xla_predict(
-                u_pid, nodes_to_fuse, fused_u_, simulate=True)
-            if verbose:
-                SingleLogger().warn(
-                    "[COST MODEL QUERY] Exec time {}ESTIMATED{}: {}".format(bcolors.CYELLOWBG, bcolors.ENDC, predicted_time))
-            # raise OptQueryCostModelError("Failed to query cost model.")
+            if args_.disable_estimate:
+                raise OptQueryCostModelError("Failed to query cost model.")
+            else:
+                predicted_time = self._wrap_xla_predict(
+                    u_pid, nodes_to_fuse, fused_u_, simulate=True)
+                if verbose:
+                    SingleLogger().warn(
+                        "[COST MODEL QUERY] Exec time {}ESTIMATED{}: {}".format(bcolors.CYELLOWBG, bcolors.ENDC, predicted_time))
         else:
             if verbose:
                 SingleLogger().info("[COST MODEL QUERY] Exec time predicted: {} (Avg. sum of origin: {}".format(
@@ -541,13 +543,10 @@ class XLAGraphPass(_BaseGraphPass):
         
         SingleLogger().info("Init search space from {} candidates, prune {}: {} fusion strategies, {} defusion strategies".format(
             len(candidates), prun_cnt if ENABLE_PRUNING else "(disabled)", fusion_cnt, defusion_cnt))
-        # raise
+
         if len(search_space) > 0:
-            min_weight = min(weights)
-            max_weight = max(weights)
-            for idx in range(len(weights)):
-                weights[idx] -= min_weight
-                weights[idx] /= max_weight - min_weight
+            weights /= np.linalg.norm(weights)
+            weights = list(weights)
 
         ### TODO (huhanpeng) delete
         bw_num_in_critical_path = len([n for n, _ in candidates if "BW" in n])
