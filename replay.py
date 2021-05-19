@@ -655,8 +655,7 @@ class Replayer:
         '''
         SingleLogger().info("Convert dag to dagdream_dag ...")
         if metadata.metainfo is None:
-            raise ValueError(
-                "meta info is None, --metadata_path should be set: {} is given".format(args_.metadata_path))
+            raise ValueError("metadata info is None")
         _dag = nx.DiGraph()
 
         DAYDREAM_BW_RATIO = 0.85

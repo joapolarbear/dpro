@@ -9,7 +9,9 @@ import logger_utils
 import threading
 from enum import Enum
 import numpy as np
+
 from logger_utils import Singleton, SingleLogger
+from base import bcolors
 
 QUEUETYPE = {
     "NCCL": {
@@ -56,7 +58,7 @@ class FileName(Enum):
     DAG="dag.gml"
     GRAPHDEF = "final_graph.json"
     TRACE="bps_trace_final.json"
-    COMP="temp.json"
+    COMP = "trace.json.gz"
     SYMBOL="symbol_debug_str.txt"
     TENSOR_NAME="gradient_name_list.json"
     COMM_DETAIL="comm_detail.json"
@@ -72,7 +74,7 @@ class FileName(Enum):
     KEY_DICT="key_dict.txt"
     BYTEPS_CACHE="bps_cache.pickle"
     BPS_ALIGNED_TRACE="bps_comm_aligned.json"
-    METADATA="metadata.json"
+    METADATA="metadata.json"    
 
 class CatName(Enum):
     OPERATOR="operator"
@@ -464,26 +466,28 @@ class TraceManager:
                     "time": [event["dur"] / 1000.0] if cal_median else event["dur"] / 1000.0, 
                     "min_t": event["dur"] / 1000.0, 
                     "max_t": event["dur"] / 1000.0,
-                    # \TODO: add `cat` field for communication traces
-                    # "cat": event["cat"] 
                     "cat": cat,
                     "id": len(self.name2sta)
                     }
             event["args"]["cnt"] = self.name2sta[unique_name]["cnt"] - 1
 
-            ### Add the `step` field
             pid_info = prefix_dict[prefix]
             if pid_info["time_base"] is None:
                 pid_info["time_base"] = event["ts"]
-            
-            if pid_info["time_cursor"] is None:
-                pass
-            elif event["ts"] - pid_info["time_cursor"] - pid_info["time_base"] > ITER_GAP_LOWER_BOUND_US and \
-                    cat in AS_START_CAT and \
-                    pid_info["cat_cnt"]["operator.BW"] > 0 and \
-                    pid_info["cat_cnt"]["operator.UPDATE"] > 0:
-                pid_info["step_cnt"] += 1
-            event["args"]["step"] = pid_info["step_cnt"]
+            ### Add the `step` field
+            if "step" not in event["args"]:
+                ### TODO (huhanpeng): Can this adapt to MXNet
+                if pid_info["time_cursor"] is None:
+                    pass
+                elif event["ts"] - pid_info["time_cursor"] - pid_info["time_base"] > ITER_GAP_LOWER_BOUND_US and \
+                        cat in AS_START_CAT and \
+                        pid_info["cat_cnt"]["operator.BW"] > 0 and \
+                        pid_info["cat_cnt"]["operator.UPDATE"] > 0:
+                    pid_info["step_cnt"] += 1
+                event["args"]["step"] = pid_info["step_cnt"]
+            else:
+                ### For TensorFlow 2.4, step info is directly given the TF profiler
+                event["args"]["step"] = int(event["args"]["step"])
 
             ### Statistic time grouped by fine-grained cat
             if parse_cat_from_name(event["name"]) in [CatName.OPERATOR.value,
@@ -557,38 +561,37 @@ class TraceManager:
                 continue
             pid_info = prefix_dict[prefix]
 
-            ### Check and statistic the last iteration
+            ### Check and statistic the LAST iteration
             if not pid_info["fw_end"] or not pid_info["bw_end"] or not pid_info["bw_start"]:
-                continue
-            elif len(pid_info["iter_multi_steps"]) > 0:
-                ### TODO (hhp): ignore the last iteration now, since sometimes the last iteration
-                #   is not complete
-                pass
-            else:
-                pid_info["iter_multi_steps"].append((pid_info["time_cursor"] - pid_info["step_start_ts"]) / 1000.0)
-                pid_info["fw_multi_steps"].append(pid_info["cat_cnt"]["operator.FW"])
-                try:
-                    pid_info["bw_multi_steps"].append(pid_info["cat_cnt"]["operator.BW"])
-                except KeyError:
-                    ### for fused op, there may be not BW nodes
-                    # append -1 as abnormal cases
-                    pid_info["bw_multi_steps"].append(-1)
-                pid_info["update_multi_steps"].append(pid_info["cat_cnt"]["operator.UPDATE"])
-                pid_info["cat_cnt"]["operator.FW"] = pid_info["cat_cnt"]["operator.BW"] = pid_info["cat_cnt"]["operator.UPDATE"] = 0
-                SingleLogger().debug("%s - the %d th iteration: FW:%f, BW: %f, Iteration time: %f" % (prefix, len(pid_info["iter_multi_steps"]), pid_info["fw_multi_steps"][-1], pid_info["bw_multi_steps"][-1], pid_info["iter_multi_steps"][-1]))
+                if len(pid_info["iter_multi_steps"]) > 0:
+                    ### TODO (hhp): ignore the last iteration now, since sometimes the last iteration
+                    #   is not completed
+                    pass
+                else:
+                    pid_info["iter_multi_steps"].append((pid_info["time_cursor"] - pid_info["step_start_ts"]) / 1000.0)
+                    pid_info["fw_multi_steps"].append(pid_info["cat_cnt"]["operator.FW"])
+                    try:
+                        pid_info["bw_multi_steps"].append(pid_info["cat_cnt"]["operator.BW"])
+                    except KeyError:
+                        ### for fused op, there may be not BW nodes
+                        # append -1 as abnormal cases
+                        pid_info["bw_multi_steps"].append(-1)
+                    pid_info["update_multi_steps"].append(pid_info["cat_cnt"]["operator.UPDATE"])
+                    pid_info["cat_cnt"]["operator.FW"] = pid_info["cat_cnt"]["operator.BW"] = pid_info["cat_cnt"]["operator.UPDATE"] = 0
+                    SingleLogger().debug("%s - the %d th iteration: FW:%f, BW: %f, Iteration time: %f" % (prefix, len(pid_info["iter_multi_steps"]), pid_info["fw_multi_steps"][-1], pid_info["bw_multi_steps"][-1], pid_info["iter_multi_steps"][-1]))
 
+            ### Statistic the iteration time
             iter_time_multi_steps = np.array(pid_info["iter_multi_steps"])
             iter_time_avg, iter_time_std = np.average(iter_time_multi_steps), np.std(iter_time_multi_steps)
-            SingleLogger().info("<%s> average iter time %f (\u00B1 %f): %s" % (
+            SingleLogger().debug("<%s> average iter time %f (\u00B1 %f): %s" % (
                 prefix, iter_time_avg, iter_time_std, str(pid_info["iter_multi_steps"])))
 
             fw_time = sum(pid_info["fw_multi_steps"]) / float(len(pid_info["fw_multi_steps"]))
             bw_time = sum(pid_info["bw_multi_steps"]) / float(len(pid_info["bw_multi_steps"]))
             update_time = sum(pid_info["update_multi_steps"]) / float(len(pid_info["update_multi_steps"]))
-            iter_time = sum(pid_info["iter_multi_steps"]) / float(len(pid_info["iter_multi_steps"]))
             iter_list_all.append(pid_info["iter_multi_steps"])
-            SingleLogger().info("<%s> fw : %f + bw: %f + update: %f -> time/it = %f ms" % (prefix,
-                    fw_time, bw_time, update_time, iter_time))
+            SingleLogger().info("<%s> fw : %f + bw: %f + update: %f -> time/it = %f (\u00B1 %f) ms" % (prefix,
+                    fw_time, bw_time, update_time, iter_time_avg, iter_time_std))
             
             if min_step_num is None or len(pid_info["iter_multi_steps"]) < min_step_num:
                 min_step_num = len(pid_info["iter_multi_steps"])
@@ -646,15 +649,15 @@ class TraceManager:
             sort_sta = sorted(self.name2sta.items(), key=lambda x: x[1]["avg"], reverse=True)
         else:
             sort_sta = self.name2sta.items()
-        SingleLogger().info("Profile Statistics.")
-        SingleLogger().info("===================")
-        SingleLogger().info("%-80s\t Total Count\t Min Time (ms)\t Max Time (ms)\t Avg Time (ms)\t Std.dev (ms)\t Median (ms)" % ("Name"))
-        SingleLogger().info("%-80s\t -----------\t -------------\t -------------\t -------------\t ---------------\t ---------------" % ("----"))
+        print_str = "{}Profile Statistics.{}\n".format(bcolors.CGREEN, bcolors.ENDC)
+        print_str += ("===================\n")
+        print_str += ("%-80s\t Total Count\t Min Time (ms)\t Max Time (ms)\t Avg Time (ms)\t Std.dev (ms)\t Median (ms)\n" % ("Name"))
+        print_str += ("%-80s\t -----------\t -------------\t -------------\t -------------\t ---------------\t ---------------\n" % ("----"))
         line_cnt = 0
         for name, statistic in sort_sta:
             if (line_num and line_cnt >= line_num):
                 break        
-            SingleLogger().info("%-80s\t %11d\t %12.4f\t %13.4f\t %13.4f\t %13.4f\t %13.4f" % 
+            print_str += ("%-80s\t %11d\t %12.4f\t %13.4f\t %13.4f\t %13.4f\t %13.4f\n" %
                     (name,
                     statistic["cnt"],
                     statistic["min_t"],
@@ -666,15 +669,18 @@ class TraceManager:
             line_cnt += 1
 
         # Group by category
-        SingleLogger().info("")
-        SingleLogger().info("Group by category")
-        SingleLogger().info("===================")
+        print_str += ("\n")
+        print_str += ("Group by category\n")
+        print_str += ("===================\n")
         line_cnt = 0
         for cat, statistic in self.cat2sta.items():
             if (line_num and line_cnt >= line_num):
                     break
-            SingleLogger().info("Category: %-10s\t The most time-consuming OP: %-30s -> %13.4f (ms)" % (cat, statistic["max_name"], statistic["max_t"] / 1000.0))
+            print_str += ("Category: %-10s\t The most time-consuming OP: %-30s -> %13.4f (ms)\n" %
+                          (cat, statistic["max_name"], statistic["max_t"] / 1000.0))
             line_cnt += 1
+
+        SingleLogger().info(print_str)
 
     def lookup_stat(self, wk_prefix, rank_prefix, name,  _field="avg"):
         ''' look up data from the stat info, return average time in ms by default
@@ -881,28 +887,6 @@ class PathManager:
                             return os.path.join(gpu_root, target)
         SingleLogger().warn("Fail to find %s in path %s" % (str(target), self.path))
         return
-
-    """
-    def fuzzy_search(self, target):
-        '''fuzzy search, return a list whose elements contain target'''
-        assert self.dir_level == DirLevel.TRIAL
-        ret = []
-
-        def lookup_files(_path, _files):
-            for file in _files:
-                if target in file:
-                    ret.append(os.path.join(_path, file))
-
-        lookup_files(self.path, self.files)
-        for _dir in self.dirs:
-            worker_root, worker_dirs, worker_files = list(os.walk(os.path.join(self.path, _dir)))[0]
-            lookup_files(worker_root, worker_files)
-            for worker_dir in worker_dirs:
-                gpu_root, gpu_dirs, gpu_files = list(os.walk(os.path.join(worker_root, worker_dir)))[0]
-                lookup_files(gpu_root, gpu_files)
-
-        return ret
-    """
 
     def ret_prefix(self):
         ''' Return the host id and rank for DirLevel.GPU

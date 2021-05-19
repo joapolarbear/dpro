@@ -1,10 +1,28 @@
 
 # Profiler
 ### Horovod + Tensorflow
+```
+recorder = hvd.Recorder(model=model, batch_size=args.batch_size)
 
-* Global step should be created to use `hvd.TimelineHook`. and call
-```opt = opt.minimize(loss, global_step=global_step)```
-* `hvd.TimelineHook` generates smaller trace files.
+@hvd.profile(recorder)
+@tf.function
+def benchmark_step(first_batch):
+    ...
+    with tf.GradientTape() as tape:
+        ...
+    tape = hvd.DistributedGradientTape(tape)
+    ...
+```
+
+# Statistic
+```
+python3 /home/tiger/byteprofile-analysis/analyze.py \
+            --option statistic \
+            --platform TENSORFLOW \
+            --comm_backend NCCL --nccl_algo RING --pretty \
+            --path $GLOBAL_TRACE_PATH \
+            --update_infi_para
+```
 
 # Replay
 ```

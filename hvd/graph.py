@@ -430,7 +430,7 @@ class ncclGraph:
         self.nccl_fusion = eval(str_[7])
 
     def init_nccl_fusion(self, traceM, grad_num, show=False):
-        ### go over traces and store all combinations of traces
+        ### traverse traces and store all combinations of traces
         self.nccl_fusion["tensor2grpID"] = [None] * grad_num
         self.nccl_fusion["tensor2grpID_sync"] = [None] * grad_num
         for event in traceM.traces:

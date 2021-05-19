@@ -1,8 +1,5 @@
-from bps_helper.preprocess import preprocess_comm_timestamp
 import warnings
 import os
-
-# append for auto_profiling
 import sys, os
 import re
 import ujson as json
@@ -16,6 +13,9 @@ import multiprocessing
 from trace_utils import *
 from dag_utils import * 
 from parameter import *
+
+from bps_helper.preprocess import preprocess_comm_timestamp
+from base import bcolors
 
 args_ = arg_utils.SingleArg().args
 
@@ -65,7 +65,7 @@ class RunningSpan:
 
 
 class Collector(object):
-    #! class used to go through the file system and collect info
+    #! class used to walk through the trace directory and collect info
     def __init__(self, root_path, comm_backend = "NCCL", platform = "TENSORFLOW"):
         self.pm = PathManager(root_path)
         self.traceM = None
@@ -114,9 +114,16 @@ class Collector(object):
             add_trace_safe(self._collect_rank_comm_detail(tmp_pm, pid, host_id))
             add_trace_safe(self._collect_rank_comm(tmp_pm, pid, host_id))
         return self.rst_traces, self.ref_name, self.ref_time, self.raw_name2IDnum
-
-    def _collect_rank_comp(self, tmp_pm=None, pid=None, host_id=None):
-        '''Apply dependency info to the mxnet trace results
+    def _collect_rank_comp(self, *args, **kwargs):
+        if self.platform == "MXNET":
+            return self._collect_rank_comp_mx(*args, **kwargs)
+        elif self.platform == "TENSORFLOW":
+            return self._collect_rank_comp_tf(*args, **kwargs)
+        else:
+            raise NotImplementedError("Unsupported platform {}.".format(self.platform))
+        
+    def _collect_rank_comp_tf(self, tmp_pm=None, pid=None, host_id=None):
+        '''Collect Computation Traces
 
         Parameters
         ----------
@@ -133,13 +140,142 @@ class Collector(object):
         comp_path = tmp_pm.search(FileName.COMP)
         if comp_path is None:
             return
-        with open(comp_path, 'r') as f:
-            raw_traces = json.load(f)
+        if comp_path.endswith(".gz"):
+            os.system("gzip -fdk {}".format(comp_path))
+            json_path = comp_path.replace(".gz", "")
+            with open(json_path, 'r') as fp:
+                raw_traces = json.load(fp)["traceEvents"]
+            os.system("rm {}".format(json_path))
+        else:
+            with open(comp_path, 'r') as fp:
+                raw_traces = json.load(fp)["traceEvents"]
+
         ### Consider mulptiprocessing, each GPU will read its own dag
-        if self.dag is None:
-            dag_path = self.pm.search(FileName.DAG)
-            self.dag, self.update_nodes_in_dag = wrap_read_gml(dag_path, platform=self.platform)
         dag_node_names_std = list(self.dag.nodes)
+
+        wk_prefix, _ = PathManager("/".join(comp_path.split('/')[:-1])).ret_prefix()
+        if wk_prefix not in self.run_span:
+            self.run_span[wk_prefix] = RunningSpan()
+
+        ### collect traces of FW + BP OPs and UPDATE OPs
+        tid_hub = []
+        def _ret_operator_tid(tid_):
+            if tid_ in tid_hub:
+                return "operator%d"%(tid_hub.index(tid_))
+            else:
+                tid_hub.append(tid_)
+                return "operator%d"%(len(tid_hub) - 1)
+
+        rst_traces = []
+        pid_dict = {}
+        for trace in raw_traces:
+            if "ph" not in trace:
+                continue
+            if trace["ph"] == "M":
+                if trace["name"] == "process_name" and trace["pid"] not in pid_dict:
+                    pid_dict[trace["pid"]] = {"name": trace["args"]["name"]}
+                if trace["name"] == "thread_name" and trace["tid"] not in pid_dict[trace["pid"]]:
+                    pid_dict[trace["pid"]][trace["tid"]] = trace["args"]["name"]
+            elif trace["ph"] == "X":
+                pid_name = pid_dict[trace["pid"]]["name"]
+                tid_name = pid_dict[trace["pid"]][trace["tid"]]
+                if "/device:GPU" in pid_name:
+                    if "TensorFlow Ops" in tid_name:
+                        try:
+                            raw_name = trace["args"]["long_name"].split(":")[0]
+                            raw_name = raw_name.split("StatefulPartitionedCall/")[1] if raw_name.startswith("StatefulPartitionedCall") else raw_name
+                        except IndexError:
+                            print(trace)
+                            continue
+                        except:
+                            print(trace)
+                            raise
+
+                        # op_type = trace["name"]
+                        name = standard_name(
+                            raw_name, platform=self.platform, update_nodes_in_dag=self.update_nodes_in_dag)
+                        
+                        ### Only collect nodes in the dag
+                        ### TODO (huhanpeng): some trvial nodes may also be useful
+                        if name not in dag_node_names_std or "Comm" in name:
+                            if args_.trace_level == "debug":
+                                trace["name"] = "%s" % (trace["name"])
+                                trace["tid"] = trace["cat"] = "debug"
+                                if pid is not None:
+                                    trace["pid"] = pid
+                                rst_traces.append(trace)
+                            continue
+                        
+                        ### Record dependency info to traces
+                        innodes = [_n for _n, _ in self.dag.in_edges(name)]
+                        _args = {
+                            "name": name,
+                            "step": trace["args"]["group_id"]
+                        }
+                        for i, _n in enumerate(innodes):
+                            _args["input%d"%i] = _n
+
+                        rst_traces.append({
+                            "name": name,
+                            "ph": "X",
+                            "ts": trace["ts"],
+                            "dur": trace["dur"],
+                            "pid": pid,
+                            "tid": _ret_operator_tid(tid_name),
+                            "cat": "operator",
+                            "args": _args
+                        })
+
+                        if "args" in trace and "input0" in trace["args"] and trace["args"]["input0"] == "global_step":
+                            self.run_span[wk_prefix].init_end(trace["ts"])
+
+        rst_traces = sorted(rst_traces, key=lambda x: x["ts"], reverse=False)
+        
+        if args_.update_clip_overlapping:
+            # trim the overlapping parts of update nodes
+            # assume the end time of each event is accurate
+            update_nodes = []
+            for ev in rst_traces:
+                if "UPDATE" in ev["name"]:
+                    update_nodes.append(ev)
+            end_times = [ev["ts"] + ev["dur"] for ev in update_nodes]
+
+            sorted_end_times, sorted_update_nodes = zip(*sorted(zip(end_times, update_nodes), key=lambda x: x[0]))
+            for idx, ev in enumerate(sorted_update_nodes):
+                if idx == 0:
+                    continue
+                start_time = ev["ts"]
+                if start_time < sorted_end_times[idx - 1]:
+                    # needs clipping
+                    ev["ts"] = sorted_end_times[idx - 1]
+                    ev["dur"] = sorted_end_times[idx] - ev["ts"]
+
+        SingleLogger().debug("Comp traces length: {}.".format(len(rst_traces)))
+        return rst_traces
+
+    def _collect_rank_comp_mx(self, tmp_pm=None, pid=None, host_id=None):
+        '''Collect Computation Traces
+
+        Parameters
+        ----------
+        _path : dict
+            if _path is not given, use the `pm` of the object
+            or, if _path is given, it should be the computation_path.
+
+        Returns
+        ----------
+        rst_traces : dict
+            A dict containing MXNet trace results combined with dependency info.
+        '''
+        # debug_utils.DebugRecorder().debug_event_start()
+        comp_path = tmp_pm.search(FileName.COMP)
+        if comp_path is None:
+            return
+        with open(comp_path, 'r') as fp:
+            raw_traces = json.load(fp)["traceEvents"]
+
+        dag_node_names_std = list(self.dag.nodes)
+
         wk_prefix, _ = PathManager("/".join(comp_path.split('/')[:-1])).ret_prefix()
         if wk_prefix not in self.run_span:
             self.run_span[wk_prefix] = RunningSpan()
@@ -159,20 +295,10 @@ class Collector(object):
                 return "operator%d"%(len(tid_hub) - 1)
 
         ### convert the ph from B/E to X
-        ### TODO(huhanpeng): it's more safe to use a stack style method
+        ### TODO(huhanpeng): delete this, since it is only for Tensorflow ???
         index = 0
         traces = []
         while index < len(raw_traces["traceEvents"]):
-            if self.platform == "TENSORFLOW" and one_pid is None:
-                for trace in raw_traces["traceEvents"]:
-                    if "device:GPU" in trace["pid"] and "Compute" in trace["pid"] and "replica" in trace["pid"]:
-                        pass
-                        # one_pid = trace["pid"]
-                    elif "device:GPU" in trace["pid"] and "stream:all Compute" in trace["pid"]:
-                        # pass
-                        one_pid = trace["pid"]
-                assert one_pid is not None
-
             if "ts" not in raw_traces["traceEvents"][index]:
                 index += 1
                 continue
@@ -199,49 +325,48 @@ class Collector(object):
         # debug_utils.DebugRecorder().debug_event_end("collect_" + pid+"_comp.sorted", "Collct", "0")
 
         ### find the last BP op in the timeline
-        if self.platform == "MXNET":
-            def real_last_bw_name():
-                statue = "init"
-                _index = 0
-                last_bw = None
-                last_fw = None
-                first_bw = None
-                while _index < len(traces):
-                    trace = traces[_index]
-                    _index += 1
-                    name = standard_name(trace["name"], platform=self.platform)
-                    if name not in self.dag.nodes:
-                        continue
-                    if statue == "init" and "FW" in name:
-                        statue = "fw"
-                        last_fw = name
-                    elif statue == "fw" and "FW" in name:
-                        last_fw = name
-                    elif statue == "fw" and "BW" in name:
-                        statue = "bw"
-                        first_bw = name
-                        last_bw = name
-                    elif statue == "bw" and "BW" in name:
-                        last_bw = name
-                    elif statue == "bw" and "FW" in name:
-                        statue = "fw"
-                        return last_fw, first_bw, last_bw
-            # debug_utils.DebugRecorder().debug_event_start()          
-            last_fw, first_bw, last_bw = real_last_bw_name()
-            # debug_utils.DebugRecorder().debug_event_end("collect_" + pid+"_comp.real_last_bw_name", "Collct", "0")
+        def real_last_bw_name():
+            statue = "init"
+            _index = 0
+            last_bw = None
+            last_fw = None
+            first_bw = None
+            while _index < len(traces):
+                trace = traces[_index]
+                _index += 1
+                name = standard_name(trace["name"], platform=self.platform)
+                if name not in self.dag.nodes:
+                    continue
+                if statue == "init" and "FW" in name:
+                    statue = "fw"
+                    last_fw = name
+                elif statue == "fw" and "FW" in name:
+                    last_fw = name
+                elif statue == "fw" and "BW" in name:
+                    statue = "bw"
+                    first_bw = name
+                    last_bw = name
+                elif statue == "bw" and "BW" in name:
+                    last_bw = name
+                elif statue == "bw" and "FW" in name:
+                    statue = "fw"
+                    return last_fw, first_bw, last_bw
+        # debug_utils.DebugRecorder().debug_event_start()          
+        last_fw, first_bw, last_bw = real_last_bw_name()
+        # debug_utils.DebugRecorder().debug_event_end("collect_" + pid+"_comp.real_last_bw_name", "Collct", "0")
 
-            def is_update_op(_trace):
-                ### TODO (huhanpeng) !!! change this when model is changed
-                if "update" in _trace["name"].lower():
-                    return True
-                else:
-                    return False
+        def is_update_op(_trace):
+            ### TODO (huhanpeng) !!! change this when model is changed
+            if "update" in _trace["name"].lower():
+                return True
+            else:
+                return False
 
-            def is_cal_op(_trace):
-                if "dot" == _trace["name"] or "add_n" == _trace["name"]:
-                    return True
-                else:
-                    return False
+        def is_cal_op(_trace):
+            if "dot" == _trace["name"] or "add_n" == _trace["name"]:
+                return True
+            else:
+                return False
 
         index = 0
         rst_traces = []
@@ -249,13 +374,7 @@ class Collector(object):
         while index < len(traces):
             trace = traces[index]
             index += 1
-            if self.platform == "MXNET":
-                raw_name = trace["name"]
-            elif self.platform == "TENSORFLOW":
-                raw_name = trace["args"]["name"]
-            else:
-                raise ArgumentError("Unsupported platform {}".format(self.platform))
-
+            raw_name = trace["name"]
             name = standard_name(raw_name, platform=self.platform, update_nodes_in_dag=self.update_nodes_in_dag)
 
             ### deduplication
@@ -302,99 +421,90 @@ class Collector(object):
                 pre_event = trace
 
             ### Handle OUTPUT
-            if self.platform == "MXNET":
-                if name == last_fw: # type: ignore
-                    output_ts = None
-                    output_dur = None
-                    output_tid = None
-                    while index < len(traces):
-                        _trace = traces[index]
-                        if one_pid != _trace["pid"]:
-                            index += 1
-                        else:
-                            name = standard_name(_trace["name"], platform=self.platform)
-                            if name == first_bw or name in self.dag.nodes: # type: ignore
-                                break
-                            output_ts = _trace["ts"] if output_ts is None else output_ts
-                            output_dur = _trace["ts"] + _trace["dur"] - output_ts
-                            output_tid = _trace["tid"] if output_tid is None else output_tid
-                            index += 1
-                    if output_ts is not None and output_dur is not None:
-                        rst_traces.append({
-                            "name": "OUTPUT0",
-                            "ts": output_ts,
-                            "dur": output_dur,
-                            "ph": "X",
-                            "cat": "operator",
-                            "pid": pid if pid is not None else one_pid,
-                            "tid": _ret_operator_tid(output_tid),
-                            "args": {
-                                "name":"OUTPUT0"
-                            }
-                        })
-
-                ### if all UPDATE-dependent BW nodes have arrived, process traces til FW
-                # if len(last_bw_nodes) == 0:
-                elif name == last_bw: # type: ignore
-                    _update_ts = None
-                    _cal_ts = None
-                    _cal_tid = None
-                    _duration = 0
-                    _cnt = 0
-                    while index < len(traces):
-                        _trace = traces[index]
-                        if one_pid != _trace["pid"]:
-                            index += 1
-                        else:
-                            name = standard_name(_trace["name"], platform=self.platform)
-                            if name in self.dag.nodes:
-                                break
-                            index += 1
-                            if is_cal_op(_trace): # type: ignore
-                                if _cal_ts is None:
-                                    _cal_ts = _trace["ts"]
-                                    _cal_tid = _trace["tid"]
-                                _duration = _trace["ts"] + _trace["dur"] - _cal_ts
-                            if is_update_op(_trace): # type: ignore
-                                if _update_ts is None:
-                                    _update_ts = _trace["ts"]
-                                    ### Add UPDATE_CAL node
-                                    rst_traces.append({
-                                        "name": "UPDATE_CAL",
-                                        "ts": _cal_ts if _cal_ts is not None else _update_ts,
-                                        "dur": _duration,
-                                        "ph": "X",
-                                        "cat": "operator",
-                                        "pid": pid if pid is not None else one_pid,
-                                        "tid": _ret_operator_tid(_cal_tid),
-                                        "args": {
-                                            "name":"UPDATE_CAL"
-                                        }
-                                    })
-                                _duration = _trace["ts"] + _trace["dur"] - _update_ts
+            if name == last_fw: # type: ignore
+                output_ts = None
+                output_dur = None
+                output_tid = None
+                while index < len(traces):
+                    _trace = traces[index]
+                    if one_pid != _trace["pid"]:
+                        index += 1
+                    else:
+                        name = standard_name(_trace["name"], platform=self.platform)
+                        if name == first_bw or name in self.dag.nodes: # type: ignore
+                            break
+                        output_ts = _trace["ts"] if output_ts is None else output_ts
+                        output_dur = _trace["ts"] + _trace["dur"] - output_ts
+                        output_tid = _trace["tid"] if output_tid is None else output_tid
+                        index += 1
+                if output_ts is not None and output_dur is not None:
+                    rst_traces.append({
+                        "name": "OUTPUT0",
+                        "ts": output_ts,
+                        "dur": output_dur,
+                        "ph": "X",
+                        "cat": "operator",
+                        "pid": pid if pid is not None else one_pid,
+                        "tid": _ret_operator_tid(output_tid),
+                        "args": {
+                            "name":"OUTPUT0"
+                        }
+                    })
+            ### if all UPDATE-dependent BW nodes have arrived, process traces til FW
+            # if len(last_bw_nodes) == 0:
+            elif name == last_bw: # type: ignore
+                _update_ts = None
+                _cal_ts = None
+                _cal_tid = None
+                _duration = 0
+                _cnt = 0
+                while index < len(traces):
+                    _trace = traces[index]
+                    if one_pid != _trace["pid"]:
+                        index += 1
+                    else:
+                        name = standard_name(_trace["name"], platform=self.platform)
+                        if name in self.dag.nodes:
+                            break
+                        index += 1
+                        if is_cal_op(_trace): # type: ignore
+                            if _cal_ts is None:
+                                _cal_ts = _trace["ts"]
+                                _cal_tid = _trace["tid"]
+                            _duration = _trace["ts"] + _trace["dur"] - _cal_ts
+                        if is_update_op(_trace): # type: ignore
+                            if _update_ts is None:
+                                _update_ts = _trace["ts"]
+                                ### Add UPDATE_CAL node
                                 rst_traces.append({
-                                    "name": "UPDATE_%d"%_cnt,
-                                    "ts": _trace["ts"],
-                                    "dur": _trace["dur"],
+                                    "name": "UPDATE_CAL",
+                                    "ts": _cal_ts if _cal_ts is not None else _update_ts,
+                                    "dur": _duration,
                                     "ph": "X",
                                     "cat": "operator",
                                     "pid": pid if pid is not None else one_pid,
-                                    "tid": _ret_operator_tid(_trace["tid"]),
+                                    "tid": _ret_operator_tid(_cal_tid),
                                     "args": {
-                                        "name":"UPDATE_%d"%_cnt
+                                        "name":"UPDATE_CAL"
                                     }
                                 })
-                                _cnt += 1
-                    if _update_ts is not None:
-                        ### Initialize the end time of the entire running span
-                        self.run_span[wk_prefix].init_end(_update_ts + _duration)
-            elif self.platform == "TENSORFLOW":
-                if index < len(traces):
-                    _trace = traces[index]
-                    if "args" in _trace and "input0"in _trace["args"] and _trace["args"]["input0"] == "global_step":
-                        self.run_span[wk_prefix].init_end(_trace["ts"])
-            else:
-                raise NotImplementedError("Unsupported platform {}.".format(self.platform))
+                            _duration = _trace["ts"] + _trace["dur"] - _update_ts
+                            rst_traces.append({
+                                "name": "UPDATE_%d"%_cnt,
+                                "ts": _trace["ts"],
+                                "dur": _trace["dur"],
+                                "ph": "X",
+                                "cat": "operator",
+                                "pid": pid if pid is not None else one_pid,
+                                "tid": _ret_operator_tid(_trace["tid"]),
+                                "args": {
+                                    "name":"UPDATE_%d"%_cnt
+                                }
+                            })
+                            _cnt += 1
+                if _update_ts is not None:
+                    ### Initialize the end time of the entire running span
+                    self.run_span[wk_prefix].init_end(_update_ts + _duration)
         
         if args_.update_clip_overlapping:
             # trim the overlapping parts of update nodes
@@ -553,9 +663,6 @@ class Collector(object):
         comm_path = self.pm.search(FileName.COMM) if tmp_pm is None else tmp_pm.search(FileName.COMM)
         if comm_path is None:   
             return
-        if self.dag is None:
-            dag_path = self.pm.search(FileName.DAG)
-            self.dag = nx.read_gml(dag_path)
         comm_traces = self.parse_comm_traces(comm_path, pid=pid, host_id=host_id)
         # debug_utils.DebugRecorder().debug_event_end("collect_" + pid+"_comm", "Collct", "0")
         return comm_traces
@@ -762,8 +869,7 @@ class Collector(object):
         return rst
 
     def collect_traces(self):
-        SingleLogger().info("# Collecting Traces")
-        SingleLogger().info("Generating %s" % (FileName.TRACE.value))
+        SingleLogger().info(bcolors.CGREEN + "Collecting Traces, Generating {}".format(FileName.TRACE.value) + bcolors.ENDC)
         ts_ = time.time()
         rst_traces = []
         assert self.pm.dir_level == DirLevel.TRIAL
@@ -829,7 +935,7 @@ class Collector(object):
         self.para_dict = ParameterDict(self.pm, self.platform)
 
     def _collect_rank_dag(self, gpu_path, worker_dag_list, critical_path, index):
-        SingleLogger().info("- Collect DAG in %s ..." % (gpu_path))
+        SingleLogger().info("Collect DAG in %s ..." % (gpu_path))
         dagmanager = DAGManager(gpu_path, self.traceM, self.nccl_graph, self.byteps_graph, platform=self.platform)
         max_para_degree, _critical_path = dagmanager.gen_gpu_dag(self.dag, _pretty=args_.pretty, para_dict=self.para_dict)
         worker_dag_list[index] = dagmanager.dag
@@ -837,7 +943,7 @@ class Collector(object):
 
     def collect_trial_dag(self):
         assert self.pm.dir_level == DirLevel.TRIAL
-        SingleLogger().info("Collecting DAG ...")
+        SingleLogger().info(bcolors.CGREEN + "Collecting DAG ..." + bcolors.ENDC)
         ts_ = time.time()
         if self.comm_backend == "NCCL":
             critical_path = [None] * self.nccl_graph.nrank
@@ -850,10 +956,6 @@ class Collector(object):
                 nrank += len(worker_dirs)
             critical_path = [None] * nrank
             worker_dag_list = [None] * nrank
-        
-        if self.dag is None:
-            dag_path = self.pm.search(FileName.DAG)
-            self.dag, self.update_nodes_in_dag = wrap_read_gml(dag_path, platform=self.platform)
             
         if self.single:
             worker_path = os.path.join(self.pm.path, self.pm.dirs[0])
@@ -971,6 +1073,9 @@ class Collector(object):
 
         ### TODO (huhanpeng) dump it or not
         self.collect_para_dict()
+
+        self.dag, self.update_nodes_in_dag = wrap_read_gml(
+                self.pm.search(FileName.DAG), platform=self.platform)
 
         trail_dag_path = self.pm.search(FileName.TRAIL_DAG)
         if force_ or trace_path is None or (self.comm_backend == "NCCL" and nccl_graph_path is None) or trail_dag_path is None:

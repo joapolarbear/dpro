@@ -130,7 +130,6 @@ if __name__ == '__main__':
 
     if args.option == "statistic":
         """ Output the statistic results """
-        clct.traceM.ret_stat(cal_median=True)
         clct.traceM.print_stat(args.sort, args.head)
         if args.xlsx:
             clct.traceM.export2xlsx(path_list[0])
