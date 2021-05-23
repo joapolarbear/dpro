@@ -149,6 +149,17 @@ class Collector(object):
         else:
             with open(comp_path, 'r') as fp:
                 raw_traces = json.load(fp)["traceEvents"]
+        
+        ### If the ts field is relatvie time, add bias
+        bias_path = os.path.join(os.path.dirname(comp_path), "profile_start_time.json")
+        if os.path.exists(bias_path):
+            with open(bias_path, 'r') as fp:
+                start_times = json.load(fp)
+            # bias = np.average(start_times) * 1e6
+            bias = (start_times[0] - 0.290846) * 1e6
+        else:
+            bias = 0
+        first_bw_end_time = None
 
         ### Consider mulptiprocessing, each GPU will read its own dag
         dag_node_names_std = list(self.dag.nodes)
@@ -218,7 +229,7 @@ class Collector(object):
                         rst_traces.append({
                             "name": name,
                             "ph": "X",
-                            "ts": trace["ts"],
+                            "ts": trace["ts"] + bias,
                             "dur": trace["dur"],
                             "pid": pid,
                             "tid": _ret_operator_tid(tid_name),
@@ -250,7 +261,7 @@ class Collector(object):
                     ev["ts"] = sorted_end_times[idx - 1]
                     ev["dur"] = sorted_end_times[idx] - ev["ts"]
 
-        SingleLogger().debug("Comp traces length: {}.".format(len(rst_traces)))
+        SingleLogger().debug("Comp traces length: {}, bias {}s".format(len(rst_traces), bias))
         return rst_traces
 
     def _collect_rank_comp_mx(self, tmp_pm=None, pid=None, host_id=None):
@@ -749,8 +760,9 @@ class Collector(object):
                 process_name = cur_pid["process_name"]
 
                 if "Sync" in process_name:
-                    tensor_id_str = op_name.split(".")[1]
+                    tensor_id_str = op_name
                 else:
+                    ### TODO: 
                     tensor_id_str = process_name.split(".")[1]
                 if self.platform == "TENSORFLOW" and "_" in tensor_id_str:
                     if "input_barrier" in tensor_id_str:
@@ -1579,10 +1591,6 @@ class Collector(object):
             worker_dag_list = [None] * nrank
         else:
             raise NotImplementedError()
-        
-        if self.dag is None:
-            dag_path = self.pm.search(FileName.DAG)
-            self.dag, self.update_nodes_in_dag = wrap_read_gml(dag_path, platform=self.platform)
             
         if self.single:
             raise ValueError("Single Machine Case")

@@ -1,6 +1,8 @@
 import numpy as np
 import json
 import os
+import re
+import networkx as nx
 from ml_platform.tensorflow.amp_lists import whitelist, blacklist, greylist, clearlist
 from logger_utils import Singleton, SingleLogger
 from trace_utils import FileName, parse_allinfo_from_name
@@ -21,14 +23,39 @@ for key in OP_HYPER_PARAMETERS:
 GFLOPS_FP32 = 1
 GFLOPS_FP16 = 2
 
+
+def _normalize_name(name):
+    """Normalizes operation name to TensorFlow rules."""
+    return re.sub('[^a-zA-Z0-9_]', '_', name)
+
+def read_dfg_with_activation(path):
+    with open(path, 'r') as fp:
+        op_dict = json.load(fp)
+    g = nx.DiGraph()
+    edges_to_add = []
+    for op in op_dict.keys():
+        if "input" not in op_dict[op] or "output" not in op_dict[op]:
+            continue
+        for _input in op_dict[op]["input"]:
+            ### _input is a dict
+            activation = _normalize_name(_input["name"])
+            edges_to_add.append((activation, op))
+        for _output in op_dict[op]["output"]:
+            ### _output is a dict
+            activation = _normalize_name(_output["name"])
+            edges_to_add.append((op, activation))
+    g.add_edges_from(edges_to_add)
+    return g
+
 class MetaInfo:
     def __init__(self, meta_dir):
         with open(os.path.join(meta_dir, FileName.METADATA.value), 'r') as fp:
             self.tf_meta = json.load(fp)
 
         try:
-            with open(os.path.join(meta_dir, FileName.TENSOR_NAME.value), 'r') as fp:
-                self.gradient_name_list = json.load(fp)["gradient_name_list"]
+            with open(os.path.join(meta_dir, "gradient_name2ID.json"), 'r') as fp:
+                name2id = json.load(fp)
+                self.gradient_name_list = [name for name, _id in sorted(name2id.items(), key=lambda x: x[1])]
         except FileNotFoundError:
             SingleLogger().warn("{} is not found !".format(FileName.TENSOR_NAME.value))
             self.gradient_name_list = []

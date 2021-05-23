@@ -430,18 +430,21 @@ class ncclGraph:
         self.nccl_fusion = eval(str_[7])
 
     def init_nccl_fusion(self, traceM, grad_num, show=False):
-        ### traverse traces and store all combinations of traces
+        ### Traverse NCCL traces and store all combinations of traces
+        ### Will be used to construct the Network Topology, where some tensors are fused together
         self.nccl_fusion["tensor2grpID"] = [None] * grad_num
         self.nccl_fusion["tensor2grpID_sync"] = [None] * grad_num
         for event in traceM.traces:
             if traceM._is_ignore_for_sta(event):
                 continue
+
             if event["args"]["step"] > (traceM.opt_step + 1):
                 ### only go through one step of traces, even if there exists overlapping,
                 # no possible overlapping between three steps
                 break
             elif event["args"]["step"] != traceM.opt_step or "Comm." not in event["name"]:
                 continue
+
             tensor_list = re.findall("[0-9]+", event["name"].split(".")[1])
             ### assert tensor_list has been sorted
             # tensor_list = sorted([int(e) for e in tensor_list])

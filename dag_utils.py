@@ -114,8 +114,11 @@ def tf_relabel_func(_name, update_nodes_in_dag):
     return _name
 
 def wrap_read_gml(gml_path, platform="MXNET"):
-    ''' The node name in Tensorflow is not standard, transfer it to standard form first
-        Tranverse the dag nodes twice
+    ''' Read raw DFG file
+        * The node name in Tensorflow is not standard, transfer it to standard form first
+            Tranverse the dag nodes twice
+        * For TF 2.4, the raw DFG does not contain Comm OPs, mannually add Comm OPs for 
+            a distributed case
     '''
     mygraph = nx.read_gml(gml_path)
     if not args_.pretty:
@@ -124,6 +127,16 @@ def wrap_read_gml(gml_path, platform="MXNET"):
         except:
             SingleLogger().info("No cycles found")
     if platform == "TENSORFLOW":
+        from ml_platform.tensorflow.metadata import read_dfg_with_activation
+        _meta_data_path = os.path.join(os.path.dirname(gml_path), "_metadata.json")
+        actvation2id_path = os.path.join(os.path.dirname(gml_path), "gradient_name2ID.json")
+        dfg_with_actv = read_dfg_with_activation(_meta_data_path)
+        with open(actvation2id_path, 'r') as fp:
+            actvation2id = {}
+            for tensor, _id in json.load(fp).items():
+                actvation2id[tensor.split(".")[1]] = _id
+
+        ### Find out Update Operators
         update_nodes_in_dag = set()
         def recursive_add_succs(_node):
             for succ_ in mygraph.successors(_node):
@@ -136,12 +149,30 @@ def wrap_read_gml(gml_path, platform="MXNET"):
             if ("allreduce" in node.lower() or "bytepspushpull" in node.lower()) \
                     and "switch" not in node.lower() and "input_barrier" not in node.lower():
                 ### node is the Comm node, add its downstream nodes as update operators
+                raise ValueError("TF 2.4 GraphDef does NOT contain Comm operators")
                 recursive_add_succs(node)
-            # if "apply" in node.lower() or ("gradientdescent" in node.lower() and "learning_rate" not in node.lower()):
-            #     update_nodes_in_dag.add(node)
             elif node == "GradientDescent" or ("GradientDescent" in node and "update" in node) \
                 or node.startswith("Assign_") or ("cond" in node and "Assign" in node):
                 update_nodes_in_dag.add(node)
+        
+        ### TF 2.4, record the mapping from BW to Comm in the local DFG
+        edges_to_add = []
+        edges_to_rm = []
+        for update_op in update_nodes_in_dag:
+            for pred in mygraph.predecessors(update_op):
+                if tf_relabel_func(pred, update_nodes_in_dag).startswith("BW"):
+                    ### Only check those BW->Update edges
+                    for actvation in dfg_with_actv.successors(pred):
+                        if update_op in dfg_with_actv.successors(actvation):
+                            ### There is an edge from pred->actvation->update_op
+                            tensor = "Comm.{}".format(actvation2id[actvation])
+                            edges_to_add.append((pred, tensor))
+                            edges_to_add.append((tensor, update_op))
+                            edges_to_rm.append((pred, update_op))
+        mygraph.add_edges_from(edges_to_add)
+        mygraph.remove_edges_from(edges_to_rm)
+
+        ### Re-label Nodes
         new_graph = nx.DiGraph()
         for u, v in mygraph.edges:
             nu, nv = tf_relabel_func(u, update_nodes_in_dag), tf_relabel_func(v, update_nodes_in_dag)
@@ -561,6 +592,12 @@ class DAGManager:
                 except TypeError:
                     ### some tensors do not have grads, for MXNet
                     continue
+                except:
+                    if self.prefix == "host0.rank0":
+                        print(u, v)
+                        print(tensor_id)
+                        print(self.nccl_graph.nccl_fusion["grp_names"])
+                    raise
                 
                 if VIRTUAL_SYNC_OP:
                     nccl_grp_name_sync = nccl_grp_name
