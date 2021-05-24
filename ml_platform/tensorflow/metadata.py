@@ -101,13 +101,12 @@ class MetaInfo:
         ### And get self.old_B
         self.get_hyper_para()
 
-        self.local_dfg = mygraph
-        self.update_nodes_in_dag = update_nodes_in_dag
-        self._wrap_read_dfg(os.path.join(meta_dir, FileName.DAG.value))
-
+        self.local_dfg = None
+        self.update_nodes_in_dag = None
         ### Mapping from tensor names to weight variable names
         self.tensor2weight = {}
-        
+        self._wrap_read_dfg(os.path.join(meta_dir, FileName.DAG.value))
+
     def pick_opnames_by_op_type(self, op_type):
         return [_name for _name in self.cache_hyper_para.keys() if self.parse_op_type(_name) == op_type]
 
@@ -130,8 +129,8 @@ class MetaInfo:
         tensor_name = self.gradient_name_list[tensor_id]
         weight_name = self.tensor2weight[tensor_name]
         
-        bw_ops = self.local_dfg.predecessors(
-            "Comm.{}".format(tensor_id))
+        bw_ops = list(self.local_dfg.predecessors(
+            "Comm.{}".format(tensor_id)))
         assert len(bw_ops) == 1, (tensor_id, bw_ops)
         assert bw_ops[0].startswith("BW"), (tensor_id, bw_ops)
 
@@ -425,7 +424,7 @@ class MetaInfo:
             assert not (nu.startswith("Comm") and nv.startswith("Comm")), (u, v)
             new_graph.add_edge(nu, nv)
         
-        self.local_dfg = mygraph
+        self.local_dfg = new_graph
         self.update_nodes_in_dag = update_nodes_in_dag
 
     def standard_name(self, _name, update_nodes_in_dag=None):
