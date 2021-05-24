@@ -1,4 +1,3 @@
-import enum
 import os
 import re
 import ujson as json
@@ -519,6 +518,7 @@ class TraceManager:
                 except:
                     print(event, pid_info)
                     raise
+                assert pid_info["cur_step"] == len(pid_info["iter_multi_steps"]) - 1
                 SingleLogger().debug("%s - the %d th iteration: FW: %f, BW: %f, Iteration time: %f" % (prefix, len(pid_info["iter_multi_steps"]), pid_info["fw_multi_steps"][-1], pid_info["bw_multi_steps"][-1], pid_info["iter_multi_steps"][-1]))
                 pid_info["step_start_ts"] = event['ts'] - pid_info["time_base"]
                 pid_info["bw_start"] = None

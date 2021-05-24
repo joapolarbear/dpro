@@ -1420,7 +1420,7 @@ class Collector(object):
                     assert len(avgs) > 0
                     self.trail_dag.nodes[node_]["avg"] = sum(avgs) / len(avgs)
             else:
-                self.trail_dag.nodes[node_]["avg"] = self.traceM.lookup_stat(None, None, node_)     
+                self.trail_dag.nodes[node_]["avg"] = self.traceM.lookup_stat(None, None, node_)
 
     def add_gaps_clip_events(self):
         ''' According to the traces and DAG, add a 'gap' field for each edge (u, v)
