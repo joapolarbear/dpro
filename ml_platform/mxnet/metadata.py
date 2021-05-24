@@ -289,7 +289,7 @@ class MetaInfo:
         else:
             raise NotImplementedError("Metadata for {} is not implemented yet.".format(node))
 
-    def ret_rawmeta(self, node, batch_size):
+    def ret_rawmeta(self, node):
         assert node in self.name2shape, "shape info for {} is not in the meta data".format(node)
         if op_type == "dense":
             ### last dimension third_d, considering some special cases, 3-D matrix multiplication
@@ -417,3 +417,27 @@ class MetaInfo:
             return 1
         else:
             raise ValueError("{} not defined".format(_dtype))
+
+    def wrap_read_dfg(self, gml_path):
+        mygraph = nx.read_gml(gml_path)
+        update_nodes_in_dag = None
+        return mygraph, update_nodes_in_dag
+
+    def standard_name(self, _name):
+        #! add for mxnet-gluon case
+        if "name=" in _name:
+            _name = _name.split("name=")[1].split(";")[0]
+        #! backward nodes or forward nodes
+        _name = "BW." + _name.split("_backward")[0] if "_backward" in _name else "FW." + _name
+        _name = _name.split("_fwd")[0] if "_fwd" in _name else _name
+        return _name
+
+    def tensor_id_to_tensor_name(self, _id):
+        return self.gradient_name_list[_id]
+    
+    def tensor_name_to_tensor_id(self, name):
+        return self.gradient_name_list.index(name)
+    
+    def tensor_id2update_id(self, tensor_id):
+        '''tensor id may be 'max' to return the maximum update id '''
+        return self.tensor2update[tensor_id]

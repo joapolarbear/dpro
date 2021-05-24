@@ -149,17 +149,6 @@ class Collector(object):
         else:
             with open(comp_path, 'r') as fp:
                 raw_traces = json.load(fp)["traceEvents"]
-        
-        ### If the ts field is relatvie time, add bias
-        bias_path = os.path.join(os.path.dirname(comp_path), "profile_start_time.json")
-        if os.path.exists(bias_path):
-            with open(bias_path, 'r') as fp:
-                start_times = json.load(fp)
-            # bias = np.average(start_times) * 1e6
-            bias = (start_times[0] - 0.290846) * 1e6
-        else:
-            bias = 0
-        first_bw_end_time = None
 
         ### Consider mulptiprocessing, each GPU will read its own dag
         dag_node_names_std = list(self.dag.nodes)
@@ -203,8 +192,8 @@ class Collector(object):
                             raise
 
                         # op_type = trace["name"]
-                        name = standard_name(
-                            raw_name, platform=self.platform, update_nodes_in_dag=self.update_nodes_in_dag)
+                        name = self.para_dict.standard_name(
+                            raw_name, update_nodes_in_dag=self.update_nodes_in_dag)
                         
                         ### Only collect nodes in the dag
                         ### TODO (huhanpeng): some trvial nodes may also be useful
@@ -229,7 +218,7 @@ class Collector(object):
                         rst_traces.append({
                             "name": name,
                             "ph": "X",
-                            "ts": trace["ts"] + bias,
+                            "ts": trace["ts"],
                             "dur": trace["dur"],
                             "pid": pid,
                             "tid": _ret_operator_tid(tid_name),
@@ -261,7 +250,7 @@ class Collector(object):
                     ev["ts"] = sorted_end_times[idx - 1]
                     ev["dur"] = sorted_end_times[idx] - ev["ts"]
 
-        SingleLogger().debug("Comp traces length: {}, bias {}s".format(len(rst_traces), bias))
+        SingleLogger().debug("Comp traces length: {}".format(len(rst_traces)))
         return rst_traces
 
     def _collect_rank_comp_mx(self, tmp_pm=None, pid=None, host_id=None):
@@ -345,7 +334,7 @@ class Collector(object):
             while _index < len(traces):
                 trace = traces[_index]
                 _index += 1
-                name = standard_name(trace["name"], platform=self.platform)
+                name = self.para_dict.standard_name(trace["name"])
                 if name not in self.dag.nodes:
                     continue
                 if statue == "init" and "FW" in name:
@@ -386,7 +375,7 @@ class Collector(object):
             trace = traces[index]
             index += 1
             raw_name = trace["name"]
-            name = standard_name(raw_name, platform=self.platform, update_nodes_in_dag=self.update_nodes_in_dag)
+            name = self.para_dict.standard_name(raw_name)
 
             ### deduplication
             ### TODO (huhanpeng): should be careful, only choose one prosess here
@@ -441,7 +430,7 @@ class Collector(object):
                     if one_pid != _trace["pid"]:
                         index += 1
                     else:
-                        name = standard_name(_trace["name"], platform=self.platform)
+                        name = self.para_dict.standard_name(_trace["name"])
                         if name == first_bw or name in self.dag.nodes: # type: ignore
                             break
                         output_ts = _trace["ts"] if output_ts is None else output_ts
@@ -474,7 +463,7 @@ class Collector(object):
                     if one_pid != _trace["pid"]:
                         index += 1
                     else:
-                        name = standard_name(_trace["name"], platform=self.platform)
+                        name = self.para_dict.standard_name(_trace["name"])
                         if name in self.dag.nodes:
                             break
                         index += 1
@@ -594,11 +583,6 @@ class Collector(object):
             ### there may be no NCCL traces for intro-machien GPUs
             traces = traces.get("traceEvents", [])
 
-        # self.tensor2group = []
-        # for _ in self.metadata["gradient_name_list"]:
-        #     self.tensor2group.append([])
-        # self.groupname = []
-
         traces = sorted(traces, key=lambda x: x["ts"], reverse=False)
         first_op = None
         for trace in traces:
@@ -636,7 +620,7 @@ class Collector(object):
                                     int(trace["args"]["sliceId"]))))
             if args_.trace_level == "debug":
                 for _id, tensor_id in enumerate(tensor_list):
-                    trace["args"]["tensor%d"%_id] = self.para_dict.tensor_id_to_name(tensor_id)
+                    trace["args"]["tensor%d"%_id] = self.para_dict.tensor_id_to_tensor_name(tensor_id)
 
             if pid is not None:
                 trace["tid"] = trace["pid"]
@@ -772,7 +756,7 @@ class Collector(object):
                 input0 = None
                 if args_.trace_level == "debug" and tensor_id_str.isdigit():
                     if self.platform == "MXNET":
-                        tensor_name = self.para_dict.tensor_id_to_name(int(tensor_id_str))
+                        tensor_name = self.para_dict.tensor_id_to_tensor_name(int(tensor_id_str))
                     elif self.platform == "TENSORFLOW":
                         raise NotImplementedError()
                     input_nodes = [u for u, _ in self.dag.in_edges(tensor_name)] # type: ignore
@@ -914,6 +898,7 @@ class Collector(object):
             host_ids = [self.nccl_graph.host_prefix2id[host_id_str] for _, _, host_id_str in arg_list]
         elif self.comm_backend == "NCCL":
             host_ids = [self.nccl_graph.host_prefix2id[host_id_str] for _, _, host_id_str in arg_list]
+            print(host_ids, ref_time_list)
             self.nccl_graph.init_host_drift(zip(host_ids, ref_time_list))
             ### Since some GPU may have no comm detailed traces, select the first non-empty file to parse chunk num...
             raw_name2IDnum = None
@@ -948,7 +933,7 @@ class Collector(object):
 
     def _collect_rank_dag(self, gpu_path, worker_dag_list, critical_path, index):
         SingleLogger().info("Collect DAG in %s ..." % (gpu_path))
-        dagmanager = DAGManager(gpu_path, self.traceM, self.nccl_graph, self.byteps_graph, platform=self.platform)
+        dagmanager = DAGManager(gpu_path, self.traceM, self.nccl_graph, self.byteps_graph, platform=self.platform, metadata=self.para_dict)
         max_para_degree, _critical_path = dagmanager.gen_gpu_dag(self.dag, _pretty=args_.pretty, para_dict=self.para_dict)
         worker_dag_list[index] = dagmanager.dag
         critical_path[index] = _critical_path
@@ -1087,7 +1072,7 @@ class Collector(object):
         self.collect_para_dict()
 
         self.dag, self.update_nodes_in_dag = wrap_read_gml(
-                self.pm.search(FileName.DAG), platform=self.platform)
+                self.pm.search(FileName.DAG), self.para_dict)
 
         trail_dag_path = self.pm.search(FileName.TRAIL_DAG)
         if force_ or trace_path is None or (self.comm_backend == "NCCL" and nccl_graph_path is None) or trail_dag_path is None:

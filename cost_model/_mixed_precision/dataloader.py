@@ -234,7 +234,7 @@ class DataLoader(BasicLoader):
             return op_names
         ### shape = (n_nodes, len(METANAME), n_batchsize_values)
         self.model_size = np.array([list(zip(*[self.meta_info.ret_metadata(op_name, batch_size=b) for b in self.BATCH_LIST_VALUE])) for op_name in op_names])
-        self.model_raw_info = np.array([list(zip(*[self.meta_info.ret_rawmeta(op_name, batch_size=b) for b in self.BATCH_LIST_VALUE])) for op_name in op_names])
+        self.model_raw_info = np.array([list(zip(*[self.meta_info.ret_rawmeta(op_name) for b in self.BATCH_LIST_VALUE])) for op_name in op_names])
         self.intensity = self.model_size[:, 0, :] / (self.model_size[:, 2, :] + self.model_size[:, 3, :] + self.model_size[:, 4, :])
         SingleLogger().info("Source metadata set, shape = (n_ops, n_dim, n_batch): {}".format(self.model_size.shape))
         return op_names
@@ -313,7 +313,7 @@ class DataLoader(BasicLoader):
                     avg_ = self.DATA_32["B=%d"%b][idx_in_32]
                     if avg_ >= AVG_THREHOLD and (np.sqrt(var_) / avg_) <= STDDEV_THREHOLD:
                         ### [H, W, C, R, S, P, Q, K, batch_size]
-                        raw_meta = self.meta_info.ret_rawmeta(op_names_[i], batch_size=b)
+                        raw_meta = self.meta_info.ret_rawmeta(op_names_[i])
                         __record_xdata(metadata, GFLOPS_FP32, avg_, op_type, addition=raw_meta, batch_size=b)
 
                 if FP32_OR_FP16[1]:
@@ -321,7 +321,7 @@ class DataLoader(BasicLoader):
                     var_ = self.VAR_16["B=%d"%b][idx_in_16] if "B=%d"%b in self.VAR_16 else 0
                     avg_ = self.DATA_16["B=%d"%b][idx_in_16]
                     if avg_ >= AVG_THREHOLD and (np.sqrt(var_) / avg_) <= STDDEV_THREHOLD:
-                        raw_meta = self.meta_info.ret_rawmeta(op_names_[i], batch_size=b)
+                        raw_meta = self.meta_info.ret_rawmeta(op_names_[i])
                         __record_xdata(metadata, GFLOPS_FP16, avg_, op_type, addition=raw_meta, batch_size=b)
 
             # _raw_meta =[0]*len(raw_meta)

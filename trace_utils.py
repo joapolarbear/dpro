@@ -29,7 +29,7 @@ QUEUETYPE = {
         }
 }
 
-### The delimiter bettwen the pid and the raw name in the standard name format
+### The delimiter bettwen the pid and the  op_name in the standard long name format
 DEL = "->"
 DDEL = "~>"
 
@@ -188,29 +188,6 @@ def parse_suffix_from_name(name):
     else:
         return name, None
 
-def parse_allinfo_from_name(name):
-    if DEL not in name:
-        raw_name = name
-        pid = "none"
-    else:
-        pid, raw_name = name.split(DEL)
-
-    suffix = None
-    if DDEL in raw_name:
-        raw_name, suffix = raw_name.split(DDEL)
-
-    if "I/O" in raw_name:
-        cat = CatName.IO.value
-    elif "Comm" in raw_name or "PUSH" in raw_name or "PULL" in raw_name:
-        cat = CatName.COMM.value
-    elif "FW" in raw_name or "BW" in raw_name or "COMP" in raw_name or "UPDATE" in raw_name or "OUTPUT" in raw_name or "COPY_FIRST" in raw_name or "SUM" in raw_name or "COPY_MERGED" in raw_name:
-        cat = CatName.OPERATOR.value
-    elif raw_name == "END":
-        cat = CatName.DEBUG.value
-    else:
-        raise ValueError("Can not decide the cat of %s" % name)
-    return pid, raw_name, cat, suffix
-
 def parse_pid_from_name(name):
     if DEL not in name:
         return "none"
@@ -274,6 +251,21 @@ def parse_cat_from_name(name):
         return CatName.DEBUG.value
     else:
         raise ValueError("Can not decide the cat of %s" % name)
+
+def parse_allinfo_from_name(name):
+    if DEL not in name:
+        std_name = name
+        pid = "none"
+    else:
+        pid, std_name = name.split(DEL)
+
+    suffix = None
+    if DDEL in std_name:
+        std_name, suffix = std_name.split(DDEL)
+
+    cat = parse_cat_from_name(std_name)
+    
+    return pid, std_name, cat, suffix
 
 ### CATs that will be affected if we change the GPU/CPU rate
 COMP_CAT = ["operator.FW", "operator.BW", "operator.UPDATE",
@@ -488,6 +480,7 @@ class TraceManager:
             else:
                 ### For TensorFlow 2.4, step info is directly given the TF profiler
                 event["args"]["step"] = int(event["args"]["step"])
+                pid_info["step_cnt"] = event["args"]["step"]
 
             ### Statistic time grouped by fine-grained cat
             if parse_cat_from_name(event["name"]) in [CatName.OPERATOR.value,

@@ -78,147 +78,23 @@ def dag_longest_path(G, pathM=None, weight='weight', default_weight=0, _debug_le
 
     return list(zip(critical_path, len_list))
 
-def tf_relabel_func(_name, update_nodes_in_dag):
-    for prefix in ["Comm.", "Comp.", "BW.", "FW.", "UPDATE_."]:
-        if _name.startswith(prefix):
-            return _name
-    if _name.startswith("^"):
-        _name = _name[1:]
-    last_slash_pos = _name.rfind("/")
-    if last_slash_pos != -1 and last_slash_pos < len(_name)-1 and _name[last_slash_pos+1] == "_":
-        _name = _name[:last_slash_pos]
-    if "BytePSPushPull" in _name and "tensor" not in _name:
-        _name = "Comm." + _name
-    elif "input_barrier" in _name:
-        _name = "FW." + _name
-    elif "allreduce" in _name.lower():
-        if "." in _name:
-            _, tensor_name = _name.split(".")
-            if "_" in tensor_name:
-                tensor_name = tensor_name.split("_")[0]
-            if "Switch" in _name:
-                _name = "BW." + tensor_name + "_Switch"
-            else:
-                _name = "Comm." + tensor_name
-        elif "cond_" in _name and "Switch" in _name:
-            _name = "BW." + _name
-        else:
-            _name = "UPDATE_." + _name
-    else:
-        if update_nodes_in_dag is not None and _name in update_nodes_in_dag:
-            _name = "UPDATE_." + _name
-        elif _name.startswith("gradients") or _name.startswith("gradient_tape"):
-            _name = "BW." + _name
-        else:
-            _name = "FW." + _name
-    return _name
-
-def wrap_read_gml(gml_path, platform="MXNET"):
+def wrap_read_gml(gml_path, metadata):
     ''' Read raw DFG file
         * The node name in Tensorflow is not standard, transfer it to standard form first
             Tranverse the dag nodes twice
         * For TF 2.4, the raw DFG does not contain Comm OPs, mannually add Comm OPs for 
             a distributed case
     '''
-    mygraph = nx.read_gml(gml_path)
+    
+    mygraph, update_nodes_in_dag = metadata.wrap_read_dfg(gml_path)
+
     if not args_.pretty:
         try:
             SingleLogger().info(list(nx.find_cycle(mygraph, orientation="original")))
         except:
             SingleLogger().info("No cycles found")
-    if platform == "TENSORFLOW":
-        from ml_platform.tensorflow.metadata import read_dfg_with_activation
-        _meta_data_path = os.path.join(os.path.dirname(gml_path), "_metadata.json")
-        actvation2id_path = os.path.join(os.path.dirname(gml_path), "gradient_name2ID.json")
-        dfg_with_actv = read_dfg_with_activation(_meta_data_path)
-        with open(actvation2id_path, 'r') as fp:
-            actvation2id = {}
-            for tensor, _id in json.load(fp).items():
-                actvation2id[tensor.split(".")[1]] = _id
 
-        ### Find out Update Operators
-        update_nodes_in_dag = set()
-        def recursive_add_succs(_node):
-            for succ_ in mygraph.successors(_node):
-                update_nodes_in_dag.add(succ_)
-                recursive_add_succs(succ_)
-                if "^"+succ_ in mygraph.nodes:
-                    recursive_add_succs("^"+succ_)
-        # mygraph.add_edges_from([(n[1:], n) for n in mygraph.nodes if n.startswith("^")])
-        for node in mygraph.nodes:
-            if ("allreduce" in node.lower() or "bytepspushpull" in node.lower()) \
-                    and "switch" not in node.lower() and "input_barrier" not in node.lower():
-                ### node is the Comm node, add its downstream nodes as update operators
-                raise ValueError("TF 2.4 GraphDef does NOT contain Comm operators")
-                recursive_add_succs(node)
-            elif node == "GradientDescent" or ("GradientDescent" in node and "update" in node) \
-                or node.startswith("Assign_") or ("cond" in node and "Assign" in node):
-                update_nodes_in_dag.add(node)
-        
-        ### TF 2.4, record the mapping from BW to Comm in the local DFG
-        edges_to_add = []
-        edges_to_rm = []
-        for update_op in update_nodes_in_dag:
-            for pred in mygraph.predecessors(update_op):
-                if tf_relabel_func(pred, update_nodes_in_dag).startswith("BW"):
-                    ### Only check those BW->Update edges
-                    for actvation in dfg_with_actv.successors(pred):
-                        if update_op in dfg_with_actv.successors(actvation):
-                            ### There is an edge from pred->actvation->update_op
-                            tensor = "Comm.{}".format(actvation2id[actvation])
-                            edges_to_add.append((pred, tensor))
-                            edges_to_add.append((tensor, update_op))
-                            edges_to_rm.append((pred, update_op))
-        mygraph.add_edges_from(edges_to_add)
-        mygraph.remove_edges_from(edges_to_rm)
-
-        ### Re-label Nodes
-        new_graph = nx.DiGraph()
-        for u, v in mygraph.edges:
-            nu, nv = tf_relabel_func(u, update_nodes_in_dag), tf_relabel_func(v, update_nodes_in_dag)
-            assert not (nu.startswith("Comm") and nv.startswith("Comm")), (u, v)
-            new_graph.add_edge(nu, nv)
-        mygraph = new_graph
-    else:
-        update_nodes_in_dag = None
     return mygraph, update_nodes_in_dag
-
-def wrap_read_graphdef(graphdef_path):
-    with open(graphdef_path, "r") as f:
-        graph_def = json.load(f)
-    graph = nx.DiGraph()
-    for node in graph_def["node"]:
-        if "input" in node:
-            for input_tensor_name in node["input"]:
-                input_node_name = input_tensor_name.split(":")[0]
-                graph.add_edge(input_node_name, node["name"])
-    update_nodes_in_dag = set()
-    def recursive_add_succs(_node):
-        for succ_ in graph.successors(_node):
-            update_nodes_in_dag.add(succ_)
-            recursive_add_succs(succ_)
-    for node in graph.nodes:
-        if "allreduce" in node.lower() or "bytepspushpull" in node.lower():
-            recursive_add_succs(node)
-    new_graph = nx.DiGraph()
-    for u, v in graph.edges:
-        new_graph.add_edge(tf_relabel_func(u, update_nodes_in_dag), tf_relabel_func(v, update_nodes_in_dag))
-    return new_graph, update_nodes_in_dag
-
-def standard_name(_name, platform="TENSORFLOW", update_nodes_in_dag=None):
-    '''Fetch and handle the trace name'''
-    ### TODO combine this function with wrap_read_gml, test MXNET
-    if platform == "MXNET":
-        #! add for mxnet-gluon case
-        if "name=" in _name:
-            _name = _name.split("name=")[1].split(";")[0]
-        #! backward nodes or forward nodes
-        _name = "BW." + _name.split("_backward")[0] if "_backward" in _name else "FW." + _name
-        _name = _name.split("_fwd")[0] if "_fwd" in _name else _name
-    elif platform == "TENSORFLOW":
-        _name = tf_relabel_func(_name, update_nodes_in_dag)
-    return _name
-
 
 class DAGManager:
     ''' Maintain a dependency graph for one GPU
@@ -244,7 +120,7 @@ class DAGManager:
                          //                                                         V  (barrier)
     FW ---> OUTPUT ---> BW ------------------- .................. --------------------> UPDATE_CAL ---> UPDATE_<id> ---> END
     '''
-    def __init__(self, path, traceM, nccl_graph=None, byteps_graph=None, platform="TENSORFLOW", single=False):
+    def __init__(self, path, traceM, nccl_graph=None, byteps_graph=None, platform="TENSORFLOW", single=False, metadata=None):
         self.pm = PathManager(path)
         self.platform = platform
         ### traceM's DirLevel = TRAIL
@@ -268,6 +144,8 @@ class DAGManager:
 
         ### is the dag for single rank
         self.single = single
+
+        self.metadata = metadata
 
     def wrap_add_dag(self, u, v):
         self.dag.append((u, v))
@@ -540,14 +418,14 @@ class DAGManager:
                     return
                 prev_bw_nodes = [_u for _u, _ in graph.in_edges(u)]
                 for prev_bw_node in prev_bw_nodes:
-                    prev_name = self.add_prefix(standard_name(prev_bw_node, platform=self.platform))
+                    prev_name = self.add_prefix(self.metadata.standard_name(prev_bw_node))
                     for push_req_node in push_req_nodes:
                         self.wrap_add_dag(prev_name, push_req_node)
                 # add dependencies to v
                 pull_res_nodes = self.byteps_graph.get_pull_res_node(wk_rank, gra_name)
                 for pull_res_node in pull_res_nodes:
-                    self.wrap_add_dag(pull_res_node, self.add_prefix(standard_name(v, platform=self.platform)))
-                    # print("adding edge {} -> {}".format(pull_res_node, self.add_prefix(standard_name(v, platform=self.platform))))
+                    self.wrap_add_dag(pull_res_node, self.add_prefix(self.metadata.standard_name(v)))
+                    # print("adding edge {} -> {}".format(pull_res_node, self.add_prefix(self.metadata.standard_name(v))))
             else:
                 raise NotImplementedError("Tensorflow + NCCL not yet implemented.")
         elif "BytePSPushPull" in v and "tensor" not in v:
@@ -558,8 +436,8 @@ class DAGManager:
             # pass
         else:
             self.wrap_add_dag(
-                self.add_prefix(standard_name(u, platform=self.platform)), 
-                self.add_prefix(standard_name(v, platform=self.platform)))
+                self.add_prefix(self.metadata.standard_name(u)), 
+                self.add_prefix(self.metadata.standard_name(v)))
 
     def gen_dag_with_prefix_weight(self, old_graph, para_dict=None):
         ''' Gen a dag from the original graph with weighted edges.
@@ -582,7 +460,7 @@ class DAGManager:
                 ### Consider Tensor fusion, only those ready tensors are fused and are used to build a graph together
                 tensor_name = u.split("Comm.")[1]
                 if self.platform == "MXNET":
-                    tensor_id = para_dict.name_to_tensor_id(tensor_name)
+                    tensor_id = para_dict.tensor_name_to_tensor_id(tensor_name)
                 elif self.platform == "TENSORFLOW":
                     tensor_id = int(tensor_name)
                 else:
@@ -611,7 +489,7 @@ class DAGManager:
                 if sync_op not in done_sync:
                     for _id in nccl_grp_name_sync.split("+"):
                         if self.platform == "MXNET":
-                            co_comm_op = "Comm." + para_dict.tensor_id_to_name(int(_id))   # e.g., Comm.bertmodel0_word_embed_embedding0_weight
+                            co_comm_op = "Comm." + para_dict.tensor_id_to_tensor_name(int(_id))   # e.g., Comm.bertmodel0_word_embed_embedding0_weight
                         elif self.platform == "TENSORFLOW":
                             co_comm_op = "Comm.{}".format(_id)
                         else:

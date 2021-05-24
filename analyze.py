@@ -299,7 +299,7 @@ if __name__ == '__main__':
                 mapping[clust_id].append(op)
             
             dag_path = clct.pm.search(FileName.DAG)
-            local_dfg, update_nodes_in_dag = wrap_read_gml(dag_path, platform=args.platform)
+            local_dfg, update_nodes_in_dag = wrap_read_gml(dag_path, clct.para_dict)
 
             def find_bw_depend(comm):
                 return [u for u, _ in local_dfg.in_edges(comm)]
@@ -427,7 +427,7 @@ if __name__ == '__main__':
         pm = PathManager(path_list[0])
         assert pm.dir_level == DirLevel.GPU
         local_rank = int(pm.path.split("/")[-1])
-        dagmanager = DAGManager(pm.path, local_rank, platform=args.platform)
+        dagmanager = DAGManager(pm.path, local_rank, platform=args.platform, metadata=clct.para_dict)
         dagmanager.gen_fw_bw_dag()
 
     if args.option == "graph":
@@ -446,7 +446,7 @@ if __name__ == '__main__':
         #! used to store all dags generated from GPUs
         graphs = []
         for _dir in pm.dirs:
-            dagmanager = DAGManager(os.path.join(pm.path, _dir), platform=args.platform)
+            dagmanager = DAGManager(os.path.join(pm.path, _dir), platform=args.platform, metadata=clct.para_dict)
             dagmanager.gen_dag_with_prefix_weight()
             dag_longest_path(dagmanager.dag, dagmanager.pm, weight="weight", default_weight=0)
             graphs.append(dagmanager.dag)

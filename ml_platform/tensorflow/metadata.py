@@ -5,7 +5,7 @@ import re
 import networkx as nx
 from ml_platform.tensorflow.amp_lists import whitelist, blacklist, greylist, clearlist
 from logger_utils import Singleton, SingleLogger
-from trace_utils import FileName, parse_allinfo_from_name
+from trace_utils import FileName, parse_op_name
 
 OP_HYPER_PARAMETERS = {
     "Conv2D": ["H", "W", "C", "R", "S", "P", "Q", "K", "B", "use_bias"],
@@ -23,29 +23,62 @@ for key in OP_HYPER_PARAMETERS:
 GFLOPS_FP32 = 1
 GFLOPS_FP16 = 2
 
+def tf_relabel_func(_name, update_nodes_in_dag):
+    for prefix in ["Comm.", "Comp.", "BW.", "FW.", "UPDATE_."]:
+        if _name.startswith(prefix):
+            return _name
+    if _name.startswith("^"):
+        _name = _name[1:]
+    last_slash_pos = _name.rfind("/")
+    if last_slash_pos != -1 and last_slash_pos < len(_name)-1 and _name[last_slash_pos+1] == "_":
+        _name = _name[:last_slash_pos]
+    if "BytePSPushPull" in _name and "tensor" not in _name:
+        _name = "Comm." + _name
+    elif "input_barrier" in _name:
+        _name = "FW." + _name
+    elif "allreduce" in _name.lower():
+        if "." in _name:
+            _, tensor_name = _name.split(".")
+            if "_" in tensor_name:
+                tensor_name = tensor_name.split("_")[0]
+            if "Switch" in _name:
+                _name = "BW." + tensor_name + "_Switch"
+            else:
+                _name = "Comm." + tensor_name
+        elif "cond_" in _name and "Switch" in _name:
+            _name = "BW." + _name
+        else:
+            _name = "UPDATE_." + _name
+    else:
+        if update_nodes_in_dag is not None and _name in update_nodes_in_dag:
+            _name = "UPDATE_." + _name
+        elif _name.startswith("gradients") or _name.startswith("gradient_tape"):
+            _name = "BW." + _name
+        else:
+            _name = "FW." + _name
+    return _name
 
-def _normalize_name(name):
-    """Normalizes operation name to TensorFlow rules."""
-    return re.sub('[^a-zA-Z0-9_]', '_', name)
-
-def read_dfg_with_activation(path):
-    with open(path, 'r') as fp:
-        op_dict = json.load(fp)
-    g = nx.DiGraph()
-    edges_to_add = []
-    for op in op_dict.keys():
-        if "input" not in op_dict[op] or "output" not in op_dict[op]:
-            continue
-        for _input in op_dict[op]["input"]:
-            ### _input is a dict
-            activation = _normalize_name(_input["name"])
-            edges_to_add.append((activation, op))
-        for _output in op_dict[op]["output"]:
-            ### _output is a dict
-            activation = _normalize_name(_output["name"])
-            edges_to_add.append((op, activation))
-    g.add_edges_from(edges_to_add)
-    return g
+def wrap_read_graphdef(graphdef_path):
+    with open(graphdef_path, "r") as f:
+        graph_def = json.load(f)
+    graph = nx.DiGraph()
+    for node in graph_def["node"]:
+        if "input" in node:
+            for input_tensor_name in node["input"]:
+                input_node_name = input_tensor_name.split(":")[0]
+                graph.add_edge(input_node_name, node["name"])
+    update_nodes_in_dag = set()
+    def recursive_add_succs(_node):
+        for succ_ in graph.successors(_node):
+            update_nodes_in_dag.add(succ_)
+            recursive_add_succs(succ_)
+    for node in graph.nodes:
+        if "allreduce" in node.lower() or "bytepspushpull" in node.lower():
+            recursive_add_succs(node)
+    new_graph = nx.DiGraph()
+    for u, v in graph.edges:
+        new_graph.add_edge(tf_relabel_func(u, update_nodes_in_dag), tf_relabel_func(v, update_nodes_in_dag))
+    return new_graph, update_nodes_in_dag
 
 class MetaInfo:
     def __init__(self, meta_dir):
@@ -55,7 +88,8 @@ class MetaInfo:
         try:
             with open(os.path.join(meta_dir, "gradient_name2ID.json"), 'r') as fp:
                 name2id = json.load(fp)
-                self.gradient_name_list = [name for name, _id in sorted(name2id.items(), key=lambda x: x[1])]
+                self.gradient_name_list = [name.replace(
+                    "HorovodAllreduce.", "") for name, _ in sorted(name2id.items(), key=lambda x: x[1])]
         except FileNotFoundError:
             SingleLogger().warn("{} is not found !".format(FileName.TENSOR_NAME.value))
             self.gradient_name_list = []
@@ -67,7 +101,12 @@ class MetaInfo:
         ### And get self.old_B
         self.get_hyper_para()
 
-        self.tensor2update = {}
+        self.local_dfg = mygraph
+        self.update_nodes_in_dag = update_nodes_in_dag
+        self._wrap_read_dfg(os.path.join(meta_dir, FileName.DAG.value))
+
+        ### Mapping from tensor names to weight variable names
+        self.tensor2weight = {}
         
     def pick_opnames_by_op_type(self, op_type):
         return [_name for _name in self.cache_hyper_para.keys() if self.parse_op_type(_name) == op_type]
@@ -89,10 +128,24 @@ class MetaInfo:
 
     def ret_tensor_size(self, tensor_id):
         tensor_name = self.gradient_name_list[tensor_id]
-        tensor_name = tensor_name.split(":")[0]
-        return self.ret_output_size_inB(tensor_name)
+        weight_name = self.tensor2weight[tensor_name]
+        
+        bw_ops = self.local_dfg.predecessors(
+            "Comm.{}".format(tensor_id))
+        assert len(bw_ops) == 1, (tensor_id, bw_ops)
+        assert bw_ops[0].startswith("BW"), (tensor_id, bw_ops)
+
+        bw_op_name = parse_op_name(bw_ops[0])
+        outputs = self.tf_meta[bw_op_name]["output"]
+        for output in outputs:
+            if output["name"] == weight_name:
+                dtype_size = self.dtype2size(output["dtype"])
+                return np.prod(output["shape"]) * dtype_size
+
+        raise ValueError("Fail to find the weight variable {}".format(weight_name))
     
     def ret_output_size_inB(self, op_name):
+        raise NotImplementedError("Distinguish weights and activations")
         outputs = self.tf_meta[op_name]["output"]
         dtype_size = self.dtype2size(outputs[0]["dtype"])
         return np.prod(outputs[0]["shape"]) * dtype_size
@@ -155,7 +208,7 @@ class MetaInfo:
             S_wei = wei * np.prod(inputs[1]["shape"]) if len(inputs) > 1 else 1
             return 0, 0, S_in, S_out, S_wei
 
-    def ret_rawmeta(self, op_name, batch_size=None):
+    def ret_rawmeta(self, op_name):
         op_type = self.parse_op_type(op_name)
         if op_type == "CastToFp16" or op_type == "CastToFp32":
             return []
@@ -284,21 +337,112 @@ class MetaInfo:
         else:
             return
         # TODO (huhanpeng): use a more complex rule, just like in AMP of TensorFlow.
-
-    def standarize_name(self, op_name):
-        '''convert trace long name to metadata name'''
-        _, rawname, cat, _ = parse_allinfo_from_name(op_name)
-        rawname = rawname.split(".")[1]
-        rawname = rawname.split(":")[0]
-        return rawname, cat
     
-    def in_metadata(self, raw_name):
-        return raw_name in self.tf_meta
+    def in_metadata(self, op_name):
+        return op_name in self.tf_meta
 
-    def is_const(self, raw_name):
-        return self.parse_op_type(raw_name) == "Const"
+    def is_const(self, op_name):
+        return self.parse_op_type(op_name) == "Const"
     
-    def is_variable(self, raw_name):
-        return self.parse_op_type(raw_name) in ["Variable", "VariableV2", "AutoReloadVariable",
+    def is_variable(self, op_name):
+        return self.parse_op_type(op_name) in ["Variable", "VariableV2", "AutoReloadVariable",
             "VarHandleOp", "ReadVariableOp",
             "_VarHandlesOp", "_ReadVariablesOp"]
+    
+    def read_dfg_with_var(self):
+        g = nx.DiGraph()
+        edges_to_add = []
+        for op in self.tf_meta.keys():
+            if "input" not in self.tf_meta[op] or "output" not in self.tf_meta[op]:
+                continue
+            for _input in self.tf_meta[op]["input"]:
+                ### _input is a dict
+                var_name = _input["name"]
+                edges_to_add.append((var_name, op))
+            for _output in self.tf_meta[op]["output"]:
+                ### _output is a dict
+                var_name = _output["name"]
+                edges_to_add.append((op, var_name))
+        g.add_edges_from(edges_to_add)
+        return g
+    
+    def wrap_read_dfg(self, gml_path):
+        if self.local_dfg is None:
+            self._wrap_read_dfg(gml_path)
+        
+        return self.local_dfg, self.update_nodes_in_dag
+
+    def _wrap_read_dfg(self, gml_path):
+        ''' Read the raw gml file, return local DFG
+            * Relabel the node name to standard format
+            * Handle the mapping from BW->Comm
+        '''
+        mygraph = nx.read_gml(gml_path)
+        dfg_with_var = self.read_dfg_with_var()
+
+        ### Find out Update Operators
+        update_nodes_in_dag = set()
+        def recursive_add_succs(_node):
+            for succ_ in mygraph.successors(_node):
+                update_nodes_in_dag.add(succ_)
+                recursive_add_succs(succ_)
+                if "^"+succ_ in mygraph.nodes:
+                    recursive_add_succs("^"+succ_)
+        # mygraph.add_edges_from([(n[1:], n) for n in mygraph.nodes if n.startswith("^")])
+        for node in mygraph.nodes:
+            if ("allreduce" in node.lower() or "bytepspushpull" in node.lower()) \
+                    and "switch" not in node.lower() and "input_barrier" not in node.lower():
+                ### node is the Comm node, add its downstream nodes as update operators
+                raise ValueError("TF 2.4 GraphDef does NOT contain Comm operators")
+                recursive_add_succs(node)
+            elif node == "GradientDescent" or ("GradientDescent" in node and "update" in node) \
+                or node.startswith("Assign_") or ("cond" in node and "Assign" in node):
+                update_nodes_in_dag.add(node)
+        
+        ### TF 2.4, record the mapping from BW to Comm in the local DFG
+        edges_to_add = []
+        edges_to_rm = []
+        for update_op in update_nodes_in_dag:
+            for pred in mygraph.predecessors(update_op):
+                if tf_relabel_func(pred, update_nodes_in_dag).startswith("BW"):
+                    ### Only check those BW->Update edges
+                    for variable in dfg_with_var.successors(pred):
+                        if update_op in dfg_with_var.successors(variable):
+                            ### There is an edge from pred->variable->update_op
+                            ### and the variable is a weight variable
+                            tensor = "Comm.{}".format(
+                                self.tensor_name_to_tensor_id(self.weight2tensor(variable)))
+                            edges_to_add.append((pred, tensor))
+                            edges_to_add.append((tensor, update_op))
+                            edges_to_rm.append((pred, update_op))
+        mygraph.add_edges_from(edges_to_add)
+        mygraph.remove_edges_from(edges_to_rm)
+
+        ### Re-label Nodes
+        new_graph = nx.DiGraph()
+        for u, v in mygraph.edges:
+            nu, nv = tf_relabel_func(u, update_nodes_in_dag), tf_relabel_func(v, update_nodes_in_dag)
+            assert not (nu.startswith("Comm") and nv.startswith("Comm")), (u, v)
+            new_graph.add_edge(nu, nv)
+        
+        self.local_dfg = mygraph
+        self.update_nodes_in_dag = update_nodes_in_dag
+
+    def standard_name(self, _name, update_nodes_in_dag=None):
+        return tf_relabel_func(_name, update_nodes_in_dag)
+
+    def tensor_id_to_tensor_name(self, _id):
+        return self.gradient_name_list(_id)
+    
+    def tensor_name_to_tensor_id(self, name):
+        return self.gradient_name_list.index(name)
+
+    def tensor_id2update_id(self, tensor_id):
+        raise NotImplementedError()
+    
+    def weight2tensor(self, weight_name):
+        """Normalizes operation name to TensorFlow rules."""
+        tensor_name = re.sub('[^a-zA-Z0-9_]', '_', weight_name)
+        if tensor_name not in self.tensor2weight:
+            self.tensor2weight[tensor_name] = weight_name
+        return tensor_name

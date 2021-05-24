@@ -51,17 +51,17 @@ class AMPPredictor:
         with open(self.ckpt_path, "rb") as f:
             self.cast_cnt, self.num_nonvar_casts_to_fp16, self.op_status = pickle.load(f)
 
-    def pred_amp_avg(self, op_name, _avg=None):
+    def pred_amp_avg(self, full_name, _avg=None):
         ''' Predict fp16 time of fp32 operators
             If _avg is given, use the relative value
         '''
-        rawname, _ = self.meta_info.standarize_name(op_name)
-        op_type = self.meta_info.parse_op_type(rawname)
+        op_name = parse_op_name(full_name)
+        op_type = self.meta_info.parse_op_type(op_name)
         if op_type not in self.cost_model:
             # SingleLogger().warn("{}({}) is not supported for AMP now".format(op_name, op_type))
             return _avg / 2.0
-        S_mul, S_add, S_in, S_out, S_wei = self.meta_info.ret_metadata(rawname)
-        raw_meta = self.meta_info.ret_rawmeta(rawname)
+        S_mul, S_add, S_in, S_out, S_wei = self.meta_info.ret_metadata(op_name)
+        raw_meta = self.meta_info.ret_rawmeta(op_name)
         _xdata = [S_mul, S_add, S_in, S_out, S_wei] + raw_meta
         _xdata32 = [GFLOPS_FP32] + _xdata
         _xdata16 = [GFLOPS_FP16] + _xdata
@@ -74,35 +74,37 @@ class AMPPredictor:
         else:
             return avg_fp16
 
-    def output_cast_time(self, op_name, tofp16=True):
+    def output_cast_time(self, full_name, tofp16=True):
         ''' 
         Parameters
         ----------
-        op_name: str, long name
+        full_name: str, long name
             pid->op_type.name.sub_op~>suffix
         '''
-        rawname, cat = self.meta_info.standarize_name(op_name)
+        op_name = parse_op_name(full_name)
+        cat = parse_cat_from_name(full_name)
+
         assert cat != CatName.COMM.value
         cm_name = "CastToFp16" if tofp16 else "CastToFp32"
         if cm_name not in self.cost_model:
             SingleLogger().error("({}) is not supported for AMP now".format(cm_name))
         try:
-            _, _, S_in, S_out, S_wei = self.meta_info.ret_metadata(rawname)
+            _, _, S_in, S_out, S_wei = self.meta_info.ret_metadata(op_name)
         except:
-            print(op_name)
+            print(full_name)
             raise
         cast_time = self.cost_model[cm_name].predict([1, 1, 1, S_out, 1, 1])
         return cast_time
 
-    def _wrap_update_status(node, key, value):
+    def _wrap_update_status(self, node, key, value):
         # self.op_status[_node]["dtype"] = "float16"
         self.cache_change.append((node, key, value))
 
-    def quantize(self, dag, op_name):
-        if op_name not in self.op_status:
-            self.init_op_statu(op_name)
-        assert self.op_status[op_name]["dtype"] == "float32", (
-            op_name, self.op_status[op_name]["dtype"])
+    def quantize(self, dag, full_name):
+        if full_name not in self.op_status:
+            self.init_op_statu(full_name)
+        assert self.op_status[full_name]["dtype"] == "float32", (
+            full_name, self.op_status[full_name]["dtype"])
 
         edges_to_add = []
         edges_to_rm = []
@@ -113,8 +115,8 @@ class AMPPredictor:
             if to16:
                 cast_op = "{}~>AMPCastToFp16_{}".format(u, self.cast_cnt)
 
-                raw_u, _ = self.meta_info.standarize_name(u)
-                if not self.meta_info.is_const(raw_u) and not self.meta_info.is_variable(raw_u):
+                op_name_u = parse_op_name(u)
+                if not self.meta_info.is_const(op_name_u) and not self.meta_info.is_variable(op_name_u):
                     self.num_nonvar_casts_to_fp16 += 1
             else:
                 cast_op = "{}~>AMPCastToFp32_{}".format(u, self.cast_cnt)
@@ -131,7 +133,7 @@ class AMPPredictor:
             nodes_to_rm.append(cast_op)
 
         ### handle parent nodes
-        for u, _ in dag.in_edges(op_name):
+        for u, _ in dag.in_edges(full_name):
             to_process = [u]
             while len(to_process) > 0:
                 _u = to_process.pop(0)
@@ -142,7 +144,7 @@ class AMPPredictor:
                     ### not MixedPrecision Boundary, remove the cast
                     prevs = list(dag.in_edges(_u))
                     assert len(prevs) == 1, prevs
-                    _rm_cast_op(prevs[0][0], _u, op_name)
+                    _rm_cast_op(prevs[0][0], _u, full_name)
                 else:
                     try:
                         cast_time = self.output_cast_time(_u)
@@ -150,16 +152,16 @@ class AMPPredictor:
                         to_process += [x for x, _ in dag.in_edges(_u) if x != _u]
                         continue
                     ### the boundary of mixed precision, add a cast op
-                    _add_cast_op(_u, op_name, cast_time, to16=True)
+                    _add_cast_op(_u, full_name, cast_time, to16=True)
 
         ### handle successors
-        out_cast_time = self.output_cast_time(op_name, tofp16=False)
-        for succ in dag.successors(op_name):
+        out_cast_time = self.output_cast_time(full_name, tofp16=False)
+        for succ in dag.successors(full_name):
             if "AMPCastToFp16" in succ:
                 ### not MixedPrecision Boundary, remove the Cast
                 _nexts = list(dag.successors(succ))
-                assert len(_nexts) == 1, (op_name, succ, _nexts)
-                _rm_cast_op(op_name, succ, _nexts[0])
+                assert len(_nexts) == 1, (full_name, succ, _nexts)
+                _rm_cast_op(full_name, succ, _nexts[0])
                 self.num_nonvar_casts_to_fp16 -= 1
             elif "Comm" in succ:
                 ### For BW->Comm edges, 
@@ -192,14 +194,14 @@ class AMPPredictor:
                             recursive_convert_comm(_succ)
                 recursive_convert_comm(succ)
             else:
-                _add_cast_op(op_name, succ, out_cast_time, to16=False)
+                _add_cast_op(full_name, succ, out_cast_time, to16=False)
 
         ### update the meta info of current node
-        prev_avg = dag.nodes[op_name]["avg"]
-        dag.nodes[op_name]["avg"] = self.pred_amp_avg(op_name, _avg=prev_avg)
-        self._wrap_update_status(op_name, "dtype", "float16")
-        # self.op_status[op_name]["dtype"] = "float16"
-        # SingleLogger().info("Convert {} from {} ms to {} ms".format(op_name, prev_avg, dag.nodes[op_name]["avg"]))
+        prev_avg = dag.nodes[full_name]["avg"]
+        dag.nodes[full_name]["avg"] = self.pred_amp_avg(full_name, _avg=prev_avg)
+        self._wrap_update_status(full_name, "dtype", "float16")
+        # self.op_status[full_name]["dtype"] = "float16"
+        # SingleLogger().info("Convert {} from {} ms to {} ms".format(full_name, prev_avg, dag.nodes[full_name]["avg"]))
 
         dag.add_nodes_from(nodes_to_add)
         dag.add_edges_from(edges_to_add)
@@ -207,7 +209,7 @@ class AMPPredictor:
         dag.remove_nodes_from(nodes_to_rm)
 
         # if not self.check_dag(dag):
-        #     raise ValueError("Incorrect dag when quantizing {}".format(op_name))
+        #     raise ValueError("Incorrect dag when quantizing {}".format(full_name))
 
         return [n for n, d in nodes_to_add]
     
@@ -220,65 +222,66 @@ class AMPPredictor:
                     return False
         return True
 
-    def init_op_statu(self, op_name):
-        rawname, _ = self.meta_info.standarize_name(op_name)
-        dtype = self.meta_info.ret_op_precision(rawname)
-        amp_color = self.meta_info.check_amp_lists(rawname)
-        self.op_status[op_name] = {"dtype": dtype, "is_white": "none", "color": amp_color}
+    def init_op_statu(self, full_name):
+        op_name = parse_op_name(full_name)
+        dtype = self.meta_info.ret_op_precision(op_name)
+        amp_color = self.meta_info.check_amp_lists(op_name)
+        self.op_status[full_name] = {"dtype": dtype,
+                                     "is_white": "none", "color": amp_color}
 
-    def op_amp_color(self, op_name):
-        if op_name not in self.op_status:
-            self.init_op_statu(op_name)
-        return self.op_status[op_name]["color"]
+    def op_amp_color(self, full_name):
+        if full_name not in self.op_status:
+            self.init_op_statu(full_name)
+        return self.op_status[full_name]["color"]
 
-    def is_white_for_amp(self, dag, op_name):
+    def is_white_for_amp(self, dag, full_name):
         ''' check whether an OP is finally white or not, according the propogation rules in AMP of TensorFlow '''
-        if op_name not in self.op_status:
-            self.init_op_statu(op_name)
-        if self.op_status[op_name]["is_white"] == "none":
-            amp_color = self.op_amp_color(op_name)
+        if full_name not in self.op_status:
+            self.init_op_statu(full_name)
+        if self.op_status[full_name]["is_white"] == "none":
+            amp_color = self.op_amp_color(full_name)
             if amp_color == "white" or amp_color == "clear":
                 ### cache the intermediate result
-                self.op_status[op_name]["is_white"] = True
+                self.op_status[full_name]["is_white"] = True
                 return True
             if amp_color == "black":
                 ### cache the intermediate result
-                self.op_status[op_name]["is_white"] = False
+                self.op_status[full_name]["is_white"] = False
                 return False
             
             ### need to further check the parent nodes
             is_white = True
-            for u, _ in dag.in_edges(op_name):
+            for u, _ in dag.in_edges(full_name):
                 is_white &= self.is_white_for_amp(dag, u)
                 if not is_white:
                     break
             ### cache the intermediate result
-            self.op_status[op_name]["is_white"] = is_white
+            self.op_status[full_name]["is_white"] = is_white
             return is_white
         else:
             ### return the cached results
-            return self.op_status[op_name]["is_white"]
+            return self.op_status[full_name]["is_white"]
 
-    def is_need_amp(self, dag, op_name):
+    def is_need_amp(self, dag, full_name):
         ''' check whether an OP need be quantized, only those with fp32 and in the final white list need be quantized'''
-        if "Comm" in op_name or "AMPCastTo" in op_name or "UPDATE_" in op_name:
+        if "Comm" in full_name or "AMPCastTo" in full_name or "UPDATE_" in full_name:
             return False
         try:
-            rawname, _ = self.meta_info.standarize_name(op_name)
-            op_type = self.meta_info.parse_op_type(rawname)
+            op_name = parse_op_name(full_name)
+            op_type = self.meta_info.parse_op_type(op_name)
             if op_type in ["ReadVariableOp", "Const", "VarHandleOp", "AssignVariableOp"]:
                 return False
         except KeyError:
             return False
-        if not self.check_dtype_fp32(op_name):
+        if not self.check_dtype_fp32(full_name):
             return False
-        return self.is_white_for_amp(dag, op_name)
+        return self.is_white_for_amp(dag, full_name)
     
-    def check_dtype_fp32(self, op_name):
+    def check_dtype_fp32(self, full_name):
         ''' Return true if this op is fp32 else False '''
-        if op_name not in self.op_status:
-            self.init_op_statu(op_name)
-        return self.op_status[op_name]["dtype"] == "float32"
+        if full_name not in self.op_status:
+            self.init_op_statu(full_name)
+        return self.op_status[full_name]["dtype"] == "float32"
     
     def flush(self, is_accept: bool):
         if is_accept:

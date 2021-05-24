@@ -828,8 +828,8 @@ class TensorFusionGraphPass(_BaseGraphPass):
         tensor_ids, tensor_grps = zip(*list(self.cur_tensor2group.items()))
         tensor_grps = set(tensor_grps)
         tensor_ids = set(tensor_ids)
-        assert len(tensor_ids) == len(self.meta_info.gradient_name_list()), \
-            ("incompleted tensor_ids {} : {}".format(sorted(tensor_ids), len(self.meta_info.gradient_name_list())))
+        assert len(tensor_ids) == self.meta_info.gradient_num(), \
+            ("incompleted tensor_ids {} : {}".format(sorted(tensor_ids), self.meta_info.gradient_num()))
 
         with open(os.path.join(ROOT_PATH, file_name), 'w') as f:
             json.dump({"mapping": list(tensor_grps)}, f)

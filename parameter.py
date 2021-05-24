@@ -1,5 +1,4 @@
 ''' Manage the parameter info of a DNN model
-### TODO (huhanpeng): mitigrate to ml_platform/mxnet/metadata.py
 '''
 import re
 from trace_utils import *
@@ -30,44 +29,54 @@ class ParameterDict:
     
     def gradient_num(self):
         return self.cnt
+
+    def wrap_read_dfg(self,  *args, **kwargs):
+        return self.metainfo.wrap_read_dfg(*args, **kwargs)
+    
+    def standard_name(self,  *args, **kwargs):
+        ''' Convert op_names in the original traces to standard names
+            `op_cat.op_name.sub_op`
+        '''
+        return self.metainfo.standard_name(*args, **kwargs)
+    
+    ### below methods are related to tensors/Communication
+
+    def tensor_id_to_tensor_name(self, tensor_id):
+        return self.metainfo.tensor_id_to_tensor_name(tensor_id)
+
+    def tensor_name_to_tensor_id(self, name):
+        return self.metainfo.tensor_name_to_tensor_id(name)
+
+    def tensor_id2size(self, tensor_id):
+        return self.metainfo.ret_tensor_size(tensor_id)
     
     def tensor_id2update_id(self, tensor_id):
         '''tensor id may be 'max' to return the maximum update id '''
-        return self.metainfo.tensor2update[tensor_id]
-
-    def name_to_tensor_id(self, name):
-        return self.metainfo.gradient_name_list.index(name)
-
-    def tensor_id_to_name(self, tensor_id):
-        return self.metainfo.gradient_name_list[tensor_id]
-
-    def tensor_id2size(self, tensor_id):
-        tensor_size = self.metainfo.ret_tensor_size(tensor_id)
-        return tensor_size
+        return self.metainfo.tensor_id2update_id(tensor_id)
     
+    ### below is related op_name
+
     def ret_metadata(self, *args, **kwargs):
         return self.metainfo.ret_metadata(*args, **kwargs)
 
-    def ret_rawmeta(self, *args, **kwargs):
-        return self.metainfo.ret_rawmeta(*args, **kwargs)
+    def ret_rawmeta(self, op_name):
+        return self.metainfo.ret_rawmeta(op_name)
     
-    def check_amp_lists(self, *args, **kwargs):
-        return self.metainfo.check_amp_lists(*args, **kwargs)
+    def check_amp_lists(self, op_name):
+        return self.metainfo.check_amp_lists(op_name)
     
-    def parse_op_type(self, *args, **kwargs):
-        return self.metainfo.parse_op_type(*args, **kwargs)
+    def parse_op_type(self, op_name):
+        return self.metainfo.parse_op_type(op_name)
     
-    def standarize_name(self, *args, **kwargs):
-        return self.metainfo.standarize_name(*args, **kwargs)
+    def ret_op_precision(self, op_name):
+        return self.metainfo.ret_op_precision(op_name)
     
-    def ret_op_precision(self, *args, **kwargs):
-        return self.metainfo.ret_op_precision(*args, **kwargs)
+    def in_metadata(self, op_name):
+        return self.metainfo.in_metadata(op_name)
     
-    def in_metadata(self, *args, **kwargs):
-        return self.metainfo.in_metadata(*args, **kwargs)
+    def is_const(self, op_name):
+        return self.metainfo.is_const(op_name)
     
-    def is_const(self, *args, **kwargs):
-        return self.metainfo.is_const(*args, **kwargs)
+    def is_variable(self, op_name):
+        return self.metainfo.is_variable(op_name)
     
-    def is_variable(self, *args, **kwargs):
-        return self.metainfo.is_variable(*args, **kwargs)
