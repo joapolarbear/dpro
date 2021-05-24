@@ -1,3 +1,4 @@
+import enum
 import os
 import re
 import ujson as json
@@ -548,7 +549,7 @@ class TraceManager:
 
         ### Aggregate duration of all iterations
         iter_list_all = []
-        min_step_num = None
+        step_num_upper = None
         for prefix in sorted(prefix_dict.keys()):
             if not (prefix.startswith("host") or prefix.startswith("traces_")):
                 continue
@@ -585,16 +586,29 @@ class TraceManager:
             SingleLogger().info("<%s> fw : %f + bw: %f + update: %f -> time/it = %f (\u00B1 %f) ms" % (prefix,
                     fw_time, bw_time, update_time, iter_time_avg, iter_time_std))
             
-            if min_step_num is None or len(pid_info["iter_multi_steps"]) < min_step_num:
-                min_step_num = len(pid_info["iter_multi_steps"])
+            if step_num_upper is None or len(pid_info["iter_multi_steps"]) < step_num_upper:
+                ### Different GPUs may have different number of steps, find the smallest one as the step_num_upper
+                step_num_upper = len(pid_info["iter_multi_steps"])
     
         ### calculate the average iteration time
         # * iter_list_all, shape = (n_GPUs, n_steps) ==> (n_steps)
-        iter_list_all = [_list[:min_step_num] for _list in iter_list_all]
+        iter_list_all = [_list[:step_num_upper] for _list in iter_list_all]
         iter_list_all = np.average(np.array(iter_list_all), axis=0)
         self.iter_time = np.average(iter_list_all)
-        self.opt_step = np.argmin(np.abs(iter_list_all - self.iter_time))
-        SingleLogger().info("<Overall> step %d is the one closest to average %f - %s" % (self.opt_step, self.iter_time, iter_list_all))
+        _std = np.std(iter_list_all)
+        STD_CHECK_THESHOLD = 0.1
+        if _std / self.iter_time > STD_CHECK_THESHOLD:
+            SingleLogger().info(
+                "Std.dev is large compared to Ave. ({:.3f}/{:.3f}), remove the first step by default".format(_std, self.iter_time))
+            self.iter_time = np.average(iter_list_all[1:])
+            _std = np.std(iter_list_all[1:])
+            self.opt_step = np.argmin(np.abs(iter_list_all - self.iter_time))
+            SingleLogger().info("<Overall> step %d is the one closest to average %f (\u00B1 %f) ms - %s" %
+                                (self.opt_step, self.iter_time, _std, iter_list_all))
+        else:
+            self.opt_step = np.argmin(np.abs(iter_list_all - self.iter_time))
+            SingleLogger().info("<Overall> step %d is the one closest to average %f (\u00B1 %f) ms - %s" %
+                                (self.opt_step, self.iter_time, _std, iter_list_all))
 
         """calculate the avg """
         for name, statistic in self.name2sta.items():
