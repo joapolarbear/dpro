@@ -1,11 +1,8 @@
 import os
-import re
 import ujson as json
 import random
 import math
 import xlsxwriter
-import traceback
-import logger_utils
 import threading
 from enum import Enum
 import numpy as np

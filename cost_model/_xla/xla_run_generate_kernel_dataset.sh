@@ -1,46 +1,37 @@
 #!/bin/bash
-cd /home/tiger
-if hdfs dfs -test -e /usr/hphu/xla_model ; then
-    hdfs dfs -get /usr/hphu/xla_model/xla
-    hdfs dfs -get /usr/hphu/xla_model/traces
-fi
 
 sudo -i
 cd /home/tiger/
 rm -rf byteprofile-analysis
 git clone https://github.com/joapolarbear/byteprofile-analysis.git
 
-
 ### Recompile XLA related Part
-export PATH=/usr/local/cuda/bin:/usr/local/nvidia/bin:${PATH} \
-    OLD_LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu:/usr/local/cudnn/lib64:/usr/local/cuda/lib64:/usr/local/lib:/usr/local/nvidia/lib:/usr/local/nvidia/lib64:/usr/local/nccl/lib:$LD_LIBRARY_PATH \
-    LD_LIBRARY_PATH=/usr/local/lib:/usr/local/cuda/lib64:/usr/local/cudnn:/usr/local/cuda:/usr/local/cuda/compat:$OLD_LD_LIBRARY_PATH \
-    LIBRARY_PATH=/usr/local/lib:/usr/local/cuda/lib64:/usr/local/nccl/lib/:$LIBRARY_PATH
+# export PATH=/usr/local/cuda/bin:/usr/local/nvidia/bin:${PATH} \
+#     OLD_LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu:/usr/local/cudnn/lib64:/usr/local/cuda/lib64:/usr/local/lib:/usr/local/nvidia/lib:/usr/local/nvidia/lib64:/usr/local/nccl/lib:$LD_LIBRARY_PATH \
+#     LD_LIBRARY_PATH=/usr/local/lib:/usr/local/cuda/lib64:/usr/local/cudnn:/usr/local/cuda:/usr/local/cuda/compat:$OLD_LD_LIBRARY_PATH \
+#     LIBRARY_PATH=/usr/local/lib:/usr/local/cuda/lib64:/usr/local/nccl/lib/:$LIBRARY_PATH
 
-cd /root/tensorflow
-./build_bpf_tf_modules.sh
 
-pip3 uninstall -y h5py
-pip3 install h5py==2.10.0
+# cd /root/tensorflow
+# ./build_bpf_tf_modules.sh
+cd /root
+wget https://github.com/joapolarbear/tensorflow/releases/download/v2.4.1-dev.2.0.1/dpro_xla_tools.zip
+unzip dpro_xla_tools
+export BPF_TF_PREFIX=/root/dpro_xla_tools
 
-### collect traces
-## Set enviroment variables related to profiling
-export BYTEPS_TRACE_ON="${BYTEPS_TRACE_ON:-1}"
-if [ "${BYTEPS_TRACE_ON}" = "1" ]; then
-	export BYTEPS_TRACE_DIR="/home/tiger/traces"
-	export BYTEPS_TRACE_START_STEP="${BYTEPS_TRACE_START_STEP:-50}"
-	export BYTEPS_TRACE_END_STEP="${BYTEPS_TRACE_END_STEP:-60}"
-    echo "BYTEPS_TRACE_DIR: ${BYTEPS_TRACE_DIR}"
-    echo "BYTEPS_TRACE_START_STEP: ${BYTEPS_TRACE_START_STEP}"
-    echo "BYTEPS_TRACE_END_STEP: ${BYTEPS_TRACE_END_STEP}"
-fi
+
+pip3 install -r requirements.txt
+
+
 # where the modified tensorflow locates
-export BPF_TF_PATH="/root/tensorflow"
+# export BPF_TF_PATH="/root/tensorflow"
 # the GPU id to run profiling on (specify one GPU only)
+
 export BPF_COST_MODEL_PROFILE_GPU="0"
+export CUDA_VISIBLE_DEVICES=0
 
 # modify these
-TRACE_DIR="$BYTEPS_TRACE_DIR/0"
+TRACE_DIR=xxx
 OUTPUT_DIR="/home/tiger/xla/kernel_dataset"
 
 ### resnet
@@ -68,14 +59,12 @@ MIN_CLUSTER_SIZE=4
 MAX_CLUSTER_SIZE=800
 
 cd /home/tiger/byteprofile-analysis
-XLA_CANDIDATE_PATH="/home/tiger/byteprofile-analysis/data/xla_candidates_inceptionv3.txt"
 python3 xla_generate_kernel_dataset.py --trace_dir ${TRACE_DIR} \
     --output_dir ${OUTPUT_DIR} \
     --num_samples ${NUM_RANDOM_SAMPLES} \
     --max_cluster_samples ${MAX_CLUSTER_SAMPLES} \
     --min_cluster_size ${MIN_CLUSTER_SIZE} \
-    --max_cluster_size ${MAX_CLUSTER_SIZE} \
-    --xla_candidate_path ${XLA_CANDIDATE_PATH}
+    --max_cluster_size ${MAX_CLUSTER_SIZE}
 
 # modify these
 DATASET_DIR="/home/tiger/xla/kernel_dataset"

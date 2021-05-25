@@ -38,8 +38,13 @@ from .gen_samples import *
 from .process_trace import *
 from .xlatools import *
 from .constant_utils import *
+from ml_platform.tensorflow.metadata import MetaInfo
 
 MAX_OP_DUR_IN_US = 10000000
+### TODO(huhanpeng): ResourceApplyGradientDescent should not be ignored
+IGNORE_OP_TYPES = ["ShapeN", "_Arg", "_Send", "_Recv", "VarIsInitializedOp", "ReadVariableOp", "VarHandleOp",
+                   "IsVariableInitialized", "ResourceApplyGradientDescent", "IteratorToStringHandle", 
+                   "IteratorGetNext", "MakeIterator", "IteratorV2", "NoOp", "Placeholder"]
 
 def clean_up(profile_dir, xla_dir):
     shutil.rmtree(profile_dir)
@@ -378,16 +383,14 @@ class XlaKernelDataset(object):
     def construct_kernel_dataset(cls, trace_dir, result_dir, num_samples=2000,
                                 num_max_cluster_samples = 5, 
                                 min_subgraph_level = None, 
-                                max_subgraph_level = None,
-                                xla_candidate_path = None):
+                                max_subgraph_level = None):
         if not os.path.isdir(result_dir):
             os.makedirs(result_dir)    
         gen_kernel_dataset(trace_dir, result_dir, 
                             num_samples=num_samples, 
                             num_max_cluster_samples=num_max_cluster_samples,
                             min_subgraph_level=min_subgraph_level, 
-                            max_subgraph_level=max_subgraph_level,
-                            xla_candidate_path=xla_candidate_path)
+                            max_subgraph_level=max_subgraph_level)
 
 class XlaModuleTestSet():
     def __init__(self, test_dataset_path, training_dataset):
@@ -491,7 +494,7 @@ def get_next_sample_id(feature_dir):
     return sample_id
 
 def gen_max_cluster_kernel_samples_using_replay(sample_generator, dataset_dir, dataset_hlo_dir, 
-                    profile_dir, min_cluster_size=4, debug_dir = None, fuse_all_fw=False):
+                    profile_dir, min_cluster_size=4, debug_dir = None, fuse_all_fw=False, metadata=None):
     print("Sampling using max cluster...")
     # generate one sample
     raw_subgraph_dir = os.path.join(dataset_dir, CMPaths.RAW_SUBGRAPH_DIR)
@@ -501,8 +504,9 @@ def gen_max_cluster_kernel_samples_using_replay(sample_generator, dataset_dir, d
     feature_dir = os.path.join(dataset_dir, CMPaths.FEATURE_DIR)
     
     if fuse_all_fw:
+        ### Unify the method to distinguish FW and BW
         forbidden_nodes = [node for node in sample_generator.nx_graph.nodes \
-                            if node.startswith("gradients") or "Assign" in node]
+                            if not metadata.tf_relabel_func(node).startswith("FW")]
         func_gen, num_clusters = sample_generator.gen_max_cluster(forbidden_nodes=forbidden_nodes, 
                                     min_cluster_size=min_cluster_size, cache_dir=dataset_dir)
     else:
@@ -537,6 +541,7 @@ def gen_max_cluster_kernel_samples_using_replay(sample_generator, dataset_dir, d
             continue
         if not os.path.exists(unopt_path):
             print("[WARNING] Failed to compile to HLO code: {}.".format(unopt_path))
+            exit(0)
             # print(def_path)
             # os.abort()
             clean_up_dir(profile_dir)
@@ -654,7 +659,6 @@ def gen_np_tensor(shape, dtype):
     else:
         return res.astype(dtype)
 
-
 # Restore the variable values
 def restore_var_values(sess, var_shapes):
     # Find the variable initialization operations
@@ -710,46 +714,45 @@ def parse_white_list():
                     white_list.add(op_type)
     return white_list
 
-def parse_xla_candidate_ops(xla_candidate_path=None):
-    candidate_path = CMPaths.DEBUG_XLA_CANDIATES_FILE if xla_candidate_path is None else xla_candidate_path
+def parse_xla_candidate_ops(metadata):
+    # return set(metadata.tf_meta.keys())
+    cad1 = set(metadata.tf_meta.keys())
+    candidate_path = "/home/tiger/byteprofile-analysis/data/xla_candidates_resnet.txt"
     candidates = set()
     with open(candidate_path, "r") as f:
         for line in f:
             candidates.add(line.strip())
+    
+    cad2 = set(candidates)
     return candidates
 
-def gen_kernel_dataset(trace_dir, result_dir, num_samples=2000, num_max_cluster_samples = 5,
-                min_subgraph_level=4, max_subgraph_level=800, xla_candidate_path=None):
-    # create directory structure
-    if not os.path.isdir(result_dir):
-        os.makedirs(result_dir)
-        print("Result dir not exist. Created result dir at {}.".format(result_dir))
-    dataset_dir = os.path.join(result_dir, CMPaths.DATASET_DIR)
-    debug_dir = os.path.join(result_dir, CMPaths.DEBUG_DIR)
-    dataset_hlo_dir = os.path.join(dataset_dir, CMPaths.HLO_DIR)
-    if not os.path.isdir(dataset_hlo_dir):
-        os.makedirs(dataset_hlo_dir)
-    profile_dir = os.path.join(result_dir, CMPaths.PROFILE_DIR)
-    if not os.path.isdir(profile_dir):
-        os.makedirs(profile_dir)
-
-    # load data from trace dir
-    # metadata
-    # with open(os.path.join(trace_dir, CMPaths.METADATA_FILE), "r") as f:
-    #     metadata = json.load(f)
-    with open(os.path.join(trace_dir, CMPaths.TENSOR_SHAPE_FILE), "r") as f:
-        shape_dict_raw = json.load(f)
+def parse_shape_dict(trace_dir, metadata=None):
     shape_dict = {}
-    for tensor_name, shape_detail in shape_dict_raw.items():
-        if isinstance(shape_detail, list):
-            shape_dict[tensor_name] = shape_detail
-        else:
-            shape_dict[tensor_name] = shape_detail["shape"]
+    tensor_path = os.path.join(trace_dir, CMPaths.TENSOR_SHAPE_FILE)
+    if os.path.exists(tensor_path):
+        with open(tensor_path, "r") as f:
+            shape_dict_raw = json.load(f)
+        for tensor_name, shape_detail in shape_dict_raw.items():
+            if isinstance(shape_detail, list):
+                shape_dict[tensor_name] = shape_detail
+            else:
+                shape_dict[tensor_name] = shape_detail["shape"]
+    else:
+        for op, _data in metadata.tf_meta.items():
+            outputs = _data["output"]
+            if len(outputs) == 0:
+                shape_dict[op] = []
+            else:
+                shape_dict[op] = outputs[0]["shape"]
+                for output in outputs:
+                    shape_dict[output["name"]] = output["shape"]
+
+    return shape_dict
+
+def parse_graph_def(trace_dir, dataset_dir, shape_dict, metadata):
     # TF2XLA supported ops
-    # white_list_ops = parse_white_list()
-    candidate_ops = parse_xla_candidate_ops(xla_candidate_path=xla_candidate_path)
-    # GraphDef
-    # with open(os.path.join(trace_dir, CMPaths.RAW_GRAPH_DEF_FILE), "r") as f:
+    # candidate_ops = parse_xla_candidate_ops(metadata)
+
     graph_def_path = os.path.join(trace_dir, CMPaths.AFTER_OPT_TF_DAG_FILE)
     with open(graph_def_path, "r") as f:
         if graph_def_path.endswith("pbtxt"):
@@ -759,51 +762,17 @@ def gen_kernel_dataset(trace_dir, result_dir, num_samples=2000, num_max_cluster_
             graph_def_as_json = json.loads(json_string)
         else:
             graph_def_as_json = json.load(f)
-        # graph_def_as_json = json.load(f)
+
         # clean up nodes
         ignored_node = set()
         pruned_node = set()
-        IGNORE_OP_TYPES = ["ShapeN", "_Arg", "_Send", "_Recv", "VarIsInitializedOp", "ReadVariableOp", "VarHandleOp",
-                           "IsVariableInitialized", "ResourceApplyGradientDescent",
-                            "IteratorToStringHandle", "IteratorGetNext", "MakeIterator", "IteratorV2"]
-        # for node in graph_def_as_json["node"]:
-            # if node["op"] == "VarHandleOp":
-            #     if "attr" in node and "shape" in node["attr"]:
-            #         if node["name"] not in shape_dict or not shape_dict[node["name"]]:
-            #             shape_as_list = []
-            #             for dim in node["attr"]["shape"]["shape"]["dim"]:
-            #                 shape_as_list.append(int(dim["size"]))
-            #             shape_dict[node["name"]+":0"] = shape_as_list
-                        # print("Added shape {} for {}".format(shape_as_list, node["name"]))
-        #     # register communication ops into TF, otherwise the GraphDef cannot
-        #     # be recognized
-        #     if node["op"] == "BytepsPushPull":
-        #         import byteps.tensorflow as bps # type: ignore
-        #         ignored_node.add(node["name"])
-        #         continue
-        #     elif node["op"] == "HorovodBroadcast" or node["op"] == "HorovodAllreduce":
-        #         import horovod.tensorflow as hvd # type: ignore
-        #         ignored_node.add(node["name"])
-        #         continue
-
-        #     # remove misc nodes and mark unsupported ones
-        #     if (node["op"] not in white_list_ops and node["op"] not in ["Switch", "While", "Cond"]) \
-        #                                     or node["op"] in ["ReadVariableOp", "Shape", "ShapeN"]:
-        #         ignored_node.add(node["name"])
-        #     if node["name"].lower().startswith("save") or node["name"].lower().startswith("final_shape"):
-        #         pruned_node.add(node["name"])
-        #     # TODO(CY): do we need this line?
-        #     if node["name"]+":0" not in shape_dict or not shape_dict[node["name"]+":0"]:
-        #         ignored_node.add(node["name"])
-        # ignored_node = ignored_node.union(pruned_node)
         all_node_names = set([node["name"] if node["name"][0] != "_" else node["name"][1:] \
                             for node in graph_def_as_json["node"]])
         for node in graph_def_as_json["node"]:
             if node["name"][0] == "_":
                 node["name"] = node["name"][1:]
             last_slash_pos = node["name"].rfind("/")
-            if last_slash_pos != -1 and last_slash_pos < len(node["name"])-1 \
-                                    and node["name"][last_slash_pos+1] == "_":
+            if last_slash_pos != -1 and last_slash_pos < len(node["name"])-1 and node["name"][last_slash_pos+1] == "_":
                 if node["name"][:last_slash_pos] in all_node_names:
                     pruned_node.add(node["name"])
                     continue
@@ -816,10 +785,10 @@ def gen_kernel_dataset(trace_dir, result_dir, num_samples=2000, num_max_cluster_
                         input_node = input_node[1:]
                     last_slash_pos = input_node.rfind("/")
                     if last_slash_pos != -1 and last_slash_pos < len(input_node)-1 \
-                                            and input_node[last_slash_pos+1] == "_":
+                        and input_node[last_slash_pos+1] == "_":
                         node["input"][idx] = input_node[:last_slash_pos]
-            if node["name"] not in candidate_ops:
-                ignored_node.add(node["name"])
+            # if node["name"] not in candidate_ops:
+            #     ignored_node.add(node["name"])
             if node["op"] in IGNORE_OP_TYPES:
                 ignored_node.add(node["name"])
 
@@ -871,42 +840,77 @@ def gen_kernel_dataset(trace_dir, result_dir, num_samples=2000, num_max_cluster_
         with open(os.path.join(dataset_dir, CMPaths.CLEANED_GRAPH_DEF_FILE), "w") as f_cleaned:
             json.dump(graph_def_as_json, f_cleaned, indent=4)
         graph_def = ParseJSON(cleaned_graph_def_str, GraphDef())
+        return graph_def, ignored_node
 
-    # initialize sample generator
+def gen_kernel_dataset(trace_dir, result_dir, num_samples=2000, num_max_cluster_samples = 5,
+                min_subgraph_level=4, max_subgraph_level=800):
+    ''' Main function to generate kernel dataset
+    Parameters
+    ----------
+    trace_dir: str
+        The path where metadata.json or tensor_shapes.json is stored
+    result_dir: str
+        The path to store the kernel dataset and intermediate results
+    num_samples: integer
+        Number of samples in total to generate
+    num_max_cluster_samples: integer
+        Number of samples that are generated using the max-cluster method
+    '''
+    # create directory structure
+    if not os.path.isdir(result_dir):
+        os.makedirs(result_dir)
+        print("Result dir not exist. Created result dir at {}.".format(result_dir))
+    dataset_dir = os.path.join(result_dir, CMPaths.DATASET_DIR)
+    debug_dir = os.path.join(result_dir, CMPaths.DEBUG_DIR)
+    dataset_hlo_dir = os.path.join(dataset_dir, CMPaths.HLO_DIR)
+    if not os.path.isdir(dataset_hlo_dir):
+        os.makedirs(dataset_hlo_dir)
+    profile_dir = os.path.join(result_dir, CMPaths.PROFILE_DIR)
+    if not os.path.isdir(profile_dir):
+        os.makedirs(profile_dir)
+
+    # load data from trace dir
+    # metadata
+    metadata = MetaInfo(trace_dir)
+    shape_dict = parse_shape_dict(trace_dir, metadata=metadata)
+    with open(os.path.join(dataset_dir, CMPaths.TENSOR_SHAPE_FILE), 'w') as fp:
+        json.dump(shape_dict, fp, indent=4)
+
+    # GraphDef
+    graph_def, ignored_node = parse_graph_def(
+        trace_dir, dataset_dir, shape_dict, metadata)
+
+    # Initialize sample generator
     sample_generator = SampleGenerator(graph_def=graph_def, \
-                            shape_dict=shape_dict, ignored_nodes=ignored_node)
-    shutil.copy(os.path.join(trace_dir, CMPaths.TENSOR_SHAPE_FILE), dataset_dir)
+                            shape_dict=shape_dict, ignored_nodes=ignored_node)    
+
     print("Start generation.")
     completed_samples = 0
     op_hash_set = set()
     unique_op_history = []
-    print("Entering max cluster sample iterations...")
-    pbar = tqdm(total=num_max_cluster_samples + 1)
-    # generate fuse all FW samples
-    fused_op_hashes = gen_max_cluster_kernel_samples_using_replay(
-                sample_generator, dataset_dir, dataset_hlo_dir, profile_dir,
-                debug_dir=debug_dir, fuse_all_fw=True)
-    unique_ops_in_this_step = 0
-    for hash_v in fused_op_hashes:
-        if hash_v not in op_hash_set:
-            op_hash_set.add(hash_v)
-            unique_ops_in_this_step += 1
-    unique_op_history.append(unique_ops_in_this_step)
-    pbar.update(1)
-    # generate max cluster samples
-    while completed_samples < num_max_cluster_samples:
-        fused_op_hashes = gen_max_cluster_kernel_samples_using_replay(
-                sample_generator, dataset_dir, dataset_hlo_dir, profile_dir,
-                debug_dir=debug_dir, fuse_all_fw=False)
-        completed_samples += 1
-        pbar.update(1)
+
+    def _parse_op_hashes(fused_op_hashes):
         unique_ops_in_this_step = 0
         for hash_v in fused_op_hashes:
             if hash_v not in op_hash_set:
                 op_hash_set.add(hash_v)
                 unique_ops_in_this_step += 1
         unique_op_history.append(unique_ops_in_this_step)
-    pbar.close()
+        
+    print("Entering max cluster sample iterations...")
+    # generate fuse all FW samples
+    print(" - generate a sample where all FW ops are fused")
+    fused_op_hashes = gen_max_cluster_kernel_samples_using_replay(
+        sample_generator, dataset_dir, dataset_hlo_dir, profile_dir, debug_dir=debug_dir, fuse_all_fw=True, metadata=metadata)
+    _parse_op_hashes(fused_op_hashes)
+    # generate max cluster samples
+    while completed_samples < num_max_cluster_samples:
+        print(" - max clustering: {} ...".format(completed_samples))
+        fused_op_hashes = gen_max_cluster_kernel_samples_using_replay(
+            sample_generator, dataset_dir, dataset_hlo_dir, profile_dir, debug_dir=debug_dir, fuse_all_fw=False, metadata=metadata)
+        _parse_op_hashes(fused_op_hashes)
+        completed_samples += 1
+
     print("Entering random sample iterations...")
     pbar = tqdm(total=num_samples)
     early_stop_counter = 0
@@ -919,19 +923,15 @@ def gen_kernel_dataset(trace_dir, result_dir, num_samples=2000, num_max_cluster_
                         debug_dir=debug_dir)
         if status:
             completed_samples += 1
+            _parse_op_hashes(fused_op_hashes)
             pbar.update(1)
-            unique_ops_in_this_step = 0
-            for hash_v in fused_op_hashes:
-                if hash_v not in op_hash_set:
-                    op_hash_set.add(hash_v)
-                    unique_ops_in_this_step += 1
-            unique_op_history.append(unique_ops_in_this_step)
         elif should_early_stop:
             early_stop_counter += 1
             if early_stop_counter >= 3:
                 print("Early stopping because no new subgraphs can be generated.")
                 break
     pbar.close()
+
     if os.path.isdir(profile_dir):
         os.rmdir(profile_dir)
     with open(os.path.join(dataset_dir, CMPaths.UNIQUE_OP_HISTORY_FILE), "w") as f:

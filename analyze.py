@@ -299,7 +299,7 @@ if __name__ == '__main__':
                 mapping[clust_id].append(op)
             
             dag_path = clct.pm.search(FileName.DAG)
-            local_dfg, update_nodes_in_dag = wrap_read_gml(dag_path, clct.para_dict)
+            local_dfg = wrap_read_gml(dag_path, clct.para_dict)
 
             def find_bw_depend(comm):
                 return [u for u, _ in local_dfg.in_edges(comm)]
@@ -319,7 +319,7 @@ if __name__ == '__main__':
                 for op in op_list:
                     if op[-2:] == "/x":
                         continue
-                    op_name = tf_relabel_func(op, update_nodes_in_dag=update_nodes_in_dag)
+                    op_name = tf_relabel_func(op)
                     if "BW" not in op_name:
                         continue
                     try:

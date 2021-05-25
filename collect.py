@@ -88,7 +88,6 @@ class Collector(object):
 
         ### TODO (huhanpeng): assume different host use the same dag, local DFG
         self.dag = None
-        self.update_nodes_in_dag = None
         self.para_dict = None
         self.trail_dag = None # global dag
         self.single = False # use to denote whether this is a single-GPU trial
@@ -192,8 +191,7 @@ class Collector(object):
                             raise
 
                         # op_type = trace["name"]
-                        name = self.para_dict.standard_name(
-                            raw_name, update_nodes_in_dag=self.update_nodes_in_dag)
+                        name = self.para_dict.standard_name(raw_name)
                         
                         ### Only collect nodes in the dag
                         ### TODO (huhanpeng): some trvial nodes may also be useful
@@ -1071,8 +1069,7 @@ class Collector(object):
         ### TODO (huhanpeng) dump it or not
         self.collect_para_dict()
 
-        self.dag, self.update_nodes_in_dag = wrap_read_gml(
-                self.pm.search(FileName.DAG), self.para_dict)
+        self.dag = wrap_read_gml(self.pm.search(FileName.DAG), self.para_dict)
 
         trail_dag_path = self.pm.search(FileName.TRAIL_DAG)
         if force_ or trace_path is None or (self.comm_backend == "NCCL" and nccl_graph_path is None) or trail_dag_path is None:

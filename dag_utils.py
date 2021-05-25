@@ -86,7 +86,7 @@ def wrap_read_gml(gml_path, metadata):
             a distributed case
     '''
     
-    mygraph, update_nodes_in_dag = metadata.wrap_read_dfg(gml_path)
+    mygraph = metadata.wrap_read_dfg(gml_path)
 
     if not args_.pretty:
         try:
@@ -94,7 +94,7 @@ def wrap_read_gml(gml_path, metadata):
         except:
             SingleLogger().info("No cycles found")
 
-    return mygraph, update_nodes_in_dag
+    return mygraph
 
 class DAGManager:
     ''' Maintain a dependency graph for one GPU

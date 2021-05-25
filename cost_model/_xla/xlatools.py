@@ -84,7 +84,10 @@ def replay_and_generate_kernel_sample(sample_id_start, hlo_path, tmp_dir, datase
     opt_6 = "--profile_start=30"
     opt_7 = "--profile_end=50"
     opt_8 = "--sample_id_start={}".format(sample_id_start)
-    process = subprocess.run("CUDA_VISIBLE_DEVICES={} {} {} {} {} {} {} {} {} {} {}".format(str(BPF_PROFILE_GPU), replay_exec, opt_1, opt_2, opt_3, opt_4, opt_5, opt_6, opt_7, opt_8, hlo_path), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=my_env, shell=True, check=True)
+    subprocess.run("CUDA_VISIBLE_DEVICES={} {} {} {} {} {} {} {} {} {} {}".format(
+            str(BPF_PROFILE_GPU), replay_exec, opt_1, opt_2, opt_3,
+            opt_4, opt_5, opt_6, opt_7, opt_8, hlo_path), 
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=my_env, shell=True, check=True)
 
 def extract_kernel_features_from_hlo(hlo_path, tmp_dir, extract_exec=None):
     if extract_exec is None:

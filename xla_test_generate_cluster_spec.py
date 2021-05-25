@@ -1,4 +1,3 @@
-from .process_trace import TRACE_SUFFIX
 from tqdm import tqdm
 import networkx as nx
 import pickle

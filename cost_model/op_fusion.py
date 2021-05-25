@@ -9,11 +9,11 @@ from tqdm import tqdm, trange
 import arg_utils
 from trace_utils import parse_cat_from_name, parse_pid_from_name, \
     CatName, parse_cat_fine_grained, _parse_tf_layer_names, \
-    SingleLogger, GAP_STR_OP2OP, GAP_STR_OP2COMM
+    SingleLogger, GAP_STR_OP2OP, GAP_STR_OP2COMM, FileName
 from base import bcolors
 
 from cost_model.base import _BaseGraphPass, OptApplyStrategyError, OptNoValidStrategyError, OptQueryCostModelError
-from cost_model._xla.gen_dataset_utils import parse_xla_candidate_ops
+from cost_model._xla.gen_dataset_utils import parse_xla_candidate_ops, IGNORE_OP_TYPES
 from cost_model._xla.pk_graph import PKGraph, contract_nodes_nx, \
     defuse_nodes_inplace_nx, postorder_contract_nx, \
     subgraph_partition_connected_nx_using_topo, get_concated_names
@@ -270,12 +270,9 @@ class XLAGraphPass(_BaseGraphPass):
         `self.forbidden_list` is used through the search process
         `self.initial_forbidden_list` is only used when initalizing the fusion pattern.
         '''
-        xla_candidates = parse_xla_candidate_ops(xla_candidate_path=args_.xla_candidate_path)
+        xla_candidates = parse_xla_candidate_ops(
+            self.opt.clct.pm.search(FileName.METADATA))
         # limit the range of nodes during search
-        ### TODO(huhanpeng): ResourceApplyGradientDescent should not be ignored
-        IGNORE_OP_TYPES = ["ShapeN", "_Arg", "_Send", "_Recv", "VarIsInitializedOp", "ReadVariableOp", "VarHandleOp",
-                    "IsVariableInitialized", "ResourceApplyGradientDescent",
-                    "IteratorToStringHandle", "IteratorGetNext", "MakeIterator", "IteratorV2"]
         filtered_xla_candidates = set()
         for op in xla_candidates:
             should_ignore = False

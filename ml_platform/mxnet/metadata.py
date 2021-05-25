@@ -420,8 +420,7 @@ class MetaInfo:
 
     def wrap_read_dfg(self, gml_path):
         mygraph = nx.read_gml(gml_path)
-        update_nodes_in_dag = None
-        return mygraph, update_nodes_in_dag
+        return mygraph
 
     def standard_name(self, _name):
         #! add for mxnet-gluon case

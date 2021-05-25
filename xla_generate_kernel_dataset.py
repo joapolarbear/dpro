@@ -16,9 +16,7 @@ parser.add_argument("--max_cluster_samples", type=int, default=0,
 parser.add_argument("--min_cluster_size", type=int, default=4,
                     help="Minimum subgraph size.")
 parser.add_argument("--max_cluster_size", type=int, default=800,
-                    help="Maximum subgraph size.")
-parser.add_argument("--xla_candidate_path", type=str, default=None,
-                    help="XLA Candidate Path")                   
+                    help="Maximum subgraph size.")              
 
 args = parser.parse_args()
 
@@ -44,5 +42,4 @@ XlaKernelDataset.construct_kernel_dataset(args.trace_dir , args.output_dir,
                                             num_samples=args.num_samples, 
                                             num_max_cluster_samples=args.max_cluster_samples, 
                                             min_subgraph_level=args.min_cluster_size, 
-                                            max_subgraph_level=args.max_cluster_size,
-                                            xla_candidate_path=args.xla_candidate_path)
+                                            max_subgraph_level=args.max_cluster_size)

@@ -33,11 +33,11 @@ class ParameterDict:
     def wrap_read_dfg(self,  *args, **kwargs):
         return self.metainfo.wrap_read_dfg(*args, **kwargs)
     
-    def standard_name(self,  *args, **kwargs):
+    def standard_name(self,  op_name):
         ''' Convert op_names in the original traces to standard names
             `op_cat.op_name.sub_op`
         '''
-        return self.metainfo.standard_name(*args, **kwargs)
+        return self.metainfo.standard_name(op_name)
     
     ### below methods are related to tensors/Communication
 
