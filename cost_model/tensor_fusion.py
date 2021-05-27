@@ -34,7 +34,6 @@ class TensorFusionGraphPass(_BaseGraphPass):
     def __init__(self, opt):
         super().__init__(opt)
         self.token = ["++", "--"]
-        self.meta_info = self.opt.clct.para_dict
         self.tensor_group_info = {}
         self.cur_tensor2group = {}
 

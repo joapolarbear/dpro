@@ -18,9 +18,8 @@ class AMPGraphPass(_BaseGraphPass):
     def __init__(self, opt):
         super().__init__(opt)
         ### AMP predictor
-        self.amp_predictor = AMPPredictor(self.opt.clct.para_dict)
+        self.amp_predictor = AMPPredictor(self.meta_info)
         self.token = [">", "<"]
-        self.meta_info = self.opt.clct.para_dict
 
     def init_search_space(self, candidates, _dag: nx.DiGraph, _pkg: PKGraph):
         search_space = []

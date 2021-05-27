@@ -12,7 +12,7 @@ from trace_utils import parse_cat_from_name, parse_pid_from_name, \
     SingleLogger, GAP_STR_OP2OP, GAP_STR_OP2COMM, FileName
 from base import bcolors
 
-from cost_model.base import _BaseGraphPass, OptApplyStrategyError, OptNoValidStrategyError, OptQueryCostModelError
+from cost_model.base import _BaseGraphPass, OptQueryCostModelError
 from cost_model._xla.gen_dataset_utils import parse_xla_candidate_ops, IGNORE_OP_TYPES
 from cost_model._xla.pk_graph import PKGraph, contract_nodes_nx, \
     defuse_nodes_inplace_nx, postorder_contract_nx, \
@@ -21,11 +21,10 @@ from cost_model._xla.xla_module_cost_model import XLAModuleCostModel
 
 args_ = arg_utils.SingleArg().args
 XLA_INIT_NO_BW = True
-SIMULATE_FUSION_RATIO = 0.8
-FORCE_SIMULATE_CM = False
+FUSION_TIME_ESTIMATE_RATIO = 0.8
+FORCE_ESTIMATE_FUSION_TIME = False
 ENABLE_PRUNING = False
-ROOT_PATH = os.path.join(
-    args_.workspace if args_.workspace else args_.path, ".opt_ws")
+ROOT_PATH = os.path.join(args_.workspace if args_.workspace else args_.path, ".opt_ws")
 
 class AttrCache():
     def __init__(self):
@@ -270,18 +269,19 @@ class XLAGraphPass(_BaseGraphPass):
         `self.forbidden_list` is used through the search process
         `self.initial_forbidden_list` is only used when initalizing the fusion pattern.
         '''
-        xla_candidates = parse_xla_candidate_ops(
-            self.opt.clct.pm.search(FileName.METADATA))
-        # limit the range of nodes during search
-        filtered_xla_candidates = set()
-        for op in xla_candidates:
-            should_ignore = False
-            for ignore_type in IGNORE_OP_TYPES:
-                if ignore_type in op:
-                    should_ignore = True
-                    break
-            if not should_ignore:
-                filtered_xla_candidates.add(op)
+        # xla_candidates = parse_xla_candidate_ops(
+        #     self.opt.clct.pm.search(FileName.METADATA))
+        # # limit the range of nodes during search
+        # filtered_xla_candidates = set()
+        # for op in xla_candidates:
+        #     should_ignore = False
+        #     for ignore_type in IGNORE_OP_TYPES:
+        #         if ignore_type in op:
+        #             should_ignore = True
+        #             break
+        #     if not should_ignore:
+        #         filtered_xla_candidates.add(op)
+        
 
         dag = self.dag if G_prime is None else G_prime
         for node in dag.nodes:
@@ -290,16 +290,16 @@ class XLAGraphPass(_BaseGraphPass):
                 self.initial_forbidden_list.add(node)
 
             try:
-                orig_name, pid = self.opt._get_original_name_pid_from_index(node)
+                op_name, pid = self.opt._get_original_name_pid_from_index(node)
             except:
                 # not standard nodes, ignore
                 self.forbidden_list.add(node)
                 self.initial_forbidden_list.add(node)
                 continue
             cat = parse_cat_from_name(node)
-            if (not args_.simulate and orig_name not in self._wrap_xla_operation_names(pid)) \
-                    or "Assign" in orig_name or cat == CatName.COMM.value \
-                    or orig_name not in filtered_xla_candidates:
+            if (not args_.simulate and op_name not in self._wrap_xla_operation_names(pid)) \
+                    or "Assign" in op_name or cat == CatName.COMM.value \
+                    or self.meta_info.parse_op_type(op_name) in IGNORE_OP_TYPES:
                 self.forbidden_list.add(node)
                 self.initial_forbidden_list.add(node)
                 
@@ -323,24 +323,24 @@ class XLAGraphPass(_BaseGraphPass):
         with open(output_path, "w") as f:
             for node in dag.nodes():
                 if "+" in node and "Comm" not in node:
-                    orig_names, _ = self._get_original_name_pid_from_fused_node(node)
-                    for orig_node_name in orig_names:
+                    op_names, _ = self._get_original_name_pid_from_fused_node(node)
+                    for orig_node_name in op_names:
                         f.write("{} {}\n".format(orig_node_name, cluster_index))
                     cluster_index += 1
 
     def _get_original_name_pid_from_fused_node(self, u_):
         single_pid = None
-        orig_names = []
+        op_names = []
         for node_name in self._get_defused_node_names(u_):
-            orig_name, pid = self.opt._get_original_name_pid_from_index(node_name)
-            orig_names.append(orig_name)
+            op_name, pid = self.opt._get_original_name_pid_from_index(node_name)
+            op_names.append(op_name)
             if single_pid is None:
                 single_pid = pid
             else:
                 if single_pid != pid:
                     raise RuntimeError(
                         "Fused DAG node {} contains ops from different machines.".format(u_))
-        return orig_names, single_pid
+        return op_names, single_pid
 
     def _get_defused_node_names(self, fused_node_):
         return fused_node_.split("+")
@@ -350,12 +350,12 @@ class XLAGraphPass(_BaseGraphPass):
         nodes_to_fuse: a list of layer names to fuse
         fused_u_: a str of fused names with layer index
         '''
-        if FORCE_SIMULATE_CM or simulate:
+        if FORCE_ESTIMATE_FUSION_TIME or simulate:
             _sum = 0
             origin_nodes = self._get_defused_node_names(fused_u_)
             for idx in range(len(origin_nodes) - 1):
                 _sum += self.node_attr_cache[origin_nodes[idx]]["avg"]
-            return _sum * SIMULATE_FUSION_RATIO + self.node_attr_cache[origin_nodes[-1]]["avg"]
+            return _sum * FUSION_TIME_ESTIMATE_RATIO + self.node_attr_cache[origin_nodes[-1]]["avg"]
         else:
             # return self.cost_models[pid].predict(nodes_to_fuse)
             predicted_time, brkdn_dict = self.cost_models["default"].predict(nodes_to_fuse)

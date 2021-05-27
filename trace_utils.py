@@ -108,63 +108,12 @@ def read_traces(traces_path):
         raise ValueError("The output file not follow the stardard chrome tracing format!: " + traces_path)
     return traces
 
-def _is_comm_trace(trace):
-    return trace["cat"] == "Comm"
-
 def first_valid_dir(_path):
     for _dir in os.listdir(_path):
         if _dir.startswith('.'):
             continue
         return _dir
     raise ValueError("No valid directory under {}".format(_path))
-
-######################## Delete ########################
-def return_stat(traces):
-    """ Basic Statistic """
-    name2sta = {}
-    cat2sta = {}
-    for event in traces:
-        name = event["name"]
-        if _is_comm_trace(event):
-            name = event["args"]["name"] + "." + event["name"]
-        if name in name2sta:
-            name2sta[name]["cnt"] += 1
-            name2sta[name]["time"] += event["dur"] / 1000.0
-            name2sta[name]["min_t"] = min(name2sta[name]["min_t"], event["dur"] / 1000.0)
-            name2sta[name]["max_t"] = max(name2sta[name]["max_t"], event["dur"] / 1000.0)
-        else:
-            name2sta[name] = {"cnt": 1, "time": event["dur"] / 1000.0, 
-                "min_t": event["dur"] / 1000.0, "max_t": event["dur"] / 1000.0,
-                # \TODO: add `cat` field for communication traces
-                # "cat": event["cat"] 
-                "cat": event["name"].split(".")[0]
-                }
-            
-    """calculate the avg """
-    for name, statistic in name2sta.items():
-        statistic["avg"] = statistic["time"] / statistic["cnt"]
-        statistic["var"] = 0.0
-        cat = statistic["cat"]
-        if cat in cat2sta:
-            if statistic["avg"] > cat2sta[cat]["max_t"]:
-                cat2sta[cat]["max_t"] = statistic["avg"]
-                cat2sta[cat]["max_name"] = name
-        else:
-            cat2sta[cat] = {"max_t": statistic["avg"], "max_name": name}
-
-    """calculate the variance"""
-    for event in traces:
-        name = event["name"]
-        if _is_comm_trace(event):
-            name = event["args"]["name"] + "." + event["name"]
-        name2sta[name]["var"] += pow(event["dur"] / 1000.0 - name2sta[name]["avg"], 2)
-
-    for name, statistic in name2sta.items():
-        statistic["var"] = statistic["var"] / float(statistic["cnt"])
-    return name2sta, cat2sta
-
-######################## Delete ########################
-
 
 def gen_long_name(prefix, raw_name, suffix=None):
     if prefix is None:
@@ -382,9 +331,6 @@ class TraceManager:
                 raise RuntimeError("Check trace failed.")
         return traces
         
-    def _is_comm_trace(self, event):
-        return event["cat"] == "Comm"
-
     def _is_ignore_for_sta(self, event):
         ### Some traces are ignored for statistic
         ### including 1) instance traces, 2) for debug 3) local_num_masks

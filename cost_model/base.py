@@ -16,6 +16,7 @@ class _BaseGraphPass:
         self.dag = self.opt.dag
         ### token is the indendifier of each optimization technique
         self.token = None
+        self.meta_info = self.opt.clct.para_dict
 
     def init_search_space(self, *args, **kwargs):
         raise NotImplementedError()
