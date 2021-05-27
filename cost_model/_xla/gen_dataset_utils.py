@@ -535,7 +535,7 @@ def gen_max_cluster_kernel_samples_using_replay(sample_generator, dataset_dir, d
             # print("[INFO] Successfully compile to HLO code.")
         except:
             print("[WARNING] Failed to compile to HLO code.")
-            # raise
+            exit(0)
             clean_up_dir(profile_dir)
             clean_up_dir(raw_subgraph_dir)
             continue

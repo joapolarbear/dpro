@@ -17,19 +17,31 @@ git clone https://github.com/joapolarbear/byteprofile-analysis.git
 cd /root
 wget https://github.com/joapolarbear/tensorflow/releases/download/v2.4.1-dev.2.0.1/dpro_xla_tools.zip
 unzip dpro_xla_tools
-export BPF_TF_PREFIX=/root/dpro_xla_tools
 
-
+### install requirements
 pip3 install -r requirements.txt
 
 
-# where the modified tensorflow locates
-# export BPF_TF_PATH="/root/tensorflow"
-# the GPU id to run profiling on (specify one GPU only)
 
+export PATH=/usr/local/cuda/bin:/usr/local/nvidia/bin:${PATH}
+export LD_LIBRARY_PATH=/usr/local/lib/python3.7/dist-packages/tensorflow/:$LD_LIBRARY_PATH
+DRIVER_VERSION=$(nvidia-smi | grep -Po "CUDA Version: \K([0-9]{1,}\.)+[0-9]{1,}")
+TOOLKIT_VERSION=$(nvcc --version | grep -Po "release \K([0-9]{1,}\.)+[0-9]{1,}")
+echo "CUDA driver version: $DRIVER_VERSION"
+echo "CUDA toolkit version: $TOOLKIT_VERSION"
+### If the driver version  is lower than the toolkit version, use compatability mode
+export LD_LIBRARY_PATH=/usr/local/cuda/compat/:$LD_LIBRARY_PATH
+
+
+# where the modified tensorflow locates
+export BPF_TF_PATH=/root/dpro_xla_tools
+# the GPU id to run profiling on (specify one GPU only)
 export BPF_COST_MODEL_PROFILE_GPU="0"
 export CUDA_VISIBLE_DEVICES=0
 
+
+####################################
+### Gen kernel data set
 # modify these
 TRACE_DIR=xxx
 OUTPUT_DIR="/home/tiger/xla/kernel_dataset"
@@ -65,6 +77,9 @@ python3 xla_generate_kernel_dataset.py --trace_dir ${TRACE_DIR} \
     --max_cluster_samples ${MAX_CLUSTER_SAMPLES} \
     --min_cluster_size ${MIN_CLUSTER_SIZE} \
     --max_cluster_size ${MAX_CLUSTER_SIZE}
+
+####################################
+### Train
 
 # modify these
 DATASET_DIR="/home/tiger/xla/kernel_dataset"
