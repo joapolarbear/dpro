@@ -714,16 +714,11 @@ def parse_white_list():
                     white_list.add(op_type)
     return white_list
 
-def parse_xla_candidate_ops(metadata):
-    # return set(metadata.tf_meta.keys())
-    cad1 = set(metadata.tf_meta.keys())
-    candidate_path = "/home/tiger/byteprofile-analysis/data/xla_candidates_resnet.txt"
+def parse_xla_candidate_ops(candidate_path):
     candidates = set()
     with open(candidate_path, "r") as f:
         for line in f:
             candidates.add(line.strip())
-    
-    cad2 = set(candidates)
     return candidates
 
 def parse_shape_dict(trace_dir, metadata=None):

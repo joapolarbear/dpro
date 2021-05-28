@@ -827,6 +827,7 @@ def pad_list(tensor, max_seq_len, pad_value=0):
 class XLAModuleCostModel():
     def __init__(self, save_dir, tmp_dir = "./cost_model_tmp"):
         super().__init__()
+        tf.compat.v1.disable_eager_execution()
         dataset_path = os.path.join(save_dir, CMPaths.DATASET_SAVE_FILE)
         self.training_dataset = XlaKernelDataset(dataset_path)
         self.elem_op_cache, self.ovhd_model, self.kernel_model = load_kernel_model(save_dir, self.training_dataset)

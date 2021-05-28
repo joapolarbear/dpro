@@ -269,18 +269,17 @@ class XLAGraphPass(_BaseGraphPass):
         `self.forbidden_list` is used through the search process
         `self.initial_forbidden_list` is only used when initalizing the fusion pattern.
         '''
-        # xla_candidates = parse_xla_candidate_ops(
-        #     self.opt.clct.pm.search(FileName.METADATA))
-        # # limit the range of nodes during search
-        # filtered_xla_candidates = set()
-        # for op in xla_candidates:
-        #     should_ignore = False
-        #     for ignore_type in IGNORE_OP_TYPES:
-        #         if ignore_type in op:
-        #             should_ignore = True
-        #             break
-        #     if not should_ignore:
-        #         filtered_xla_candidates.add(op)
+        xla_candidates = parse_xla_candidate_ops(args_.xla_candidate_path)
+        # limit the range of nodes during search
+        filtered_xla_candidates = set()
+        for op in xla_candidates:
+            should_ignore = False
+            for ignore_type in IGNORE_OP_TYPES:
+                if ignore_type in op:
+                    should_ignore = True
+                    break
+            if not should_ignore:
+                filtered_xla_candidates.add(op)
         
 
         dag = self.dag if G_prime is None else G_prime
@@ -299,7 +298,7 @@ class XLAGraphPass(_BaseGraphPass):
             cat = parse_cat_from_name(node)
             if (not args_.simulate and op_name not in self._wrap_xla_operation_names(pid)) \
                     or "Assign" in op_name or cat == CatName.COMM.value \
-                    or self.meta_info.parse_op_type(op_name) in IGNORE_OP_TYPES:
+                    or op_name not in filtered_xla_candidates:
                 self.forbidden_list.add(node)
                 self.initial_forbidden_list.add(node)
                 

@@ -42,9 +42,7 @@ Sample commands, put the XLA cost model in the path of  `./cost_model/_xla/.cost
 python3 analyze.py --option optimize --sub_option xla,^memory \
     --platform TENSORFLOW --comm_backend NCCL --nccl_algo RING --pretty \
     --path /root/data/20210125_05_hvd_tf_resnet50_tcp/ \
-    --workspace /root/data/20210125_05_hvd_tf_resnet50_tcp/ \
-    --xla_candidate_path data/xla_candidates_resnet.txt \
-    --update_infi_para --layer_by_layer --mcmc_beta 10
+     --layer_by_layer --mcmc_beta 10
 ```
 If you do not have a XLA cost model, run the following command to search with estimated fusion time:
 ```

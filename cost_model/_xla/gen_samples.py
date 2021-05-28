@@ -134,6 +134,8 @@ class GraphDefUtil(object):
         self.name2nodedef = {}
         for node_def in self.original_graph_def.node:
             self.name2nodedef[node_def.name] = node_def
+        
+        tf.compat.v1.disable_eager_execution()
 
     def gen_shape_type_attr_value(self, shape, data_type):
         shape_proto = shape.as_proto()

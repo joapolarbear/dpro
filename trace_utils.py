@@ -169,7 +169,7 @@ def _parse_tf_layer_names(name):
     op_name_split = parse_op_name(name).split("/")
     op_type = "FW"
     idx = 0
-    if op_name_split[idx] == "gradients":
+    if op_name_split[idx] == "gradients" or op_name_split[idx] == "gradient_tape":
         op_type = "BW"
         idx += 1
     if op_name_split[idx].lower() in ["inception_v3", "resnet50", "vgg16", "bert"]:
