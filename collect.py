@@ -32,14 +32,17 @@ class RunningSpan:
     def __init__(self):
         self.reset_span()
         self.disable = False
+        self.reset_span()
 
     def init_start(self, s):
         if self.start is None:
             self.start = s
+        else:
+            self.start = min(self.start, s)
 
     def init_end(self, e):
         ### allow to override
-        self.end = e
+        self.end = max(self.end, e)
 
     def if_start(self, t):
         if self.disable:
@@ -61,7 +64,7 @@ class RunningSpan:
 
     def reset_span(self):
         self.start = None
-        self.end = None
+        self.end = 0
 
 
 class Collector(object):
@@ -113,6 +116,7 @@ class Collector(object):
             add_trace_safe(self._collect_rank_comm_detail(tmp_pm, pid, host_id))
             add_trace_safe(self._collect_rank_comm(tmp_pm, pid, host_id))
         return self.rst_traces, self.ref_name, self.ref_time, self.raw_name2IDnum
+    
     def _collect_rank_comp(self, *args, **kwargs):
         if self.platform == "MXNET":
             return self._collect_rank_comp_mx(*args, **kwargs)
@@ -224,8 +228,8 @@ class Collector(object):
                             "args": _args
                         })
 
-                        if "args" in trace and "input0" in trace["args"] and trace["args"]["input0"] == "global_step":
-                            self.run_span[wk_prefix].init_end(trace["ts"])
+                        self.run_span[wk_prefix].init_start(trace["ts"])
+                        self.run_span[wk_prefix].init_end(trace["ts"] + trace["dur"])
 
         rst_traces = sorted(rst_traces, key=lambda x: x["ts"], reverse=False)
         
@@ -582,7 +586,6 @@ class Collector(object):
             traces = traces.get("traceEvents", [])
 
         traces = sorted(traces, key=lambda x: x["ts"], reverse=False)
-        first_op = None
         for trace in traces:
             ### ignore digit
             if "<<" in trace["name"] and ">>" in trace["name"]:
@@ -593,14 +596,11 @@ class Collector(object):
             if re.match("[^.]+\.[0-9+]+\.(SEND|RECV)", trace["name"]) is None:
                 continue
 
-            if first_op is None:
-                first_op = trace["args"]["name"]
-
             ### Only check the time range for the first communication operator, 
             ### then the following communication traces should be added to the final traces
             if "ts" in trace and not self.run_span[wk_prefix].if_start(trace["ts"]):
                 continue
-            elif first_op == trace["args"]["name"] and "ts" in trace and self.run_span[wk_prefix].if_end(trace["ts"]):
+            elif "ts" in trace and self.run_span[wk_prefix].if_end(trace["ts"]):
                 break
 
             if trace["ph"].lower() == "i":
@@ -1262,7 +1262,7 @@ class Collector(object):
                                 _to_process += [_in for _in, _ in self.trail_dag.in_edges(_prev)]
                         
                         u_idx_l = [self.traceM.map_name2idxlist(_node) for _node in bw_nodes]
-                        assert len(u_idx_l) > 0, bw_nodes
+                        assert len(u_idx_l) > 0, (node_, bw_nodes)
                         bw_traces = [self.traceM.traces[u_idxs[self.traceM.opt_step]] for u_idxs in u_idx_l]
                         last_bw_time = max([trace["ts"] + trace["dur"] for trace in bw_traces])
                         gap = event["ts"] - last_bw_time

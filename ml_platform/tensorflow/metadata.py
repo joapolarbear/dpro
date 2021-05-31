@@ -28,14 +28,23 @@ class MetaInfo:
         with open(os.path.join(meta_dir, FileName.METADATA.value), 'r') as fp:
             self.tf_meta = json.load(fp)
 
+        ### Read tensor/gradient names
         try:
-            with open(os.path.join(meta_dir, "gradient_name2ID.json"), 'r') as fp:
-                name2id = json.load(fp)
-                self.gradient_name_list = [name.replace(
-                    "HorovodAllreduce.", "") for name, _ in sorted(name2id.items(), key=lambda x: x[1])]
+            with open(os.path.join(meta_dir, FileName.TENSOR_NAME.value), 'r') as fp:
+                self.gradient_name_list = json.load(fp)["gradient_name_list"]
+                ### Horovod use the same as weight names for tensor names
+                self.same_tensor_weight_name = True
         except FileNotFoundError:
-            SingleLogger().warn("{} is not found !".format(FileName.TENSOR_NAME.value))
-            self.gradient_name_list = []
+            try:
+                with open(os.path.join(meta_dir, "gradient_name2ID.json"), 'r') as fp:
+                    name2id = json.load(fp)
+                    self.gradient_name_list = [name.replace(
+                        "HorovodAllreduce.", "") for name, _ in sorted(name2id.items(), key=lambda x: x[1])]
+                    ### Horovod use the same as weight names for tensor names
+                    self.same_tensor_weight_name = False
+            except FileNotFoundError:
+                SingleLogger().error("{} is not found !".format(FileName.TENSOR_NAME.value))
+                self.gradient_name_list = []
 
         ### Batch size used for this meta data file
         self.old_B = None
@@ -70,7 +79,7 @@ class MetaInfo:
 
     def ret_tensor_size(self, tensor_id):
         tensor_name = self.gradient_name_list[tensor_id]
-        weight_name = self.tensor2weight[tensor_name]
+        weight_name = self.tensor_name2weight_name(tensor_name)
         
         bw_ops = list(self.local_dfg.predecessors(
             "Comm.{}".format(tensor_id)))
@@ -391,7 +400,7 @@ class MetaInfo:
                                 ### There is an edge from pred->variable->update_op
                                 ### and the variable is a weight variable
                                 tensor = "Comm.{}".format(
-                                    self.tensor_name_to_tensor_id(self.weight2tensor(variable)))
+                                    self.tensor_name_to_tensor_id(self.weight_name2tensor_name(variable)))
                                 edges_to_add.append((pred, tensor))
                                 edges_to_add.append((tensor, update_op))
                                 edges_to_rm.append((pred, update_op))
@@ -419,9 +428,16 @@ class MetaInfo:
     def tensor_id2update_id(self, tensor_id):
         raise NotImplementedError()
     
-    def weight2tensor(self, weight_name):
+    def weight_name2tensor_name(self, weight_name):
+        if self.same_tensor_weight_name:
+            return weight_name
         """Normalizes operation name to TensorFlow rules."""
         tensor_name = re.sub('[^a-zA-Z0-9_]', '_', weight_name)
         if tensor_name not in self.tensor2weight:
             self.tensor2weight[tensor_name] = weight_name
         return tensor_name
+    
+    def tensor_name2weight_name(self, tensor_name):
+        if self.same_tensor_weight_name:
+            return tensor_name
+        return self.tensor2weight[tensor_name]
