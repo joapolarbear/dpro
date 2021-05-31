@@ -37,14 +37,10 @@ from sklearn.model_selection import train_test_split
 from .gen_samples import *
 from .process_trace import *
 from .xlatools import *
-from .constant_utils import *
+from .utils import CMPaths, CMEnvs, parse_xla_candidate_ops, IGNORE_OP_TYPES
 from ml_platform.tensorflow.metadata import MetaInfo
 
 MAX_OP_DUR_IN_US = 10000000
-### TODO(huhanpeng): ResourceApplyGradientDescent should not be ignored
-IGNORE_OP_TYPES = ["ShapeN", "_Arg", "_Send", "_Recv", "VarIsInitializedOp", "ReadVariableOp", "VarHandleOp",
-                   "IsVariableInitialized", "ResourceApplyGradientDescent", "IteratorToStringHandle", 
-                   "IteratorGetNext", "MakeIterator", "IteratorV2", "NoOp", "Placeholder"]
 
 def clean_up(profile_dir, xla_dir):
     shutil.rmtree(profile_dir)
@@ -714,13 +710,6 @@ def parse_white_list():
                     white_list.add(op_type)
     return white_list
 
-def parse_xla_candidate_ops(candidate_path):
-    candidates = set()
-    with open(candidate_path, "r") as f:
-        for line in f:
-            candidates.add(line.strip())
-    return candidates
-
 def parse_shape_dict(trace_dir, metadata=None):
     shape_dict = {}
     tensor_path = os.path.join(trace_dir, CMPaths.TENSOR_SHAPE_FILE)
@@ -746,7 +735,7 @@ def parse_shape_dict(trace_dir, metadata=None):
 
 def parse_graph_def(trace_dir, dataset_dir, shape_dict, metadata):
     # TF2XLA supported ops
-    # candidate_ops = parse_xla_candidate_ops(metadata)
+    # candidate_ops, unsafe_resource_deps_ = parse_xla_candidate_ops(metadata)
 
     graph_def_path = os.path.join(trace_dir, CMPaths.AFTER_OPT_TF_DAG_FILE)
     with open(graph_def_path, "r") as f:

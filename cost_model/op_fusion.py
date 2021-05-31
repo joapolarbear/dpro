@@ -13,7 +13,7 @@ from trace_utils import parse_cat_from_name, parse_pid_from_name, \
 from base import bcolors
 
 from cost_model.base import _BaseGraphPass, OptQueryCostModelError
-from cost_model._xla.gen_dataset_utils import parse_xla_candidate_ops, IGNORE_OP_TYPES
+from cost_model._xla.utils import parse_xla_candidate_ops, IGNORE_OP_TYPES
 from cost_model._xla.pk_graph import PKGraph, contract_nodes_nx, \
     defuse_nodes_inplace_nx, postorder_contract_nx, \
     subgraph_partition_connected_nx_using_topo, get_concated_names
@@ -99,7 +99,8 @@ class XLAGraphPass(_BaseGraphPass):
 
             G, initial_partitions_formed = self._init_partition(G, PKG)
             with open(init_ckpt_path, "wb") as f:
-                pickle.dump([G, PKG, self.node_attr_cache, initial_partitions_formed, self.forbidden_list], f)
+                pickle.dump([G, PKG, self.node_attr_cache, initial_partitions_formed,
+                             self.forbidden_list], f)
             SingleLogger().info("Graph cache dumped to {}.".format(init_ckpt_path))
 
         if "BPF_DUMP_INIT_CLUSTER_TO" in os.environ:
@@ -191,7 +192,7 @@ class XLAGraphPass(_BaseGraphPass):
             
             G_copy = G.copy()
             PKG_copy = PKG.copy()
-            G_copy, _ = self._cluster_mapping_to_partition(G_copy, PKG_copy, partition_G)
+            G_copy, _ = self._create_clusters(G_copy, PKG_copy, partition_G)
             cost, _, _ = self.opt.evaluate(G_copy)
             SingleLogger().info(bcolors.CYELLOWBG +
                                 "_layer_num_limit: {} ==> cost: {}".format(_layer_num_limit, cost) + bcolors.ENDC)
@@ -233,9 +234,9 @@ class XLAGraphPass(_BaseGraphPass):
                 ROOT_PATH, "cluster_mapping_after_initialization.txt"))
 
         SingleLogger().info("Start to init partition graph ... ")
-        return self._cluster_mapping_to_partition(G, PKG, partition_G)
+        return self._create_clusters(G, PKG, partition_G)
 
-    def _cluster_mapping_to_partition(self, G, PKG, partition_G):
+    def _create_clusters(self, G, PKG, partition_G):
         ''' Init partition on `G` based on the the pre-partitioned DFG `partition_G`
             **NOTE**: this modification is in place
         '''
@@ -269,7 +270,7 @@ class XLAGraphPass(_BaseGraphPass):
         `self.forbidden_list` is used through the search process
         `self.initial_forbidden_list` is only used when initalizing the fusion pattern.
         '''
-        xla_candidates = parse_xla_candidate_ops(args_.xla_candidate_path)
+        xla_candidates, _ = parse_xla_candidate_ops(args_.xla_candidate_path)
         # limit the range of nodes during search
         filtered_xla_candidates = set()
         for op in xla_candidates:

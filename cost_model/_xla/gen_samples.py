@@ -20,7 +20,7 @@ from multiprocessing import Pool
 from .pk_graph import PKGraph, contract_nodes_nx, \
                         defuse_nodes_inplace_nx, postorder_contract_nx, \
                         subgraph_partition_connected_nx
-from .constant_utils import *
+from .utils import CMPaths
 import networkx as nx
 
 try:

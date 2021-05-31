@@ -2,6 +2,10 @@ from random import sample
 import networkx as nx
 import random
 
+import arg_utils
+from trace_utils import _parse_tf_layer_names, parse_op_name
+from cost_model._xla.utils import parse_xla_candidate_ops
+
 class PKGraphCycleError(Exception):
     pass
 
@@ -174,7 +178,8 @@ class PKGraph(object):
     state of PKGraph only.
     Works for networkx DiGraphs.
     """
-    def __init__(self, nx_graph=None, nx_graph_reference=None, _init_copy = False):
+
+    def __init__(self, nx_graph=None, nx_graph_reference=None, _init_copy=False):
         if _init_copy:
             return
         if not isinstance(nx_graph, nx.DiGraph):
@@ -191,6 +196,8 @@ class PKGraph(object):
         self.ord = list(range(len(index2nodename)))
         self.free_indexes = set()
         self.nodename2fusednode = {}
+
+        _, self.unsafe_resource_deps_ = parse_xla_candidate_ops(arg_utils.SingleArg().args.xla_candidate_path)
 
     def _get_node_order(self, u):
         idx = self.nodename2index[u]
@@ -215,8 +222,22 @@ class PKGraph(object):
             self._reorder(delta_f, delta_b)
 
     def can_contract_edge(self, u, v):
-        ''' Check if the graph has cycles after contracting u and v
+        ''' Check whether we can contract the edge from cluster u to cluster v
+                * > // Check if contracting this edge will break the resource variable concurrency
+                    // semantics.  In theory this is quadratic in the number of nodes, but seems
+                    // to not be a problem in practice so far.   --- from TensorFlow
+                * if the graph has cycles after contracting u and v
         '''
+        ### check source semantics
+        ### unsafe_resource_deps_
+        if self.unsafe_resource_deps_:
+            for _from_name in u.split("+"):
+                for _to_name in u.split("+"):
+                    _from, _to = parse_op_name(_from_name), parse_op_name(_to_name)
+                    if (_from, _to) in self.unsafe_resource_deps_ or (_to, _from) in self.unsafe_resource_deps_:
+                        return False
+
+        ### check cycles
         if u not in self.nx_graph or v not in self.nx_graph:
             raise RuntimeError("u ({}) and v ({}) must in the original networkx graph.".format(u, v))
         self.nx_graph.remove_edge(u, v)
@@ -415,10 +436,8 @@ class PKGraph(object):
         for i in range(len(L)):
             self.ord[L[i]] = all_orders[i]
 
-from trace_utils import _parse_tf_layer_names
-
 def postorder_contract_nx(_dag: nx.DiGraph, _pkg: PKGraph, source_node, visitied_nodes, 
-                            forbidden_list = None, size_limit = None, layer_num_limit = None):
+                          forbidden_list=None, size_limit=None, layer_num_limit=None):
     # print("postorder_contract_nx for {}".format(source_node))
     graph_changed_outer = False
     while True:

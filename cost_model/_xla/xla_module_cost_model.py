@@ -23,7 +23,7 @@ from cost_model._xla.xlatools import compile_to_hlo, extract_kernel_features_fro
 from google.protobuf.json_format import Parse
 from cost_model._xla.gen_dataset_utils import XlaKernelDataset, XlaModuleTestSet
 from cost_model._xla.gen_samples import GraphDefUtil, GSInternalErrors
-from cost_model._xla.constant_utils import *
+from cost_model._xla.utils import CMPaths
 from tqdm import tqdm, trange
 from collections import defaultdict
 import traceback
