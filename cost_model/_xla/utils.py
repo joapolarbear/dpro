@@ -37,9 +37,12 @@ class CMEnvs:
 
 
 ### TODO(huhanpeng): ResourceApplyGradientDescent should not be ignored
-IGNORE_OP_TYPES = ["ShapeN", "_Arg", "_Send", "_Recv", "VarIsInitializedOp", "ReadVariableOp", "VarHandleOp",
-                   "IsVariableInitialized", "ResourceApplyGradientDescent", "IteratorToStringHandle",
-                   "IteratorGetNext", "MakeIterator", "IteratorV2", "NoOp", "Placeholder"]
+IGNORE_OP_TYPES = ["ShapeN", "_Arg", "_Send", "_Recv", "VarIsInitializedOp", 
+                    "ReadVariableOp", 
+                    # "Pad", "SparseSoftmaxCrossEntropyWithLogits",
+                    "VarHandleOp",
+                    "IsVariableInitialized", "ResourceApplyGradientDescent", "IteratorToStringHandle",
+                    "IteratorGetNext", "MakeIterator", "IteratorV2", "NoOp", "Placeholder"]
 
 
 def parse_xla_candidate_ops(candidate_path):

@@ -23,6 +23,33 @@ for key in OP_HYPER_PARAMETERS:
 GFLOPS_FP32 = 1
 GFLOPS_FP16 = 2
 
+def wrap_read_graphdef(graphdef_path):
+    from google.protobuf.json_format import MessageToJson
+    from google.protobuf.text_format import Parse
+    import tensorflow as tf
+    try:
+        GraphDef = tf.GraphDef
+    except:
+        GraphDef = tf.compat.v1.GraphDef
+    if graphdef_path.endswith("pbtxt"):
+        with open(graphdef_path, "r") as f:
+            pb = f.read()
+        graph_def = Parse(pb, GraphDef())
+        json_string = MessageToJson(graph_def)
+        graph_def = json.loads(json_string)
+    else:
+        with open(graphdef_path, "r") as f:
+            graph_def = json.load(f)
+    graph = nx.DiGraph()
+    for node in graph_def["node"]:
+        if "input" in node:
+            for input_tensor_name in node["input"]:
+                input_node_name = input_tensor_name.split(":")[0]
+                graph.add_edge(input_node_name, node["name"])
+    gml_path = os.path.join(os.path.dirname(graphdef_path), "graphdef_dag.gml")
+    nx.write_gml(graph, gml_path)
+
+
 class MetaInfo:
     def __init__(self, meta_dir):
         with open(os.path.join(meta_dir, FileName.METADATA.value), 'r') as fp:
@@ -77,16 +104,25 @@ class MetaInfo:
             raise KeyError("op {} has not been given a type".format(op_name))
         return self.tf_meta[op_name]["op"]
 
+    def find_effective_bw_of_comm(self, comm_op):
+        to_process = set(self.local_dfg.predecessors(comm_op))
+        while len(to_process) > 0:
+            bw_op = to_process.pop()
+            assert bw_op.startswith("BW"), (comm_op, bw_op)
+            bw_op_name = parse_op_name(bw_op)
+            if bw_op_name.startswith("gradient_tape") or bw_op_name.startswith("gradients"):
+                return bw_op_name
+            else:
+                to_process = to_process.union(
+                    set([pre for pre in self.local_dfg.predecessors(bw_op) if "BW" in pre]))
+        raise ValueError("Fail to find corresponding bw op for {}".format(comm_op))
+
     def ret_tensor_size(self, tensor_id):
         tensor_name = self.gradient_name_list[tensor_id]
         weight_name = self.tensor_name2weight_name(tensor_name)
         
-        bw_ops = list(self.local_dfg.predecessors(
-            "Comm.{}".format(tensor_id)))
-        assert len(bw_ops) == 1, (tensor_id, bw_ops)
-        assert bw_ops[0].startswith("BW"), (tensor_id, bw_ops)
+        bw_op_name = self.find_effective_bw_of_comm("Comm.{}".format(tensor_id))
 
-        bw_op_name = parse_op_name(bw_ops[0])
         outputs = self.tf_meta[bw_op_name]["output"]
         for output in outputs:
             if output["name"] == weight_name:
@@ -317,15 +353,21 @@ class MetaInfo:
         g.add_edges_from(edges_to_add)
         return g
     
+    def remove_last_trival_slash(self, _name):
+        last_slash_pos = _name.rfind("/")
+        if last_slash_pos != -1 and last_slash_pos < len(_name)-1 and _name[last_slash_pos+1] == "_":
+            _name = _name[:last_slash_pos]
+        return _name
+
     def tf_relabel_func(self, _name):
         for prefix in ["Comm.", "Comp.", "BW.", "FW.", "UPDATE_."]:
             if _name.startswith(prefix):
                 return _name
         if _name.startswith("^"):
             _name = _name[1:]
-        last_slash_pos = _name.rfind("/")
-        if last_slash_pos != -1 and last_slash_pos < len(_name)-1 and _name[last_slash_pos+1] == "_":
-            _name = _name[:last_slash_pos]
+
+        _name = self.remove_last_trival_slash(_name)
+
         if "BytePSPushPull" in _name and "tensor" not in _name:
             _name = "Comm." + _name
         elif "input_barrier" in _name:
@@ -339,10 +381,16 @@ class MetaInfo:
                     _name = "BW." + tensor_name + "_Switch"
                 else:
                     _name = "Comm." + tensor_name
-            elif "cond_" in _name and "Switch" in _name:
-                _name = "BW." + _name
-            else:
+            elif self.update_nodes_in_dag is not None and _name in self.update_nodes_in_dag:
                 _name = "UPDATE_." + _name
+            else:
+                _name = "BW." + _name
+            # elif "cond_" in _name and "Switch" in _name:
+            #     _name = "BW." + _name
+            # elif "Const" in _name or "cond_" in _name:
+            #     _name = "BW." + _name
+            # else:
+            #     _name = "UPDATE_." + _name
         else:
             if self.update_nodes_in_dag is not None and _name in self.update_nodes_in_dag:
                 _name = "UPDATE_." + _name
@@ -363,14 +411,20 @@ class MetaInfo:
             * Relabel the node name to standard format
             * Handle the mapping from BW->Comm
         '''
-        mygraph = nx.read_gml(gml_path)
-        dfg_with_var = self.read_dfg_with_var()
+        graphdef_dag_path = os.environ.get("DPRO_GRAPHDEF_DFG_PATH", None)
+        if graphdef_dag_path:
+            mygraph = nx.read_gml(graphdef_dag_path)
+            SingleLogger().info(
+                "[TF Metadata] read DFG parsed from graphdef: {}".format(graphdef_dag_path))
+        else:
+            mygraph = nx.read_gml(gml_path)
+            dfg_with_var = self.read_dfg_with_var()
 
         ### Find out Update Operators
         update_nodes_in_dag = set()
         def recursive_add_succs(_node):
             for succ_ in mygraph.successors(_node):
-                update_nodes_in_dag.add(succ_)
+                update_nodes_in_dag.add(self.remove_last_trival_slash(succ_))
                 recursive_add_succs(succ_)
                 if "^"+succ_ in mygraph.nodes:
                     recursive_add_succs("^"+succ_)
@@ -379,33 +433,36 @@ class MetaInfo:
             if ("allreduce" in node.lower() or "bytepspushpull" in node.lower()) \
                     and "switch" not in node.lower() and "input_barrier" not in node.lower():
                 ### node is the Comm node, add its downstream nodes as update operators
-                raise ValueError("TF 2.4 GraphDef does NOT contain Comm operators")
-                recursive_add_succs(node)
+                # raise ValueError("TF 2.4 GraphDef does NOT contain Comm operators")
+                if "." in node and node.split(".")[1].isdigit():
+                    recursive_add_succs(node)
             elif node == "GradientDescent" or ("GradientDescent" in node and "update" in node) \
                     or node.startswith("Assign_") or ("cond" in node and "Assign" in node) \
                     or "SGD" in node or "Assign" in node:
-                update_nodes_in_dag.add(node)
+                update_nodes_in_dag.add(self.remove_last_trival_slash(node))
         
         self.update_nodes_in_dag = update_nodes_in_dag
-        ### TF 2.4, record the mapping from BW to Comm in the local DFG
-        if len(self.gradient_name_list) > 0:
-            edges_to_add = []
-            edges_to_rm = []
-            for update_op in update_nodes_in_dag:
-                for pred in mygraph.predecessors(update_op):
-                    if self.tf_relabel_func(pred).startswith("BW"):
-                        ### Only check those BW->Update edges
-                        for variable in dfg_with_var.successors(pred):
-                            if update_op in dfg_with_var.successors(variable):
-                                ### There is an edge from pred->variable->update_op
-                                ### and the variable is a weight variable
-                                tensor = "Comm.{}".format(
-                                    self.tensor_name_to_tensor_id(self.weight_name2tensor_name(variable)))
-                                edges_to_add.append((pred, tensor))
-                                edges_to_add.append((tensor, update_op))
-                                edges_to_rm.append((pred, update_op))
-            mygraph.add_edges_from(edges_to_add)
-            mygraph.remove_edges_from(edges_to_rm)
+
+        if graphdef_dag_path is None:
+            ### TF 2.4, record the mapping from BW to Comm in the local DFG
+            if len(self.gradient_name_list) > 0:
+                edges_to_add = []
+                edges_to_rm = []
+                for update_op in update_nodes_in_dag:
+                    for pred in mygraph.predecessors(update_op):
+                        if self.tf_relabel_func(pred).startswith("BW"):
+                            ### Only check those BW->Update edges
+                            for variable in dfg_with_var.successors(pred):
+                                if update_op in dfg_with_var.successors(variable):
+                                    ### There is an edge from pred->variable->update_op
+                                    ### and the variable is a weight variable
+                                    tensor = "Comm.{}".format(
+                                        self.tensor_name_to_tensor_id(self.weight_name2tensor_name(variable)))
+                                    edges_to_add.append((pred, tensor))
+                                    edges_to_add.append((tensor, update_op))
+                                    edges_to_rm.append((pred, update_op))
+                mygraph.add_edges_from(edges_to_add)
+                mygraph.remove_edges_from(edges_to_rm)
 
         ### Re-label Nodes
         new_graph = nx.DiGraph()

@@ -193,7 +193,7 @@ if __name__ == '__main__':
                 delay_dict = {nodename: {"delay": 10, "ratio": 1.0}}
                 step_end_time = replayer.replayAndDelay(delay_dict, _ouput=False)
                 logger.info("Delay %s ==> %s ==> %s critical path." % (nodename, str(step_end_time), "in" if nodename in critical_path else "not in"))
-                pgsbar.update(idx)
+                pgsbar.update()
                 idx += 10
             pgsbar.close()
         elif args.sub_option == "bottleneck":

@@ -380,6 +380,7 @@ class PKGraph(object):
         new_instance.ord = self.ord.copy()
         new_instance.free_indexes = self.free_indexes.copy()
         new_instance.nodename2fusednode = self.nodename2fusednode.copy()
+        new_instance.unsafe_resource_deps_ = self.unsafe_resource_deps_.copy()
         return new_instance
 
     def check_invariant(self):
