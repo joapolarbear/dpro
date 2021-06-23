@@ -2,7 +2,7 @@
 # Profiler
 ### Horovod + Tensorflow
 ```
-recorder = hvd.Recorder(model=model, batch_size=args.batch_size)
+recorder = hvd.Recorder()
 
 @hvd.profile(recorder)
 @tf.function

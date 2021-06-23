@@ -451,6 +451,22 @@ class DAGManager:
         mygraph = old_graph
         queue_type_list = QueueType("NCCL").ret_list()
 
+        def _nccl_tensor_name2tensor_id(tensor_name):
+            if self.platform == "MXNET":
+                return para_dict.tensor_name_to_tensor_id(tensor_name)
+            elif self.platform == "TENSORFLOW":
+                return int(tensor_name)
+            else:
+                raise ArgumentError("Unsupported platform {}.".format(self.platform))
+        
+        def _nccl_tensor_id2tensor_name(tensor_id):
+            if self.platform == "MXNET":
+                return "Comm." + para_dict.tensor_id_to_tensor_name(int(tensor_id))   # e.g., Comm.bertmodel0_word_embed_embedding0_weight
+            elif self.platform == "TENSORFLOW":
+                return "Comm.{}".format(tensor_id)
+            else:
+                raise ArgumentError("Unsupported platform {}.".format(self.platform))
+
         done_comm = []
         done_sync = []
 
@@ -459,12 +475,8 @@ class DAGManager:
             if "Comm." in u and self.nccl_graph is not None:
                 ### Consider Tensor fusion, only those ready tensors are fused and are used to build a graph together
                 tensor_name = u.split("Comm.")[1]
-                if self.platform == "MXNET":
-                    tensor_id = para_dict.tensor_name_to_tensor_id(tensor_name)
-                elif self.platform == "TENSORFLOW":
-                    tensor_id = int(tensor_name)
-                else:
-                    raise ArgumentError("Unsupported platform {}.".format(self.platform))
+                tensor_id = _nccl_tensor_name2tensor_id(tensor_name)
+   
                 try:
                     nccl_grp_name = self.nccl_graph.tensor2group_name(tensor_id)
                 except TypeError:
@@ -488,13 +500,8 @@ class DAGManager:
                 sync_op = "Comm." + nccl_grp_name_sync + ".Sync"
                 if sync_op not in done_sync:
                     for _id in nccl_grp_name_sync.split("+"):
-                        if self.platform == "MXNET":
-                            co_comm_op = "Comm." + para_dict.tensor_id_to_tensor_name(int(_id))   # e.g., Comm.bertmodel0_word_embed_embedding0_weight
-                        elif self.platform == "TENSORFLOW":
-                            co_comm_op = "Comm.{}".format(_id)
-                        else:
-                            raise ArgumentError("Unsupported platform {}.".format(self.platform))
-                        prev_bw_nodes = [_u for _u, _ in mygraph.in_edges(co_comm_op)]
+                        co_comm_op = _nccl_tensor_id2tensor_name(_id)
+                        prev_bw_nodes = list(mygraph.predecessors(co_comm_op))
                         # assert len(prev_bw_nodes) == 1, (co_comm_op, prev_bw_nodes)
                         prev_rawname = prev_bw_nodes[0]         # no prefix, start with BW.
                         self.wrap_add_dag(self.add_prefix(prev_rawname), self.add_prefix(sync_op))
@@ -504,8 +511,10 @@ class DAGManager:
                 u = "Comm." + nccl_grp_name
                 if u in done_comm:
                     continue
+
+                ### Set the `pre_nodes` and `post_nodes`
+                # nodes in `pre_nodes` --> Comm.xxx.SEND --> ... --> nodes in `post_nodes`
                 pre_nodes =[sync_op]
-                first = True
                 for _id in nccl_grp_name.split("+"):
                     if self.platform == "MXNET":
                         # e.g., from tensor 256 to update 140
@@ -515,10 +524,8 @@ class DAGManager:
                         ### TODO (hphu): for a fused tensor, it corresponds to multiple updates which run cocurrently
                         # Current, only select one as the update operator
                         co_comm_op = "Comm.{}".format(_id)
-                        if args_.update_infi_para or first:
-                            post_update_nodes = list(mygraph.successors(co_comm_op))
-                            post_nodes += post_update_nodes
-                            first = False
+                        post_update_nodes = list(mygraph.successors(co_comm_op))
+                        post_nodes += post_update_nodes
                   
                 done_comm.append(u)
                 

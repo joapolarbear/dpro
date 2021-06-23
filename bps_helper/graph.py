@@ -66,7 +66,7 @@ class ServerOpCounter(object):
 		return res_name
 
 def optimize_time_shift(shift_constraints: dict):
-    # shift_constraints contains node-level time shift constaints
+    # shift_constraints contains node-level time shift constraints
     # mapping: (node_id_0: int, node_id_1: int) -> value: float
     # denotes contraint: S_node_id_0 - S_node_id_1 <= value
     # base node is chosen as the node with smallest node_id

@@ -354,7 +354,8 @@ class TraceManager:
         self.name2sta = {}
         self.cat2sta = {}
         prefix_dict = {}
-
+        
+        ### Step 1: tranvers all traces
         for event in self.traces:
             if self._is_ignore_for_sta(event):
                 continue
@@ -389,16 +390,13 @@ class TraceManager:
                     event["args"]["cnt"] = -1
                     continue
                 self.name2sta[unique_name]["cnt"] += 1
-                if cal_median:
-                    self.name2sta[unique_name]["time"].append(event["dur"] / 1000.0)
-                else:
-                    self.name2sta[unique_name]["time"] += event["dur"] / 1000.0
+                self.name2sta[unique_name]["time"].append(event["dur"] / 1000.0)
                 self.name2sta[unique_name]["min_t"] = min(self.name2sta[unique_name]["min_t"], event["dur"] / 1000.0)
                 self.name2sta[unique_name]["max_t"] = max(self.name2sta[unique_name]["max_t"], event["dur"] / 1000.0)
             else:
                 self.name2sta[unique_name] = {
                     "cnt": 1, 
-                    "time": [event["dur"] / 1000.0] if cal_median else event["dur"] / 1000.0, 
+                    "time": [event["dur"] / 1000.0], 
                     "min_t": event["dur"] / 1000.0, 
                     "max_t": event["dur"] / 1000.0,
                     "cat": cat,
@@ -490,7 +488,7 @@ class TraceManager:
                                                       CatName.PS_SERVER_OPERATOR.value]:
                 pid_info["trace_name_cursor"] = event["name"]
 
-        ### Aggregate duration of all iterations
+        ### Step 2: calculate ithe teration time of each iteration
         iter_list_all = []
         step_num_upper = None
         for prefix in sorted(prefix_dict.keys()):
@@ -533,7 +531,7 @@ class TraceManager:
                 ### Different GPUs may have different number of steps, find the smallest one as the step_num_upper
                 step_num_upper = len(pid_info["iter_multi_steps"])
     
-        ### calculate the average iteration time
+        ### Step 3: calculate the average iteration time
         # * iter_list_all, shape = (n_GPUs, n_steps) ==> (n_steps)
         iter_list_all = [_list[:step_num_upper] for _list in iter_list_all]
         iter_list_all = np.average(np.array(iter_list_all), axis=0)
@@ -542,8 +540,11 @@ class TraceManager:
         STD_CHECK_THESHOLD = 0.1
         if _std / self.iter_time > STD_CHECK_THESHOLD:
             SingleLogger().info(
-                "Std.dev is large compared to Ave. ({:.3f}/{:.3f}), remove the first step by default".format(_std, self.iter_time))
+                "Std.dev is large compared to Ave. ({:.3f}/{:.3f}), take the median as the iteration time".format(_std, self.iter_time))
             self.iter_time = np.average(iter_list_all[1:])
+
+            self.iter_time = np.median(iter_list_all)
+
             _std = np.std(iter_list_all[1:])
             self.opt_step = np.argmin(np.abs(iter_list_all - self.iter_time))
             SingleLogger().info("<Overall> step %d is the one closest to average %f (\u00B1 %f) ms - %s" %
@@ -553,14 +554,11 @@ class TraceManager:
             SingleLogger().info("<Overall> step %d is the one closest to average %f (\u00B1 %f) ms - %s" %
                                 (self.opt_step, self.iter_time, _std, iter_list_all))
 
-        """calculate the avg """
+        ### Step 4: calculate the avg of each operator
         for name, statistic in self.name2sta.items():
             ### TODO (huhanpeng), var can be calculated directly with avg list
-            if cal_median:
-                statistic["avg"] = sum(statistic["time"]) / statistic["cnt"]
-                statistic["median"] = sorted(statistic["time"])[int(statistic["cnt"]/2)]
-            else:
-                statistic["avg"] = statistic["time"] / statistic["cnt"]
+            statistic["avg"] = sum(statistic["time"]) / statistic["cnt"]
+            statistic["median"] = sorted(statistic["time"])[int(statistic["cnt"]/2)]
             statistic["var"] = 0.0
 
             # assert statistic["time"] != 0
@@ -571,14 +569,14 @@ class TraceManager:
                     self.cat2sta[cat]["max_name"] = name
             else:
                 self.cat2sta[cat] = {"max_t": statistic["avg"], "max_name": name, "time": 0, "cnt": 0, "op_cnt":0}
-            self.cat2sta[cat]["time"] += sum(statistic["time"]) if cal_median else statistic["time"]
+            self.cat2sta[cat]["time"] += sum(statistic["time"])
             self.cat2sta[cat]["cnt"] += statistic["cnt"]
             self.cat2sta[cat]["op_cnt"] += 1
 
         for cat, statistic in self.cat2sta.items():
             statistic["avg"] = statistic["time"] / statistic["cnt"]
 
-        """calculate the variance"""
+        ### Step 4: calculate the variance of each operator
         for idx, event in enumerate(self.traces):
             if self._is_ignore_for_sta(event):
                 continue

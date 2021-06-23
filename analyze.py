@@ -2,8 +2,6 @@ from tqdm import tqdm
 import os 
 import ujson as json
 import networkx as nx
-import traceback
-import time
 import sys
 # from pathlib import Path
 
@@ -453,9 +451,6 @@ if __name__ == '__main__':
 
         graph = nx.compose_all(graphs)
         dag_longest_path(graph, pm, weight="weight", default_weight=0)
-
-    if args.option == "timeline":
-        raise NotImplementedError()
 
     ### Output debug traces
     debug_utils.DebugRecorder().dump_traces(path_list[0])

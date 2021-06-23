@@ -3,6 +3,7 @@ import json
 import os
 import re
 import networkx as nx
+from tensorflow.python.ops.gen_math_ops import exp
 from ml_platform.tensorflow.amp_lists import whitelist, blacklist, greylist, clearlist
 from logger_utils import Singleton, SingleLogger
 from trace_utils import FileName, parse_op_name
@@ -67,7 +68,7 @@ class MetaInfo:
                     name2id = json.load(fp)
                     self.gradient_name_list = [name.replace(
                         "HorovodAllreduce.", "") for name, _ in sorted(name2id.items(), key=lambda x: x[1])]
-                    ### Horovod use the same as weight names for tensor names
+                    ### Horovod does NOT use the same as weight names for tensor names
                     self.same_tensor_weight_name = False
             except FileNotFoundError:
                 SingleLogger().error("{} is not found !".format(FileName.TENSOR_NAME.value))
@@ -420,6 +421,32 @@ class MetaInfo:
             mygraph = nx.read_gml(gml_path)
             dfg_with_var = self.read_dfg_with_var()
 
+            ### Mark comm operators
+            edges_to_add = []
+            edges_to_rm = []
+            for op in mygraph.nodes:
+                if op not in dfg_with_var.nodes:
+                    continue
+                for variable in dfg_with_var.successors(op):
+                    if variable in self.gradient_name_list:
+                        ### Comm operators
+                        update_op = list(dfg_with_var.successors(variable))
+                        assert len(list(dfg_with_var.predecessors(variable))) == 1
+                        assert len(update_op) == 1
+                        update_op = update_op[0]
+                        assert update_op in mygraph.successors(op)
+                        ### There is an edge from op->variable->update_op
+                        ### and the variable is a weight variable
+
+                        tensor = "Comm.{}".format(
+                                        self.tensor_name_to_tensor_id(self.weight_name2tensor_name(variable)))
+                        edges_to_add.append((op, tensor))
+                        edges_to_add.append(
+                            (tensor, update_op))
+                        edges_to_rm.append((op, update_op))
+            mygraph.add_edges_from(edges_to_add)
+            mygraph.remove_edges_from(edges_to_rm)
+
         ### Find out Update Operators
         update_nodes_in_dag = set()
         def recursive_add_succs(_node):
@@ -430,12 +457,13 @@ class MetaInfo:
                     recursive_add_succs("^"+succ_)
         # mygraph.add_edges_from([(n[1:], n) for n in mygraph.nodes if n.startswith("^")])
         for node in mygraph.nodes:
-            if ("allreduce" in node.lower() or "bytepspushpull" in node.lower()) \
-                    and "switch" not in node.lower() and "input_barrier" not in node.lower():
-                ### node is the Comm node, add its downstream nodes as update operators
-                # raise ValueError("TF 2.4 GraphDef does NOT contain Comm operators")
-                if "." in node and node.split(".")[1].isdigit():
-                    recursive_add_succs(node)
+            # if ("allreduce" in node.lower() or "bytepspushpull" in node.lower()) \
+            #         and "switch" not in node.lower() and "input_barrier" not in node.lower():
+            #     ### node is the Comm node, add its downstream nodes as update operators
+            #     # raise ValueError("TF 2.4 GraphDef does NOT contain Comm operators")
+            #     if "." in node and node.split(".")[1].isdigit():
+            if self.tf_relabel_func(node).startswith("Comm."):
+                recursive_add_succs(node)
             elif node == "GradientDescent" or ("GradientDescent" in node and "update" in node) \
                     or node.startswith("Assign_") or ("cond" in node and "Assign" in node) \
                     or "SGD" in node or "Assign" in node:
@@ -443,26 +471,33 @@ class MetaInfo:
         
         self.update_nodes_in_dag = update_nodes_in_dag
 
-        if graphdef_dag_path is None:
-            ### TF 2.4, record the mapping from BW to Comm in the local DFG
-            if len(self.gradient_name_list) > 0:
-                edges_to_add = []
-                edges_to_rm = []
-                for update_op in update_nodes_in_dag:
-                    for pred in mygraph.predecessors(update_op):
-                        if self.tf_relabel_func(pred).startswith("BW"):
-                            ### Only check those BW->Update edges
-                            for variable in dfg_with_var.successors(pred):
-                                if update_op in dfg_with_var.successors(variable):
-                                    ### There is an edge from pred->variable->update_op
-                                    ### and the variable is a weight variable
-                                    tensor = "Comm.{}".format(
-                                        self.tensor_name_to_tensor_id(self.weight_name2tensor_name(variable)))
-                                    edges_to_add.append((pred, tensor))
-                                    edges_to_add.append((tensor, update_op))
-                                    edges_to_rm.append((pred, update_op))
-                mygraph.add_edges_from(edges_to_add)
-                mygraph.remove_edges_from(edges_to_rm)
+        # import code
+        # code.interact(local=locals())
+        
+        # if graphdef_dag_path is None:
+        #     ### TF 2.4, record the mapping from BW to Comm in the local DFG
+        #     if len(self.gradient_name_list) > 0:
+        #         edges_to_add = []
+        #         edges_to_rm = []
+        #         for update_op in update_nodes_in_dag:
+        #             for pred in mygraph.predecessors(update_op):
+        #                 if self.tf_relabel_func(pred).startswith("BW"):
+        #                     ### Only check those BW->Update edges
+        #                     for variable in dfg_with_var.successors(pred):
+        #                         if update_op in dfg_with_var.successors(variable):
+        #                             ### There is an edge from pred->variable->update_op
+        #                             ### and the variable is a weight variable
+        #                             try:
+        #                                 tensor = "Comm.{}".format(
+        #                                     self.tensor_name_to_tensor_id(self.weight_name2tensor_name(variable)))
+        #                                 edges_to_add.append((pred, tensor))
+        #                                 edges_to_add.append((tensor, update_op))
+        #                                 edges_to_rm.append((pred, update_op))
+        #                             except ValueError:
+        #                                 ### Some weight names do not have corresponding tensor names
+        #                                 pass
+        #         mygraph.add_edges_from(edges_to_add)
+        #         mygraph.remove_edges_from(edges_to_rm)
 
         ### Re-label Nodes
         new_graph = nx.DiGraph()

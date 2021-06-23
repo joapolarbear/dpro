@@ -1,6 +1,4 @@
-import warnings
 import os
-import sys, os
 import re
 import ujson as json
 import networkx as nx
@@ -14,7 +12,7 @@ from trace_utils import *
 from dag_utils import * 
 from parameter import *
 
-from bps_helper.preprocess import preprocess_comm_timestamp
+from bps_helper.preprocess import preprocess_comm_timestamp, preprocess_pcap
 from base import bcolors
 
 args_ = arg_utils.SingleArg().args
@@ -94,11 +92,6 @@ class Collector(object):
         self.para_dict = None
         self.trail_dag = None # global dag
         self.single = False # use to denote whether this is a single-GPU trial
-        
-    def delete_traces_by_cat(self, _cat):
-        _rst_traces = {"traceEvents": []}
-        _rst_traces["traceEvents"] = [_trace for _trace in self.time_dict["traceEvents"] if _trace["cat"] != _cat]
-        self.time_dict = _rst_traces
 
     def _collect_rank_traces(self, *args):
         tmp_pm, pid, host_id = args[0]
@@ -656,19 +649,15 @@ class Collector(object):
         comm_path = self.pm.search(FileName.COMM) if tmp_pm is None else tmp_pm.search(FileName.COMM)
         if comm_path is None:   
             return
-        comm_traces = self.parse_comm_traces(comm_path, pid=pid, host_id=host_id)
-        # debug_utils.DebugRecorder().debug_event_end("collect_" + pid+"_comm", "Collct", "0")
-        return comm_traces
     
-    def parse_comm_traces(self, path, pid=None, host_id=None):
         self.gradient_name_table = {}
 
         ### **NOTE** that this requires the computation traces have been collected
-        wk_prefix, _ = PathManager("/".join(path.split('/')[:-1])).ret_prefix()
+        wk_prefix, _ = PathManager("/".join(comm_path.split('/')[:-1])).ret_prefix()
 
-        #! read communication traces offline
+        ### read communication traces offline
         # debug_utils.DebugRecorder().debug_event_start()
-        with open(path, 'r') as f:
+        with open(comm_path, 'r') as f:
             comm_traces = json.load(f)
         # debug_utils.DebugRecorder().debug_event_end("collect_" + pid+"_comm.read_traces", "Collct", "0")
 
@@ -786,7 +775,7 @@ class Collector(object):
             else:
                 pass
         
-        ### Combine Comm.1.Sync, Comm.2.Sync into Comm.1+2.Sync, is their 'ts's are the same
+        ### Combine Comm.1.Sync, Comm.2.Sync into Comm.1+2.Sync, if their 'ts's are the same
         ### TODO (hphu): delete after correcting Horovod profiling
         traces = sorted(ret, key=lambda x: x["ts"], reverse=False)
         last_sync_op = None
@@ -795,8 +784,10 @@ class Collector(object):
             if "Sync" not in trace["name"] or "local_num_masks" in trace["name"]:
                 ret.append(trace)
                 continue
-        
+                
+            ### Comm.Sync and local_mum_masks not in name
             tensor_id_str = trace["name"].split(".")[1]
+            assert tensor_id_str.isdigit()
             ts, dur = trace["ts"], trace["dur"]
             
             # if pid == "host0.rank0":
@@ -836,6 +827,75 @@ class Collector(object):
         elif algo.lower() == "ring":
             self.nccl_graph.parse_ring_topo(nccl_rank_graph["RealRing"], map_to=pid)
             # self.nccl_graph.parse_connect_topo(traces["Ring"], map_to=pid)
+
+    def _collect_bps_graph(self, force_):
+        byteps_cache_path = self.pm.search(FileName.BYTEPS_CACHE)
+        if byteps_cache_path is not None:
+            SingleLogger().info("Inited BytePS graph helper from cache.")
+            self.byteps_graph.init_from_cache(byteps_cache_path)
+        else:
+            SingleLogger().info("Unable to find BytePS cache file.")
+            # read or generate BPS comm_trace
+            byteps_comm_detail_path = self.pm.search(FileName.BPS_COMM_DETAIL)
+            if byteps_comm_detail_path is None or force_:
+                # need to run preprocessing
+                ip_to_rank_path = self.pm.search(FileName.IP_TO_RANK)
+                ip_to_rank_dict = {}
+                try:
+                    with open(ip_to_rank_path, "r") as f:
+                        for line in f:
+                            ip, rank = line.strip().split(":")
+                            ip = ip.strip()
+                            rank = rank.strip()
+                            ip_to_rank_dict[ip] = rank
+                except:
+                    SingleLogger().error("Failed to read ip to rank mapping.")
+                    exit(1)
+                
+                if self.platform == "MXNET":
+                    gradient_name_list_path = self.pm.search(FileName.TENSOR_NAME)
+                else:
+                    gradient_name_list_path = None
+
+                key_dict_path = self.pm.search(FileName.KEY_DICT)
+
+                if args_.pcap_file_path is not None:
+                    pcap_fns = [fn for fn in os.listdir(args_.pcap_file_path) if (os.path.isfile(os.path.join(args_.pcap_file_path,fn)) and fn.endswith(".pcap"))]
+                    pcap_paths = [os.path.join(args_.pcap_file_path, fn) for fn in pcap_fns]
+                    process_names = [fn.split(".pcap")[0] for fn in pcap_fns]
+                    SingleLogger().info("Preprocessing pcap files: {}.".format(pcap_paths))
+                    byteps_comm_detail_path = preprocess_pcap(pcap_paths, process_names, ip_to_rank_dict, key_dict_path, gradient_name_list_path=gradient_name_list_path, platform=self.platform)
+                elif args_.zmq_log_path is not None:
+                    zmq_log_fns = [fn for fn in os.listdir(args_.zmq_log_path) if (os.path.isfile(os.path.join(args_.zmq_log_path,fn)) and fn.endswith(".log"))]
+                    zmq_log_paths = [os.path.join(args_.zmq_log_path, fn) for fn in zmq_log_fns]
+                    SingleLogger().info("Preprocessing ZMQ log files: {}.".format(zmq_log_paths))
+                    byteps_comm_detail_path = preprocess_comm_timestamp(zmq_log_paths, ip_to_rank_dict, key_dict_path, gradient_name_list_path=gradient_name_list_path, platform=self.platform)
+                else:
+                    SingleLogger().error("Cannot find BytePS comm trace or pcap files.")
+                    exit(1)
+            else:
+                SingleLogger().info("Found BytePS comm trace file in {}.".format(byteps_comm_detail_path))
+            # read or generate BPS server trace
+            byteps_server_trace_path = self.pm.search(FileName.BPS_SERVER_TRACE)
+            if byteps_server_trace_path is None or force_:
+                # need to run preprocessing
+                if args_.server_log_path is None:
+                    SingleLogger().error("Cannot find BytePS server trace or raw log files.")
+                    exit(1)
+                log_fns = [fn for fn in os.listdir(args_.server_log_path) if os.path.isfile(os.path.join(args_.server_log_path,fn)) and fn.endswith(".txt")]
+                log_paths = [os.path.join(args_.server_log_path, fn) for fn in log_fns]
+                node_ranks = [int(fn.split(".txt")[0].split("_")[-1]) for fn in log_fns]
+                if self.platform == "MXNET":
+                    gradient_name_list_path = self.pm.search(FileName.TENSOR_NAME)
+                else:
+                    gradient_name_list_path = None
+                key_dict_path = self.pm.search(FileName.KEY_DICT)
+                SingleLogger().info("Parsing server log files: {}.".format(log_paths))
+                byteps_server_trace_path = parse_server_logs(log_paths, node_ranks, key_dict_path, gradient_name_list_path=gradient_name_list_path, platform=self.platform)
+            else:
+                SingleLogger().info("Found BytePS server trace file in {}".format(byteps_server_trace_path))
+            # initialize BytePS graph helper
+            self.byteps_graph.init(byteps_comm_detail_path, byteps_server_trace_path, van_type=args_.van_type)
 
     def clock_align(self, traces_list, host_ids):
         SingleLogger().info("Combine and align traces ...")
@@ -916,6 +976,7 @@ class Collector(object):
 
         if self.comm_backend == "NCCL" and not args_.pretty:
             self.nccl_graph.print_graph()
+        
         if self.comm_backend == "BYTEPS":
             rst_traces += self.byteps_graph.gen_compatible_trace(dump_path=os.path.join(self.pm.path, FileName.BPS_ALIGNED_TRACE.value))
 
@@ -998,75 +1059,9 @@ class Collector(object):
             nccl_graph_path = self.pm.search(FileName.NCCL_GRAPH)
         else:
             nccl_graph_path = None
-            byteps_cache_path = self.pm.search(FileName.BYTEPS_CACHE)
-            if byteps_cache_path is not None:
-                SingleLogger().info("Inited BytePS graph helper from cache.")
-                self.byteps_graph.init_from_cache(byteps_cache_path)
-            else:
-                SingleLogger().info("Unable to find BytePS cache file.")
-                # read or generate BPS comm_trace
-                byteps_comm_detail_path = self.pm.search(FileName.BPS_COMM_DETAIL)
-                if byteps_comm_detail_path is None or force_:
-                    # need to run preprocessing
-                    ip_to_rank_path = self.pm.search(FileName.IP_TO_RANK)
-                    ip_to_rank_dict = {}
-                    try:
-                        with open(ip_to_rank_path, "r") as f:
-                            for line in f:
-                                ip, rank = line.strip().split(":")
-                                ip = ip.strip()
-                                rank = rank.strip()
-                                ip_to_rank_dict[ip] = rank
-                    except:
-                        SingleLogger().error("Failed to read ip to rank mapping.")
-                        exit(1)
-                    
-                    if self.platform == "MXNET":
-                        gradient_name_list_path = self.pm.search(FileName.TENSOR_NAME)
-                    else:
-                        gradient_name_list_path = None
-
-                    key_dict_path = self.pm.search(FileName.KEY_DICT)
-
-                    if args_.pcap_file_path is not None:
-                        pcap_fns = [fn for fn in os.listdir(args_.pcap_file_path) if (os.path.isfile(os.path.join(args_.pcap_file_path,fn)) and fn.endswith(".pcap"))]
-                        pcap_paths = [os.path.join(args_.pcap_file_path, fn) for fn in pcap_fns]
-                        process_names = [fn.split(".pcap")[0] for fn in pcap_fns]
-                        SingleLogger().info("Preprocessing pcap files: {}.".format(pcap_paths))
-                        byteps_comm_detail_path = preprocess_pcap(pcap_paths, process_names, ip_to_rank_dict, key_dict_path, gradient_name_list_path=gradient_name_list_path, platform=self.platform)
-                    elif args_.zmq_log_path is not None:
-                        zmq_log_fns = [fn for fn in os.listdir(args_.zmq_log_path) if (os.path.isfile(os.path.join(args_.zmq_log_path,fn)) and fn.endswith(".log"))]
-                        zmq_log_paths = [os.path.join(args_.zmq_log_path, fn) for fn in zmq_log_fns]
-                        SingleLogger().info("Preprocessing ZMQ log files: {}.".format(zmq_log_paths))
-                        byteps_comm_detail_path = preprocess_comm_timestamp(zmq_log_paths, ip_to_rank_dict, key_dict_path, gradient_name_list_path=gradient_name_list_path, platform=self.platform)
-                    else:
-                        SingleLogger().error("Cannot find BytePS comm trace or pcap files.")
-                        exit(1)
-                else:
-                    SingleLogger().info("Found BytePS comm trace file in {}.".format(byteps_comm_detail_path))
-                # read or generate BPS server trace
-                byteps_server_trace_path = self.pm.search(FileName.BPS_SERVER_TRACE)
-                if byteps_server_trace_path is None or force_:
-                    # need to run preprocessing
-                    if args_.server_log_path is None:
-                        SingleLogger().error("Cannot find BytePS server trace or raw log files.")
-                        exit(1)
-                    log_fns = [fn for fn in os.listdir(args_.server_log_path) if os.path.isfile(os.path.join(args_.server_log_path,fn)) and fn.endswith(".txt")]
-                    log_paths = [os.path.join(args_.server_log_path, fn) for fn in log_fns]
-                    node_ranks = [int(fn.split(".txt")[0].split("_")[-1]) for fn in log_fns]
-                    if self.platform == "MXNET":
-                        gradient_name_list_path = self.pm.search(FileName.TENSOR_NAME)
-                    else:
-                        gradient_name_list_path = None
-                    key_dict_path = self.pm.search(FileName.KEY_DICT)
-                    SingleLogger().info("Parsing server log files: {}.".format(log_paths))
-                    byteps_server_trace_path = parse_server_logs(log_paths, node_ranks, key_dict_path, gradient_name_list_path=gradient_name_list_path, platform=self.platform)
-                else:
-                    SingleLogger().info("Found BytePS server trace file in {}".format(byteps_server_trace_path))
-                # initialize BytePS graph helper
-                self.byteps_graph.init(byteps_comm_detail_path, byteps_server_trace_path, van_type=args_.van_type)
-
-        ### TODO (huhanpeng) dump it or not
+            self._collect_bps_graph(force_)
+            
+        ### Collect metadata
         self.collect_para_dict()
 
         self.dag = wrap_read_gml(self.pm.search(FileName.DAG), self.para_dict)
@@ -1126,7 +1121,6 @@ class Collector(object):
         ### Fine tune the traces and dependency graph
         if self.comm_backend == "BYTEPS":
             self.byteps_graph.calc_bw_to_comm_delay(self.traceM.traces, self.trail_dag)
-        ### TODO (huhanpeng): does this adapt to BytePS ???
         self.add_avg_to_nodes()
         self.add_gap_to_nodes() 
         if self.comm_backend == "NCCL":
@@ -1275,8 +1269,9 @@ class Collector(object):
                 ### There are some prev events with the same pid and find-grained cat
                 prev_e = cur_pid_dict[cat_]
                 gap_string = GAP_STR_OP2OP if cat_ == CatName.OPERATOR.value else GAP_STR_COMM2COMM
-                if not "UPDATE_CAL" in prev_e["name"] and not "UPDATE_CAL" in event["name"] and not ("BW" in prev_e["name"] \
-                    and "UPDATE_" in event["name"]) and not ("UPDATE_" in prev_e["name"] and "FW_" in event["name"]) \
+                if not "UPDATE_CAL" in prev_e["name"] and not "UPDATE_CAL" in event["name"] and \
+                    not ("BW" in prev_e["name"] and "UPDATE_" in event["name"]) and \
+                    not ("UPDATE_" in prev_e["name"] and "FW_" in event["name"]) \
                     and "local_num_masks" not in prev_e["name"]:
                     gap = event["ts"] - (prev_e["ts"] + prev_e["dur"])
                     gap_threshold = GAP_THRESHOLD_COMP if gap_string == GAP_STR_OP2OP else GAP_THRESHOLD_COMM
@@ -1358,21 +1353,21 @@ class Collector(object):
                     ### RECV.ts = SEND.ts
                     send_event = self.traceM.traces[u_idx]
                     recv_event = self.traceM.traces[v_idx]
-                    how_much_less = 0
+                    how_much_less_in_ms = 0
                     if send_event["ts"] > recv_event["ts"]:
                         temp_dur = recv_event["dur"]
                         recv_event["dur"] = max(recv_event["dur"] - (send_event["ts"] - recv_event["ts"]), 0)
                         recv_event["ts"] = send_event["ts"]
-                        how_much_less = temp_dur - recv_event["dur"]
+                        how_much_less_in_ms = (temp_dur - recv_event["dur"]) / 1000.
                     if recv_dict is None:
                         recv_dict = {
                             "unique_name": self.traceM.ret_unique_name(recv_event),
                             "durs": [recv_event["dur"]],
-                            "less": how_much_less
+                            "less": how_much_less_in_ms
                         }
                     else:
                         recv_dict["durs"].append(recv_event["dur"])
-                        recv_dict["less"] += how_much_less
+                        recv_dict["less"] += how_much_less_in_ms
                 if recv_dict is not None:
                     name_ = recv_dict["unique_name"]
                     ### Update statistical information: name2sta
@@ -1382,6 +1377,8 @@ class Collector(object):
                     self.traceM.name2sta[recv_dict["unique_name"]]["var"] = sum(var_l) / len(var_l)
                     ### Update statistical information: cat2sta
                     if recv_dict["less"] != 0:
+                        SingleLogger().info(
+                            "Clip {} by {} ms".format(name_, recv_dict["less"]))
                         cat = parse_cat_fine_grained(name_)
                         self.traceM.cat2sta[cat]["time"] -= recv_dict["less"]
                         self.traceM.cat2sta[cat]["avg"] = self.traceM.cat2sta[cat]["time"] / self.traceM.cat2sta[cat]["cnt"]
@@ -1456,21 +1453,21 @@ class Collector(object):
                     ### RECV.ts = SEND.ts
                     send_event = self.traceM.traces[u_idx]
                     recv_event = self.traceM.traces[v_idx]
-                    how_much_less = 0
+                    how_much_less_in_ms = 0
                     if send_event["ts"] > recv_event["ts"]:
                         temp_dur = recv_event["dur"]
                         recv_event["dur"] = max(recv_event["dur"] - (send_event["ts"] - recv_event["ts"]), 0)
                         recv_event["ts"] = send_event["ts"]
-                        how_much_less = temp_dur - recv_event["dur"]
+                        how_much_less_in_ms = temp_dur - recv_event["dur"]
                     if recv_dict is None:
                         recv_dict = {
                             "unique_name": self.traceM.ret_unique_name(recv_event),
                             "durs": [recv_event["dur"]],
-                            "less": how_much_less
+                            "less": how_much_less_in_ms
                         }
                     else:
                         recv_dict["durs"].append(recv_event["dur"])
-                        recv_dict["less"] += how_much_less
+                        recv_dict["less"] += how_much_less_in_ms
                 if recv_dict is not None:
                     name_ = recv_dict["unique_name"]
                     ### Update statistical information: name2sta

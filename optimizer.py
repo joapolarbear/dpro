@@ -973,3 +973,100 @@ class MCTSOptimizer(Optimizer):
             return True
         else:
             return False
+
+
+class DPOptimizer(Optimizer):
+    def __init__(self, *args, **kwargs):
+        super(MCMCOptimizer, self).__init__(*args, **kwargs)
+    
+    def search(self, graph_cache=os.path.join(ROOT_PATH, "graph_cache.pickle")):
+
+        G = self.dag.copy()
+        PKG = PKGraph(G)
+
+        self.trajectory = []
+        ## load init checkpoint
+        G = None
+        for _cost_model in self.cst_md_mng.cost_model_list:
+            _G, _PKG, _trajectory = _cost_model.load_init_ckpt(G_prime=G)
+            if _G is not None:
+                G = _G
+            if _PKG is not None:
+                PKG = _PKG
+            self.trajectory += _trajectory
+        
+        ### load checkpoint
+        if args_.ckpt and graph_cache is not None and os.path.isfile(graph_cache):
+            ### TODO (hhp): need to guarantee the consistence of checkpoints of both cost models and DFG states
+            for _cost_model in self.cst_md_mng.cost_model_list:
+                _cost_model.load_ckpt()
+            with open(graph_cache, "rb") as f:
+                G, PKG, self.best_cost, self.best_strategy, self.best_step, self.step, self.trajectory = pickle.load(f)
+            SingleLogger().info("Loading checkpoint of step {}".format(self.step))
+            self.cur_cost, self.exct_dag, self.mem_usage = self.evaluate(
+                G, _path=os.path.join(ROOT_PATH, "searched_graph/init.json"))
+            self.cost_star = self.exct_dag_star = self.mem_usage_star = None
+        else:
+            self.cur_cost, self.exct_dag, self.mem_usage = self.evaluate(
+                G, _path=os.path.join(ROOT_PATH, "searched_graph/init.json"))
+            self.cost_star = self.exct_dag_star = self.mem_usage_star = None
+            self.best_cost = self.cur_cost
+            self.best_strategy = self.trajectory
+            self.best_step = 0
+            self.step = 0
+            self.trajectory = []
+            SingleLogger().info("No checkpoint found, search from scratch")
+
+        SingleLogger().info("="*20 + " Search Starts " + "="*20)
+        SingleLogger().info(bcolors.CGREEN + "Start to search, the original iteration time is %f, init cost is %f" %
+                            (self.base_cost, self.cur_cost) + bcolors.ENDC)
+
+        def display_and_ckpt():
+            SingleLogger().info(bcolors.CBLUE + "Step: %d - Current speedup to the origin: %6.4f %%" % (self.step,
+                                                                                                        100 * (self.base_cost - self.cur_cost) / self.base_cost) + bcolors.ENDC)
+            SingleLogger().info(bcolors.CBLUE + "Step: %d - Best speedup: %d th step, speed up to the origin: %6.4f %%" % (self.step,
+                                                                                                                           self.best_step, 100 * (self.base_cost - self.best_cost) / self.base_cost) + bcolors.ENDC + "\n")
+
+            with open(os.path.join(ROOT_PATH, "search_trajectory.txt"), "a") as f:
+                f.write(str(time.time()) + ": {},{},{}".format(
+                    self.step,
+                    100 * (self.base_cost - self.cur_cost) / self.base_cost,
+                    100 * (self.base_cost - self.best_cost) / self.base_cost) + "\n")
+
+            with open(os.path.join(ROOT_PATH, "best_strategy.txt"), "w") as f:
+                json.dump({"best_strategy": self.best_strategy}, f)
+
+            # if args_.ckpt:
+            ### Save checkpoints by default
+            for _cost_model in self.cst_md_mng.cost_model_list:
+                _cost_model.checkpoint()
+            with open(graph_cache, "wb") as f:
+                pickle.dump([G, PKG, self.best_cost, self.best_strategy, self.best_step, self.step, self.trajectory], f)
+
+        op_pair_list = self.ret_all_op_paris(...)
+        for _op_u, _op_v in op_pair_list:
+            op_u = self.current_op_in_graph(_op_u)
+            op_v = self.current_op_in_graph(_op_v)
+            best_cost, best_st, best_G, best_PKG = None, None, None, None
+            possible_strategies= self.all_possible_strategies(op_u, op_v)
+            for sts in possible_strategies:
+                G_star = G.copy()
+                PKG_star = PKG.copy()
+                _nodes_introduced, _nodes_removed = self.apply_strategies(
+                    G_star, PKG_star, sts)
+                _cost_star, _exct_dag_star, _mem_usage_star = self.evaluate(
+                    G_star)
+                if best_cost is None or _cost_star < best_cost:
+                    best_cost, best_st, best_G, best_PKG = _cost_star, sts, G_star, PKG_star
+            
+            G = best_G
+            PKG = best_PKG
+            self.trajectory += sts
+        
+        display_and_ckpt()
+        if "+" in self.cst_md_mng.strategy2model:
+            self.cst_md_mng.strategy2model["+"]._dump_cluster_mapping(
+                G, os.path.join(ROOT_PATH, "cluster_mapping.txt"), partition=True)
+
+        if "++" in self.cst_md_mng.strategy2model:
+            self.cst_md_mng.strategy2model["++"].dump_tensor_grp_mapping()

@@ -177,7 +177,9 @@ class Device:
                     ### For Send->Recv edge, there exist some overlap
                     ### TODO (huhanpeng): how do decide the end time of the RECV event
                     avg = self.replayer.dag.nodes[_succ]["avg"]
-                    _status["ready"] = _end_time
+                    gap = 0
+                    _status["ready"] = (
+                        _end_time + gap) if _status["ready"] is None else max(_end_time + gap, _status["ready"])
                 else:
                     ## For BYTEPS and Horovod, Only apply BW->Comm gaps
                     ## Other gaps should be considered with the device time.
@@ -710,8 +712,8 @@ class Replayer:
                     fused_size += tensor_size
                 SingleLogger().debug("Fused Tensor Size for {}: {} MB".format(op_name, fused_size / (1024.0 * 1024.0)))
             else:
-                if not single and "BW" in u and "UPDATE_" in v:
-                    raise ValueError(u, v)
+                # if not single and "BW" in u and "UPDATE_" in v:
+                #     raise ValueError(u, v)
                 wrap_add_edge(u, v)
         # _dag.add_edges_from(edges_to_add)
         for node_ in _dag.nodes():
