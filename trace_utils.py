@@ -410,13 +410,13 @@ class TraceManager:
             ### Add the `step` field
             if "step" not in event["args"]:
                 ### TODO (huhanpeng): Can this adapt to MXNet
-                if pid_info["time_cursor"] is None:
-                    pass
-                elif event["ts"] - pid_info["time_cursor"] - pid_info["time_base"] > ITER_GAP_LOWER_BOUND_US and \
-                        cat in AS_START_CAT and \
-                        pid_info["cat_cnt"]["operator.BW"] > 0 and \
-                        pid_info["cat_cnt"]["operator.UPDATE"] > 0:
-                    pid_info["step_cnt"] += 1
+                # if pid_info["time_cursor"] is None:
+                #     pass
+                # elif event["ts"] - pid_info["time_cursor"] - pid_info["time_base"] > ITER_GAP_LOWER_BOUND_US and \
+                #         cat in AS_START_CAT and \
+                #         pid_info["cat_cnt"]["operator.BW"] > 0 and \
+                #         pid_info["cat_cnt"]["operator.UPDATE"] > 0:
+                #     pid_info["step_cnt"] += 1
                 event["args"]["step"] = pid_info["step_cnt"]
             else:
                 ### For TensorFlow 2.4, step info is directly given the TF profiler
@@ -738,14 +738,13 @@ class BiasRange:
             return max(a, b) if is_max else min(a, b)
 
     def add_with_none(self, a, b):
-        if a is None:
-            return b
-        elif b is None:
-            return a
+        if a is None or b is None:
+            return None
         else:
             return a + b
 
     def __mul__(self, other):
+        ### intersection
         nl = self.max_min_with_none(self.l, other.l, is_max=True)
         nr = self.max_min_with_none(self.r, other.r, is_max=False)
         return BiasRange(nl, nr)

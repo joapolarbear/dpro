@@ -203,10 +203,15 @@ class Collector(object):
                         
                         ### Record dependency info to traces
                         innodes = [_n for _n, _ in self.dag.in_edges(name)]
-                        _args = {
-                            "name": name,
-                            "step": trace["args"]["group_id"]
-                        }
+                        try:
+                            _args = {
+                                "name": name,
+                                "step": trace["args"]["group_id"]
+                            }
+                        except:
+                            _args = {
+                                "name": name
+                            }
                         for i, _n in enumerate(innodes):
                             _args["input%d"%i] = _n
 
@@ -916,7 +921,7 @@ class Collector(object):
                     bias = self.byteps_graph.time_drift[host_id]
                 else:
                     bias = self.nccl_graph.time_drift[host_id]
-                SingleLogger().info("Align - add {} us to host {}".format(bias, host_id))
+                SingleLogger().info("Align - add {} us to host {}".format(bias, host_id))    
                 for trace in traces_list[idx]:
                     trace["ts"] += bias
             rst += traces_list[idx]
@@ -1122,26 +1127,23 @@ class Collector(object):
         if self.comm_backend == "BYTEPS":
             self.byteps_graph.calc_bw_to_comm_delay(self.traceM.traces, self.trail_dag)
         self.add_avg_to_nodes()
-        self.add_gap_to_nodes() 
+        self.add_gap_to_nodes()
+
+        # self.re_align_traces()
+
         if self.comm_backend == "NCCL":
             self.clip_recv_events()
 
-    def search_trace_with_cnt(self, longname, send_idx):
-        ### should not cansider suffix
-        return self.traceM.search_by_long_name(longname, send_idx + 1)
-
-    def re_align_traces(self, dag):
+    def re_align_traces(self):
         ''' Re-align traces according to the dependency info in dag.
         TODO (huhanpeng): 
         1. currently lower priority, since clock synchronization 
             will not bring much replay accuracy improvement
         2. Cost large amount of time for a large model, e.g. Bert
         '''
-        raise NotImplementedError("Do not support clock synchronization currently.")
+        raise NotImplementedError("Do not support clock synchronization currently."
+            "The drift may not be a constant, thus may conflict the constraints")
 
-        if self.nccl_graph.algo == NCCL_ALGO.TREE:
-            SingleLogger().warn("Trace name has not be solved, can not look up")
-            return
         ### bias based on each other
         align_table = dict([(host_id, {}) for host_id in self.nccl_graph.host_id2prefix.keys()])
         def display_align_table():
@@ -1150,12 +1152,10 @@ class Collector(object):
                 for _id, _range in _dict.items():
                     print("     based on %d: %s" % (_id, _range.displays()))
                     
-
         ### bias based on host0
         align_list = [None for host_id in self.nccl_graph.host_id2prefix.keys()]
-        for u, v in dag.edges:
-            if "Comm" in u and "SEND" in u:
-                assert "Comm" in v and "RECV" in v
+        for u, v in self.trail_dag.edges:
+            if "Comm" in u and "SEND" in u and "Comm" in v and "RECV" in v:
                 send_host = self.nccl_graph.ret_hostid(u)
                 recv_host = self.nccl_graph.ret_hostid(v)
 
@@ -1164,59 +1164,86 @@ class Collector(object):
                     continue
 
                 ### Find the corresponding traces
-                ### TODO (huhanpeng): only find one pair of traces
-                send_idx = recv_idx = -1
-                cnt = 0
-                while True:
-                    send_idx, send_trace = self.search_trace_with_cnt(u, send_idx)
-                    recv_idx, recv_trace = self.search_trace_with_cnt(v, recv_idx)
-                    if send_idx is None:
-                        break
-                    ### Find send trace and recv trace
-                    assert send_trace["args"]["cnt"] == recv_trace["args"]["cnt"]
-                    cnt += 1
-                    send_end_t = send_trace["ts"] + send_trace["dur"]
-                    recv_end_t = recv_trace["ts"] + recv_trace["dur"]
+                try:
+                    u_idx_l = self.traceM.map_name2idxlist(u)
+                    v_idx_l = self.traceM.map_name2idxlist(v)
+                except KeyError:
+                    continue
+                if u_idx_l is None or v_idx_l is None:
+                    ### some dag nodes do not appear in the traces
+                    continue
+                for cnt_ in range(self.traceM.max_step):
+                    u_idx, v_idx = u_idx_l[cnt_], v_idx_l[cnt_]
+                    if u_idx is None or v_idx is None:
+                        continue
+                    ### Given two servers A and B, t_A = t_B + theta
+                    ### If A is the sender, RB + theta > SA ==> theta > SA - RB
+                    ### If B is the sender, SB + theta < RA ==> theta < RA - SB
+                    send_event = self.traceM.traces[u_idx]
+                    recv_event = self.traceM.traces[v_idx]
+                    send_end_t = send_event["ts"] + send_event["dur"]
+                    recv_end_t = recv_event["ts"] + recv_event["dur"]
+                    
+                    if int(send_host) == 1 and int(recv_host) == 0:
+                        raise
+
                     if send_host > recv_host:
+                        ### Correspond to the  case of `B is the sender`, get a upper bound
                         if recv_host not in align_table[send_host]:
                             align_table[send_host][recv_host] = BiasRange(None, None)
+                            # align_table[send_host][recv_host] = {"upper": [], "lower": []}
                         ### (hostid=send_host)'s bias based on (rankid=recv_host)
-                        align_table[send_host][recv_host] *= BiasRange(None, recv_end_t - send_end_t)  
+                        align_table[send_host][recv_host] *= BiasRange(None, recv_end_t - send_end_t)
+                        # align_table[send_host][recv_host]["upper"].append((recv_end_t, recv_end_t - send_end_t))
                     else:
                         ### send_host < recv_host:
                         if send_host not in align_table[recv_host]:
                             align_table[recv_host][send_host] = BiasRange(None, None)
+                            # align_table[recv_host][send_host] = {"upper": [], "lower": []}
                         ### (hostid=send_host)'s bias based on (rankid=recv_host)
                         align_table[recv_host][send_host] *= BiasRange(send_end_t - recv_end_t, None)
-                    # print(send_trace)
-                    # print(recv_trace)
-                    # display_align_table()
-                    break
+                        # align_table[recv_host][send_host]["lower"].append((send_end_t, send_end_t - recv_end_t))
 
+        # with open("/home/tiger/bias_range.json", 'w') as fp:
+        #     json.dump(align_table, fp)
+        
+        # display_align_table()
         ### tidy up align table, calculate bias for all hostid based hostid=0
         def ret_bias_range_to_host0(_hostid):
             if _hostid == 0:
                 return BiasRange(0, 0)
-            range2host0 = BiasRange(None, None)
+            bias_range2host0 = BiasRange(None, None)
             for base_id, _range in align_table[_hostid].items():
-                ### Assume the bias of base_id is correct
-                range2host0 *= (_range + ret_bias_range_to_host0(base_id))
-            return range2host0
+                ### base_id < _hostid, and the bias based on rank0 of base_id has been cacluated
+                bias_range2host0 *= (_range + align_list[base_id])
+            return bias_range2host0
         
         for host_id in sorted(align_table.keys()):
             bias_range = ret_bias_range_to_host0(host_id)
-            SingleLogger().info("%d's bias range: %s" % (host_id, bias_range.displays()))
-            align_list[host_id] = bias_range.random_gen_value()
-
-        ### Apply these bias
-        for trace in self.traceM.traces:
-            ### For the original Horovod Communication traces, no need to align
-            ### TODO (huhanpeng): delte these traces
-            if "Comm." in trace["pid"]:
-                continue
-
-            host_id = self.nccl_graph.ret_hostid(trace["pid"])
-            trace["ts"] += align_list[host_id]
+            SingleLogger().info("[TIME ALIGN] %d's bias range: %s" % (host_id, bias_range.displays()))
+            align_list[host_id] = bias_range
+        
+        import cvxpy as cp
+        variables = [cp.Variable() for _ in range(len(align_list) - 1)]
+        obj = cp.sum_squares(cp.hstack(variables))
+        constraints = []
+        for idx, bias_range in enumerate(align_list[1:]):
+            if bias_range.l is not None:
+                constraints.append(variables[idx] >= bias_range.l)
+            if bias_range.r is not None:
+                constraints.append(variables[idx] >= bias_range.r)
+        prob = cp.Problem(cp.Minimize(obj), constraints)
+        prob.solve()
+        
+        if prob.status not in ["infeasible", "unbounded"]:
+            if self.nccl_graph is not None:
+                for host_id in range(1, len(align_list)):
+                    drift = float(variables[host_id-1].value)
+                    SingleLogger().info("[TIME ALIGN] Drift of {} to {} is {} us".format(host_id, 0, drift))
+                    self.nccl_graph.time_drift[host_id] = drift
+        else:
+            print("[TIME ALIGN] Problem is {}".format(prob.status))
+            exit(-1)
 
     def add_gap_to_nodes(self):
         ''' Add gaps for each node '''
@@ -1323,7 +1350,7 @@ class Collector(object):
                     gap = self.byteps_graph.comm_delays[(source, target)]
                     self.trail_dag.nodes[node_][GAP_STR_INTERNODE] = gap
 
-    def clip_recv_events(self):
+    def clip_recv_events(self, check_depd=False):
         SingleLogger().info("Clip RECV events...")
         for u, v in self.trail_dag.edges:
             if "I/O" in u:
@@ -1359,6 +1386,11 @@ class Collector(object):
                         recv_event["dur"] = max(recv_event["dur"] - (send_event["ts"] - recv_event["ts"]), 0)
                         recv_event["ts"] = send_event["ts"]
                         how_much_less_in_ms = (temp_dur - recv_event["dur"]) / 1000.
+
+                    if check_depd:
+                        if send_event["ts"] + send_event["dur"] > recv_event["ts"] + recv_event["dur"]:
+                            raise
+
                     if recv_dict is None:
                         recv_dict = {
                             "unique_name": self.traceM.ret_unique_name(recv_event),
@@ -1377,7 +1409,7 @@ class Collector(object):
                     self.traceM.name2sta[recv_dict["unique_name"]]["var"] = sum(var_l) / len(var_l)
                     ### Update statistical information: cat2sta
                     if recv_dict["less"] != 0:
-                        SingleLogger().info(
+                        SingleLogger().debug(
                             "Clip {} by {} ms".format(name_, recv_dict["less"]))
                         cat = parse_cat_fine_grained(name_)
                         self.traceM.cat2sta[cat]["time"] -= recv_dict["less"]
