@@ -311,7 +311,7 @@ class PSCommDevice(Device):
 
 class Replayer:
     def __init__(self, dag, _step_num, leaf_dirs, dump_path, comm_backend, byteps_graph, 
-                infi_para_update=False, show_queue=False):
+                infi_para_update=False, show_queue=False, recd_topo_order=False):
         self.dag = dag
         self.infi_para_update = infi_para_update
         # self.preprocess_dag()
@@ -336,6 +336,16 @@ class Replayer:
         self.show_queue = show_queue
         if not self.show_queue:	
             self.queue = []
+        
+        ### Decide whether to record the topological order
+        self.topo_ord = []
+        self.recd_topo_order = recd_topo_order
+
+        self.replay_done = False
+
+    def ret_topo_ord(self):
+        assert self.replay_done, "The DFG has not been replayed."
+        return self.topo_ord
 
     def preprocess_dag(self):
         if self.infi_para_update:
@@ -388,6 +398,8 @@ class Replayer:
             if self.pop_one_node_exec(step_idx) == 1:
                 break
         debug_utils.DebugRecorder().dump_traces(".")
+        
+        self.replay_done = True
 
     def pop_one_node_exec(self, step_idx):
         if self.show_queue:
@@ -396,8 +408,9 @@ class Replayer:
                 if len(device.queue) == 0:
                     continue
                 (n, t) = device.queue.pop(0)
-                if self.show_queue:
-                    self.record_queue_status(t)
+                if self.recd_topo_order:
+                    self.topo_ord.append(n)
+                self.record_queue_status(t)
                 device.exct(n, t, step_idx)
                 return 0
             return 1  ### no operators to execute
@@ -406,6 +419,8 @@ class Replayer:
                 return 1
             else:
                 (n, t) = self.queue.pop(0)
+                if self.recd_topo_order:
+                    self.topo_ord.append(n)
                 device = self.name2device(n)
                 device.exct(n, t, step_idx)
                 return 0
@@ -473,6 +488,8 @@ class Replayer:
         pid = parse_pid_from_name(n)
         cat = parse_cat_from_name(n)
         if cat == "Comm":
+            # if "SEND" in n or "RECV" in n:
+            #     device_id = gen_long_name(pid, cat)
             if "SEND" in n:
                 device_id = gen_long_name(pid, cat, "SEND")
             elif "RECV" in n:
@@ -540,6 +557,9 @@ class Replayer:
 
         ### Ininitalize the execution graph as the depdency graph
         self.exct_dag = self.dag.copy()
+
+        self.topo_ord = []
+        self.replay_done = False
 
     def dump_critical_path(self, file, critical_path, prefix=None):
         rst = {

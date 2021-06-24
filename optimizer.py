@@ -224,7 +224,7 @@ class Optimizer:
         else:
             return parse_op_name(name_), parse_pid_from_name(name_)
 
-    def evaluate(self, _dag, _path=None, _crit_filename=None):
+    def evaluate(self, _dag, _path=None, _crit_filename=None, recd_topo_order=False):
         # t = time.time()
         ### input _dag is a dependency graph, using the replayer to get the simulated traces and execution graph
         ### Return the iteration time and the execution graph
@@ -234,7 +234,9 @@ class Optimizer:
                             dump_path=self.clct.pm.path,
                             comm_backend=self.clct.comm_backend,
                             byteps_graph=self.clct.byteps_graph,
-                            infi_para_update=args_.update_infi_para)
+                            infi_para_update=args_.update_infi_para,
+                            recd_topo_order=recd_topo_order
+                            )
         step_end_time_ms = [t / 1000 for t in replayer.replayAndDelay(
             None, _output=_output, _path=_path, verbose=False).values()]
         # print("Evaluate time {}".format(time.time() - t))
@@ -248,8 +250,12 @@ class Optimizer:
         # critical_path = self.wrap_critical_path(replayer.exct_dag)
         # replayer.dump_critical_path("critical_path_{}.json".format(self.tmp_id), [n for (n, e) in critical_path])
         # self.tmp_id += 1
-
-        return max(step_end_time_ms), replayer.exct_dag, estimated_memory_usage
+        
+        ### Whether to record the topological order
+        if recd_topo_order:
+            return max(step_end_time_ms), replayer.exct_dag, estimated_memory_usage, replayer.ret_topo_ord()
+        else:
+            return max(step_end_time_ms), replayer.exct_dag, estimated_memory_usage
 
     def candidate_selection(self, GS, topk=None, critical_path=None):
         ''' Select nodes on the critical path of the execution graph as the candidates
@@ -383,9 +389,12 @@ class Optimizer:
                 SingleLogger().info("Estimated memory usage does not exceed memory budget: {:.2f}GB < {:.2f}GB".format(
                     self.mem_usage, self.memory_budget))
 
+            ### cm_start_end and cm_weight_dict are used to balance the weights across
+            ### different optimization passes
             cm_types = []
             cm_start_end = []
             cm_weight_dict = {}
+
             for _cost_model in self.cst_md_mng.cost_model_list:
                 if isinstance(_cost_model, XLAGraphPass):
                     model_type = "xla"
@@ -400,8 +409,9 @@ class Optimizer:
                 cm_weight_dict[model_type] = sum(wei_)
                 SingleLogger().info("Weight sum for {}: {}".format(model_type, sum(wei_)))
                 weights += wei_
-            # assign a specific portion to each strategy, according to step size
-            # TEMP: xla : tensor_fusion = 2:1
+
+            ### assign a specific portion to each strategy, according to step size
+            ### TEMP: xla : tensor_fusion = 2:1
             if len(cm_weight_dict) >= 2:
                 for idx, cm_type in enumerate(cm_types):
                     if cm_type == "xla":
@@ -978,6 +988,53 @@ class MCTSOptimizer(Optimizer):
 class DPOptimizer(Optimizer):
     def __init__(self, *args, **kwargs):
         super(MCMCOptimizer, self).__init__(*args, **kwargs)
+
+        ### Map from the original op to the current op in the DFG
+        ### E.g, a and b has been fused to be a+b, then there are two mappings, 
+        #   a -> a+b and b => a+b
+        ### Note the names of these ops are in the long op_long_name format (with pid)
+        ### See `current_op_in_graph`
+        self.op2cur_op = {}
+    
+    def current_op_in_graph(self, original_name) -> str:
+        return self.op2cur_op[original_name]
+    
+    def ret_all_comp_ops(self, topo_ord):
+        comp_ops = []
+        ref_pid = None
+        for node in topo_ord:
+            pid, std_name, cat, _ = parse_allinfo_from_name(node)
+            if ref_pid is None:
+                ref_pid = pid
+            if pid == ref_pid and cat == CatName.OPERATOR.value:
+                comp_ops.append(node)
+        return comp_ops
+    
+    def powerset(self, seq):
+        """
+            Returns all the subsets of this set. This is a generator.
+        """
+        if len(seq) <= 1:
+            yield []
+            yield seq
+        else:
+            for item in self.powerset(seq[1:]):
+                yield item
+                yield [seq[0]]+item
+                
+    def all_possible_strategies(self, op_u, op_v, G_star, PKG_star):
+        search_space, weights = self.init_search_space(
+            [op_u, op_v], G_star, PKG_star)
+        
+        rst_sts = []
+        for st_op, u, v in search_space:
+            if st_op == "+":
+                if u in [op_u, op_v] and v in [op_u, op_v]:
+                    rst_sts.append((st_op, u, v))
+                
+        ### If the search_space constains two strategies, s1 and s2
+        ### Return a combination of them, i.e., [s1, s2, [s1, s2]]
+        return self.powerset(rst_sts)
     
     def search(self, graph_cache=os.path.join(ROOT_PATH, "graph_cache.pickle")):
 
@@ -1001,14 +1058,20 @@ class DPOptimizer(Optimizer):
             for _cost_model in self.cst_md_mng.cost_model_list:
                 _cost_model.load_ckpt()
             with open(graph_cache, "rb") as f:
-                G, PKG, self.best_cost, self.best_strategy, self.best_step, self.step, self.trajectory = pickle.load(f)
+                G, PKG, self.best_cost, self.best_strategy, self.best_step, \
+                    self.step, self.trajectory, comp_ops_std, cur_comp_idx = pickle.load(f)
             SingleLogger().info("Loading checkpoint of step {}".format(self.step))
             self.cur_cost, self.exct_dag, self.mem_usage = self.evaluate(
                 G, _path=os.path.join(ROOT_PATH, "searched_graph/init.json"))
             self.cost_star = self.exct_dag_star = self.mem_usage_star = None
         else:
-            self.cur_cost, self.exct_dag, self.mem_usage = self.evaluate(
-                G, _path=os.path.join(ROOT_PATH, "searched_graph/init.json"))
+            self.cur_cost, self.exct_dag, self.mem_usage, topo_ord = self.evaluate(
+                G, _path=os.path.join(ROOT_PATH, "searched_graph/init.json"),
+                recd_topo_order=True)
+            
+            comp_ops = self.ret_all_comp_ops(topo_ord)
+            cur_comp_idx = 1
+
             self.cost_star = self.exct_dag_star = self.mem_usage_star = None
             self.best_cost = self.cur_cost
             self.best_strategy = self.trajectory
@@ -1041,15 +1104,30 @@ class DPOptimizer(Optimizer):
             for _cost_model in self.cst_md_mng.cost_model_list:
                 _cost_model.checkpoint()
             with open(graph_cache, "wb") as f:
-                pickle.dump([G, PKG, self.best_cost, self.best_strategy, self.best_step, self.step, self.trajectory], f)
+                pickle.dump([G, PKG, self.best_cost, self.best_strategy, self.best_step, 
+                             self.step, self.trajectory, comp_ops, cur_comp_idx], f)
 
-        op_pair_list = self.ret_all_op_paris(...)
-        for _op_u, _op_v in op_pair_list:
+        def update_comp_idx(strategy_rsts, cur_idx, comp_ops):
+            for sts, _nodes_introduced, _nodes_removed in strategy_rsts:
+                st_op, u, v = sts
+                if st_op == "+":
+                    assert u in _nodes_removed
+                    assert v in _nodes_removed
+                    pid = parse_pid_from_name(u)
+                    _nodes_introduced = [n for n in _nodes_introduced if parse_pid_from_name(n) == pid]
+                    assert len(_nodes_introduced) == 1, _nodes_introduced
+                    comp_ops.insert(cur_idx, _nodes_introduced[0])
+                    comp_ops.remove(u)
+                    comp_ops.remove(v)
+                    return cur_idx
+            return cur_idx + 1
+
+        while cur_comp_idx < len(comp_ops):
+            _op_u, _op_v = comp_ops[cur_comp_idx-1], comp_ops[cur_comp_idx]
             op_u = self.current_op_in_graph(_op_u)
             op_v = self.current_op_in_graph(_op_v)
-            best_cost, best_st, best_G, best_PKG = None, None, None, None
-            possible_strategies= self.all_possible_strategies(op_u, op_v)
-            for sts in possible_strategies:
+            best_cost, best_st, best_G, best_PKG = None, None, None, None 
+            for sts in self.all_possible_strategies(op_u, op_v, G_star, PKG_star):
                 G_star = G.copy()
                 PKG_star = PKG.copy()
                 _nodes_introduced, _nodes_removed = self.apply_strategies(
@@ -1057,11 +1135,14 @@ class DPOptimizer(Optimizer):
                 _cost_star, _exct_dag_star, _mem_usage_star = self.evaluate(
                     G_star)
                 if best_cost is None or _cost_star < best_cost:
-                    best_cost, best_st, best_G, best_PKG = _cost_star, sts, G_star, PKG_star
+                    best_cost, best_st, best_G, best_PKG = _cost_star, (sts, _nodes_introduced, _nodes_removed), G_star, PKG_star
             
             G = best_G
             PKG = best_PKG
-            self.trajectory += sts
+            self.trajectory += best_st[0]
+
+            cur_comp_idx = update_comp_idx(best_st, cur_comp_idx, comp_ops)
+            display_and_ckpt()
         
         display_and_ckpt()
         if "+" in self.cst_md_mng.strategy2model:
