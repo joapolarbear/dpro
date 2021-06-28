@@ -29,24 +29,26 @@ ROOT_PATH = os.path.join(
 class CostModelManager:
     def __init__(self, opt):
         self.cost_model_list = []
+        self.strategy2model = {}
         # if "amp" in args_.sub_option:
         #     self.cost_model_list.append(AMPGraphPass(opt))
         if "tensor_fusion" in args_.sub_option:
             self.cost_model_list.append(TensorFusionGraphPass(opt))
         if "xla" in args_.sub_option:
             self.cost_model_list.append(XLAGraphPass(opt, ROOT_PATH))
-        if len(self.cost_model_list) == 0:
-            SingleLogger().warn("No optimization techniques for computation. ")
-            # self.cost_model_list = [
-            #    XLAGraphPass(opt, ROOT_PATH),
-            #    AMPGraphPass(opt),
-            # ]
+        
         if "^memory" in args_.sub_option:
             self.mem_model_list = []
         else:
             self.cost_model_list.append(IncreasingBatchSizeCostModel(opt))
             self.mem_model_list = [MemoryGraphPass(opt)]
-        self.strategy2model = {}
+
+        if len(self.cost_model_list) + len(self.mem_model_list) == 0:
+            SingleLogger().error("No optimization techniques for computation. ")
+            # self.cost_model_list = [
+            #    XLAGraphPass(opt, ROOT_PATH),
+            #    AMPGraphPass(opt),
+            # ]
 
         ### Register Thoughput-oriented Cost Models
         for cm in self.cost_model_list:

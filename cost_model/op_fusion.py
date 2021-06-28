@@ -8,15 +8,17 @@ from tqdm import tqdm, trange
 
 import arg_utils
 from trace_utils import parse_cat_from_name, parse_pid_from_name, \
-    CatName, parse_cat_fine_grained, _parse_tf_layer_names, \
-    SingleLogger, GAP_STR_OP2OP, GAP_STR_OP2COMM, FileName
+    _map_tf_op2layer, parse_cat_fine_grained, _parse_tf_layer_names, \
+    gen_long_name, \
+    SingleLogger, GAP_STR_OP2OP, GAP_STR_OP2COMM, CatName, FileName
 from base import bcolors
 
 from cost_model.base import _BaseGraphPass, OptQueryCostModelError
 from cost_model._xla.utils import parse_xla_candidate_ops, IGNORE_OP_TYPES
 from cost_model._xla.pk_graph import PKGraph, contract_nodes_nx, \
     defuse_nodes_inplace_nx, postorder_contract_nx, \
-    subgraph_partition_connected_nx_using_topo, get_concated_names
+    subgraph_partition_connected_nx_using_topo, get_concated_names, \
+    contract_groups
 from cost_model._xla.xla_module_cost_model import XLAModuleCostModel
 
 args_ = arg_utils.SingleArg().args
@@ -71,6 +73,8 @@ class XLAGraphPass(_BaseGraphPass):
 
         self.expore_fusion = True
         self.enable_partition = True
+
+        self.cord_pid = "host0.rank0" if self.opt.clct.comm_backend == "NCCL" else "traces_0.rank0"
 
     def flush(self, is_accept):
         pass
@@ -143,8 +147,7 @@ class XLAGraphPass(_BaseGraphPass):
         for u, v in G.edges:
             if u == v:
                 continue
-            if (u.startswith("host0.rank0") and v.startswith("host0.rank0")) \
-                or (u.startswith("traces_0.rank0") and v.startswith("traces_0.rank0")):
+            if u.startswith(self.cord_pid) and v.startswith(self.cord_pid):
                 # we also remove FW -> UPDATE egdes here since now we have 
                 # removed communication nodes, postorder_contract will try to
                 # fuse UPDATE with FW
@@ -207,32 +210,43 @@ class XLAGraphPass(_BaseGraphPass):
         ''' Initialize the graph with a default operator fusion strategy
             By default, this function tries to fuse all operators and avoids cycles
         '''
-        # partition_G = G.copy()
-
         partition_G = self._reduce_nx_size(G)
         partition_PKG = PKGraph(partition_G)
 
         if args_.layer_by_layer:
-            source_nodes = sorted(
-                [node for node in partition_G.nodes if node not in self.forbidden_list and "Comm" not in node], key=lambda x: partition_G.in_degree(x))
-        else:
-            source_nodes = sorted(
-                [node for node in partition_G.nodes if node not in self.initial_forbidden_list and "Comm" not in node], key=lambda x: partition_G.in_degree(x))
+            # from dag_utils import part_of_dag
+            # node = "BW.gradient_tape/resnet50/conv2_block2_2_conv/Conv2D/ShapeN"
+            # node = "BW.gradient_tape/resnet50/conv5_block1_out/ReluGrad"
+            # small_dag = part_of_dag(self.opt.clct.dag, node,
+            #     max_in_depth=2, max_out_depth=2,
+            #     path = "/home/tiger/small_dag.txt")
+            # exit(0)
+            op2layer, layer2ops = _map_tf_op2layer(self.opt.clct.dag)
+            ### We will handle bw operators seperately, so add bw ops to initial_forbidden_list first
+            self.initial_forbidden_list.union([gen_long_name(self.cord_pid, bw_op) for bw_op in op2layer.keys()])
 
+        source_nodes = sorted(
+            [node for node in partition_G.nodes if 
+                node not in self.initial_forbidden_list and "Comm" not in node], 
+            key=lambda x: partition_G.in_degree(x))
         # Run post order traversal on partition_G
         visited_nodes = set()
         SingleLogger().info("Start to postorder_contract_nx ... ")
         for source in tqdm(source_nodes, total=len(source_nodes)):
             if source not in visited_nodes and source in partition_G.nodes:
-                if args_.layer_by_layer:
-                    _, _, partition_G = postorder_contract_nx(
-                        partition_G, partition_PKG, source, visited_nodes,
-                        forbidden_list=self.forbidden_list,
-                        layer_num_limit=1)
-                else:
-                    _, _, partition_G = postorder_contract_nx(
-                        partition_G, partition_PKG, source, visited_nodes,
-                        forbidden_list=self.initial_forbidden_list)
+                _, _, partition_G = postorder_contract_nx(
+                    partition_G, partition_PKG, source, visited_nodes,
+                    forbidden_list=self.initial_forbidden_list)
+        
+        print("host0.rank0->BW.gradient_tape/resnet50/conv5_block1_0_bn/FusedBatchNormGradV3" in partition_PKG.nx_graph.nodes)
+
+        if args_.layer_by_layer:
+            list_of_group = [[gen_long_name(self.cord_pid, n) for n in nodes_to_contract] for nodes_to_contract in layer2ops.values()]
+            partition_G = contract_groups(
+                partition_G, partition_PKG, 
+                forbidden_list=self.forbidden_list,
+                list_of_group = list_of_group)
+            exit(0)
 
         self._dump_cluster_mapping(partition_G, os.path.join(
                 self.root_path, "cluster_mapping_after_initialization.txt"))

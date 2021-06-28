@@ -32,6 +32,39 @@ def visualize_gml(graph, layout="circular"):
     # plot_instance = netgraph.InteractiveGraph(graph, node_positions=pos)
     # node_positions = plot_instance.node_positions
 
+def part_of_dag(dag, node, 
+    max_in_depth=2, max_out_depth=2, path=None):
+    ''' Return part of the dag, recursively add the predecessors
+        and the successors of `node`
+    '''
+    small_dag = nx.DiGraph()
+    edges_to_add = []
+
+    visited = set()
+
+    def recur_add(_node, _max_in_depth, _max_out_depth, _visited):
+        if _max_in_depth > 0:
+            for pred in dag.predecessors(_node):
+                if pred in _visited:
+                    continue
+                edges_to_add.append((pred, _node))
+                _visited.add(_node)
+                recur_add(pred, _max_in_depth-1, _max_out_depth, _visited)
+                _visited.remove(_node)
+        if _max_out_depth > 0:
+            for succ in dag.successors(_node):
+                if succ in _visited:
+                    continue
+                edges_to_add.append((_node, succ))
+                _visited.add(_node)
+                recur_add(succ, _max_in_depth, _max_out_depth-1, _visited)
+                _visited.remove(_node)
+    recur_add(node, max_in_depth, max_out_depth, visited)
+    small_dag.add_edges_from(edges_to_add)
+    if path is not None:
+        nx.drawing.nx_pydot.write_dot(small_dag, path)
+    return small_dag
+
 def cal_edge_cost(G):
     for u, v in G.edges:
         if "weight" in G.edges[u, v]:

@@ -27,11 +27,8 @@ class MCMCOptimizer(Optimizer):
 
     def search(self, graph_cache=os.path.join(ROOT_PATH, "graph_cache.pickle")):
         step_size = args_.step_size
-
-        G = self.dag.copy()
-        PKG = PKGraph(G)
-
         self.trajectory = []
+        
         ## load init checkpoint
         G = None
         for _cost_model in self.cst_md_mng.cost_model_list:
@@ -41,6 +38,9 @@ class MCMCOptimizer(Optimizer):
             if _PKG is not None:
                 PKG = _PKG
             self.trajectory += _trajectory
+        if G is None:
+            G = self.dag.copy()
+            PKG = PKGraph(G)
 
         ### load checkpoint
         if args_.ckpt and graph_cache is not None and os.path.isfile(graph_cache):

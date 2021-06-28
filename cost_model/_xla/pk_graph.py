@@ -438,7 +438,7 @@ class PKGraph(object):
             self.ord[L[i]] = all_orders[i]
 
 def postorder_contract_nx(_dag: nx.DiGraph, _pkg: PKGraph, source_node, visitied_nodes, 
-                          forbidden_list=None, size_limit=None, layer_num_limit=None):
+                          forbidden_list=None, size_limit=None):
     # print("postorder_contract_nx for {}".format(source_node))
     graph_changed_outer = False
     while True:
@@ -451,8 +451,7 @@ def postorder_contract_nx(_dag: nx.DiGraph, _pkg: PKGraph, source_node, visitied
                 new_node_name, graph_changed, _dag = postorder_contract_nx(
                     _dag, _pkg, node, visitied_nodes,
                     forbidden_list = forbidden_list,
-                    size_limit = size_limit,
-                    layer_num_limit = layer_num_limit
+                    size_limit = size_limit
                 )
                 if graph_changed:
                     should_break = False
@@ -467,15 +466,15 @@ def postorder_contract_nx(_dag: nx.DiGraph, _pkg: PKGraph, source_node, visitied
             if source_node in forbidden_list or succ in forbidden_list:
                 continue
         
-        ### fuse BW layer by layer
-        ### only operators in the same `layer_num_limit` layer(s) can be contracted
-        if layer_num_limit is not None and "BW" in source_node and "BW" in succ:
-            u_layer_names = _parse_tf_layer_names(source_node)
-            v_layer_names = _parse_tf_layer_names(succ)
-            fused_layer_names = set(u_layer_names).union(v_layer_names)
-            # print(set(u_layer_names), set(v_layer_names))
-            if len(fused_layer_names) > layer_num_limit:
-                continue
+        # ### fuse BW layer by layer
+        # ### only operators in the same `layer_num_limit` layer(s) can be contracted
+        # if layer_num_limit is not None and "BW" in source_node and "BW" in succ:
+        #     u_layer_names = _parse_tf_layer_names(source_node)
+        #     v_layer_names = _parse_tf_layer_names(succ)
+        #     fused_layer_names = set(u_layer_names).union(v_layer_names)
+        #     # print(set(u_layer_names), set(v_layer_names))
+        #     if len(fused_layer_names) > layer_num_limit:
+        #         continue
 
         if _pkg.can_contract_edge(source_node, succ):
             succ_size = len(succ.split("+"))
@@ -487,3 +486,16 @@ def postorder_contract_nx(_dag: nx.DiGraph, _pkg: PKGraph, source_node, visitied
             self_size = self_size + succ_size
             graph_changed_outer = True
     return source_node, graph_changed_outer, _dag
+
+def contract_groups(_dag: nx.DiGraph, _pkg: PKGraph, forbidden_list=None, list_of_group=None):
+    for nodes_to_contract in list_of_group:
+        if forbidden_list is not None:
+            nodes_to_contract = [n for n in nodes_to_contract if n not in forbidden_list]
+        if len(nodes_to_contract) < 2:
+            continue
+
+        # print(nodes_to_contract)
+
+        _pkg.contract_nodes_unsafe(nodes_to_contract)
+        new_node_name = contract_nodes_nx(_dag, nodes_to_contract)
+    return _dag

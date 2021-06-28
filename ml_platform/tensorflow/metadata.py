@@ -395,7 +395,7 @@ class MetaInfo:
         else:
             if self.update_nodes_in_dag is not None and _name in self.update_nodes_in_dag:
                 _name = "UPDATE_." + _name
-            elif _name.startswith("gradients") or _name.startswith("gradient_tape"):
+            elif _name.startswith("gradients") or "gradient_tape" in _name:
                 _name = "BW." + _name
             else:
                 _name = "FW." + _name

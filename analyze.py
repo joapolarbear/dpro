@@ -342,7 +342,7 @@ if __name__ == '__main__':
             with open(path_list[1].split(".txt")[0] + "_tensor_grp.txt", 'w') as f:
                 json.dump({"mapping": list(tensor_grps)}, f)
             exit(0)
-                    
+        
         if args.optimizer == "MCTS":
             from optimizer.mcts import MCTSOptimizer
             opt = MCTSOptimizer(clct)

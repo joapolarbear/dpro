@@ -166,24 +166,133 @@ def _parse_tf_layer_names(name):
         for _name in name.split("+"):
             layer_names += _parse_tf_layer_names(_name)
         return layer_names
-    op_name_split = parse_op_name(name).split("/")
-    op_type = "FW"
-    idx = 0
-    if op_name_split[idx] == "gradients" or op_name_split[idx] == "gradient_tape":
-        op_type = "BW"
-        idx += 1
-    if op_name_split[idx].lower() in ["inception_v3", "resnet50", "vgg16", "bert"]:
-        idx += 1
+    op_type = None
+    try:
+        op_type = parse_cat_fine_grained(name)
+        name = parse_op_name(name)
+    except ValueError:
+        pass
+    if op_type is None:
+        op_name_split = parse_op_name(name).split("/")
+        op_type = "FW"
+        idx = 0
+        if op_name_split[idx] == "gradients" or op_name_split[idx] == "gradient_tape":
+            op_type = "BW"
+            idx += 1
+        if op_name_split[idx].lower() in ["inception_v3", "resnet50", "vgg16", "bert"]:
+            idx += 1
 
-    if idx >= len(op_name_split) - 2:
-        layer_names.append("{}.{}".format(op_type, op_name_split[idx]))
-    elif op_name_split[idx-1].lower() == "bert":
-        layer_names.append(
-            "{}.{}/{}".format(op_type, op_name_split[idx], op_name_split[idx+1]))
-    else:
-        layer_names.append("{}.{}".format(op_type, op_name_split[idx]))
+        if idx >= len(op_name_split) - 2:
+            layer_names.append("{}.{}".format(op_type, op_name_split[idx]))
+        elif op_name_split[idx-1].lower() == "bert":
+            layer_names.append(
+                "{}.{}/{}".format(op_type, op_name_split[idx], op_name_split[idx+1]))
+        else:
+            layer_names.append("{}.{}".format(op_type, op_name_split[idx]))
     return layer_names
+
+def _try_to_parse_tf_layer(name):
+    ''' Try to parse tensorlow op's layer
+        * Only for BW ops in the main skeleton
+        * Based on empirical knowledge, may be error-prone
+    '''
+    assert "+" not in name
+    op_type = parse_cat_fine_grained(name)
+    name = parse_op_name(name)
+    if op_type in ["operator.FW", "operator.UPDATE"] or "Comm" in op_type:
+        return op_type
+    elif op_type == "operator.BW":
+        op_name_split = parse_op_name(name).split("/")
+        if "resnet50" in op_name_split:
+            return "BW." + op_name_split[op_name_split.index("resnet50")+1]
+        else:
+            return "BW." + "none"
+    else:
+        raise ValueError(name, op_type)
+
+def _map_tf_op2layer(local_dfg):
+    op2layer = {}
+    layer2ops = {}
+
+    todo = set()
+
+    def same_layer(bw_u, bw_v):
+        if "FW" in bw_v:
+            return False
+        _layer_u, _layer_v = _try_to_parse_tf_layer(bw_u), _try_to_parse_tf_layer(bw_v)
+        if "BW" in _layer_u and "BW" in _layer_v and "none" not in _layer_u and "none" not in _layer_v:
+            if "_" in _layer_u and "_" in _layer_v \
+                and _layer_u.split("_")[:-1] == _layer_v.split("_")[:-1]:
+                return True
+            if  _layer_u != _layer_v:
+                return False
+        return True
+
+    def recur_parse_layer(bw_op, visited_set = set()):
+        # print(bw_op, visited_set)
+        layer = None
+        for succ in local_dfg.successors(bw_op):
+            if (visited_set and succ in visited_set) or not same_layer(bw_op, succ):
+                continue
+            if "Comm" in succ:
+                layer = succ.split("Comm.")[1]               
+            elif succ in op2layer:
+                layer = op2layer[succ]
+            else:
+                visited_set.add(bw_op)
+                layer = recur_parse_layer(succ, visited_set = visited_set)
+                visited_set.remove(bw_op)
+            
+            if layer:
+                break
+        
+        if layer is None:
+            for pred in local_dfg.predecessors(bw_op):
+                if (visited_set and pred in visited_set) or not same_layer(bw_op, pred):
+                    continue            
+                if pred in op2layer:
+                    layer = op2layer[pred]
+                else:            
+                    visited_set.add(bw_op)
+                    layer = recur_parse_layer(pred, visited_set = visited_set)
+                    visited_set.remove(bw_op)
+                
+                if layer:
+                    break
+
+        if layer:
+            for _op in [bw_op] + list(visited_set):
+                op2layer[_op] = layer
+                if _op in todo:
+                    todo.remove(_op)
+                if layer not in layer2ops:
+                    layer2ops[layer] = set()
+                layer2ops[layer].add(_op)
+                # if _op == "BW.gradient_tape/resnet50/conv5_block1_0_conv/Conv2D/Conv2DBackpropInput":
+                # if _op == "BW.gradient_tape/resnet50/conv4_block6_out/ReluGrad":
+                #     print(bw_op, list(local_dfg.successors(bw_op)))
+                #     print(list(local_dfg.predecessors(bw_op)))
+                #     print(todo_set)
+        else:
+            todo.add(bw_op)
+        return layer
+
+    for node in local_dfg.nodes:
+        if not "BW" in node:
+            continue
+        recur_parse_layer(node)
     
+    if len(todo) > 0:
+        # import code
+        # code.interact(local=locals())
+        for op in todo:
+            if op not in layer2ops:
+                layer2ops[op] = []
+            layer2ops[op].append(op)
+            op2layer[op] = op 
+        SingleLogger().warn("Fail to parse layer names for {} BW operators.".format(len(todo)))
+    return op2layer, layer2ops
+
 def parse_cat_from_name(name):
     if "I/O" in name:
         return CatName.IO.value
