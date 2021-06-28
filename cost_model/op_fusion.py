@@ -24,7 +24,6 @@ XLA_INIT_NO_BW = True
 FUSION_TIME_ESTIMATE_RATIO = 0.8
 FORCE_ESTIMATE_FUSION_TIME = False
 ENABLE_PRUNING = False
-ROOT_PATH = os.path.join(args_.workspace if args_.workspace else args_.path, ".opt_ws")
 
 class AttrCache():
     def __init__(self):
@@ -54,8 +53,10 @@ class AttrCache():
 
 
 class XLAGraphPass(_BaseGraphPass):
-    def __init__(self, opt):
+    def __init__(self, opt, root_path):
         super().__init__(opt)
+        self.root_path = root_path
+
         if not args_.simulate:
             self.cost_models = self._load_cm()
         self.forbidden_list = set()
@@ -64,9 +65,12 @@ class XLAGraphPass(_BaseGraphPass):
         self.token = ["+", "-"]
 
         ### Need to cache
-        self.ckpt_path = os.path.join(ROOT_PATH, "xla_ckpt.pickle")
+        self.ckpt_path = os.path.join(self.root_path, "xla_ckpt.pickle")
         ### Used to cache the node attribtue
         self.node_attr_cache = AttrCache()
+
+        self.expore_fusion = True
+        self.enable_partition = True
 
     def flush(self, is_accept):
         pass
@@ -74,7 +78,7 @@ class XLAGraphPass(_BaseGraphPass):
     def load_init_ckpt(self, G_prime=None):
         ''' Other cost model may initialize the DFG, init DFG based on that
         '''
-        init_ckpt_path = os.path.join(ROOT_PATH, "xla_init_ckpt.pickle")
+        init_ckpt_path = os.path.join(self.root_path, "xla_init_ckpt.pickle")
         trajectory = []
         if os.path.isfile(init_ckpt_path):
             with open(init_ckpt_path, "rb") as f:
@@ -126,7 +130,7 @@ class XLAGraphPass(_BaseGraphPass):
         models_dir = os.path.join(os.path.dirname(os.path.abspath(
             __file__)), "_xla/.cost_model")
 
-        cost_model_tmp_dir = os.path.join(ROOT_PATH, "cost_model_tmp")
+        cost_model_tmp_dir = os.path.join(self.root_path, "cost_model_tmp")
         if not os.path.exists(cost_model_tmp_dir):
             os.makedirs(cost_model_tmp_dir)
         SingleLogger().info("Searching for XLA Cost Model dumps in {}".format(models_dir))
@@ -188,7 +192,7 @@ class XLAGraphPass(_BaseGraphPass):
                         layer_num_limit = _layer_num_limit
                     )
             self._dump_cluster_mapping(partition_G, os.path.join(
-                ROOT_PATH, "cluster_mapping_layer_num_limit_{}.txt".format(_layer_num_limit)))
+                self.root_path, "cluster_mapping_layer_num_limit_{}.txt".format(_layer_num_limit)))
             
             G_copy = G.copy()
             PKG_copy = PKG.copy()
@@ -197,7 +201,7 @@ class XLAGraphPass(_BaseGraphPass):
             SingleLogger().info(bcolors.CYELLOWBG +
                                 "_layer_num_limit: {} ==> cost: {}".format(_layer_num_limit, cost) + bcolors.ENDC)
 
-        SingleLogger().info("Done. Strategies are stored at {}".format(ROOT_PATH))
+        SingleLogger().info("Done. Strategies are stored at {}".format(self.root_path))
 
     def _init_partition(self, G, PKG):
         ''' Initialize the graph with a default operator fusion strategy
@@ -231,7 +235,7 @@ class XLAGraphPass(_BaseGraphPass):
                         forbidden_list=self.initial_forbidden_list)
 
         self._dump_cluster_mapping(partition_G, os.path.join(
-                ROOT_PATH, "cluster_mapping_after_initialization.txt"))
+                self.root_path, "cluster_mapping_after_initialization.txt"))
 
         SingleLogger().info("Start to init partition graph ... ")
         return self._create_clusters(G, PKG, partition_G)
@@ -433,6 +437,17 @@ class XLAGraphPass(_BaseGraphPass):
 
         return True
 
+    def init_search_space_by_nodes(self, preds, node, _pkg):
+        search_space = []
+        if not self._wrap_xla_need_fuse(node):
+            return []
+        
+        for pred in preds:
+            if self._wrap_xla_need_fuse(pred) and self._wrap_can_fuse_to_b(_pkg, pred, node):
+                search_space.append(("+", pred, node))
+
+        return search_space
+
     def init_search_space(self, candidates, _dag: nx.DiGraph, _pkg: PKGraph):
         ### Based on the candidates, init the search space for the new dependency graph `_dag`
         ### TODO (huhanpeng): currently only consider fusion
@@ -453,7 +468,7 @@ class XLAGraphPass(_BaseGraphPass):
             if "Comm" in n:
                 continue
 
-            if "+" in n:
+            if "+" in n and self.enable_partition:
                 ### This a fused node
                 if args_.layer_by_layer and "FW" in n and "BW" not in n:
                     continue
@@ -653,6 +668,9 @@ class XLAGraphPass(_BaseGraphPass):
                     nodes_to_add.append(u__+"+"+v__)
                     nodes_to_remove += [u__, v__]
                 
+                if not self.expore_fusion:
+                    break
+
                 is_end = True
                 if avg > self._get_node_avg(u_) + self._get_node_avg(v_):
                     succs = [s for s in _dag.successors(

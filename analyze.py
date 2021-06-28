@@ -346,9 +346,11 @@ if __name__ == '__main__':
             exit(0)
                     
         if args.optimizer == "MCTS":
-            opt = optimizer.MCTSOptimizer(clct)
+            opt = optimizer.mcts.MCTSOptimizer(clct)
         elif args.optimizer == "MCMC":
-            opt = optimizer.MCMCOptimizer(clct)
+            opt = optimizer.mcmc.MCMCOptimizer(clct)
+        elif args.optimizer == "DP":
+            opt = optimizer.dp.DPOptimizer(clct)
         else:
             raise ArgumentError("Unrecognized optimizer type {}.".format(args.optimizer))
         opt.search()

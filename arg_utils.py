@@ -55,7 +55,7 @@ group_replay.add_argument("--show_queue", action="store_true", help="If this arg
 
 ### Optimize
 group_opt = parser.add_argument_group('Optimal Strategies Search')
-group_opt.add_argument("--optimizer", type=str, default="MCMC", choices=["MCTS", "MCMC"], help="The algorithm used to search the optimal optimzation strategy")
+group_opt.add_argument("--optimizer", type=str, default="MCMC", choices=["MCTS", "MCMC", "DP"], help="The algorithm used to search the optimal optimzation strategy")
 group_opt.add_argument("--ucb_type", type=str, default="AVG", choices=["MAX", "AVG"], help="The type of quanlity value used in the UCB euqation")
 group_opt.add_argument("--no_mutation", action="store_true", help="If this arg is set, the default policy of MCTS will not rollout")
 group_opt.add_argument("--ucb_gamma", type=float, default=0.1, help="Hyper Parameter used in UCB to control the exploration rate.")
