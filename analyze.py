@@ -20,8 +20,6 @@ from replay import Replayer
 from base import bcolors
 
 import debug_utils
-if args.option == "optimize":
-    import optimizer
 
 QueueType("NCCL")
 debug_utils.DebugRecorder(is_enable=args.debug_traces)
@@ -346,11 +344,14 @@ if __name__ == '__main__':
             exit(0)
                     
         if args.optimizer == "MCTS":
-            opt = optimizer.mcts.MCTSOptimizer(clct)
+            from optimizer.mcts import MCTSOptimizer
+            opt = MCTSOptimizer(clct)
         elif args.optimizer == "MCMC":
-            opt = optimizer.mcmc.MCMCOptimizer(clct)
+            from optimizer.mcmc import MCMCOptimizer
+            opt = MCMCOptimizer(clct)
         elif args.optimizer == "DP":
-            opt = optimizer.dp.DPOptimizer(clct)
+            from optimizer.dp import DPOptimizer
+            opt = DPOptimizer(clct)
         else:
             raise ArgumentError("Unrecognized optimizer type {}.".format(args.optimizer))
         opt.search()
