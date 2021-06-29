@@ -291,6 +291,7 @@ def _map_tf_op2layer(local_dfg):
             layer2ops[op].append(op)
             op2layer[op] = op 
         SingleLogger().warn("Fail to parse layer names for {} BW operators.".format(len(todo)))
+    SingleLogger().info("Parse {} BW layers.".format(len(layer2ops)))
     return op2layer, layer2ops
 
 def parse_cat_from_name(name):

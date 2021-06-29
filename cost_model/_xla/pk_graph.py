@@ -27,15 +27,7 @@ def get_all_pred_succ_nx(_dag: nx.DiGraph, nodes_to_contract):
     return all_predecessors, all_successors, new_node_name
 
 def get_concated_names(components):
-    component_names = []
-    for idx, component in enumerate(components):
-        component_name = ""
-        for node_idx, node in enumerate(component):
-            component_name += node
-            if node_idx != len(component) - 1:
-                component_name += "+"
-        component_names.append(component_name)
-    return component_names
+    return ["+".join(component) for component in components]
 
 def defuse_nodes_inplace_nx(_dag: nx.DiGraph, pkg, target, components, 
                             succ_override=None, pred_override=None):
@@ -136,7 +128,6 @@ def subgraph_partition_connected_nx_using_topo(subgraph, size=100, layer_by_laye
     split_plans = set()
     topo_order_nodes = list(nx.topological_sort(subgraph))
    
-    
     valid_split_point = []
     for idx, node in enumerate(topo_order_nodes):
         if idx == 0:

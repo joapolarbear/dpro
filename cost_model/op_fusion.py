@@ -3,6 +3,7 @@ import networkx as nx
 from scipy.stats.mstats import gmean
 import numpy as np
 import pickle
+import itertools
 
 from tqdm import tqdm, trange
 
@@ -76,6 +77,9 @@ class XLAGraphPass(_BaseGraphPass):
 
         self.cord_pid = "host0.rank0" if self.opt.clct.comm_backend == "NCCL" else "traces_0.rank0"
 
+        self.init_dfg = None
+        self.init_op2fused = None
+
     def flush(self, is_accept):
         pass
 
@@ -86,7 +90,8 @@ class XLAGraphPass(_BaseGraphPass):
         trajectory = []
         if os.path.isfile(init_ckpt_path):
             with open(init_ckpt_path, "rb") as f:
-                G, PKG, node_attr_cache, initial_partitions_formed, self.forbidden_list = pickle.load(
+                G, PKG, node_attr_cache, initial_partitions_formed, \
+                    self.forbidden_list, self.init_op2fused = pickle.load(
                     f)
                 self.node_attr_cache = node_attr_cache
             SingleLogger().info("Reading init graph from cache.")
@@ -108,7 +113,7 @@ class XLAGraphPass(_BaseGraphPass):
             G, initial_partitions_formed = self._init_partition(G, PKG)
             with open(init_ckpt_path, "wb") as f:
                 pickle.dump([G, PKG, self.node_attr_cache, initial_partitions_formed,
-                             self.forbidden_list], f)
+                             self.forbidden_list, self.init_op2fused], f)
             SingleLogger().info("Graph cache dumped to {}.".format(init_ckpt_path))
 
         if "BPF_DUMP_INIT_CLUSTER_TO" in os.environ:
@@ -116,6 +121,7 @@ class XLAGraphPass(_BaseGraphPass):
         SingleLogger().info("Successfully initialized {} partitions.".format(initial_partitions_formed))
 
         # self._check_dag_avg(G)
+        self.init_dfg = G.copy()
 
         return G, PKG, trajectory
 
@@ -238,15 +244,12 @@ class XLAGraphPass(_BaseGraphPass):
                     partition_G, partition_PKG, source, visited_nodes,
                     forbidden_list=self.initial_forbidden_list)
         
-        print("host0.rank0->BW.gradient_tape/resnet50/conv5_block1_0_bn/FusedBatchNormGradV3" in partition_PKG.nx_graph.nodes)
-
         if args_.layer_by_layer:
             list_of_group = [[gen_long_name(self.cord_pid, n) for n in nodes_to_contract] for nodes_to_contract in layer2ops.values()]
             partition_G = contract_groups(
                 partition_G, partition_PKG, 
                 forbidden_list=self.forbidden_list,
                 list_of_group = list_of_group)
-            exit(0)
 
         self._dump_cluster_mapping(partition_G, os.path.join(
                 self.root_path, "cluster_mapping_after_initialization.txt"))
@@ -265,7 +268,6 @@ class XLAGraphPass(_BaseGraphPass):
             
             if "+" in node_name:
                 # fused node, test if compilable
-                # print("hhp: {}".format(node_name))
                 try:
                     avg = self._get_node_avg(node_name, verbose=False)
                     self._parse_node_attr(partition_G, node_name, avg)
@@ -281,6 +283,11 @@ class XLAGraphPass(_BaseGraphPass):
                         ### we directly use the fused time of the first GPU for all GPUs' fused nodes
                         self._parse_node_attr(G, new_node_name, avg) # type: ignore
                         initial_partitions_formed += 1
+                        if args_.layer_by_layer:
+                            if self.init_op2fused is None:
+                                self.init_op2fused = {}
+                            for op in ns:
+                                self.init_op2fused[op] = new_node_name
         return G, initial_partitions_formed
 
     def _init_forbidden_list(self, G_prime=None):
@@ -300,7 +307,6 @@ class XLAGraphPass(_BaseGraphPass):
             if not should_ignore:
                 filtered_xla_candidates.add(op)
         
-
         dag = self.dag if G_prime is None else G_prime
         for node in dag.nodes:
             # ignore BW nodes and communication nodes
@@ -489,21 +495,28 @@ class XLAGraphPass(_BaseGraphPass):
                 ns = n.split("+")
                 cat = parse_cat_fine_grained(ns[0])
                 pid = parse_pid_from_name(ns[0])
-                ns = set(ns)
-                subgraph = self.dag.subgraph(ns)
+                if args_.layer_by_layer:
+                    ### enforce that layer is the minimun unit
+                    ns = set([self.init_op2fused.get(op, op) for op in ns])
+                    subgraph = self.init_dfg.subgraph(ns)
+                else:
+                    ns = set(ns)
+                    subgraph = self.dag.subgraph(ns)
 
-                # randomly split edges using spanning tree
-                ### a list of tupe(nodes_in_a, nodes_in_b)
-                valid_split_plans = subgraph_partition_connected_nx_using_topo(
-                    subgraph, layer_by_layer=args_.layer_by_layer)
-                split_weights = []
-                for splits in valid_split_plans:
-                    split_weights.append(gmean([len(nodes) for nodes in splits]))
-                split_weights = np.exp(5e-4*(len(ns) - 80)) * (np.array(split_weights) / np.sum(split_weights))
-                for split_index, splits in enumerate(valid_split_plans):
-                    search_space.append(("-", n, splits))
-                    defusion_cnt += 1
-                    weights.append(self.opt._combine_weight(l, 1 / (heat + 1) - 1) * split_weights[split_index])
+                if len(ns) > 1:
+                    # randomly split edges using spanning tree
+                    ### a list of tupe(nodes_in_a, nodes_in_b)
+                    valid_split_plans = subgraph_partition_connected_nx_using_topo(subgraph)
+                    split_weights = []
+                    for splits in valid_split_plans:
+                        split_weights.append(gmean([len(nodes) for nodes in splits]))
+                    split_weights = np.exp(5e-4*(len(ns) - 80)) * (np.array(split_weights) / np.sum(split_weights))
+                    for split_index, splits in enumerate(valid_split_plans):
+                        if args_.layer_by_layer:
+                            splits = [list(itertools.chain(*[n.split("+") for n in nodes])) for nodes in splits]
+                        search_space.append(("-", n, splits))
+                        defusion_cnt += 1
+                        weights.append(self.opt._combine_weight(l, 1 / (heat + 1) - 1) * split_weights[split_index])
             else:
                 ### Nodes that have never been fused
                 cat = parse_cat_fine_grained(n)
@@ -636,7 +649,7 @@ class XLAGraphPass(_BaseGraphPass):
             nx.set_node_attributes(_dag, {new_name: self.node_attr_cache[new_name]})
             # _dag.add_node(new_name, **self.node_attr_cache[new_name])
         else:
-            ns = new_name.split("+")
+            ns = self._get_defused_node_names(new_name)
             attrs = self.node_attr_cache[ns[0]].copy()
             for idx in range(1, len(ns)):
                 self._combine_attr_except_avg(attrs, attrs, self.node_attr_cache[ns[idx]])
