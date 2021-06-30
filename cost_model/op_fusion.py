@@ -4,13 +4,13 @@ from scipy.stats.mstats import gmean
 import numpy as np
 import pickle
 import itertools
-
+import json
 from tqdm import tqdm, trange
 
 import arg_utils
 from trace_utils import parse_cat_from_name, parse_pid_from_name, \
     _map_tf_op2layer, parse_cat_fine_grained, _parse_tf_layer_names, \
-    gen_long_name, \
+    gen_long_name, parse_op_name, \
     SingleLogger, GAP_STR_OP2OP, GAP_STR_OP2COMM, CatName, FileName
 from base import bcolors
 
@@ -122,6 +122,25 @@ class XLAGraphPass(_BaseGraphPass):
 
         # self._check_dag_avg(G)
         self.init_dfg = G.copy()
+
+        if not args_.pretty:
+            ### Debug, check subgraph
+            check_dag = nx.DiGraph()
+            nodes = [n for n in self.init_dfg if "host0.rank0" in n and ("BW" in n or ("Comm" in n and "Sync" in n))]
+            sub_dag = self.init_dfg.subgraph(nodes)
+            def relabel_func(old_label):
+                idx = nodes.index(old_label)
+                prefix = "BW." if "BW" in old_label else "Comm."
+                return "{}{}".format(prefix, idx)
+            sub_dag = nx.relabel_nodes(sub_dag, relabel_func)
+            nx.drawing.nx_pydot.write_dot(sub_dag, "/home/tiger/small_dag.txt")
+            with open("/home/tiger/small_dag_idmapping.txt", 'w') as fp:
+                json.dump(dict(enumerate(nodes)), fp, indent=4)
+
+        ### Dump the default tensor fusion pattern
+        comm_set = set([parse_op_name(n) for n in self.init_dfg.nodes if "Comm" in n and self.cord_pid in n])
+        with open(os.path.join(self.root_path, "tensor_grp.json"), 'w') as fp:
+            json.dump({"mapping": list(comm_set)}, fp, indent=4)
 
         return G, PKG, trajectory
 
