@@ -2,7 +2,6 @@ from random import sample
 import networkx as nx
 import random
 
-import arg_utils
 from trace_utils import _parse_tf_layer_names, parse_op_name
 from cost_model._xla.utils import parse_xla_candidate_ops
 
@@ -188,8 +187,6 @@ class PKGraph(object):
         self.free_indexes = set()
         self.nodename2fusednode = {}
 
-        _, self.unsafe_resource_deps_ = parse_xla_candidate_ops(arg_utils.SingleArg().args.xla_candidate_path)
-
     def _get_node_order(self, u):
         idx = self.nodename2index[u]
         return self.ord[idx]
@@ -219,15 +216,6 @@ class PKGraph(object):
                     // to not be a problem in practice so far.   --- from TensorFlow
                 * if the graph has cycles after contracting u and v
         '''
-        ### check source semantics
-        ### unsafe_resource_deps_
-        if self.unsafe_resource_deps_:
-            for _from_name in u.split("+"):
-                for _to_name in u.split("+"):
-                    _from, _to = parse_op_name(_from_name), parse_op_name(_to_name)
-                    if (_from, _to) in self.unsafe_resource_deps_ or (_to, _from) in self.unsafe_resource_deps_:
-                        return False
-
         ### check cycles
         if u not in self.nx_graph or v not in self.nx_graph:
             raise RuntimeError("u ({}) and v ({}) must in the original networkx graph.".format(u, v))
@@ -371,7 +359,6 @@ class PKGraph(object):
         new_instance.ord = self.ord.copy()
         new_instance.free_indexes = self.free_indexes.copy()
         new_instance.nodename2fusednode = self.nodename2fusednode.copy()
-        new_instance.unsafe_resource_deps_ = self.unsafe_resource_deps_.copy()
         return new_instance
 
     def check_invariant(self):

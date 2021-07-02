@@ -21,8 +21,6 @@ unzip dpro_xla_tools
 ### install requirements
 pip3 install -r requirements.txt
 
-
-
 export PATH=/usr/local/cuda/bin:/usr/local/nvidia/bin:${PATH}
 export LD_LIBRARY_PATH=/usr/local/lib/python3.7/dist-packages/tensorflow/:$LD_LIBRARY_PATH
 DRIVER_VERSION=$(nvidia-smi | grep -Po "CUDA Version: \K([0-9]{1,}\.)+[0-9]{1,}")
@@ -42,7 +40,7 @@ export CUDA_VISIBLE_DEVICES=0
 
 ####################################
 ### Gen kernel data set
-# modify these
+# The path where local_dfg, metadata info... are stored
 TRACE_DIR=xxx
 OUTPUT_DIR="/home/tiger/xla/kernel_dataset"
 

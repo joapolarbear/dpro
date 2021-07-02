@@ -735,7 +735,7 @@ def parse_shape_dict(trace_dir, metadata=None):
 
 def parse_graph_def(trace_dir, dataset_dir, shape_dict, metadata):
     # TF2XLA supported ops
-    # candidate_ops, unsafe_resource_deps_ = parse_xla_candidate_ops(metadata)
+    # candidate_ops, _ = parse_xla_candidate_ops(metadata)
 
     graph_def_path = os.path.join(trace_dir, CMPaths.AFTER_OPT_TF_DAG_FILE)
     with open(graph_def_path, "r") as f:

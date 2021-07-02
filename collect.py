@@ -26,6 +26,14 @@ elif args_.comm_backend == "BYTEPS":
 GAP_THRESHOLD_COMP = 1000
 GAP_THRESHOLD_COMM = 1000
 
+### Clock Sychronization mode
+#   0: based on sync op
+#   1: based on constraints, objective: mean square error
+#   2: based on constraints, objective: recv dur close to median
+#   3: based on constraints, objective: loop drift error
+SYNC_MODE = 2
+ALIGN_BASED_SYNC = True if SYNC_MODE == 0 else False
+
 class RunningSpan:
     def __init__(self):
         self.reset_span()
@@ -902,30 +910,48 @@ class Collector(object):
             # initialize BytePS graph helper
             self.byteps_graph.init(byteps_comm_detail_path, byteps_server_trace_path, van_type=args_.van_type)
 
-    def clock_align(self, traces_list, host_ids):
+    def clock_align(self, traces_list, host_ids=None, fix_bias=None):
         SingleLogger().info("Combine and align traces ...")
-        if self.single:
-            assert len(traces_list) == 1
-            return traces_list[0]
         if self.byteps_graph is not None:
             base_host_id = self.byteps_graph.master_host_id
         else:
             base_host_id = self.nccl_graph.master_host_id
-        rst = []
-        for idx in range(len(traces_list)):
-            host_id = host_ids[idx]
-            if host_id == base_host_id:
-                pass
-            else:
+        
+        if isinstance(traces_list, TraceManager):
+            traceM = traces_list
+            for trace in traceM.traces:
+                name = traceM.ret_unique_name(trace)
+                host_id = self.nccl_graph.ret_hostid(name)
                 if self.byteps_graph is not None:
                     bias = self.byteps_graph.time_drift[host_id]
                 else:
                     bias = self.nccl_graph.time_drift[host_id]
-                SingleLogger().info("Align - add {} us to host {}".format(bias, host_id))    
-                for trace in traces_list[idx]:
-                    trace["ts"] += bias
-            rst += traces_list[idx]
-        return rst
+                trace["ts"] += bias
+            traceM.ret_stat()
+            return
+        elif isinstance(traces_list[0], list):
+            if self.single:
+                assert len(traces_list) == 1
+                return traces_list[0]
+            rst = []
+            for idx in range(len(traces_list)):
+                host_id = host_ids[idx]
+                if host_id == base_host_id:
+                    pass
+                else:
+                    if fix_bias is not None:
+                        bias = fix_bias
+                    elif self.byteps_graph is not None:
+                        bias = self.byteps_graph.time_drift[host_id]
+                    else:
+                        bias = self.nccl_graph.time_drift[host_id]
+                    SingleLogger().info("Align - add {} us to host {}".format(bias, host_id))    
+                    for trace in traces_list[idx]:
+                        trace["ts"] += bias
+                rst += traces_list[idx]
+            return rst
+        else:
+            raise TypeError(type(trace_list))
 
     def collect_traces(self):
         SingleLogger().info(bcolors.CGREEN + "Collecting Traces, Generating {}".format(FileName.TRACE.value) + bcolors.ENDC)
@@ -976,7 +1002,7 @@ class Collector(object):
             for host_id in host_ids:
                 assert host_id in self.byteps_graph.time_drift
         ### align the time
-        rst_traces = self.clock_align(traces_list, host_ids)
+        rst_traces = self.clock_align(traces_list, host_ids, fix_bias=(None if ALIGN_BASED_SYNC else 0))
         # self.single = (len(rst) == 1)
 
         if self.comm_backend == "NCCL" and not args_.pretty:
@@ -1126,34 +1152,53 @@ class Collector(object):
         ### Fine tune the traces and dependency graph
         if self.comm_backend == "BYTEPS":
             self.byteps_graph.calc_bw_to_comm_delay(self.traceM.traces, self.trail_dag)
+        
+        if SYNC_MODE > 0:
+            self.re_align_traces(mode=SYNC_MODE)
+            # self.re_align_traces(mode=2)
+            self.clock_align(self.traceM)
+
         self.add_avg_to_nodes()
         self.add_gap_to_nodes()
-
-        # self.re_align_traces()
-
         if self.comm_backend == "NCCL":
             self.clip_recv_events()
 
-    def re_align_traces(self):
+    def re_align_traces(self, mode=1, dump_bound=False):
         ''' Re-align traces according to the dependency info in dag.
         TODO (huhanpeng): 
         1. currently lower priority, since clock synchronization 
             will not bring much replay accuracy improvement
         2. Cost large amount of time for a large model, e.g. Bert
         '''
-        raise NotImplementedError("Do not support clock synchronization currently."
-            "The drift may not be a constant, thus may conflict the constraints")
-
+        # raise NotImplementedError("Do not support clock synchronization currently."
+        #     "The drift may not be a constant, thus may conflict the constraints")
+        
+        import cvxpy as cp
+        ### bias based on host0
+        drifts2host0 = [None for host_id in self.nccl_graph.host_id2prefix.keys()]
+        M = len(drifts2host0)
+        
         ### bias based on each other
-        align_table = dict([(host_id, {}) for host_id in self.nccl_graph.host_id2prefix.keys()])
-        def display_align_table():
-            for host_id, _dict in align_table.items():
+        drift_table = dict([(host_id, {}) for host_id in self.nccl_graph.host_id2prefix.keys()])
+        drift_bound = dict([(host_id, {}) for host_id in self.nccl_graph.host_id2prefix.keys()])
+        def display_drift_table():
+            for host_id, _dict in drift_table.items():
                 print("For host %d" % host_id)
                 for _id, _range in _dict.items():
                     print("     based on %d: %s" % (_id, _range.displays()))
-                    
-        ### bias based on host0
-        align_list = [None for host_id in self.nccl_graph.host_id2prefix.keys()]
+
+        if mode == 1:
+            ### drift_list[1] = theta_0_1, ..., drift_list[M-1] = theta_0_N-1
+            drift_list = [0] + [cp.Variable() for _ in range(M - 1)]
+        elif mode == 2:
+            ### drift_list[1] = theta_0_1, ..., drift_list[M-1] = theta_0_N-1
+            drift_list = [0] + [cp.Variable() for _ in range(M - 1)]
+            obj_dict = {}
+        elif mode == 3:
+            ### The sum of relative drift should be 0
+            ### drift_list[0] = theta_0_1, ..., drift_list[M-1] = theta_N-1_0
+            drift_list = [cp.Variable() for _ in range(M)]
+
         for u, v in self.trail_dag.edges:
             if "Comm" in u and "SEND" in u and "Comm" in v and "RECV" in v:
                 send_host = self.nccl_graph.ret_hostid(u)
@@ -1183,68 +1228,127 @@ class Collector(object):
                     recv_event = self.traceM.traces[v_idx]
                     send_end_t = send_event["ts"] + send_event["dur"]
                     recv_end_t = recv_event["ts"] + recv_event["dur"]
-                    
-                    if int(send_host) == 1 and int(recv_host) == 0:
-                        raise
+
+                    # constraints.append(send_end_t + drift_list[send_host] <= recv_end_t + drift_list[recv_host])
+                    if mode == 2:
+                        recv_event_name = gen_long_name(recv_event["pid"], recv_event["name"])
+                        if recv_event_name not in obj_dict:
+                            ### recv_dur, recv_end_t, sent_ts, recv_host, send_host
+                            obj_dict[recv_event_name] = []
+                        obj_dict[recv_event_name].append(
+                            [recv_event["dur"], recv_end_t, send_event["ts"], recv_host, send_host])
 
                     if send_host > recv_host:
                         ### Correspond to the  case of `B is the sender`, get a upper bound
-                        if recv_host not in align_table[send_host]:
-                            align_table[send_host][recv_host] = BiasRange(None, None)
-                            # align_table[send_host][recv_host] = {"upper": [], "lower": []}
+                        if recv_host not in drift_table[send_host]:
+                            drift_table[recv_host][send_host] = BiasRange(None, None)
+                            drift_bound[recv_host][send_host] = {"upper": [], "lower": []}
                         ### (hostid=send_host)'s bias based on (rankid=recv_host)
-                        align_table[send_host][recv_host] *= BiasRange(None, recv_end_t - send_end_t)
-                        # align_table[send_host][recv_host]["upper"].append((recv_end_t, recv_end_t - send_end_t))
+                        drift_table[recv_host][send_host] *= BiasRange(None, recv_end_t - send_end_t)
+                        drift_bound[recv_host][send_host]["upper"].append((recv_end_t, recv_end_t - send_end_t))
                     else:
                         ### send_host < recv_host:
-                        if send_host not in align_table[recv_host]:
-                            align_table[recv_host][send_host] = BiasRange(None, None)
-                            # align_table[recv_host][send_host] = {"upper": [], "lower": []}
+                        if send_host not in drift_table[recv_host]:
+                            drift_table[send_host][recv_host] = BiasRange(None, None)
+                            drift_bound[send_host][recv_host] = {"upper": [], "lower": []}
                         ### (hostid=send_host)'s bias based on (rankid=recv_host)
-                        align_table[recv_host][send_host] *= BiasRange(send_end_t - recv_end_t, None)
-                        # align_table[recv_host][send_host]["lower"].append((send_end_t, send_end_t - recv_end_t))
+                        drift_table[send_host][recv_host] *= BiasRange(send_end_t - recv_end_t, None)
+                        drift_bound[send_host][recv_host]["lower"].append((send_end_t, send_end_t - recv_end_t))
 
-        # with open("/home/tiger/bias_range.json", 'w') as fp:
-        #     json.dump(align_table, fp)
+        if dump_bound:
+            with open("/home/tiger/drift_bound.json", 'w') as fp:
+                json.dump(drift_table, fp)
         
-        # display_align_table()
+        # display_drift_table()
+
         ### tidy up align table, calculate bias for all hostid based hostid=0
-        def ret_bias_range_to_host0(_hostid):
-            if _hostid == 0:
-                return BiasRange(0, 0)
-            bias_range2host0 = BiasRange(None, None)
-            for base_id, _range in align_table[_hostid].items():
-                ### base_id < _hostid, and the bias based on rank0 of base_id has been cacluated
-                bias_range2host0 *= (_range + align_list[base_id])
-            return bias_range2host0
+        # def ret_bias_range_to_host0(_hostid):
+        #     if _hostid == 0:
+        #         return BiasRange(0, 0)
+        #     bias_range2host0 = BiasRange(None, None)
+        #     for base_id, _range in drift_table[_hostid].items():
+        #         ### base_id < _hostid, and the bias based on rank0 of base_id has been cacluated
+        #         bias_range2host0 *= (_range + drifts2host0[base_id])
+        #     return bias_range2host0
         
-        for host_id in sorted(align_table.keys()):
-            bias_range = ret_bias_range_to_host0(host_id)
-            SingleLogger().info("[TIME ALIGN] %d's bias range: %s" % (host_id, bias_range.displays()))
-            align_list[host_id] = bias_range
+        # for host_id in sorted(drift_table.keys()):
+        #     bias_range = ret_bias_range_to_host0(host_id)
+        #     SingleLogger().info("[TIME ALIGN] %d's bias range: %s" % (host_id, bias_range.displays()))
+        #     drifts2host0[host_id] = bias_range
         
-        import cvxpy as cp
-        variables = [cp.Variable() for _ in range(len(align_list) - 1)]
-        obj = cp.sum_squares(cp.hstack(variables))
         constraints = []
-        for idx, bias_range in enumerate(align_list[1:]):
-            if bias_range.l is not None:
-                constraints.append(variables[idx] >= bias_range.l)
-            if bias_range.r is not None:
-                constraints.append(variables[idx] >= bias_range.r)
+        if mode == 1 or mode == 2:
+            if mode == 1:
+                obj = cp.sum_squares(cp.hstack(drift_list[1:]))
+            elif mode == 2:
+                obj_list = []
+                for recv_event_name in obj_dict.keys():
+                    recv_dur_l, recv_end_t_l, sent_ts_l, recv_host_l, send_host_l = zip(*obj_dict[recv_event_name])
+                    median = np.median(recv_dur_l)
+                    for idx, dur in enumerate(recv_dur_l):
+                        if (dur - median) / median > 0.5:
+                            # time_after_clip = (recv_end_t_l[idx] + drift_list[recv_host_l[idx]]) \
+                            #     - cp.maximum(
+                            #             recv_end_t_l[idx] - dur + drift_list[recv_host_l[idx]], 
+                            #                 (sent_ts_l[idx] + drift_list[send_host_l[idx]])
+                            #             )
+                            time_after_clip = (recv_end_t_l[idx] + drift_list[recv_host_l[idx]]) \
+                                - (sent_ts_l[idx] + drift_list[send_host_l[idx]])
+                            obj_list.append(time_after_clip - median)
+                obj = cp.sum_squares(cp.hstack(obj_list))
+
+            for base_id, _dict in drift_table.items():
+                for ref_id, bias_range in _dict.items():
+                    if bias_range.l is not None:
+                        constraints.append(drift_list[ref_id] - drift_list[base_id] >= bias_range.l)
+                        SingleLogger().debug("theta_0_{} - theta_0_{} >= {}".format(ref_id, base_id, bias_range.l))
+                    if bias_range.r is not None:
+                        constraints.append(drift_list[ref_id] - drift_list[base_id] <= bias_range.r)
+                        SingleLogger().debug("theta_0_{} - theta_0_{} <= {}".format(ref_id, base_id, bias_range.r))
+        elif mode == 3:
+            ### TODO (HHP): this is only for Ring
+            obj = cp.sum(drift_list)
+
+            for base_id in range(M):
+                if base_id < (M - 1):
+                    assert base_id + 1 in drift_table[base_id], (base_id, drift_table[base_id])
+                    bias_range = drift_table[base_id][base_id + 1]
+                    if bias_range.l is not None:
+                        constraints.append(drift_list[base_id] >= bias_range.l)
+                        SingleLogger().debug("theta_{}_{} >= {}".format(base_id, base_id+1, bias_range.l))
+                    if bias_range.r is not None:
+                        constraints.append(drift_list[base_id] <= bias_range.r)
+                        SingleLogger().debug("theta_{}_{} <= {}".format(base_id, base_id+1, bias_range.r))
+                else:
+                    ### M-1 --> 0
+                    bias_range = drift_table[0][M-1]
+                    if bias_range.l is not None:
+                        constraints.append(drift_list[base_id] <= bias_range.l)
+                        SingleLogger().debug("theta_{}_{} <= {}".format(M-1, 0, bias_range.l))
+                    if bias_range.r is not None:
+                        constraints.append(drift_list[base_id] >= bias_range.r)
+                        SingleLogger().debug("theta_{}_{} >= {}".format(M-1, 0, bias_range.r))
+        else:
+            raise ValueError()
+
         prob = cp.Problem(cp.Minimize(obj), constraints)
         prob.solve()
-        
+
         if prob.status not in ["infeasible", "unbounded"]:
             if self.nccl_graph is not None:
-                for host_id in range(1, len(align_list)):
-                    drift = float(variables[host_id-1].value)
+                self.nccl_graph.time_drift[0] = 0
+                for host_id in range(1, len(drifts2host0)):
+                    if mode == 1 or mode == 2:
+                        drift = float(drift_list[host_id].value)
+                    elif mode == 3:
+                        drift = float(drift_list[host_id-1].value) + self.nccl_graph.time_drift[host_id-1]
+                        SingleLogger().info("theta_{}_{} = {}".format(host_id-1, host_id, drift_list[host_id-1].value))
                     SingleLogger().info("[TIME ALIGN] Drift of {} to {} is {} us".format(host_id, 0, drift))
                     self.nccl_graph.time_drift[host_id] = drift
         else:
             print("[TIME ALIGN] Problem is {}".format(prob.status))
             exit(-1)
-
+        
     def add_gap_to_nodes(self):
         ''' Add gaps for each node '''
         SingleLogger().info("Add gap to dependency DAG nodes...")
