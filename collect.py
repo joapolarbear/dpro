@@ -31,7 +31,7 @@ GAP_THRESHOLD_COMM = 1000
 #   1: based on constraints, objective: mean square error
 #   2: based on constraints, objective: recv dur close to median
 #   3: based on constraints, objective: loop drift error
-SYNC_MODE = 2
+SYNC_MODE = 0
 ALIGN_BASED_SYNC = True if SYNC_MODE == 0 else False
 
 class RunningSpan:
@@ -1153,6 +1153,8 @@ class Collector(object):
         if self.comm_backend == "BYTEPS":
             self.byteps_graph.calc_bw_to_comm_delay(self.traceM.traces, self.trail_dag)
         
+        # self.calculate_bandwidth()
+
         if SYNC_MODE > 0:
             self.re_align_traces(mode=SYNC_MODE)
             # self.re_align_traces(mode=2)
@@ -1162,6 +1164,32 @@ class Collector(object):
         self.add_gap_to_nodes()
         if self.comm_backend == "NCCL":
             self.clip_recv_events()
+
+    def calculate_bandwidth(self):
+        ### TODO (hhp): how to select pid who is involved to inter-node communication
+        one_pid = "host0.rank2" if self.comm_backend == "NCCL" else "traces_0.rank0"
+        tensor2dur = {}
+        for trace in self.traceM.traces:
+            if "Comm" in trace["name"] and one_pid in trace["pid"] and trace["args"]["step"] == self.traceM.opt_step and \
+                ("SEND" in trace["name"] or "RECV" in trace["name"]):
+                op_name = parse_op_name(trace["name"])
+                if op_name not in tensor2dur:
+                    tensor2dur[op_name] = [None, None]  # ts and end
+                if tensor2dur[op_name][0] is None or trace["ts"] < tensor2dur[op_name][0]:
+                    tensor2dur[op_name][0] = trace["ts"]
+                if tensor2dur[op_name][1] is None or trace["ts"] + trace["dur"] > tensor2dur[op_name][1]:
+                    tensor2dur[op_name][1] = trace["ts"] + trace["dur"]
+        for tensor in tensor2dur.keys():
+            tensor_list = re.findall("[0-9]+", tensor)
+            fused_size = 0
+            for tensor_id_str in tensor_list:
+                tensor_id = int(tensor_id_str)
+                tensor_size = self.para_dict.tensor_id2size(tensor_id)
+                fused_size += tensor_size
+            tensor_dur = (tensor2dur[tensor][1] - tensor2dur[tensor][0]) / 1e6
+            bw = fused_size * 8 / tensor_dur
+            SingleLogger().info("{}: {} MB / {} s = {} Gbps".format(tensor, fused_size / 1024**2, tensor_dur, bw / 1e9))
+        exit(0)
 
     def re_align_traces(self, mode=1, dump_bound=False):
         ''' Re-align traces according to the dependency info in dag.
@@ -1281,21 +1309,53 @@ class Collector(object):
             if mode == 1:
                 obj = cp.sum_squares(cp.hstack(drift_list[1:]))
             elif mode == 2:
-                obj_list = []
+                
+                hosts_grouped_by_node = [
+                    [0, 1, 2],
+                    [3, 4, 5, 6, 7]
+                ]
+
+                obj1 = 0
+                scale1 = 0
                 for recv_event_name in obj_dict.keys():
                     recv_dur_l, recv_end_t_l, sent_ts_l, recv_host_l, send_host_l = zip(*obj_dict[recv_event_name])
                     median = np.median(recv_dur_l)
+                    dur_list = []
                     for idx, dur in enumerate(recv_dur_l):
                         if (dur - median) / median > 0.5:
-                            # time_after_clip = (recv_end_t_l[idx] + drift_list[recv_host_l[idx]]) \
-                            #     - cp.maximum(
-                            #             recv_end_t_l[idx] - dur + drift_list[recv_host_l[idx]], 
-                            #                 (sent_ts_l[idx] + drift_list[send_host_l[idx]])
-                            #             )
-                            time_after_clip = (recv_end_t_l[idx] + drift_list[recv_host_l[idx]]) \
+                            scale1 = max(scale1, dur - median)
+                            ### The max(a, b) in the objective function can be converted to a new variable c
+                            ### with two additional constraints a <= c and b <= c.
+                            # new_max = cp.Variable()
+                            # drift_list.append(new_max)
+                            # constraints.append(recv_end_t_l[idx] - dur + drift_list[recv_host_l[idx]] <= new_max)
+                            # constraints.append(sent_ts_l[idx] + drift_list[send_host_l[idx]] <= new_max)
+                            # dur_after_clip = (recv_end_t_l[idx] + drift_list[recv_host_l[idx]]) - new_max
+
+
+                            ### Approximate Variance and Max
+                            dur_after_clip = (recv_end_t_l[idx] + drift_list[recv_host_l[idx]]) \
                                 - (sent_ts_l[idx] + drift_list[send_host_l[idx]])
-                            obj_list.append(time_after_clip - median)
-                obj = cp.sum_squares(cp.hstack(obj_list))
+                            dur_list.append(dur)
+                    _sum = cp.sum(dur_list)
+                    _ave = _sum / len(dur_list)
+                    for dur in dur_list:
+                        obj1 += cp.square(dur - _ave)
+                scale1 = 1 / scale1**2
+
+                ### Add more useful principles into solving the problem, 
+                ### e.g., ensure the same time for workers on the same machine
+                obj2 = 0
+                for hosts in hosts_grouped_by_node:
+                    dur_sum = 0
+                    for host_idx in hosts:
+                        dur_sum += drift_list[host_idx]
+                    dur_ave = dur_sum / len(hosts)
+                    for host_idx in hosts:
+                        obj2 += cp.square(drift_list[host_idx] - dur_ave)
+                scale2 = 1
+
+                obj = obj1 * scale1 + obj2 * scale2
 
             for base_id, _dict in drift_table.items():
                 for ref_id, bias_range in _dict.items():
@@ -1332,7 +1392,7 @@ class Collector(object):
             raise ValueError()
 
         prob = cp.Problem(cp.Minimize(obj), constraints)
-        prob.solve()
+        prob.solve(verbose=True, max_iter=int(1e5))
 
         if prob.status not in ["infeasible", "unbounded"]:
             if self.nccl_graph is not None:
@@ -1387,6 +1447,9 @@ class Collector(object):
                                 _to_process += [_in for _in, _ in self.trail_dag.in_edges(_prev)]
                         
                         u_idx_l = [self.traceM.map_name2idxlist(_node) for _node in bw_nodes]
+                        if len(u_idx_l) <= 0:
+                            import code
+                            code.interact(local=locals())
                         assert len(u_idx_l) > 0, (node_, bw_nodes)
                         bw_traces = [self.traceM.traces[u_idxs[self.traceM.opt_step]] for u_idxs in u_idx_l]
                         last_bw_time = max([trace["ts"] + trace["dur"] for trace in bw_traces])

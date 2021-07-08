@@ -33,7 +33,7 @@ def visualize_gml(graph, layout="circular"):
     # node_positions = plot_instance.node_positions
 
 def part_of_dag(dag, node, 
-    max_in_depth=2, max_out_depth=2, path=None):
+    max_in_depth=2, max_out_depth=2, path=None, simple=False):
     ''' Return part of the dag, recursively add the predecessors
         and the successors of `node`
     '''
@@ -41,26 +41,45 @@ def part_of_dag(dag, node,
     edges_to_add = []
 
     visited = set()
+    start_nodes = set()
+    end_nodes = set()
 
-    def recur_add(_node, _max_in_depth, _max_out_depth, _visited):
+    def recur_add(_node, _max_in_depth, _max_out_depth, _visited, simple=False):
         if _max_in_depth > 0:
             for pred in dag.predecessors(_node):
+                if dag.in_degree(pred) == 0:
+                    start_nodes.add(pred)
+                if dag.out_degree(pred) == 0:
+                    end_nodes.add(pred)
+                    
                 if pred in _visited:
                     continue
                 edges_to_add.append((pred, _node))
                 _visited.add(_node)
-                recur_add(pred, _max_in_depth-1, _max_out_depth, _visited)
+                recur_add(pred, 0 if simple else _max_in_depth-1, _max_out_depth, _visited)
                 _visited.remove(_node)
+                
         if _max_out_depth > 0:
             for succ in dag.successors(_node):
+                if dag.in_degree(succ) == 0:
+                    start_nodes.add(succ)
+                if dag.out_degree(_node) == 0:
+                    end_nodes.add(_node)
+
                 if succ in _visited:
                     continue
                 edges_to_add.append((_node, succ))
                 _visited.add(_node)
-                recur_add(succ, _max_in_depth, _max_out_depth-1, _visited)
+                recur_add(succ, _max_in_depth, 0 if simple else _max_out_depth-1, _visited)
                 _visited.remove(_node)
-    recur_add(node, max_in_depth, max_out_depth, visited)
+                
+    recur_add(node, max_in_depth, max_out_depth, visited, simple=simple)
     small_dag.add_edges_from(edges_to_add)
+    for _node in start_nodes:
+        small_dag.nodes[_node]["color"] = "red"
+    for _node in end_nodes:
+        small_dag.nodes[_node]["color"] = "green"
+    small_dag.nodes[node]["color"] = "yellow"
     if path is not None:
         nx.drawing.nx_pydot.write_dot(small_dag, path)
     return small_dag
@@ -229,8 +248,9 @@ class DAGManager:
                                     # for pre_node in pre_nodes:
                                     #     self.wrap_add_dag(self.add_prefix(pre_node), self.add_prefix(next_rawname))
 
+                                    ### pre_nodes: ['Comm.xxx+xxx+...+xxx.Sync']
                                     next_rawname = pre_nodes[0]
-                                    
+
                                     ### Connect all ranks' Sync to the first Send
                                     prev_rawname = next_rawname
                                     prev_nodes_prefix = self.nccl_graph.bw_to_first_send(channelId)

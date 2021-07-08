@@ -80,3 +80,5 @@ class ParameterDict:
     def is_variable(self, op_name):
         return self.metainfo.is_variable(op_name)
     
+    def parse_model_name(self):
+        return self.metainfo.parse_model_name()

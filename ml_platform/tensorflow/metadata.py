@@ -32,10 +32,13 @@ class MetaInfo:
         ### Read tensor/gradient names
         try:
             with open(os.path.join(meta_dir, FileName.TENSOR_NAME.value), 'r') as fp:
-                self.gradient_name_list = json.load(fp)["gradient_name_list"]
+                info = json.load(fp)
+                self.gradient_name_list = info["gradient_name_list"]
+                self.model_name = info["model_name"]
                 ### Horovod use the same as weight names for tensor names
                 self.same_tensor_weight_name = True
         except FileNotFoundError:
+            self.model_name = None
             try:
                 with open(os.path.join(meta_dir, "gradient_name2ID.json"), 'r') as fp:
                     name2id = json.load(fp)
@@ -506,3 +509,6 @@ class MetaInfo:
         if self.same_tensor_weight_name:
             return tensor_name
         return self.tensor2weight[tensor_name]
+    
+    def parse_model_name(self):
+        return self.model_name

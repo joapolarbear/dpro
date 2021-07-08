@@ -239,14 +239,19 @@ class XLAGraphPass(_BaseGraphPass):
         partition_PKG = PKGraph(partition_G)
 
         if args_.layer_by_layer:
-            # from dag_utils import part_of_dag
+            from dag_utils import part_of_dag
             # node = "BW.gradient_tape/resnet50/conv2_block2_2_conv/Conv2D/ShapeN"
             # node = "BW.gradient_tape/resnet50/conv5_block1_out/ReluGrad"
+            # node = "BW.gradient_tape/inception_v3/mixed10/Slice_2"
+            # node = "BW.gradient_tape/inception_v3/avg_pool/Tile"
+            # node = "BW.gradient_tape/inception_v3/activation_93/ReluGrad-0-TransposeNHWCToNCHW-LayoutOptimizer"
             # small_dag = part_of_dag(self.opt.clct.dag, node,
-            #     max_in_depth=2, max_out_depth=2,
-            #     path = "/home/tiger/small_dag.txt")
+            #     max_in_depth=3, max_out_depth=3,
+            #     path = "/home/tiger/small_dag.txt",
+            #     simple=False)
             # exit(0)
-            op2layer, layer2ops = _map_tf_op2layer(self.opt.clct.dag)
+            model_name = self.opt.clct.para_dict.parse_model_name()
+            op2layer, layer2ops = _map_tf_op2layer(self.opt.clct.dag, model_name)
             ### We will handle bw operators seperately, so add bw ops to initial_forbidden_list first
             self.initial_forbidden_list.union([gen_long_name(self.cord_pid, bw_op) for bw_op in op2layer.keys()])
 

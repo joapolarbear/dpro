@@ -4,22 +4,30 @@ sudo -i
 cd /home/tiger/
 rm -rf byteprofile-analysis
 git clone https://github.com/joapolarbear/byteprofile-analysis.git
+cd byteprofile-analysis
+### install requirements
+pip3 install -r requirements.txt
 
-### Recompile XLA related Part
+
+### Recompile XLA related Part or directly download it
 # export PATH=/usr/local/cuda/bin:/usr/local/nvidia/bin:${PATH} \
 #     OLD_LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu:/usr/local/cudnn/lib64:/usr/local/cuda/lib64:/usr/local/lib:/usr/local/nvidia/lib:/usr/local/nvidia/lib64:/usr/local/nccl/lib:$LD_LIBRARY_PATH \
 #     LD_LIBRARY_PATH=/usr/local/lib:/usr/local/cuda/lib64:/usr/local/cudnn:/usr/local/cuda:/usr/local/cuda/compat:$OLD_LD_LIBRARY_PATH \
 #     LIBRARY_PATH=/usr/local/lib:/usr/local/cuda/lib64:/usr/local/nccl/lib/:$LIBRARY_PATH
-
-
 # cd /root/tensorflow
 # ./build_bpf_tf_modules.sh
-cd /root
-wget https://github.com/joapolarbear/tensorflow/releases/download/v2.4.1-dev.2.0.1/dpro_xla_tools.zip
-unzip dpro_xla_tools
 
-### install requirements
-pip3 install -r requirements.txt
+cd /home/tiger/
+wget https://github.com/joapolarbear/tensorflow/releases/download/v2.4.1-dev.2.0.1/dpro_xla_tools.zip
+unzip dpro_xla_tools.zip
+
+### Config env
+# where the modified tensorflow locates
+export BPF_TF_PATH=/home/tiger/dpro_xla_tools
+# the GPU id to run profiling on (specify one GPU only)
+export BPF_COST_MODEL_PROFILE_GPU="0"
+export CUDA_VISIBLE_DEVICES=0
+
 
 export PATH=/usr/local/cuda/bin:/usr/local/nvidia/bin:${PATH}
 export LD_LIBRARY_PATH=/usr/local/lib/python3.7/dist-packages/tensorflow/:$LD_LIBRARY_PATH
@@ -29,14 +37,6 @@ echo "CUDA driver version: $DRIVER_VERSION"
 echo "CUDA toolkit version: $TOOLKIT_VERSION"
 ### If the driver version  is lower than the toolkit version, use compatability mode
 export LD_LIBRARY_PATH=/usr/local/cuda/compat/:$LD_LIBRARY_PATH
-
-
-# where the modified tensorflow locates
-export BPF_TF_PATH=/root/dpro_xla_tools
-# the GPU id to run profiling on (specify one GPU only)
-export BPF_COST_MODEL_PROFILE_GPU="0"
-export CUDA_VISIBLE_DEVICES=0
-
 
 ####################################
 ### Gen kernel data set

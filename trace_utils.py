@@ -191,48 +191,52 @@ def _parse_tf_layer_names(name):
             layer_names.append("{}.{}".format(op_type, op_name_split[idx]))
     return layer_names
 
-def _try_to_parse_tf_layer(name):
-    ''' Try to parse tensorlow op's layer
+def _parse_tf_rough_layer(name, model_name):
+    ''' Roughly decide tensorlow op's layer
         * Only for BW ops in the main skeleton
         * Based on empirical knowledge, may be error-prone
     '''
     assert "+" not in name
     op_type = parse_cat_fine_grained(name)
-    name = parse_op_name(name)
     if op_type in ["operator.FW", "operator.UPDATE"] or "Comm" in op_type:
         return op_type
     elif op_type == "operator.BW":
         op_name_split = parse_op_name(name).split("/")
-        if "resnet50" in op_name_split:
-            return "BW." + op_name_split[op_name_split.index("resnet50")+1]
+        if model_name in op_name_split:
+            rough_layer = op_name_split[op_name_split.index(model_name)+1]
+            if "_" in rough_layer:
+                rough_layer = "_".join(rough_layer.split("_")[:-1])
+            return "BW." + rough_layer
         else:
             return "BW." + "none"
     else:
         raise ValueError(name, op_type)
 
-def _map_tf_op2layer(local_dfg):
+def _map_tf_op2layer(local_dfg, model_name):
     op2layer = {}
     layer2ops = {}
 
     todo = set()
 
-    def same_layer(bw_u, bw_v):
+    def same_rough_layer(bw_u, bw_v):
+        ''' Use some empirical experience to tell bw_u 
+            and bw_v must be not in the same `layer`
+        '''
         if "FW" in bw_v:
             return False
-        _layer_u, _layer_v = _try_to_parse_tf_layer(bw_u), _try_to_parse_tf_layer(bw_v)
-        if "BW" in _layer_u and "BW" in _layer_v and "none" not in _layer_u and "none" not in _layer_v:
-            if "_" in _layer_u and "_" in _layer_v \
-                and _layer_u.split("_")[:-1] == _layer_v.split("_")[:-1]:
-                return True
-            if  _layer_u != _layer_v:
+        rough_layer_u, rough_layer_v = _parse_tf_rough_layer(bw_u, model_name), _parse_tf_rough_layer(bw_v, model_name)
+        if "BW" in rough_layer_u and "BW" in rough_layer_v and "none" not in rough_layer_u and "none" not in rough_layer_v:
+            if  rough_layer_u != rough_layer_v:
                 return False
         return True
 
-    def recur_parse_layer(bw_op, visited_set = set()):
+    def recur_parse_layer(bw_op, visited_set = set(), use_rough_layer=True):
+        ''' Recursively decide bw_op's layer
+        '''
         # print(bw_op, visited_set)
         layer = None
         for succ in local_dfg.successors(bw_op):
-            if (visited_set and succ in visited_set) or not same_layer(bw_op, succ):
+            if (visited_set and succ in visited_set) or (use_rough_layer and not same_rough_layer(bw_op, succ)):
                 continue
             if "Comm" in succ:
                 layer = succ.split("Comm.")[1]               
@@ -248,7 +252,7 @@ def _map_tf_op2layer(local_dfg):
         
         if layer is None:
             for pred in local_dfg.predecessors(bw_op):
-                if (visited_set and pred in visited_set) or not same_layer(bw_op, pred):
+                if (visited_set and pred in visited_set) or (use_rough_layer and not same_rough_layer(bw_op, pred)):
                     continue            
                 if pred in op2layer:
                     layer = op2layer[pred]
@@ -283,15 +287,24 @@ def _map_tf_op2layer(local_dfg):
         recur_parse_layer(node)
     
     if len(todo) > 0:
-        # import code
-        # code.interact(local=locals())
-        for op in todo:
-            if op not in layer2ops:
-                layer2ops[op] = []
-            layer2ops[op].append(op)
-            op2layer[op] = op 
+        # todo_copy = todo.copy()
+        # for op in todo_copy:
+        #     recur_parse_layer(op, use_rough_layer=False)
+        # if len(todo) > 0:
+        #     for op in todo:
+        #         if op not in layer2ops:
+        #             layer2ops[op] = []
+        #         layer2ops[op].append(op)
+        #         op2layer[op] = op 
         SingleLogger().warn("Fail to parse layer names for {} BW operators.".format(len(todo)))
-    SingleLogger().info("Parse {} BW layers.".format(len(layer2ops)))
+    SingleLogger().info("Parse {} BW layers for {}.".format(len(layer2ops), model_name))
+
+    for layer in layer2ops.keys():
+        layer2ops[layer] = list(layer2ops[layer])
+    with open("/home/tiger/layer_map.json", 'w') as fp:
+        json.dump({"layer2ops": layer2ops, "todo": list(todo)}, fp)
+        # json.dump(layer2ops, fp)
+        
     return op2layer, layer2ops
 
 def parse_cat_from_name(name):

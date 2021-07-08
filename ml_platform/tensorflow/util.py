@@ -27,6 +27,7 @@ def wrap_read_graphdef(graphdef_path):
                 graph.add_edge(input_node_name, node["name"])
     gml_path = os.path.join(os.path.dirname(graphdef_path), "graphdef_dag.gml")
     nx.write_gml(graph, gml_path)
+    print("Create gml file at {}".format(gml_path))
 
 if __name__ == "__main__":
     wrap_read_graphdef(sys.argv[1])
