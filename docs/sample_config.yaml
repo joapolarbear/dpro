@@ -1,0 +1,14 @@
+# Normal arguments
+platform: TENSORFLOW
+comm_backend: NCCL
+nccl_algo: RING
+optimizer: MCMC
+
+# Stroe true argements
+store_true:
+        pretty: 1
+        layer_by_layer: 1
+
+# environment variables
+env:
+        DPRO_GRAPHDEF_DFG_PATH: {{path}}/.xla_dump/graphdef_dag.gml

@@ -13,3 +13,5 @@ ujson >= 4.0.1
 h5py <= 2.10.0
 seaborn
 pydot
+pyyaml
+jinja2

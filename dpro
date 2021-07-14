@@ -1,0 +1,67 @@
+#!/usr/bin/env python3
+'''
+****************************************
+*                                      *
+*                                      *
+*   _______________________________    *
+*   ______  /__  __ \__  __ \_  __ \   *
+*   _  __  /__  /_/ /_  /_/ /  / / /   *
+*   / /_/ / _  ____/_  _, _// /_/ /    *
+*   \__,_/  /_/     /_/ |_| \____/     *
+*                                      *
+*                                      *
+*                                      *
+****************************************
+'''
+import os, sys
+import yaml
+from jinja2 import Environment, FileSystemLoader
+
+usage_prompt = "usage: dpro <option> <path> [<remaining_args>]"
+dpro_dir = os.path.dirname(__file__)
+dpro_entry = os.path.join(dpro_dir, "analyze.py")
+
+if __name__ == "__main__":
+    if len(sys.argv) < 3:
+        print("dpro: missing path")
+        print(usage_prompt)
+        exit(0)
+    option = sys.argv[1]
+    abspath = os.path.abspath(sys.argv[2])
+    
+    cfg_file = None
+    for file in os.listdir(abspath):
+        if file.endswith(".yaml"):
+            cfg_file = os.path.abspath(file)
+
+    cmd_from_yaml = ""
+    env_from_yaml = ""
+    if cfg_file:
+        env = Environment(loader=FileSystemLoader(os.path.dirname(cfg_file)))
+        template = env.get_template(os.path.basename(cfg_file))
+        c = template.render(path=abspath)
+        cfg = yaml.load(c, Loader=yaml.Loader)
+
+        # with open(cfg_file, 'r') as fp:
+        #     cfg = yaml.load(fp.read(), Loader=yaml.Loader)
+
+        if cfg is not None:
+            print("Use the config file: {}".format(cfg_file))
+            for key_, values_ in cfg.items():
+                if key_ == "env":
+                    for env_name, env_value in values_.items():
+                        env_from_yaml += " {}={}".format(env_name, env_value)
+                elif key_ == "store_true":
+                    for arg_, value_ in values_.items():
+                        if value_ in [1, "yes", 'y']:
+                            cmd_from_yaml += " --{}".format(arg_)
+                else:
+                    cmd_from_yaml += " --{} {}".format(key_, values_)
+
+    remain_arg = " ".join(sys.argv[3:])
+    command = "{} python3 {} --option {} --path {} {} {}".format(
+        env_from_yaml, dpro_entry, option, abspath, cmd_from_yaml, remain_arg)
+    print(command)
+    os.system(command)
+
+
