@@ -1,3 +1,6 @@
+import os
+
+dpro_dir = os.path.dirname(__file__)
 
 #! define a singleton class
 def Singleton(cls):
