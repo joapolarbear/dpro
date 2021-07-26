@@ -390,6 +390,12 @@ class MetaInfo:
         '''
         graphdef_dag_path = os.environ.get("DPRO_GRAPHDEF_DFG_PATH", None)
         if graphdef_dag_path:
+            if not os.path.exists(graphdef_dag_path):
+                trace_path = os.path.dirname(os.path.dirname(os.path.dirname(gml_path)))
+                dumped_hlo_graph_path = os.path.join(trace_path, ".xla_dump/before_mark_for_compilation.pbtxt")
+                cur_dir, _ = os.path.split(os.path.realpath(__file__))
+                cmd = "python3 {}/util.py {}".format(cur_dir, dumped_hlo_graph_path)
+                os.system(cmd)
             mygraph = nx.read_gml(graphdef_dag_path)
             SingleLogger().info(
                 "[TF Metadata] read DFG parsed from graphdef: {}".format(graphdef_dag_path))

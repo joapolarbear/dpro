@@ -72,7 +72,7 @@ class XLAGraphPass(_BaseGraphPass):
         ### Used to cache the node attribtue
         self.node_attr_cache = AttrCache()
 
-        self.expore_fusion = True
+        self.explore_fusion = True
         self.enable_partition = True
 
         self.cord_pid = "host0.rank0" if self.opt.clct.comm_backend == "NCCL" else "traces_0.rank0"
@@ -719,7 +719,7 @@ class XLAGraphPass(_BaseGraphPass):
                     nodes_to_add.append(u__+"+"+v__)
                     nodes_to_remove += [u__, v__]
                 
-                if not self.expore_fusion:
+                if not self.explore_fusion:
                     break
 
                 is_end = True

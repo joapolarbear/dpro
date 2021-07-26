@@ -3,6 +3,7 @@ platform: TENSORFLOW
 comm_backend: NCCL
 nccl_algo: RING
 optimizer: MCMC
+xla_candidate_path: {{path}}/.xla_dump/unsafe_resource_deps.txt
 
 # Stroe true argements
 store_true:

@@ -1310,6 +1310,8 @@ class Collector(object):
                 obj = cp.sum_squares(cp.hstack(drift_list[1:]))
             elif mode == 2:
                 
+                ### TODO (huhanpeng): parse from metadta
+                raise NotImplementedError()
                 hosts_grouped_by_node = [
                     [0, 1, 2],
                     [3, 4, 5, 6, 7]
