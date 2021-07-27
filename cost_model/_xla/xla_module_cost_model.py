@@ -844,6 +844,12 @@ class XLAModuleCostModel():
         self._tmp_dir = os.path.abspath(tmp_dir)
         if not os.path.isdir(self._tmp_dir):
             os.makedirs(self._tmp_dir)
+        
+        self.silent = False
+    
+    def _error_log(self, *args, **kwargs):
+        if not self.silent:
+            print("[Cost Model] ", *args, **kwargs)
 
     @classmethod
     def train_on_dataset(cls, dataset_path, save_dir, batch_size=256):
@@ -862,123 +868,23 @@ class XLAModuleCostModel():
         # transfer tensor shapes into save_dir
         shutil.copy(os.path.join(dataset_folder_path, CMPaths.TENSOR_SHAPE_FILE), save_dir)
 
-    # def predict(self, node_names):
-    #     try:
-    #         graph_def_path, config_path = \
-    #             self.graph_def_util.get_subgraph_def_config_from_nodes(node_names, self._tmp_dir, 0)
-    #     except GSInternalErrors as e:
-    #         print("[Cost Model] Failed to generate legal graph def for input nodes: {}".format(e))
-    #         return -1, {}
-    #     except RuntimeError:
-    #         traceback.print_exc()
-    #         print("[Cost Model] Failed to generate legal graph def for input nodes.")
-    #         return -1, {}
-
-    #     if graph_def_path is None or config_path is None:
-    #         if len(node_names) > 10:
-    #             print("[Cost Model] Failed to predict the running time of ops: {} ...".format(list(node_names)[:10]))
-    #         else:
-    #             print("[Cost Model] Failed to predict the running time of ops: {} ...".format(node_names))
-    #         return -1, {}
-    #     unopt_hlo_path = os.path.join(self._tmp_dir, "unopt.txt")
-    #     opt_hlo_path = os.path.join(self._tmp_dir, "opt.txt")
-    #     try:
-    #         compile_to_hlo(graph_def_path, config_path, unopt_hlo_path, opt_hlo_path)
-    #         extract_kernel_features_from_hlo(opt_hlo_path, self._tmp_dir)
-
-    #         config_path = os.path.join(self._tmp_dir, CMPaths.MODULE_CONFIG_FILE)
-    #         elem_op_hashes = []
-    #         fused_op_infos = []
-    #         with open(config_path, "r") as f:
-    #             for line in f:
-    #                 is_fused_op = bool(int(line.split(",")[0]))
-    #                 if is_fused_op:
-    #                     fused_op_hash = int(line.split(",")[1])
-    #                     kernel_path = os.path.join(self._tmp_dir, line.split(",")[-1].split("/")[-1].strip())
-    #                     kernel_sid = int(line.split(",")[-1].split("/")[-1].split(".txt")[0])
-    #                     with open(kernel_path, "r") as f_kernel:
-    #                         (adj, fusion_type, computation_hash, subop_infos) = \
-    #                             self.training_dataset._parse_feature_file(f_kernel)
-    #                     if (computation_hash != fused_op_hash):
-    #                         print("Inconsistent hashes for kernel SID: {}".format(kernel_sid))
-    #                         assert False
-    #                     # generate representations
-    #                     ( fusion_type_one_hot, op_codes_in_sample, 
-    #                         op_hashes_in_sample, feature_vectors_in_sample )= \
-    #                             self.training_dataset.gen_representation_for_sample(fusion_type, subop_infos)
-    #                     fused_op_infos.append((computation_hash, fusion_type_one_hot, 
-    #                                             op_codes_in_sample, op_hashes_in_sample, 
-    #                                             feature_vectors_in_sample))
-    #                 else:
-    #                     _, elem_op_hash, op_code = [v.strip() for v in line.split(",")]
-    #                     elem_op_hashes.append((int(elem_op_hash), op_code))
-
-    #         predicted_module_time = 0
-    #         fused_kernel_sizes = [len(op_codes_in_sample) for (_, _, op_codes_in_sample, _, _) \
-    #                                                         in fused_op_infos]
-
-    #         breakdown_dict = {}
-    #         breakdown_dict["elementary"] = {}
-    #         breakdown_dict["fused"] = {}
-
-    #         overhead = self.ovhd_model.get_overhead(elem_op_hashes, fused_kernel_sizes)
-    #         predicted_module_time += overhead
-    #         breakdown_dict["overhead"] = overhead
-
-    #         # look up elementary op cache
-    #         for (hash_v, op_code) in elem_op_hashes:
-    #             predicted_time, cache_hit = self.elem_op_cache.query(hash_v, op_code=op_code)
-    #             predicted_module_time += predicted_time
-    #             breakdown_dict["elementary"][hash_v] = predicted_time
-            
-    #         # run model to predict fused kernel time
-    #         for (computation_hash, fusion_type_one_hot, op_codes_in_sample, 
-    #                 op_hashes_in_sample, feature_vectors_in_sample) in fused_op_infos:
-    #             if computation_hash in self.computation_cache:
-    #                 predicted_time = self.computation_cache[computation_hash]
-    #             else:
-    #                 fusion_types = np.expand_dims(np.array(fusion_type_one_hot, dtype=np.float32), 0)
-    #                 op_codes = np.expand_dims(np.array(op_codes_in_sample), 0)
-    #                 op_hashes = np.expand_dims(op_hashes_in_sample, 0)
-    #                 feature_vectors = np.expand_dims(np.array(feature_vectors_in_sample, dtype=np.float32), 0)
-    #                 predicted_time = self.kernel_model.predict(
-    #                                         x=[fusion_types, op_codes, op_hashes, feature_vectors]) \
-    #                                                                                     .flatten()[0]
-    #                 self.computation_cache[computation_hash] = predicted_time
-    #             predicted_module_time += predicted_time
-    #             breakdown_dict["fused"][computation_hash] = predicted_time
-
-    #     except Exception as e:
-    #         traceback.print_exc()
-    #         if len(node_names) > 10:
-    #             print("[Cost Model] Failed to predict the running time of ops: {} ...".format(list(node_names)[:10]))
-    #         else:
-    #             print("[Cost Model] Failed to predict the running time of ops: {} ...".format(node_names))
-    #         shutil.rmtree(self._tmp_dir)
-    #         os.makedirs(self._tmp_dir)
-    #         return -1, {}
-    #     # clean up
-    #     shutil.rmtree(self._tmp_dir)
-    #     os.makedirs(self._tmp_dir)
-    #     return predicted_module_time, breakdown_dict
-
     def predict(self, node_names):
         try:
             graph_def_path, config_path = \
                 self.graph_def_util.get_subgraph_def_config_from_nodes(node_names, self._tmp_dir, 0)
         except GSInternalErrors as e:
-            print("[Cost Model] Failed to generate legal graph def for input nodes: {}".format(e))
+            self._error_log("Failed to generate legal graph def for input nodes: {}".format(e))
             return -1, {}
         except RuntimeError:
             traceback.print_exc()
-            print("[Cost Model] Failed to generate legal graph def for input nodes.")
+            self._error_log("Failed to generate legal graph def for input nodes.")
             return -1, {}
 
         if graph_def_path is None or config_path is None:
             if len(node_names) > 10:
-                print("[Cost Model] Failed to predict the running time of ops: {} ...".format(list(node_names)[:10]))
+                self._error_log("Failed to predict the running time of ops: {} ...".format(list(node_names)[:10]))
             else:
-                print("[Cost Model] Failed to predict the running time of ops: {} ...".format(node_names))
+                self._error_log("Failed to predict the running time of ops: {} ...".format(node_names))
             return -1, {}
         unopt_hlo_path = os.path.join(self._tmp_dir, "unopt.txt")
         opt_hlo_path = os.path.join(self._tmp_dir, "opt.txt")
@@ -1000,7 +906,7 @@ class XLAModuleCostModel():
                             (adj, fusion_type, computation_hash, subop_infos) = \
                                 self.training_dataset._parse_feature_file(f_kernel)
                         if (computation_hash != fused_op_hash):
-                            print("Inconsistent hashes for kernel SID: {}".format(kernel_sid))
+                            self._error_log("Inconsistent hashes for kernel SID: {}".format(kernel_sid))
                             assert False
                         # generate representations
                         ( fusion_type_one_hot, op_codes_in_sample, 
@@ -1082,29 +988,12 @@ class XLAModuleCostModel():
                     predicted_module_time += predicted_time
                     breakdown_dict["fused"][computation_hash] = predicted_time
 
-            # # run model to predict fused kernel time
-            # for (computation_hash, fusion_type_one_hot, op_codes_in_sample, 
-            #         op_hashes_in_sample, feature_vectors_in_sample) in fused_op_infos:
-            #     if computation_hash in self.computation_cache:
-            #         predicted_time = self.computation_cache[computation_hash]
-            #     else:
-            #         fusion_types = np.expand_dims(np.array(fusion_type_one_hot, dtype=np.float32), 0)
-            #         op_codes = np.expand_dims(np.array(op_codes_in_sample), 0)
-            #         op_hashes = np.expand_dims(op_hashes_in_sample, 0)
-            #         feature_vectors = np.expand_dims(np.array(feature_vectors_in_sample, dtype=np.float32), 0)
-            #         predicted_time = self.kernel_model.predict(
-            #                                 x=[fusion_types, op_codes, op_hashes, feature_vectors]) \
-            #                                                                             .flatten()[0]
-            #         self.computation_cache[computation_hash] = predicted_time
-            #     predicted_module_time += predicted_time
-            #     breakdown_dict["fused"][computation_hash] = predicted_time
-
         except Exception as e:
             traceback.print_exc()
             if len(node_names) > 10:
-                print("[Cost Model] Failed to predict the running time of ops: {} ...".format(list(node_names)[:10]))
+                self._error_log("Failed to predict the running time of ops: {} ...".format(list(node_names)[:10]))
             else:
-                print("[Cost Model] Failed to predict the running time of ops: {} ...".format(node_names))
+                self._error_log("Failed to predict the running time of ops: {} ...".format(node_names))
             shutil.rmtree(self._tmp_dir)
             os.makedirs(self._tmp_dir)
             return -1, {}
@@ -1119,13 +1008,13 @@ class XLAModuleCostModel():
                 self.graph_def_util.get_subgraph_def_config_from_nodes(node_names, self._tmp_dir, 0)
         except:
             traceback.print_exc()
-            print("[Cost Model] Failed to generate legal graph def for input nodes. Possibly because an input node has non-fixed output shape.")
+            self._error_log("Failed to generate legal graph def for input nodes. Possibly because an input node has non-fixed output shape.")
             return -1, {}
         if graph_def_path is None or config_path is None:
             if len(node_names) > 10:
-                print("[Cost Model] Failed to predict the running time of ops: {} ...".format(list(node_names)[:10]))
+                self._error_log("Failed to predict the running time of ops: {} ...".format(list(node_names)[:10]))
             else:
-                print("[Cost Model] Failed to predict the running time of ops: {} ...".format(node_names))
+                self._error_log("Failed to predict the running time of ops: {} ...".format(node_names))
             return -1, {}
         unopt_hlo_path = os.path.join(self._tmp_dir, "unopt.txt")
         opt_hlo_path = os.path.join(self._tmp_dir, "opt.txt")
@@ -1134,8 +1023,8 @@ class XLAModuleCostModel():
             compile_to_hlo(graph_def_path, config_path, unopt_hlo_path, opt_hlo_path)
             replay_and_generate_kernel_sample(0, unopt_hlo_path, self._tmp_dir, self._tmp_dir)
         except Exception as e:
-            print(e)
-            print("[Cost Model] Failed to execute the running time of ops: {}".format(node_names))
+            self._error_log(e)
+            self._error_log("Failed to execute the running time of ops: {}".format(node_names))
             return -1, {}
         exec_log_path = os.path.join(self._tmp_dir, "modules/0_exec.txt")
         exec_times = []

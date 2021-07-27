@@ -33,7 +33,10 @@ def visualize_gml(graph, layout="circular"):
     # node_positions = plot_instance.node_positions
 
 def part_of_dag(dag, node, 
-    max_in_depth=2, max_out_depth=2, path=None, simple=False):
+    max_in_depth=2, max_out_depth=2, 
+    path=None, simple=False, 
+    focus_nodes=None, use_std_name=True,
+    name_size_limit=50):
     ''' Return part of the dag, recursively add the predecessors
         and the successors of `node`
     '''
@@ -75,11 +78,28 @@ def part_of_dag(dag, node,
                 
     recur_add(node, max_in_depth, max_out_depth, visited, simple=simple)
     small_dag.add_edges_from(edges_to_add)
+
     for _node in start_nodes:
         small_dag.nodes[_node]["color"] = "red"
     for _node in end_nodes:
         small_dag.nodes[_node]["color"] = "green"
     small_dag.nodes[node]["color"] = "yellow"
+
+    if focus_nodes is not None:
+        for _node in focus_nodes:
+            if use_std_name:
+                _node = parse_allinfo_from_name(_node)[1]
+            if _node in small_dag.nodes:
+                small_dag.nodes[_node]["fontcolor"] = "blue"
+    
+    def relabel_func(old_label):
+        old_label = "+".join([parse_rawname(_label) for _label in old_label.split("+")])
+        if len(old_label) > name_size_limit:
+            return old_label[:name_size_limit] + "..."
+        else:
+            return old_label
+    nx.relabel_nodes(small_dag, relabel_func, copy=False)
+
     if path is not None:
         nx.drawing.nx_pydot.write_dot(small_dag, path)
     return small_dag

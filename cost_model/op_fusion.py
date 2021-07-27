@@ -1,3 +1,4 @@
+from multiprocessing import Value
 import os, sys
 import networkx as nx
 from scipy.stats.mstats import gmean
@@ -8,7 +9,7 @@ import json
 from tqdm import tqdm, trange
 
 import arg_utils
-from trace_utils import parse_cat_from_name, parse_pid_from_name, \
+from trace_utils import painted_timeline, parse_cat_from_name, parse_pid_from_name, \
     _map_tf_op2layer, parse_cat_fine_grained, _parse_tf_layer_names, \
     gen_long_name, parse_op_name, \
     SingleLogger, GAP_STR_OP2OP, GAP_STR_OP2COMM, CatName, FileName
@@ -23,7 +24,6 @@ from cost_model._xla.pk_graph import PKGraph, contract_nodes_nx, \
 from cost_model._xla.xla_module_cost_model import XLAModuleCostModel
 
 args_ = arg_utils.SingleArg().args
-XLA_INIT_NO_BW = True
 FUSION_TIME_ESTIMATE_RATIO = 0.8
 FORCE_ESTIMATE_FUSION_TIME = False
 ENABLE_PRUNING = False
@@ -74,6 +74,9 @@ class XLAGraphPass(_BaseGraphPass):
 
         self.explore_fusion = True
         self.enable_partition = True
+        self.xla_init_forbid_bw = True
+        if args_.layer_by_layer:
+            self.xla_init_forbid_bw = True
 
         self.cord_pid = "host0.rank0" if self.opt.clct.comm_backend == "NCCL" else "traces_0.rank0"
 
@@ -94,7 +97,7 @@ class XLAGraphPass(_BaseGraphPass):
                     self.forbidden_list, self.init_op2fused = pickle.load(
                     f)
                 self.node_attr_cache = node_attr_cache
-            SingleLogger().info("Reading init graph from cache.")
+            SingleLogger().info("Reading init graph from cache: {}.".format(init_ckpt_path))
         else:
             G = self.dag.copy() if G_prime is None else G_prime.copy()
             PKG = PKGraph(G)
@@ -239,21 +242,34 @@ class XLAGraphPass(_BaseGraphPass):
         partition_PKG = PKGraph(partition_G)
 
         if args_.layer_by_layer:
-            from dag_utils import part_of_dag
-            # node = "BW.gradient_tape/resnet50/conv2_block2_2_conv/Conv2D/ShapeN"
-            # node = "BW.gradient_tape/resnet50/conv5_block1_out/ReluGrad"
-            # node = "BW.gradient_tape/inception_v3/mixed10/Slice_2"
-            # node = "BW.gradient_tape/inception_v3/avg_pool/Tile"
-            # node = "BW.gradient_tape/inception_v3/activation_93/ReluGrad-0-TransposeNHWCToNCHW-LayoutOptimizer"
+            self.cost_models["default"].silent = True
+
+            model_name = self.opt.clct.para_dict.parse_model_name()
+            parse_layer_method = 2
+            if parse_layer_method == 1:
+                op2layer, layer2ops = _map_tf_op2layer(self.opt.clct.dag, model_name)
+            elif parse_layer_method == 2:
+                op2layer, layer2ops = _map_tf_op2layer(self.opt.clct.dag, model_name,
+                    use_rough_layer=False, check_pred=False)
+            else:
+                raise ValueError()
+            
+            # import code
+            # code.interact(local=locals())
+            assert len([op for op in op2layer.keys() if "FW" in op]) == 0
+            
+            # from dag_utils import part_of_dag
+            # node = "BW.gradient_tape/resnet50/avg_pool/Tile"
+            # focus_nodes = ["host0.rank0->BW.gradient_tape/resnet50/conv5_block3_out/ReluGrad", "host0.rank0->BW.gradient_tape/resnet50/avg_pool/Tile", "host0.rank0->BW.gradient_tape/resnet50/avg_pool/Reshape", "host0.rank0->BW.gradient_tape/resnet50/avg_pool/truediv", "host0.rank0->BW.gradient_tape/resnet50/predictions/MatMul", "host0.rank0->BW.gradient_tape/resnet50/avg_pool/Tile/multiples", "host0.rank0->BW.gradient_tape/resnet50/conv5_block3_3_bn/FusedBatchNormGradV3", "host0.rank0->BW.gradient_tape/resnet50/conv5_block3_3_conv/Conv2D/Conv2DBackpropFilter", "host0.rank0->BW.gradient_tape/resnet50/avg_pool/Reshape/shape"]
             # small_dag = part_of_dag(self.opt.clct.dag, node,
             #     max_in_depth=3, max_out_depth=3,
             #     path = "/home/tiger/small_dag.txt",
-            #     simple=False)
+            #     simple=False,
+            #     focus_nodes=focus_nodes)
             # exit(0)
-            model_name = self.opt.clct.para_dict.parse_model_name()
-            op2layer, layer2ops = _map_tf_op2layer(self.opt.clct.dag, model_name)
+
             ### We will handle bw operators seperately, so add bw ops to initial_forbidden_list first
-            self.initial_forbidden_list.union([gen_long_name(self.cord_pid, bw_op) for bw_op in op2layer.keys()])
+            # self.initial_forbidden_list.union([gen_long_name(self.cord_pid, bw_op) for bw_op in op2layer.keys()])
 
         source_nodes = sorted(
             [node for node in partition_G.nodes if 
@@ -269,7 +285,10 @@ class XLAGraphPass(_BaseGraphPass):
                     forbidden_list=self.initial_forbidden_list)
         
         if args_.layer_by_layer:
-            list_of_group = [[gen_long_name(self.cord_pid, n) for n in nodes_to_contract] for nodes_to_contract in layer2ops.values()]
+            painted_timeline(self.opt.clct.traceM.traces, lambda event: op2layer.get(event["name"], event["name"]),
+                os.path.join(self.root_path, "op2layer.json"))
+            list_of_group = [[gen_long_name(self.cord_pid, n) for n in nodes_to_contract] for nodes_to_contract in layer2ops.values() if len(nodes_to_contract) > 1]
+            SingleLogger().info("[Layer View] Start to contract {} layer ...".format(len(list_of_group)))
             partition_G = contract_groups(
                 partition_G, partition_PKG, 
                 forbidden_list=self.forbidden_list,
@@ -301,6 +320,15 @@ class XLAGraphPass(_BaseGraphPass):
                 if compilable:
                     for _node_name in [node_name] + self.opt._debug_convert_to_other_machines(node_name):
                         ns = _node_name.split("+")
+
+                        ### DEBUG
+                        if self.cord_pid in _node_name:
+                            origin_avg = 0
+                            for _op in ns:
+                                origin_avg += G.nodes[_op]["avg"]
+                            if origin_avg > 0:
+                                print("Fusion from {} nodes {:.3f} ms to {:.3f} ms".format(len(ns), origin_avg, avg))
+
                         new_node_name = contract_nodes_nx(G, ns)
                         PKG.contract_nodes_unsafe(ns)
                         ### TODO (huhanpeng): since we assume data parallel
@@ -334,7 +362,7 @@ class XLAGraphPass(_BaseGraphPass):
         dag = self.dag if G_prime is None else G_prime
         for node in dag.nodes:
             # ignore BW nodes and communication nodes
-            if XLA_INIT_NO_BW and "BW" in node:
+            if self.xla_init_forbid_bw and "BW" in node:
                 self.initial_forbidden_list.add(node)
 
             try:
@@ -458,10 +486,6 @@ class XLAGraphPass(_BaseGraphPass):
             if verbose:
                 SingleLogger().info("[COST MODEL QUERY] Exec time predicted: {} (Avg. sum of origin: {}".format(
                     predicted_time, sum([self._get_node_avg(n) for n in fused_u_.split("+")])))
-            # self.cost_model_error.append(np.abs(predicted_time - executed_time) / executed_time)
-            # SingleLogger().info("[COST MODEL QUERY] Average prediction accuracy: {}".format(np.average(self.cost_model_error)))
-            # if len(self.cost_model_error) > 20:
-            # self.cost_model_error = []
             pass
         return predicted_time
         

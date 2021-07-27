@@ -104,10 +104,11 @@ class Device:
         
         ### Construct execution graphs
         ### 1. Add new edges according to the execution order
-        if not self.infi_para and self.prev_name_dur is not None:
-            if (self.prev_name_dur[0], name) not in self.replayer.exct_dag.edges:
-                self.replayer.exct_dag.add_edge(self.prev_name_dur[0], name, weight=(
-                    (start_t - self.prev_name_dur[2]) / 1000.0))
+        if not self.infi_para and self.prev_name_dur is not None and \
+            (self.prev_name_dur[0], name) not in self.replayer.exct_dag.edges and \
+            not ("BW" in self.prev_name_dur[0] and "UPDATE_" in name):
+            self.replayer.exct_dag.add_edge(self.prev_name_dur[0], name, weight=(
+                (start_t - self.prev_name_dur[2]) / 1000.0))
                     
         if duration == 0 and not args_.full_trace:
             self.prev_name_dur = (name, 0, start_t)
@@ -562,22 +563,13 @@ class Replayer:
         self.replay_done = False
 
     def dump_critical_path(self, file, critical_path, prefix=None):
-        rst = {
-            "traceEvents": [],
-            "displayTimeUnit": "ms"
-        }
-        for trace in self.rst_traces:
-            if trace["args"]["name"] in critical_path:
-                trace["name"] = "Y"
-            else:
-                trace["name"] = "N"
-            rst["traceEvents"].append(trace)
         if prefix is None:
             dump_path = os.path.join(self.dump_path, file)
         else:
             dump_path = os.path.join(prefix, file)
-        with open(dump_path, 'w') as f:
-            json.dump(rst, f)
+        painted_timeline(self.rst_traces, 
+            lambda event: "Y" if event["args"]["name"] in critical_path else "N",
+            dump_path)
     
     def paint_bw_comm_depend(self, traceM=None, one_pid=None):
         ''' Paint the timeline to show the dependency between BW nodes and Comm nodes

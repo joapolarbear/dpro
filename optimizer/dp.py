@@ -23,7 +23,7 @@ class DPOptimizer(Optimizer):
         self.use_heat = False
 
         if "+" in self.cst_md_mng.strategy2model:
-            self.cst_md_mng.strategy2model["+"].expore_fusion = False
+            self.cst_md_mng.strategy2model["+"].explore_fusion = False
             self.cst_md_mng.strategy2model["+"].enable_partition = False
     
     def current_op_in_graph(self, original_name) -> str:
@@ -71,6 +71,8 @@ class DPOptimizer(Optimizer):
     
     def search(self, graph_cache=os.path.join(ROOT_PATH, "graph_cache.pickle")):
 
+        SingleLogger().info(bcolors.CGREEN + "Start to search using DP" + bcolors.ENDC)
+
         G = self.dag.copy()
         PKG = PKGraph(G)
 
@@ -96,12 +98,12 @@ class DPOptimizer(Optimizer):
             self.cur_cost, self.exct_dag, self.mem_usage = self.evaluate(
                 G, _path=os.path.join(ROOT_PATH, "searched_graph/init.json"))
         else:
-            self.cur_cost, self.exct_dag, self.mem_usage, topo_ord = self.evaluate(
+            self.cur_cost, self.exct_dag, self.mem_usage = self.evaluate(
                 G, _path=os.path.join(ROOT_PATH, "searched_graph/init.json"),
-                recd_topo_order=True)
+                recd_topo_order=False)
             
-            comp_ops = self.ret_all_comp_ops(topo_ord)
-            cur_comp_idx = 1
+            # comp_ops = self.ret_all_comp_ops(topo_ord)
+            # cur_comp_idx = 1
 
             self.step = 0
             self.trajectory = []
@@ -147,6 +149,49 @@ class DPOptimizer(Optimizer):
                     comp_ops.remove(v)
                     return cur_idx
             return cur_idx + 1
+
+        def ret_standar_names(cur_n):
+            if "+" in cur_n:
+                if "Comm" in cur_n:
+                    _, std_name, cat, _ = parse_allinfo_from_name(cur_n)
+                    tensor_name_list = std_name.split(".")[1]
+                    return ["{}.{}".format(cat, _n) for _n in tensor_name_list.split("+")]
+                else:
+                    ### fused_op
+                    return [parse_allinfo_from_name(_n)[1] for _n in cur_n.split("+")]
+            else:
+                # pid, std_name, cat, suffix = parse_allinfo_from_name(cur_n)
+                return [parse_allinfo_from_name(cur_n)[1]]
+        
+        local_dfg = self.clct.dag
+        
+        while True:
+            critical_path = self.wrap_critical_path(self.exct_dag)
+            prev_nodes = None
+            for cur_n, l in critical_path:
+                if prev_nodes is None:
+                    prev_nodes = ret_standar_names(cur_n)
+                    continue
+                
+                # print(prev_nodes, cur_n)
+                cur_nodes = ret_standar_names(cur_n)
+
+                ### Some consecutive communication OPs on the critical path
+                # if "+".join(prev_nodes) == "+".join(cur_nodes):
+                #     if "Comm" in prev_nodes[0]:
+                #         print(prev_nodes)
+                
+                # for pred in prev_nodes:
+                #     for _cur_n in cur_nodes:
+                #         if (pred, _cur_n) in local_dfg.edges:
+                #             print(pred, _cur_n)
+                #         if "Comm" in pred and "Comm" in _cur_n:
+                #             print(pred, _cur_n)
+                #     assert pred in local_dfg.nodes, pred
+
+                prev_nodes = cur_nodes
+
+            exit(0)
 
         while cur_comp_idx < len(comp_ops):
             if cur_comp_idx == 0:

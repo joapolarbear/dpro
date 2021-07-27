@@ -212,10 +212,11 @@ def _parse_tf_rough_layer(name, model_name):
     else:
         raise ValueError(name, op_type)
 
-def _map_tf_op2layer(local_dfg, model_name):
+def _map_tf_op2layer(local_dfg, model_name,
+    use_rough_layer=True, check_pred=True):
+        
     op2layer = {}
     layer2ops = {}
-
     todo = set()
 
     def same_rough_layer(bw_u, bw_v):
@@ -230,30 +231,52 @@ def _map_tf_op2layer(local_dfg, model_name):
                 return False
         return True
 
-    def recur_parse_layer(bw_op, visited_set = set(), use_rough_layer=True):
-        ''' Recursively decide bw_op's layer
+    def recur_parse_layer(bw_op, visited_set = set()):
+        ''' Recursively decide bw_op's layer in post-order
+        * If `use_rough_layer` is set True, operators with different `rough_layer` belong to different layers
+        * If `check_pred` is set True, check the predecessors to decide the layer
         '''
-        # print(bw_op, visited_set)
-        layer = None
+        if bw_op in op2layer:
+            return op2layer[bw_op]
+
         for succ in local_dfg.successors(bw_op):
             if (visited_set and succ in visited_set) or (use_rough_layer and not same_rough_layer(bw_op, succ)):
                 continue
-            if "Comm" in succ:
-                layer = succ.split("Comm.")[1]               
-            elif succ in op2layer:
-                layer = op2layer[succ]
+            if "FW" in succ or "UPDATE_" in succ or "Comm" in succ:
+                continue
             else:
                 visited_set.add(bw_op)
                 layer = recur_parse_layer(succ, visited_set = visited_set)
                 visited_set.remove(bw_op)
             
-            if layer:
-                break
-        
-        if layer is None:
+        layer = None
+        layers_from_comm_succs = [succ.split("Comm.")[1] for succ in local_dfg.successors(bw_op) if "Comm" in succ]
+        layers_from_exist = [op2layer[succ] for succ in local_dfg.successors(bw_op) if succ in op2layer]
+        if len(layers_from_comm_succs) > 0:
+            layers_from_comm_succs = set(layers_from_comm_succs)
+            if len(layers_from_comm_succs) > 1:
+                print("[Layer View] {}: {} possible layers from comm: {}".format(bw_op,
+                    len(layers_from_comm_succs), layers_from_comm_succs))
+            layer = layers_from_comm_succs.pop()
+        elif len(layers_from_exist) > 0:
+            layers_from_exist = set(layers_from_exist)
+            if len(layers_from_exist) > 1:
+                print("[Layer View] {}: {} possible layers from succ: {}.".format(bw_op,
+                    len(layers_from_exist), layers_from_exist), 
+                    " We currently do not assign any this node to the same layer view of any its successors.")
+                layer = bw_op
+            else:
+                layer = layers_from_exist.pop()
+        else:
+            pass
+
+        if layer is None and check_pred and False:
             for pred in local_dfg.predecessors(bw_op):
                 if (visited_set and pred in visited_set) or (use_rough_layer and not same_rough_layer(bw_op, pred)):
-                    continue            
+                    continue
+                if "FW" in pred or "UPDATE_" in pred:
+                    continue
+                assert "Comm" not in pred, (bw_op, pred)    
                 if pred in op2layer:
                     layer = op2layer[pred]
                 else:            
@@ -261,49 +284,41 @@ def _map_tf_op2layer(local_dfg, model_name):
                     layer = recur_parse_layer(pred, visited_set = visited_set)
                     visited_set.remove(bw_op)
                 
-                if layer:
+                if layer is not None:
                     break
 
-        if layer:
-            for _op in [bw_op] + list(visited_set):
-                op2layer[_op] = layer
-                if _op in todo:
-                    todo.remove(_op)
-                if layer not in layer2ops:
-                    layer2ops[layer] = set()
-                layer2ops[layer].add(_op)
-                # if _op == "BW.gradient_tape/resnet50/conv5_block1_0_conv/Conv2D/Conv2DBackpropInput":
-                # if _op == "BW.gradient_tape/resnet50/conv4_block6_out/ReluGrad":
-                #     print(bw_op, list(local_dfg.successors(bw_op)))
-                #     print(list(local_dfg.predecessors(bw_op)))
-                #     print(todo_set)
+        if layer is not None:
+            # for _op in [bw_op] + list(visited_set):
+            _op = bw_op
+            assert _op not in op2layer, (_op, visited_set)
+            op2layer[_op] = layer
+            if _op in todo:
+                todo.remove(_op)
+            if layer not in layer2ops:
+                layer2ops[layer] = set()
+            layer2ops[layer].add(_op)
+
+            if "FW" in _op or "Comm" in _op:
+                print(bw_op, _op, visited_set)
+                raise
         else:
             todo.add(bw_op)
         return layer
 
     for node in local_dfg.nodes:
-        if not "BW" in node:
+        if "FW" in node or "UPDATE_" in node or "Comm" in node:
             continue
         recur_parse_layer(node)
     
     if len(todo) > 0:
-        # todo_copy = todo.copy()
-        # for op in todo_copy:
-        #     recur_parse_layer(op, use_rough_layer=False)
-        # if len(todo) > 0:
-        #     for op in todo:
-        #         if op not in layer2ops:
-        #             layer2ops[op] = []
-        #         layer2ops[op].append(op)
-        #         op2layer[op] = op 
         SingleLogger().warn("Fail to parse layer names for {} BW operators.".format(len(todo)))
     SingleLogger().info("Parse {} BW layers for {}.".format(len(layer2ops), model_name))
 
     for layer in layer2ops.keys():
         layer2ops[layer] = list(layer2ops[layer])
-    with open("/home/tiger/layer_map.json", 'w') as fp:
-        json.dump({"layer2ops": layer2ops, "todo": list(todo)}, fp)
-        # json.dump(layer2ops, fp)
+
+    # with open("/home/tiger/layer_map.json", 'w') as fp:
+    #     json.dump({"layer2ops": layer2ops, "todo": list(todo)}, fp)
         
     return op2layer, layer2ops
 
@@ -980,5 +995,17 @@ class PathManager:
             raise ValueError()
 
 
-
+def painted_timeline(traces, mapping, dump_path):
+    ''' Paint a timeline
+    * `mapping`: a function map a trace to the new name
+    '''
+    rst = {
+        "traceEvents": [],
+        "displayTimeUnit": "ms"
+    }
+    for trace in traces:
+        trace["name"] = mapping(trace)
+        rst["traceEvents"].append(trace)
+    with open(dump_path, 'w') as f:
+        json.dump(rst, f)
 

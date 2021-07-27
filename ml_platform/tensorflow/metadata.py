@@ -371,7 +371,9 @@ class MetaInfo:
         else:
             if self.update_nodes_in_dag is not None and _name in self.update_nodes_in_dag:
                 _name = "UPDATE_." + _name
-            elif _name.startswith("gradients") or "gradient_tape" in _name:
+            elif _name.startswith("gradients") or \
+                (_name.startswith("gradient_tape") and not _name.endswith("ShapeN") \
+                    and not "LayoutOptimizer" in _name):
                 _name = "BW." + _name
             else:
                 _name = "FW." + _name
@@ -488,6 +490,30 @@ class MetaInfo:
             assert not (nu.startswith("Comm") and nv.startswith("Comm")), (u, v)
             new_graph.add_edge(nu, nv)
         
+        ### Relabel operators, all downstream operators of BW OPs should be BW OPs
+        relabel_map = {}
+        visited_nodes = set()
+        def recur_update_fw2bw(bw_op):
+            if bw_op in visited_nodes:
+                return
+            visited_nodes.add(bw_op)
+            for succ in new_graph.successors(bw_op):
+                if "FW" in succ:
+                    # print(bw_op, succ)
+                    relabel_map[succ] = succ.replace("FW", "BW")
+                    recur_update_fw2bw(succ)
+                elif "Comm" in succ:
+                    pass
+                elif "UPDATE_" in succ:
+                    pass
+                else:
+                    ### "BW" in succ
+                    recur_update_fw2bw(succ)
+        for _op in new_graph.nodes():
+            if "BW" in _op:
+                recur_update_fw2bw(_op)
+        nx.relabel_nodes(new_graph, relabel_map, copy=False)
+
         self.local_dfg = new_graph
 
     def standard_name(self, op_name):

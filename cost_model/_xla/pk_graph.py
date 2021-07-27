@@ -182,13 +182,13 @@ class PKGraph(object):
                 raise RuntimeError("nx_graph_reference must be an networkx DiGraph.")
             self.nx_graph_reference = nx_graph_reference
         index2nodename = list(nx.topological_sort(self.nx_graph))
-        self.nodename2index = dict([(name, idx) for idx, name in enumerate(index2nodename)])
+        self.nodename2idx = dict([(name, idx) for idx, name in enumerate(index2nodename)])
         self.ord = list(range(len(index2nodename)))
         self.free_indexes = set()
         self.nodename2fusednode = {}
 
     def _get_node_order(self, u):
-        idx = self.nodename2index[u]
+        idx = self.nodename2idx[u]
         return self.ord[idx]
 
     def add_edge(self, u, v, **kwargs):
@@ -203,6 +203,17 @@ class PKGraph(object):
             exists_cycle = not self._dfs_forward(v, upper_bound, delta_f)
             if exists_cycle:
                 self.nx_graph.remove_edge(u, v)
+                # print(delta_f)
+                # print(list(nx.find_cycle(self.nx_graph, orientation="original")))
+                from dag_utils import part_of_dag
+                node = u
+                focus_nodes = [v]
+                small_dag = part_of_dag(self.nx_graph, node,
+                    max_in_depth=3, max_out_depth=3,
+                    path = "/home/tiger/small_dag.txt",
+                    simple=True,
+                    focus_nodes=focus_nodes,
+                    use_std_name=False)
                 raise PKGraphCycleError("Cannot add edge ({}, {}) because it will introduce a cycle.".format(u, v))
             delta_b = []
             self._dfs_backward(u, lower_bound, delta_b)
@@ -239,10 +250,10 @@ class PKGraph(object):
         all_predecessors, all_successors, new_node_name = get_all_pred_succ_nx(self.nx_graph, nodes_to_contract)
 
         # update indexes
-        self.nodename2index[new_node_name] = self.nodename2index[nodes_to_contract[-1]]
-        self.nodename2index.pop(nodes_to_contract[-1])
+        self.nodename2idx[new_node_name] = self.nodename2idx[nodes_to_contract[-1]]
+        self.nodename2idx.pop(nodes_to_contract[-1])
         for node in nodes_to_contract[:-1]:
-            self.free_indexes.add(self.nodename2index.pop(node))
+            self.free_indexes.add(self.nodename2idx.pop(node))
 
         for node in nodes_to_contract:
             self.nx_graph.remove_node(node)
@@ -274,9 +285,9 @@ class PKGraph(object):
             successors.add(node)
         new_node_name = u + "+" + v
 
-        self.nodename2index[new_node_name] = self.nodename2index[v]
-        self.free_indexes.add(self.nodename2index.pop(u))
-        self.nodename2index.pop(v)
+        self.nodename2idx[new_node_name] = self.nodename2idx[v]
+        self.free_indexes.add(self.nodename2idx.pop(u))
+        self.nodename2idx.pop(v)
         
         self.nx_graph.remove_node(u)
         self.nx_graph.remove_node(v)
@@ -299,7 +310,7 @@ class PKGraph(object):
         # Note: we assume the split is valid and only throw errors 
         # if add edge fails
         self.nx_graph.remove_node(u)
-        self.free_indexes.add(self.nodename2index.pop(u))
+        self.free_indexes.add(self.nodename2idx.pop(u))
 
         # build a node -> component reverse index
         component_names = []
@@ -316,7 +327,7 @@ class PKGraph(object):
 
             # ! important: assign a free index to the component
             free_idx = self.free_indexes.pop()
-            self.nodename2index[component_name] = free_idx
+            self.nodename2idx[component_name] = free_idx
 
         # print("Component names: {}".format(component_names))
 
@@ -355,14 +366,14 @@ class PKGraph(object):
         new_instance = self.__class__(_init_copy=True)
         new_instance.nx_graph = self.nx_graph.copy()
         new_instance.nx_graph_reference = self.nx_graph_reference.copy()
-        new_instance.nodename2index = self.nodename2index.copy()
+        new_instance.nodename2index = self.nodename2idx.copy()
         new_instance.ord = self.ord.copy()
         new_instance.free_indexes = self.free_indexes.copy()
         new_instance.nodename2fusednode = self.nodename2fusednode.copy()
         return new_instance
 
     def check_invariant(self):
-        assert len(self.free_indexes) + len(self.nodename2index) == len(self.nx_graph_reference.nodes)
+        assert len(self.free_indexes) + len(self.nodename2idx) == len(self.nx_graph_reference.nodes)
     
     def check_identical(self, g):
         assert g.edges() == self.nx_graph.edges()
@@ -404,9 +415,9 @@ class PKGraph(object):
                 self._dfs_backward(u, lower_bound, backward_nodes=backward_nodes, visited=visited)
     
     def _reorder(self, delta_f, delta_b):
-        delta_f_idx = sorted([self.nodename2index[node] for node in delta_f], key=lambda x: self.ord[x])
+        delta_f_idx = sorted([self.nodename2idx[node] for node in delta_f], key=lambda x: self.ord[x])
         delta_f_ord = [self.ord[idx] for idx in delta_f_idx]
-        delta_b_idx = sorted([self.nodename2index[node] for node in delta_b], key=lambda x: self.ord[x])
+        delta_b_idx = sorted([self.nodename2idx[node] for node in delta_b], key=lambda x: self.ord[x])
         delta_b_ord = [self.ord[idx] for idx in delta_b_idx]
         L = []
         L += delta_b_idx
@@ -467,12 +478,12 @@ def postorder_contract_nx(_dag: nx.DiGraph, _pkg: PKGraph, source_node, visitied
 
 def contract_groups(_dag: nx.DiGraph, _pkg: PKGraph, forbidden_list=None, list_of_group=None):
     for nodes_to_contract in list_of_group:
-        if forbidden_list is not None:
-            nodes_to_contract = [n for n in nodes_to_contract if n not in forbidden_list]
-        if len(nodes_to_contract) < 2:
-            continue
-
-        # print(nodes_to_contract)
+        # if forbidden_list is not None:
+        #     nodes_to_contract = [n for n in nodes_to_contract if n not in forbidden_list]
+        
+        assert len(nodes_to_contract) > 1
+        assert len([n for n in nodes_to_contract if "FW" in n or "Comm" in n]) == 0
+        # print("DEBUG: {}".format(nodes_to_contract))
 
         _pkg.contract_nodes_unsafe(nodes_to_contract)
         new_node_name = contract_nodes_nx(_dag, nodes_to_contract)
