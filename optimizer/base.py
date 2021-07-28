@@ -405,6 +405,10 @@ class Optimizer:
         return nodes_introduced, nodes_removed
 
     def cost_model_flush(self, is_accept):
+        ''' Some strategies may not be accepted, and some Passes are stateful
+            * If a strategy is accepted, change the interal state of those Passes
+            * Otherwise, keep it the same
+        '''
         for cm in self.cst_md_mng.cost_model_list:
             cm.flush(is_accept)
 

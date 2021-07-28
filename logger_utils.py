@@ -22,6 +22,9 @@ _srcfile = os.path.normcase(_srcfile)
 class SingleLogger:
     def __init__(self, path, name, logging_level, is_clean=False, show_progress=False):
         dirname = path if os.path.isdir(path) else os.path.dirname(path)
+        dirname = os.path.join(path, ".log")
+        if not os.path.exists(dirname):
+            os.makedirs(dirname)
         logfile = os.path.join(dirname, "log_option-" + name + ".txt")
         if is_clean and os.path.exists(logfile):
             os.remove(logfile)

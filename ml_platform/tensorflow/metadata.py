@@ -59,6 +59,7 @@ class MetaInfo:
 
         self.local_dfg = None
         self.update_nodes_in_dag = None
+        self.bw_nodes_in_dag = None
         ### Mapping from tensor names to weight variable names
         self.tensor2weight = {}
         self._wrap_read_dfg(os.path.join(meta_dir, FileName.DAG.value))
@@ -371,6 +372,8 @@ class MetaInfo:
         else:
             if self.update_nodes_in_dag is not None and _name in self.update_nodes_in_dag:
                 _name = "UPDATE_." + _name
+            elif self.bw_nodes_in_dag is not None and _name in self.bw_nodes_in_dag:
+                _name = "BW." + _name
             elif _name.startswith("gradients") or \
                 (_name.startswith("gradient_tape") and not _name.endswith("ShapeN") \
                     and not "LayoutOptimizer" in _name):
@@ -492,6 +495,7 @@ class MetaInfo:
         
         ### Relabel operators, all downstream operators of BW OPs should be BW OPs
         relabel_map = {}
+        self.bw_nodes_in_dag = set()
         visited_nodes = set()
         def recur_update_fw2bw(bw_op):
             if bw_op in visited_nodes:
@@ -501,6 +505,7 @@ class MetaInfo:
                 if "FW" in succ:
                     # print(bw_op, succ)
                     relabel_map[succ] = succ.replace("FW", "BW")
+                    self.bw_nodes_in_dag.add(parse_op_name(succ))
                     recur_update_fw2bw(succ)
                 elif "Comm" in succ:
                     pass
@@ -511,12 +516,14 @@ class MetaInfo:
                     recur_update_fw2bw(succ)
         for _op in new_graph.nodes():
             if "BW" in _op:
+                self.bw_nodes_in_dag.add(parse_op_name(_op))
                 recur_update_fw2bw(_op)
         nx.relabel_nodes(new_graph, relabel_map, copy=False)
 
         self.local_dfg = new_graph
 
     def standard_name(self, op_name):
+        assert self.update_nodes_in_dag is not None and self.bw_nodes_in_dag is not None
         return self.tf_relabel_func(op_name)
 
     def tensor_id_to_tensor_name(self, _id):

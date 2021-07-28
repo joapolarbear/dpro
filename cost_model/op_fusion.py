@@ -327,7 +327,8 @@ class XLAGraphPass(_BaseGraphPass):
                             for _op in ns:
                                 origin_avg += G.nodes[_op]["avg"]
                             if origin_avg > 0:
-                                print("Fusion from {} nodes {:.3f} ms to {:.3f} ms".format(len(ns), origin_avg, avg))
+                                print("Fusion from {} nodes {:.3f} ms to {:.3f} ms {}".format(
+                                    len(ns), origin_avg, avg, " <<< !!!" if avg > origin_avg else ""))
 
                         new_node_name = contract_nodes_nx(G, ns)
                         PKG.contract_nodes_unsafe(ns)

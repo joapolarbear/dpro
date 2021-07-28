@@ -141,8 +141,8 @@ class TensorFusionGraphPass(_BaseGraphPass):
         assert "+" not in _node
         assert "BW" in _node
         local_dag = self.opt.clct.dag
-        pid, raw_name, cat, suffix = parse_allinfo_from_name(_node)
-        unfused_comm_nodes = [n for n in local_dag.successors(raw_name) 
+        pid, std_name, cat, suffix = parse_allinfo_from_name(_node)
+        unfused_comm_nodes = [n for n in local_dag.successors(std_name) 
                                 if parse_cat_from_name(n) == CatName.COMM.value]
         current_comm_nodes = set()
         for comm_node in unfused_comm_nodes:
@@ -155,8 +155,8 @@ class TensorFusionGraphPass(_BaseGraphPass):
         assert "+" not in _node
         assert "UPDATE" in _node
         local_dag = self.opt.clct.dag
-        pid, raw_name, cat, suffix = parse_allinfo_from_name(_node)
-        unfused_comm_nodes = [n for n in local_dag.predecessors(raw_name) 
+        pid, std_name, cat, suffix = parse_allinfo_from_name(_node)
+        unfused_comm_nodes = [n for n in local_dag.predecessors(std_name) 
                                 if parse_cat_from_name(n) == CatName.COMM.value]
         current_comm_nodes = set()
         for comm_node in unfused_comm_nodes:
@@ -265,28 +265,32 @@ class TensorFusionGraphPass(_BaseGraphPass):
             ### Fuse two nodes
             if isinstance(target, int):
                 return self._apply_grp_num(__dag, __pkg, target)
-            return self._op_fusion(__dag, __pkg, target, next_)
+            return self._tensor_fusion(__dag, __pkg, target, next_)
         elif op == "--":
-            return self._op_defusion(__dag, __pkg, target, next_)
+            return self._tensor_defusion(__dag, __pkg, target, next_)
 
     def _update_tensor2grp(self, n):
-        rawname = self._wrap_parse_all_info(n)[2]
-        for tensor_id in rawname.split("+"):
-            self.cur_tensor2group[int(tensor_id)] = rawname
+        op_name = self._wrap_parse_all_info(n)[2]
+        for tensor_id in op_name.split("+"):
+            self.cur_tensor2group[int(tensor_id)] = op_name
 
     def _wrap_parse_all_info(self, n):
-        pid, raw_name, cat, suffix = parse_allinfo_from_name(n)
+        pid, std_name, cat, suffix = parse_allinfo_from_name(n)
         try:
-            op_name, layer_name, sub_op = raw_name.split(".")
+            op_cat, op_name, sub_op = std_name.split(".")
         except:
             print(n)
             raise
-        return pid, op_name, layer_name, sub_op, suffix
+        return pid, op_cat, op_name, sub_op, suffix
     
-    def _wrap_gen_long_name(self, pid, op_name, layer_name, sub_op, suffix):
-        return gen_long_name(pid, "{}.{}.{}".format(op_name, layer_name, sub_op), suffix)
+    def _wrap_gen_long_name(self, pid, op_cat, op_name, sub_op, suffix):
+        return gen_long_name(pid, "{}.{}.{}".format(op_cat, op_name, sub_op), suffix)
 
     def flush(self, is_accept):
+        ''' Some strategies may not be accepted,
+            * If accepted, change the interal state of this Pass
+            * Otherwise, keep it the same
+        '''
         if is_accept:
             for n in self.cache_change:
                 if isinstance(n, int):
@@ -296,7 +300,7 @@ class TensorFusionGraphPass(_BaseGraphPass):
                     self._update_tensor2grp(n)
         self.cache_change = []
 
-    def _op_fusion(self, _dag, _pkg: PKGraph, u_, v_):
+    def _tensor_fusion(self, _dag, _pkg: PKGraph, u_, v_):
         # SingleLogger().info("Fusing Tensor {} & {}.".format(u_, v_))
         all_infos = [
             self._wrap_parse_all_info(u_),
@@ -483,7 +487,7 @@ class TensorFusionGraphPass(_BaseGraphPass):
                 all_infos[0][3], u_))
         return new_name, fused_time
     
-    def _op_defusion(self, _dag, _pkg: PKGraph, u, loc):
+    def _tensor_defusion(self, _dag, _pkg: PKGraph, u, loc):
         ### need to use original local DFG to parse dependency info
         local_dfg = self.opt.clct.dag
 
@@ -627,11 +631,11 @@ class TensorFusionGraphPass(_BaseGraphPass):
             part_times.append(part_time)
         return new_part_names, part_times
 
-    def _parse_tensor_group_info(self, raw_name, ref=None):
-        ''' raw_name must be sorted '''
-        if raw_name not in self.tensor_group_info:
+    def _parse_tensor_group_info(self, op_name, ref=None):
+        ''' op_name must be sorted '''
+        if op_name not in self.tensor_group_info:
             if ref is None:
-                chunkNum, sliceNum, channelNum, loopNum = self.opt.clct.nccl_graph.get_IDnum("Comm." + raw_name)
+                chunkNum, sliceNum, channelNum, loopNum = self.opt.clct.nccl_graph.get_IDnum("Comm." + op_name)
                 grp_info = {
                     "chunkNum": chunkNum,
                     "sliceNum": sliceNum,
@@ -643,12 +647,12 @@ class TensorFusionGraphPass(_BaseGraphPass):
                 ### some group may not occur in the traces, ref to other groups
                 grp_info = self._parse_tensor_group_info(ref).copy()
             total_size = 0
-            for tensor_id_str in raw_name.split("+"):
+            for tensor_id_str in op_name.split("+"):
                 tensor_id = int(tensor_id_str)
                 total_size += self.meta_info.tensor_id2size(tensor_id)
             grp_info["size"] = total_size
-            self.tensor_group_info[raw_name] = grp_info
-        return self.tensor_group_info[raw_name]
+            self.tensor_group_info[op_name] = grp_info
+        return self.tensor_group_info[op_name]
 
     def checkpoint(self):
         try:
