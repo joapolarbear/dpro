@@ -531,17 +531,17 @@ class XLAGraphPass(_BaseGraphPass):
         if args_.no_crit:
             candidates = [(n, _dag.nodes[n]["avg"]) for n in _dag.nodes() if "BW" in n and "host0.rank0" in n]
 
-        for n, l in candidates:
+        for cur_op, l in candidates:
             # node heat
-            heat = self.opt._get_heat_from_history(n)
-            if "Comm" in n:
+            heat = self.opt._get_heat_from_history(cur_op)
+            if "Comm" in cur_op:
                 continue
 
-            if "+" in n and self.enable_partition:
+            if "+" in cur_op and self.enable_partition:
                 ### This a fused node
-                if args_.layer_by_layer and "FW" in n and "BW" not in n:
+                if args_.layer_by_layer and "FW" in cur_op and "BW" not in cur_op:
                     continue
-                ns = n.split("+")
+                ns = cur_op.split("+")
                 cat = parse_cat_fine_grained(ns[0])
                 pid = parse_pid_from_name(ns[0])
                 if args_.layer_by_layer:
@@ -563,68 +563,53 @@ class XLAGraphPass(_BaseGraphPass):
                     for split_index, splits in enumerate(valid_split_plans):
                         if args_.layer_by_layer:
                             splits = [list(itertools.chain(*[n.split("+") for n in nodes])) for nodes in splits]
-                        search_space.append(("-", n, splits))
+                        search_space.append(("-", cur_op, splits))
                         defusion_cnt += 1
                         weights.append(self.opt._combine_weight(l, 1 / (heat + 1) - 1) * split_weights[split_index])
             else:
                 ### Nodes that have never been fused
-                cat = parse_cat_fine_grained(n)
-                pid = parse_pid_from_name(n)
+                cat = parse_cat_fine_grained(cur_op)
+                pid = parse_pid_from_name(cur_op)
             
             ### TODO (huhanpeng): !!! NOTE: should modify below code back
-            if args_.fusion_once and not self._wrap_xla_need_fuse(n):
+            if args_.fusion_once and not self._wrap_xla_need_fuse(cur_op):
                 continue
-            elif not args_.fusion_once and "+" not in n and not self._wrap_xla_need_fuse(n):
+            elif not args_.fusion_once and "+" not in cur_op and not self._wrap_xla_need_fuse(cur_op):
                 # if 'BW' in n:
                 #     print("Ignore {}".format(n))
                 continue
 
-            for succ_ in _dag.successors(n):
-                if not self._wrap_can_fuse_to_b(_pkg, n, succ_):
+            for succ_ in _dag.successors(cur_op):
+                if not self._wrap_can_fuse_to_b(_pkg, cur_op, succ_):
                     continue
 
-                ### Assumption: for edge bw_u->bw_v, if comm_bw_u > bw_v, it can not bring any speedup if fusing u and v.
-                def ret_comm_time(_node):
-                    __ret = _dag.nodes[_node]["avg"]
-                    for __succ in _dag.successors(_node):
-                        _pid = parse_pid_from_name(__succ)
-                        if "Comm" in __succ and pid == _pid:
-                            __ret += ret_comm_time(__succ)
-                    return __ret
-                # if comm_t >= _dag.nodes[bw_v]["avg"]:
+                ### Assumption: for edge bw_u->bw_v, 
+                # if comm_bw_u > bw_v, it can not bring any speedup if fusing u and v.
                 if ENABLE_PRUNING:
-                    comm_t = 0
+                    comm_avg_u = self._op_to_coarse_comm_time(cur_op, _dag, pid)
                     effective_succ_bw = set()
-                    # for bw_u_succ in _dag.successors(bw_u):
-                    for bw_u_succ in _dag.successors(n):
-                        if "Comm" in bw_u_succ:
-                            if self.opt.comm_backend == "NCCL":
-                                # check if the comm node's predecessor includes succ_
-                                if succ_ in _dag.predecessors(bw_u_succ):
-                                    # OK to fuse
-                                    continue
-                                else:
-                                    succ_bws = [node for node in _dag.predecessors(bw_u_succ) if "BW" in node]
-                                    effective_succ_bw.union(set(succ_bws))
-                                    comm_t += ret_comm_time(bw_u_succ)
+                    for bw_v_succ in _dag.successors(succ_):
+                        if "Comm" in bw_v_succ:
+                            # check if the comm node's predecessor includes succ_
+                            if cur_op in _dag.predecessors(bw_v_succ):
+                                # OK to fuse
+                                continue
                             else:
-                                ### TODO (huhanpeng): is there only one comm sub operator ???
-                                comm_t += _dag.nodes[bw_u_succ]["avg"]
-                                effective_succ_bw.add(succ_)
-                    effective_bw_size = 0
+                                effective_succ_bw.union(set([node for node in _dag.predecessors(bw_u_succ) if "BW" in node]))
+                    effective_avg_sum = 0
                     for node in effective_succ_bw:
-                        effective_bw_size += _dag.nodes[node]["avg"]
+                        effective_avg_sum += _dag.nodes[node]["avg"]
 
-                    if comm_t > effective_bw_size:
+                    if comm_avg_u > effective_avg_sum:
                         prun_cnt += 1
-                        SingleLogger().debug("Prune fusing {} and {} with comm time {}".format(n, succ_, comm_t))
+                        SingleLogger().debug("Prune fusing {} and {} with comm time {}".format(cur_op, succ_, comm_t))
                         continue
 
                 # calculate heat using max(heat(n), heat(succ_))
                 heat_succ = self.opt._get_heat_from_history(succ_)
                 heat_combined = (heat + heat_succ) / 2
 
-                search_space.append(("+", n, succ_))
+                search_space.append(("+", cur_op, succ_))
                 fusion_cnt += 1
                 weights.append(self.opt._combine_weight(l, heat_combined))
                 # weights.append(1)
@@ -725,7 +710,7 @@ class XLAGraphPass(_BaseGraphPass):
             for explore_idx in range(MAX_FUSION_EXLPORE_DEPTH):
                 # pkg must contract after calling _fuse_pair since it can
                 # throw errors
-                SingleLogger().info(bcolors.CBLUE + "The {} th exploration...".format(explore_idx) + bcolors.ENDC)
+                SingleLogger().debug(bcolors.CBLUE + "[Fusion] The {} th exploration...".format(explore_idx) + bcolors.ENDC)
                 avg = self._fuse_pair(_dag, u_, v_)
                 _pkg.contract_edge(u_, v_)
 
@@ -891,3 +876,24 @@ class XLAGraphPass(_BaseGraphPass):
             print("Fuse {} nodes, predicted avg: {}, fused nodes avg sum: {}".format(
                 len(all_fuse_nodes), fused_avg, avg_sum))
         raise RuntimeError()
+
+    def is_fusion_better(self, long_name_u, long_name_v, _dag, _pkg, dp_state):
+        if (long_name_u, long_name_v) not in _dag.edges() or not self._wrap_can_fuse_to_b(_pkg, long_name_u, long_name_v):
+            return False, None
+
+        # ref_pid = parse_pid_from_name(long_name_u)
+        # comm_dur_u = self.opt._op_to_coarse_grained_comm_time(long_name_u, _dag, ref_pid) ### q_{n-1}^d
+        # comp_dur_v = self._get_node_avg(long_name_v, verbose=False) ### p_{n}^d
+        # comp_dur_u = self._get_node_avg(long_name_u, verbose=False) ### p_{n-1}^d
+
+        comm_dur_u = dp_state.q_d[-2]
+        comp_dur_v = dp_state.p_d[-1]
+        comp_dur_u = dp_state.p_d[-2]
+
+        ### TODO (HHP): cache fused time to avoid repeatedly running the XLA cost model
+        fused_time = self._get_node_avg(long_name_u+"+"+long_name_v, verbose=False)
+        if comm_dur_u < comp_dur_v + comp_dur_u - fused_time:
+            ### operator fusion leads to better performance
+            return True, fused_time
+        else:
+            return False, fused_time

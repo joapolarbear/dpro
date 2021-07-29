@@ -366,7 +366,7 @@ class PKGraph(object):
         new_instance = self.__class__(_init_copy=True)
         new_instance.nx_graph = self.nx_graph.copy()
         new_instance.nx_graph_reference = self.nx_graph_reference.copy()
-        new_instance.nodename2index = self.nodename2idx.copy()
+        new_instance.nodename2idx = self.nodename2idx.copy()
         new_instance.ord = self.ord.copy()
         new_instance.free_indexes = self.free_indexes.copy()
         new_instance.nodename2fusednode = self.nodename2fusednode.copy()

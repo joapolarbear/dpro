@@ -54,6 +54,13 @@ class ParameterDict:
         '''tensor id may be 'max' to return the maximum update id '''
         return self.metainfo.tensor_id2update_id(tensor_id)
     
+    def tensor_grp_size(self, op_name):
+        total_size = 0
+        for tensor_id_str in op_name.split("+"):
+            tensor_id = int(tensor_id_str)
+            total_size += self.tensor_id2size(tensor_id)
+        return total_size
+    
     ### below is related op_name
 
     def ret_metadata(self, *args, **kwargs):

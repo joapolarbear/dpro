@@ -196,7 +196,7 @@ class Optimizer:
         replayer = Replayer(dag=_dag, _step_num=1,
                             leaf_dirs=self.clct.all_prefix_list(),
                             dump_path=self.clct.pm.path,
-                            comm_backend=self.clct.comm_backend,
+                            comm_backend=self.comm_backend,
                             byteps_graph=self.clct.byteps_graph,
                             infi_para_update=args_.update_infi_para,
                             recd_topo_order=recd_topo_order
@@ -500,3 +500,23 @@ class Optimizer:
             upto += weights[i]
         # assert False, "Shouldn't get here"
         return choices[0]
+
+    def _op_to_coarse_grained_comm_time(self, bw_op, _dag, ref_pid):
+        comm_t = 0
+        def ret_comm_time(comm_op):
+            avg_sum = _dag.nodes[comm_op]["avg"]
+            for comm_succ in _dag.successors(comm_op):
+                _pid = parse_pid_from_name(comm_succ)
+                if "Comm" in comm_succ and ref_pid == _pid:
+                    avg_sum += ret_comm_time(comm_succ)
+            return avg_sum
+        for _succ in _dag.successors(bw_op):
+            if "Comm" in _succ:
+                if self.comm_backend == "NCCL":
+                    comm_t += ret_comm_time(_succ)
+                else:
+                    ### PS
+                    ### TODO (huhanpeng): is there only one comm sub operator ???
+                    raise NotImplementedError()
+                    comm_t += _dag.nodes[_succ]["avg"]
+        return comm_t

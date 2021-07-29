@@ -3,6 +3,7 @@ import time
 import os
 import pickle
 import numpy as np
+import math
 import ujson as json
 from tqdm import tqdm, trange
 from scipy.optimize import curve_fit
@@ -13,7 +14,7 @@ from trace_utils import *
 from cost_model._xla.pk_graph import PKGraph
 
 args_ = arg_utils.SingleArg().args
-ENABLE_PARTITION = True
+
 FUSION_RATIO = 1
 TRAIN_PERCENT = 0.9
 ### given a fused tensor, return N possible partition method
@@ -55,6 +56,13 @@ class TensorFusionGraphPass(_BaseGraphPass):
 
         ### Store the cost model for tensor fusion/partition
         self.pid_to_cm = None
+
+        ### Tensor level cost model, a tuple where the first element is the slope
+        self.send_cm = None
+        self.recv_cm = None
+
+        self.enable_partition = True
+        self.enable_defusion = True
 
     def _ret_weight_num_grp(self, num_grp):
         if num_grp not in self.history_num_grp:
@@ -244,7 +252,7 @@ class TensorFusionGraphPass(_BaseGraphPass):
                     weights.append(l)
                 '''
 
-                if ENABLE_PARTITION:
+                if self.enable_defusion:
                     ### tensor partition
                     all_infos = self._wrap_parse_all_info(to_fuse_u)
                     sorted_tensor_ids = [int(_n) for _n in all_infos[2].split("+")]
@@ -344,7 +352,7 @@ class TensorFusionGraphPass(_BaseGraphPass):
             ### Handle BW->Sync edges
             ### each sync may have multiple input bw nodes
             for _sync in _pid_sync:
-                _in_bw = [n1 for n1, _ in _dag.in_edges(_sync)]
+                _in_bw = list(_dag.predecessors(_sync))
                 edges_to_add += [(_bw, new_fused_name) for _bw in _in_bw]
                 edges_to_rm += [(_bw, _sync) for _bw in _in_bw]     
                 nodes_to_rm.add(_sync)
@@ -646,14 +654,15 @@ class TensorFusionGraphPass(_BaseGraphPass):
             else:
                 ### some group may not occur in the traces, ref to other groups
                 grp_info = self._parse_tensor_group_info(ref).copy()
-            total_size = 0
-            for tensor_id_str in op_name.split("+"):
-                tensor_id = int(tensor_id_str)
-                total_size += self.meta_info.tensor_id2size(tensor_id)
+            
+            total_size = self._tensor_grp_size(op_name)
             grp_info["size"] = total_size
             self.tensor_group_info[op_name] = grp_info
         return self.tensor_group_info[op_name]
 
+    def _tensor_grp_size(self, op_name):
+        return self.meta_info.tensor_grp_size(op_name)
+        
     def checkpoint(self):
         try:
             with open(self.ckpt_path, "wb") as f:
@@ -820,7 +829,8 @@ class TensorFusionGraphPass(_BaseGraphPass):
             for n in G.nodes():
                 if "Sync" in n:
                     G.nodes[n]["avg"] = 0
-
+        
+        self._tensor_level_send_recv_cm()
         self.dump_tensor_grp_mapping(_file_name="tensor_fusion_grp_mapping_init.json")
         self.cache_change = []
         return G, PKG, trajectory
@@ -836,4 +846,74 @@ class TensorFusionGraphPass(_BaseGraphPass):
 
         with open(os.path.join(ROOT_PATH, file_name), 'w') as f:
             json.dump({"mapping": list(tensor_grps)}, f)
+    
+    def _tensor_level_send_recv_cm(self):
+        # self.pid_to_cm[all_info[0]] = {
+        #                 "SEND": {"data":[], "param": None},
+        #                 "RECV": {"data":[], "param": None}}
+        send_slope_list = []
+        recv_slope_list = []
+        send_bias_list = []
+        recv_bias_list = []
+        for _dict in self.pid_to_cm.values():
+            if _dict["SEND"]["param"] is not None:
+                send_slope_list.append(_dict["SEND"]["param"][0][0])
+                send_bias_list.append(_dict["SEND"]["param"][0][1])
+            if _dict["RECV"]["param"] is not None:
+                recv_slope_list.append(_dict["RECV"]["param"][0][0])
+                recv_bias_list.append(_dict["RECV"]["param"][0][1])
+        
+        self.send_cm = (np.average(send_bias_list), np.average(send_slope_list))
+        self.recv_cm = (np.average(recv_bias_list), np.average(recv_slope_list))
+        assert self.send_cm[0] > 0 and self.recv_cm[0] > 0
+    
+    def if_fusion_better(self, op_name_u, op_name_v, dp_state):
+        ''' Decide if fusing two tensors (u, v) is better based on some heuristics
+            Return a tuple (is_fuse, k_star), 
+            where `is_fuse` denotes whether to fuse the two tensors
+            `k_star` is the optimal partition number
+        '''
+        end_comm_time_u = dp_state.q_e[-2]  ### q_{n-1}^e
+        end_comp_time_v = dp_state.p_n[-1]  ### p_{n}^e
+        tensor_size_u = dp_state.q_m[-2]
+        tensor_size_v = dp_state.q_m[-1]
+        
+        k_star_fuse, t_sync_fuse = self.best_partition(tensor_size_u + tensor_size_v)
+        k_star_null, t_sync_null = self.best_partition(tensor_size_v)
+        if end_comm_time_u > end_comp_time_v + t_sync_fuse - t_sync_null:
+            ### Fusion is better
+            return True, k_star_fuse, t_sync_fuse, t_sync_null
+        else:
+            return False, k_star_null, t_sync_fuse, t_sync_null
+    
+    def best_partition(self, tensor_size, ref_time=None):
+        ''' Find the the optimal partition number given tensor size
+            Return a tuple (k_star, sync_time), where `k_star` is the optimal patition number
+            and `sync_time` is the estimated execution time of this tensor if it's
+            partitioned into k_star pieces 
+        '''
+        if not self.enable_partition:
+            return 1, ref_time
+
+        self.aggr_cm = (0, 0)
+        if self.send_cm[1] > self.recv_cm[1]:
+            ### Recv is faster
+            k_star = math.sqrt(
+                (tensor_size * (self.recv_cm[1] + self.aggr_cm[1])) / self.send_cm[0])
+        else:
+            ### Send is faster
+            k_star = math.sqrt(
+                (tensor_size * (self.send_cm[1] + self.aggr_cm[1])) / self.recv_cm[0])
+        
+        k_star = max(round(k_star), 1)
+        partition_size = tensor_size / k_star
+        t_send = func_tensor_size_to_time(partition_size, self.send_cm[1], self.send_cm[0])
+        t_recv = func_tensor_size_to_time(partition_size, self.recv_cm[1], self.recv_cm[0])
+        t_aggr = func_tensor_size_to_time(partition_size, self.aggr_cm[1], self.aggr_cm[0])
+
+        if self.send_cm[1] > self.recv_cm[1]:
+            sync_time = k_star * t_send + t_aggr + t_recv
+        else:
+            sync_time = t_send + t_aggr + k_star * t_recv
+        return k_star, sync_time
 
