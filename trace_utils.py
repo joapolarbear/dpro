@@ -128,17 +128,26 @@ def gen_long_name(prefix, raw_name, suffix=None):
         suf = DDEL + suffix
     return pre + raw_name + suf
 
-def parse_suffix_from_name(name):
-    if DDEL in name:
-        return name.split(DDEL)[0], name.split(DDEL)[1]
+def _parse_long_name(long_name):
+    if DEL in long_name:
+        pid, long_name = long_name.split(DEL)
     else:
-        return name, None
+        pid = None
+    if DDEL in long_name:
+        std_name, suffix = long_name.split(DDEL)
+    else:
+        std_name, suffix = long_name, None
+    name_split = std_name.split(".")
+    if len(name_split) == 2:
+        _, op_name = name_split
+        sub_op = None
+    elif len(name_split) == 3:
+        _, op_name, sub_op = name_split
+    return pid, std_name, op_name, sub_op, suffix
 
-def parse_pid_from_name(name):
-    if DEL not in name:
-        return "none"
-    else:
-        return name.split(DEL)[0]
+def parse_op_name(name):
+    pid, std_name, op_name, sub_op, suffix = _parse_long_name(name)
+    return op_name
 
 def parse_rawname(name):
     if DEL not in name:
@@ -146,21 +155,16 @@ def parse_rawname(name):
     else:
         return name.split(DEL)[1]
 
-def parse_op_name(name):
-    if DEL in name:
-        name = name.split(DEL)[1]
-    if DDEL in name:
-        name = name.split(DDEL)[0]
-    if "." in name:
-        name = name.split(".")[1]
-    # name_split = name.split("_")
-    # if name_split[-1] in ["gamma", "beta", "weight", "bias"]:
-    #     return "_".join(name_split[:-1])
-    # else:
-    #     return name
-    return name
+def parse_pid_from_name(name):
+    pid, std_name, op_name, sub_op, suffix = _parse_long_name(name)
+    return "none" if pid is None else pid
+
+def parse_suffix_from_name(name):
+    pid, std_name, op_name, sub_op, suffix = _parse_long_name(name)
+    return suffix
 
 def _parse_tf_layer_names(name):
+    raise NotImplementedError("Move to tf directory")
     layer_names = []
     if "+" in name:
         for _name in name.split("+"):
@@ -325,31 +329,26 @@ def _map_tf_op2layer(local_dfg, model_name,
 def parse_cat_from_name(name):
     if "I/O" in name:
         return CatName.IO.value
+    elif "COPY_FIRST" in name or "SUM" in name or "COPY_MERGED" in name:
+        return CatName.PS_SERVER_OPERATOR.value
     elif "Comm" in name or "PUSH" in name or "PULL" in name:
         return CatName.COMM.value
     elif "FW" in name or "BW" in name or "COMP" in name or "UPDATE" in name or "OUTPUT" in name:
         return CatName.OPERATOR.value
-    elif "COPY_FIRST" in name or "SUM" in name or "COPY_MERGED" in name:
-        return CatName.PS_SERVER_OPERATOR.value
     elif name == "END":
         return CatName.DEBUG.value
     else:
         raise ValueError("Can not decide the cat of %s" % name)
 
 def parse_allinfo_from_name(name):
-    if DEL not in name:
-        std_name = name
-        pid = "none"
-    else:
-        pid, std_name = name.split(DEL)
-
-    suffix = None
-    if DDEL in std_name:
-        std_name, suffix = std_name.split(DDEL)
-
+    pid, std_name, op_name, sub_op, suffix = _parse_long_name(name)
+    pid = "none" if pid is None else pid
     cat = parse_cat_from_name(std_name)
-    
     return pid, std_name, cat, suffix
+
+def parse_allinfo_from_name_v2(name):
+    pid, std_name, op_name, sub_op, suffix = _parse_long_name(name)
+    return op_name, sub_op, suffix
 
 ### CATs that will be affected if we change the GPU/CPU rate
 COMP_CAT = ["operator.FW", "operator.BW", "operator.UPDATE",
@@ -359,13 +358,9 @@ COMP_CAT = ["operator.FW", "operator.BW", "operator.UPDATE",
 COMM_CAT = ["Comm.SEND", "Comm.RECV", "Comm.PUSH_REQ",
             "Comm.PUSH_RES", "Comm.PULL_REQ", "Comm.PULL_RES"]
 def parse_cat_fine_grained(name_):
-    if "Comm" in name_:
-        if "SEND" in name_:
-            ret_cat = "Comm.SEND"
-        elif "RECV" in name_:
-            ret_cat = "Comm.RECV"
-        else:
-            ret_cat = "Comm.other"
+    ### PS communication traces
+    if "COPY_FIRST" in name_ or "SUM" in name_ or "COPY_MERGED" in name_:
+        return "ServerOp"
     elif "PUSH_REQ" in name_:
         return "Comm.PUSH_REQ"
     elif "PUSH_RES" in name_:
@@ -374,8 +369,15 @@ def parse_cat_fine_grained(name_):
         return "Comm.PULL_REQ"
     elif "PULL_RES" in name_:
         return "Comm.PULL_RES"
-    elif "I/O" in name_:
-        ret_cat = "I/O"
+    ### Common communication traces
+    elif "Comm" in name_:
+        if "SEND" in name_:
+            ret_cat = "Comm.SEND"
+        elif "RECV" in name_:
+            ret_cat = "Comm.RECV"
+        else:
+            ret_cat = "Comm.other"
+    ### Computation traces
     elif "BW" in name_ and "FW" in name_:
         ret_cat = "operator.FW+BW"
     elif "BW" in name_:
@@ -383,18 +385,20 @@ def parse_cat_fine_grained(name_):
     elif "FW" in name_:
         ret_cat = "operator.FW"
     elif "COMM" in name_:
+        # TODO (delete)
         ret_cat = "operator.COMM"
     elif "COMP" in name_:
         # TODO (delete)
         ret_cat = "operator.COMP"
+    ### Others
+    elif "I/O" in name_:
+        ret_cat = "I/O"
     elif "UPDATE_" in name_:
         ret_cat = "operator.UPDATE"
     elif "OUTPUT" in name_:
         ret_cat = "operator.OUTPUT"
     elif name_ == "END":
         ret_cat = "virtual"
-    elif "COPY_FIRST" in name_ or "SUM" in name_ or "COPY_MERGED" in name_:
-        return "ServerOp"
     else:
         raise ValueError("Can not decide the cat of %s" % name_)
 

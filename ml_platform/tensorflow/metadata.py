@@ -347,7 +347,10 @@ class MetaInfo:
         _name = self.remove_last_trival_slash(_name)
 
         if "BytePSPushPull" in _name and "tensor" not in _name:
-            _name = "Comm." + _name
+            if "BytePSPushPull." in _name:
+                _name = "Comm." + _name.split("BytePSPushPull.")[1]
+            else:
+                _name = "Comm." + _name
         elif "input_barrier" in _name:
             _name = "FW." + _name
         elif "allreduce" in _name.lower():

@@ -175,22 +175,52 @@ class DAGManager:
     path: str
         Root path for one GPU
     
-    e.g. For NCCL ALLREDUCE RING
-    Note: Sync used to sync between ranks
+    Examples:
 
-    FW ---> OUTPUT ---> BW ------------------- .................. --------------------> UPDATE_CAL ---> UPDATE_<id> ---> END
-                         \\                                                         ^  (barrier)
-                          \\                                                       //
-                            -> Comm.<>.Sync --------> Comm.<>.SEND~>x_x_x_x ...
-                                                  \\   ^
-                                                   \\ //
-                                                     x
-                                                   // \\
-                                                  //   V
-                            -> Comm.<>.Sync --------> Comm.<>.SEND~>x_x_x_x ...
-                          //                                                       \\
-                         //                                                         V  (barrier)
-    FW ---> OUTPUT ---> BW ------------------- .................. --------------------> UPDATE_CAL ---> UPDATE_<id> ---> END
+    Legend: ──────▶   intra-worker dependency            ══════▶  inter-worker dependency
+
+    e.g. For NCCL ALLREDUCE RING
+    Note: Sync used to sync between ranks                          
+                                                                                        
+    ┌─────────┐                                                                                       
+    │Worker 0 │  FW  ─────▶OUTPUT────▶  BW ──────▶ ...  ────▶ BW                           UPDATE_<id>
+    └─────────┘                                                                                       
+                                        │                                                       ▲     
+                                        └─▶ Comm.Sync ──▶ Comm.<>.SEND~>xxx ──────▶  ...   ─────┘     
+                                                                                                    
+                                                ║                 ▲                                   
+                                                ╠═════════════════╣                                   
+                                                ║                 ▼                                   
+                                                                                                    
+                                        ┌─▶ Comm.Sync ──▶ Comm.<>.SEND~>xxx ──────▶  ...   ─────┐     
+                                        │                                                       ▼     
+    ┌─────────┐                                                                                       
+    │Worker 1 │  FW  ─────▶OUTPUT────▶  BW ──────▶ ...  ────▶ BW                           UPDATE_<id>
+    └─────────┘                                                                                       
+
+    e.g.: For PS
+    ┌─────────┐                                                                                                                               
+    │Worker 0 │    FW  ──▶OUTPUT──▶  BW ───────────▶ ...  ────▶ BW                                                                UPDATE_<id> 
+    └─────────┘                                                                                                                               
+                                     │                                                                                                 ▲      
+                                     └──▶ PUSH_REQ  ────────▶ PUSH_RES  ────▶ PULL_REQ  ────────────────────────────────┬─▶ PULL_RES  ─┘      
+                                                                                                                        │                     
+                                              │                                                                         │                     
+                                           ┌──┘                                                                         │                     
+                                           ▼                                                                            │                     
+    ┌─────────┐                     ┌─────────────┐    ┌───────┐    ┌────────┐   ┌─────────────────┐   ┌──────────────┐ │                     
+    │ Server  │                     │ COPY_FIRST  │───▶│ SUM_0 │───▶│  ...   │──▶│SUM_<worker_num-2│──▶│ COPY_MERGED  │─┤                     
+    └─────────┘                     └─────────────┘    └───────┘    └────────┘   └─────────────────┘   └──────────────┘ │                     
+                                                           ▲                                                            │                     
+                                             ┌─────────────┘                                                            │                     
+                                             │                                                                          │                     
+                                                                                                                        │                     
+                                     ┌─▶ PUSH_REQ  ────────▶ PUSH_RES  ────▶ PULL_REQ  ─────────────────────────────────┴─▶ PULL_RES  ──┐     
+                                     │                                                                                                  ▼     
+    ┌─────────┐                                                                                                                               
+    │Worker 1 │    FW  ──▶OUTPUT──▶  BW ───────────▶ ...  ────▶ BW                                                                 UPDATE_<id>
+    └─────────┘                                                                                                                               
+                                                                                       
     '''
     def __init__(self, path, traceM, nccl_graph=None, byteps_graph=None, platform="TENSORFLOW", single=False, metadata=None):
         self.pm = PathManager(path)
@@ -478,39 +508,35 @@ class DAGManager:
             self.wrap_add_dag(self.add_prefix(u), self.add_prefix(v))
 
     def _process_edge_byteps(self, graph, queue_type_list, u, v):
-        if "BytePSPushPull" in u and "tensor" not in u:
+        if "Comm." in u:
             ### BytePS traces
-            gra_name = u.split("Comm.")[1]
+            tensor_name = u.split("Comm.")[1]
             if self.byteps_graph is not None:
                 wk_rank = int(self.wk_prefix.split("_")[-1])
                 # add push request dependency
                 try:
-                    push_req_nodes = self.byteps_graph.get_push_req_node(wk_rank, gra_name)
+                    push_req_nodes = self.byteps_graph.get_push_req_node(wk_rank, tensor_name)
                 except:
-                    SingleLogger().warn("{} is not in comm dag. Ignoring.".format(gra_name))
+                    SingleLogger().warn("{} is not in comm dag. Ignoring.".format(tensor_name))
                     return
                 prev_bw_nodes = [_u for _u, _ in graph.in_edges(u)]
                 for prev_bw_node in prev_bw_nodes:
-                    prev_name = self.add_prefix(self.metadata.standard_name(prev_bw_node))
+                    prev_name = self.add_prefix(prev_bw_node)
                     for push_req_node in push_req_nodes:
                         self.wrap_add_dag(prev_name, push_req_node)
                 # add dependencies to v
-                pull_res_nodes = self.byteps_graph.get_pull_res_node(wk_rank, gra_name)
+                pull_res_nodes = self.byteps_graph.get_pull_res_node(wk_rank, tensor_name)
                 for pull_res_node in pull_res_nodes:
-                    self.wrap_add_dag(pull_res_node, self.add_prefix(self.metadata.standard_name(v)))
-                    # print("adding edge {} -> {}".format(pull_res_node, self.add_prefix(self.metadata.standard_name(v))))
+                    self.wrap_add_dag(pull_res_node, self.add_prefix(v))
             else:
                 raise NotImplementedError("Tensorflow + NCCL not yet implemented.")
-        elif "BytePSPushPull" in v and "tensor" not in v:
+        elif "Comm." in v:
             ### delete edges from BW to Comm main task.
             pass
-        # elif "" in v:
-            # avoid circle
-            # pass
         else:
             self.wrap_add_dag(
-                self.add_prefix(self.metadata.standard_name(u)), 
-                self.add_prefix(self.metadata.standard_name(v)))
+                self.add_prefix(u), 
+                self.add_prefix(v))
 
     def gen_dag_with_prefix_weight(self, old_graph, para_dict=None):
         ''' Gen a dag from the original graph with weighted edges.

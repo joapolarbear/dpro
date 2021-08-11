@@ -844,7 +844,7 @@ class Collector(object):
     def _collect_bps_graph(self, force_):
         byteps_cache_path = self.pm.search(FileName.BYTEPS_CACHE)
         if byteps_cache_path is not None:
-            SingleLogger().info("Inited BytePS graph helper from cache.")
+            SingleLogger().info("Inited BytePS graph helper from cache: {}.".format(byteps_cache_path))
             self.byteps_graph.init_from_cache(byteps_cache_path)
         else:
             SingleLogger().info("Unable to find BytePS cache file.")
@@ -1066,7 +1066,7 @@ class Collector(object):
                 t.join()
 
         ### Combine all worker_dag_list on one worker, build the dependency
-        SingleLogger().info("Compose all {} gpu DAGs together ... ".format(len(worker_dag_list)))
+        SingleLogger().info("Compose all {} local DFGs together ... ".format(len(worker_dag_list)))
         all_edges = []
         for _edges in worker_dag_list:
             all_edges += _edges
@@ -1515,7 +1515,7 @@ class Collector(object):
                     self.trail_dag.nodes[node_][GAP_STR_OP2COMM] = gap
                 elif "PUSH_REQ" in node_ or "PULL_REQ" in node_ \
                         or "PUSH_RES" in node_ or "PULL_RES" in node_:
-                    source, target, _, _= self.byteps_graph.parse_comm_event_name(parse_rawname(node_))
+                    source, target, _, _, _ = self.byteps_graph.parse_comm_event_name(parse_rawname(node_))
                     gap = self.byteps_graph.comm_delays[(source, target)]
                     self.trail_dag.nodes[node_][GAP_STR_INTERNODE] = gap
 
