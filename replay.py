@@ -292,7 +292,7 @@ class PSCommDevice(Device):
         if next_name is not None:
             actual_successors.append(next_name)
             # add an edge from this name to next_name in exct dag
-            self.replayer.exct_dag.add_edge(name, next_name, weight=(_end_time - _start_t / 1000.0))
+            self.replayer.exct_dag.add_edge(name, next_name, weight=((_end_time - _start_t) / 1000.0))
 
         for _succ in actual_successors:
             next_cat = parse_cat_from_name(_succ)
