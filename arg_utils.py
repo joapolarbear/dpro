@@ -71,6 +71,8 @@ group_opt.add_argument("--ckpt", action="store_true", help="If this arg is set, 
 group_opt.add_argument("--workspace", type=str, default=None, help="Workerspace of the optimizer")
 group_opt.add_argument("--memory_budget", type=float, default=16, help="GPU Memory budget")
 
+group_opt.add_argument("--search_ts_group_num", action="store_true", help="Search the optimal tensor group numbers if set")
+
 ### Operator fusion
 group_xla = parser.add_argument_group('Operator Fusion')
 group_xla.add_argument("--simulate", action="store_true", help="If this arg is set, simulate the XLA cost model,"

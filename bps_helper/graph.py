@@ -16,13 +16,13 @@ import cvxpy as cp
 
 args_ = arg_utils.SingleArg().args
 
-class COMM_OPS():
+class PS_COMM_OPS():
     PUSH_REQ = "PUSH_REQ"
     PULL_REQ = "PULL_REQ"
     PUSH_RES = "PUSH_RES"
     PULL_RES = "PULL_RES"
 
-class COMP_OPS():
+class PS_COMP_OPS():
     COPY_FIRST = "COPY_FIRST"
     SUM = "SUM"
     COPY_MERGED = "COPY_MERGED"
@@ -30,9 +30,9 @@ class COMP_OPS():
 COMM_DEL = "::"
 PART_DEL = "~PART"
 
-comm_ops = set([COMM_OPS.PUSH_REQ, COMM_OPS.PULL_REQ, COMM_OPS.PUSH_RES, COMM_OPS.PULL_RES])
+PS_COMM_OPS_SETS = set([PS_COMM_OPS.PUSH_REQ, PS_COMM_OPS.PULL_REQ, PS_COMM_OPS.PUSH_RES, PS_COMM_OPS.PULL_RES])
 
-comp_ops = set([COMP_OPS.COPY_FIRST, COMP_OPS.SUM, COMP_OPS.COPY_MERGED])
+PS_COMP_OPS_SETS = set([PS_COMP_OPS.COPY_FIRST, PS_COMP_OPS.SUM, PS_COMP_OPS.COPY_MERGED])
 
 class ServerOpCounter(object):
     def __init__(self, byteps_graph):
@@ -48,18 +48,18 @@ class ServerOpCounter(object):
         source, target, tensor_name, sub_op, part_id = self.byteps_graph.parse_comm_event_name(raw_name)
         if target in self.server_op_counter:
             # is a push or pull request to servers
-            if sub_op == COMM_OPS.PUSH_REQ:
+            if sub_op == PS_COMM_OPS.PUSH_REQ:
                 if tensor_name not in self.server_op_counter[target]:
                     self.server_op_counter[target][tensor_name] = 0
                 if self.server_op_counter[target][tensor_name] == 0:
                     # first push, a copy_first sub_op
-                    comp_key = (target, tensor_name, COMP_OPS.COPY_FIRST,
-                        self.byteps_graph.comp_ops_tid[(target, tensor_name, COMP_OPS.COPY_FIRST, part_id)],
+                    comp_key = (target, tensor_name, PS_COMP_OPS.COPY_FIRST,
+                        self.byteps_graph.comp_ops_tid[(target, tensor_name, PS_COMP_OPS.COPY_FIRST, part_id)],
                         part_id)
                     res_name = self.byteps_graph.gen_comp_full_name(comp_key)
                 else:
-                    comp_key = (target, tensor_name, COMP_OPS.SUM,
-                        self.byteps_graph.comp_ops_tid[(target, tensor_name, COMP_OPS.SUM, part_id)],
+                    comp_key = (target, tensor_name, PS_COMP_OPS.SUM,
+                        self.byteps_graph.comp_ops_tid[(target, tensor_name, PS_COMP_OPS.SUM, part_id)],
                         part_id)
                     res_name = self.byteps_graph.gen_comp_full_name(comp_key, sum_index=self.server_op_counter[target][tensor_name]-1)
                 self.server_op_counter[target][tensor_name] += 1
@@ -191,7 +191,8 @@ class bytepsGraph:
          self.servers_threads, self.partition_dict,
          self.comp_ops_tid, self.workers, self.graph,
          self.master_host_id, self.time_drift, 
-         self.comm_delays, self.bw_delays, self.van_type) = state
+         self.comm_delays, self.bw_delays, self.van_type,
+         self.pid_to_server, self.pid_to_target) = state
         self._inited = True
     
     def _dump_cache(self, cache_path=None):
@@ -202,7 +203,8 @@ class bytepsGraph:
                  self.servers_threads, self.partition_dict,
                  self.comp_ops_tid, self.workers, self.graph,
                  self.master_host_id, self.time_drift, 
-                 self.comm_delays, self.bw_delays, self.van_type)
+                 self.comm_delays, self.bw_delays, self.van_type,
+                 self.pid_to_server, self.pid_to_target)
         with open(cache_path, "wb") as f:
             pickle.dump(state, f)
 
@@ -258,6 +260,10 @@ class bytepsGraph:
         return tensor_name + PART_DEL + str(part_id)
     
     def _parse_partition_name(self, tensor_name_w_partition):
+        '''
+        tensor_name_w_partition is in the format of 
+            <tensor_name>PART_DEL<part_id>
+        '''
         return tensor_name_w_partition.split(PART_DEL)
 
     def _parse_trace(self):
@@ -386,7 +392,7 @@ class bytepsGraph:
 
         for key, durations in self.comm_durations.items():
             sub_op = key[3]
-            if sub_op == COMM_OPS.PUSH_REQ or sub_op == COMM_OPS.PUSH_RES:
+            if sub_op == PS_COMM_OPS.PUSH_REQ or sub_op == PS_COMM_OPS.PUSH_RES:
                 my_count = len(durations) - 1
             else:
                 my_count = len(durations)
@@ -403,7 +409,7 @@ class bytepsGraph:
 
         for key, durations in self.comm_durations.items():
             sub_op = key[3]
-            if sub_op == COMM_OPS.PUSH_REQ or sub_op == COMM_OPS.PUSH_RES:
+            if sub_op == PS_COMM_OPS.PUSH_REQ or sub_op == PS_COMM_OPS.PUSH_RES:
                 # if len(durations) != mode_len + 1:
                 if abs(len(durations) - mode_len) > 2:
                     self._ignored_tensors.add(key)
@@ -487,11 +493,17 @@ class bytepsGraph:
     def gen_comp_full_name(self, comp_key, sum_index=None):
         return self._add_prefix(self.gen_comp_device_name(comp_key), self.gen_comp_event_name(comp_key, sum_index=sum_index))
     
-    def _parse_comp_name(self, comp_name):
-        raise NotImplementedError()
-        # comp_name = event name - op
-        _, server_id, tid, tensor_name = comp_name.split(COMM_DEL)
-        return server_id, tid, tensor_name
+    def parse_comp_name(self, comp_name):
+        tensor_name, sub_op, suffix = parse_allinfo_from_name_v2(comp_name)
+        suffix_splits = suffix.split(COMM_DEL)
+        if len(suffix_splits) == 3:
+            server_tid, sum_index, part_id = suffix_splits
+        elif len(suffix_splits) == 2:
+            server_tid, part_id = suffix_splits
+            sum_index = None
+        server_id, tid = server_tid.split("_t")
+        part_id = part_id.split(PART_DEL)[1]
+        return server_id, tid, tensor_name, sub_op, part_id, sum_index
     
     def gen_comp_unique_pid(self, comp_key):
         # comp_key is in format (server, tensor_name, op, tid)
@@ -589,7 +601,7 @@ class bytepsGraph:
         for source_rank, key_dict in durations_dict.items():
             for key, durations in key_dict.items():
                 source, target, tensor_name, op, part_id = key
-                if target.startswith("worker") and op == COMM_OPS.PUSH_RES:
+                if target.startswith("worker") and op == PS_COMM_OPS.PUSH_RES:
                     # an op that can be used to align traces
                     if key in self._ignored_tensors:
                         SingleLogger().warn(
@@ -603,7 +615,7 @@ class bytepsGraph:
                         # find the corresponding push_req
                         push_res_st, push_res_ed = durations[index]
                         _, push_req_ed = durations_dict[target_node_id] \
-                                                    [(target, source, tensor_name, COMM_OPS.PUSH_REQ, part_id)] \
+                                                    [(target, source, tensor_name, PS_COMM_OPS.PUSH_REQ, part_id)] \
                                                     [index]
                         # if push_response not queued on server->worker
                         if not intervals[(source, target)].overlap(push_res_st-500, push_res_st-1):
@@ -612,7 +624,7 @@ class bytepsGraph:
                                 send_delays[(source_rank, target_node_id)] = push_res_st - push_req_ed
                         # find the corresponding pull_req
                         pull_req_st, pull_req_ed = durations_dict[target_node_id] \
-                                                    [(target, source, tensor_name, COMM_OPS.PULL_REQ, part_id)] \
+                                                    [(target, source, tensor_name, PS_COMM_OPS.PULL_REQ, part_id)] \
                                                     [index]
                         # if pull_req not queued on worker->server
                         if not intervals[(target, source)].overlap(pull_req_st - 500, pull_req_st-1):
@@ -684,15 +696,15 @@ class bytepsGraph:
                 min_start_time = min(min_start_time, st)
                 if st != ed:
                     intervals[(source, target)][st:ed] = (tensor_name, op)
-            if op == COMM_OPS.PUSH_REQ:
+            if op == PS_COMM_OPS.PUSH_REQ:
                 if (source, target) not in push_req_ops:
                     push_req_ops[(source, target)] = {}
                 push_req_ops[(source, target)][key] = durations
-            elif op == COMM_OPS.PUSH_RES:
+            elif op == PS_COMM_OPS.PUSH_RES:
                 if (source, target) not in push_res_ops:
                     push_res_ops[(source, target)] = {}
                 push_res_ops[(source, target)][key] = durations
-            elif op == COMM_OPS.PULL_REQ:
+            elif op == PS_COMM_OPS.PULL_REQ:
                 if (source, target) not in pull_req_ops:
                     pull_req_ops[(source, target)] = {}
                 pull_req_ops[(source, target)][key] = durations
@@ -719,7 +731,7 @@ class bytepsGraph:
                     continue
                 # copy_first_op_durations, tid_cp = copy_first_ops[target][tensor_name]
                 # sum_op_durations, tid_sum = sum_ops[target][tensor_name]
-                push_res_op_durations = push_res_ops[(target, source)][(target, source, tensor_name, COMM_OPS.PUSH_RES, part_id)]
+                push_res_op_durations = push_res_ops[(target, source)][(target, source, tensor_name, PS_COMM_OPS.PUSH_RES, part_id)]
                 for index, (st, ed) in enumerate(durations):
                     pres_st, pres_ed = push_res_op_durations[index]
                     # if not queued in server->worker communication queue
@@ -736,7 +748,7 @@ class bytepsGraph:
                 _, _, tensor_name, _, part_id = key
                 if key in self._ignored_tensors:
                     continue
-                pull_req_op_durations = pull_req_ops[(target, source)][(target, source, tensor_name, COMM_OPS.PULL_REQ, part_id)]
+                pull_req_op_durations = pull_req_ops[(target, source)][(target, source, tensor_name, PS_COMM_OPS.PULL_REQ, part_id)]
                 for index, (st, ed) in enumerate(durations):
                     # get pull request
                     rq_st, rq_ed = pull_req_op_durations[index]
@@ -781,7 +793,7 @@ class bytepsGraph:
         for key, durations in self.comp_durations.items():
             _, _, op, _, part_id = key
             for index, (st, ed) in enumerate(durations):
-                if op == COMP_OPS.SUM:
+                if op == PS_COMP_OPS.SUM:
                     for i in range(len(self.workers)-1):
                         json_event = {}
                         json_event["name"] = self.gen_comp_event_name(key, i)
@@ -842,7 +854,7 @@ class bytepsGraph:
             # (source, target, tensor_name, op, partition_id)
             partitioned_name = self._gen_partitioned_name(tensor_name, part_id)
             key = ("worker_"+str(source_id), self.tensor_part2server[partitioned_name], 
-                tensor_name, COMM_OPS.PUSH_REQ, part_id)
+                tensor_name, PS_COMM_OPS.PUSH_REQ, part_id)
             full_names.append(self.gen_comm_full_name(key))
         return full_names
 
@@ -854,7 +866,7 @@ class bytepsGraph:
             # (source, target, tensor_name, op, partition_id)
             partitioned_name = self._gen_partitioned_name(tensor_name, part_id)
             key = (self.tensor_part2server[partitioned_name], "worker_"+str(source_id),
-                tensor_name, COMM_OPS.PULL_RES, part_id)
+                tensor_name, PS_COMM_OPS.PULL_RES, part_id)
             full_names.append(self.gen_comm_full_name(key))
         return full_names
 
@@ -866,78 +878,75 @@ class bytepsGraph:
             # push req -> push res -> pull req
             for worker_name in self.workers:
                 edges_to_add.append(
-                    self.gen_comm_full_name(
-                        (worker_name, assigned_server, tensor_name, COMM_OPS.PUSH_REQ, part_id)
+                    (self.gen_comm_full_name(
+                        (worker_name, assigned_server, tensor_name, PS_COMM_OPS.PUSH_REQ, part_id)
                     ),
                     self.gen_comm_full_name(
-                        (assigned_server, worker_name, tensor_name, COMM_OPS.PUSH_RES, part_id)
-                    )
+                        (assigned_server, worker_name, tensor_name, PS_COMM_OPS.PUSH_RES, part_id)
+                    ))
                 )
                 edges_to_add.append(
-                    self.gen_comm_full_name(
-                        (assigned_server, worker_name, tensor_name, COMM_OPS.PUSH_RES, part_id)
+                    (self.gen_comm_full_name(
+                        (assigned_server, worker_name, tensor_name, PS_COMM_OPS.PUSH_RES, part_id)
                     ),
                     self.gen_comm_full_name(
-                        (worker_name, assigned_server, tensor_name, COMM_OPS.PULL_REQ, part_id)
-                    )
+                        (worker_name, assigned_server, tensor_name, PS_COMM_OPS.PULL_REQ, part_id)
+                    ))
                 )
 
             # copy_first -> sum * N-1 -> copy_merged
             edges_to_add.append(
-                self.gen_comp_full_name(
+                (self.gen_comp_full_name(
                     (assigned_server, 
                     tensor_name, 
-                    COMP_OPS.COPY_FIRST, 
-                    self.comp_ops_tid[(assigned_server, tensor_name, COMP_OPS.COPY_FIRST, part_id)],
+                    PS_COMP_OPS.COPY_FIRST, 
+                    self.comp_ops_tid[(assigned_server, tensor_name, PS_COMP_OPS.COPY_FIRST, part_id)],
                     part_id)
                     ),
                 self.gen_comp_full_name(
                     (assigned_server, 
                     tensor_name, 
-                    COMP_OPS.SUM, 
-                    self.comp_ops_tid[(assigned_server, tensor_name, COMP_OPS.SUM, part_id)],
+                    PS_COMP_OPS.SUM, 
+                    self.comp_ops_tid[(assigned_server, tensor_name, PS_COMP_OPS.SUM, part_id)],
                     part_id),
                     sum_index=0
-                    ),
-                weight=0
+                    ))
             )
             for i in range(1, len(self.workers)-1):
                 edges_to_add.append(
-                    self.gen_comp_full_name(
+                    (self.gen_comp_full_name(
                         (assigned_server, 
                         tensor_name, 
-                        COMP_OPS.SUM, 
-                        self.comp_ops_tid[(assigned_server, tensor_name, COMP_OPS.SUM, part_id)],
+                        PS_COMP_OPS.SUM, 
+                        self.comp_ops_tid[(assigned_server, tensor_name, PS_COMP_OPS.SUM, part_id)],
                         part_id),
                         sum_index=i-1
                         ),
                     self.gen_comp_full_name(
                         (assigned_server, 
                         tensor_name, 
-                        COMP_OPS.SUM, 
-                        self.comp_ops_tid[(assigned_server, tensor_name, COMP_OPS.SUM, part_id)],
+                        PS_COMP_OPS.SUM, 
+                        self.comp_ops_tid[(assigned_server, tensor_name, PS_COMP_OPS.SUM, part_id)],
                         part_id),
                         sum_index=i
-                        ),
-                    weight=0
+                        ))
                 )
             edges_to_add.append(
-                self.gen_comp_full_name(
+                (self.gen_comp_full_name(
                     (assigned_server, 
                     tensor_name, 
-                    COMP_OPS.SUM, 
-                    self.comp_ops_tid[(assigned_server, tensor_name, COMP_OPS.SUM, part_id)],
+                    PS_COMP_OPS.SUM, 
+                    self.comp_ops_tid[(assigned_server, tensor_name, PS_COMP_OPS.SUM, part_id)],
                     part_id),
                     sum_index=len(self.workers)-2
                     ),
                 self.gen_comp_full_name(
                     (assigned_server, 
                     tensor_name, 
-                    COMP_OPS.COPY_MERGED, 
-                    self.comp_ops_tid[(assigned_server, tensor_name, COMP_OPS.COPY_MERGED, part_id)],
+                    PS_COMP_OPS.COPY_MERGED, 
+                    self.comp_ops_tid[(assigned_server, tensor_name, PS_COMP_OPS.COPY_MERGED, part_id)],
                     part_id)
-                    ),
-                weight=0
+                    ))
             )
 
             ### NOTE: there should be some edges from byteps comm to byteps comp
@@ -947,27 +956,25 @@ class bytepsGraph:
             # pull req -> pull res, copy_merged -> pull_res
             for worker_name in self.workers:
                 edges_to_add.append(
-                    self.gen_comm_full_name((worker_name, assigned_server, tensor_name, COMM_OPS.PULL_REQ, part_id)),
-                    self.gen_comm_full_name((assigned_server, worker_name, tensor_name, COMM_OPS.PULL_RES, part_id)),
-                    weight=0
+                    (self.gen_comm_full_name((worker_name, assigned_server, tensor_name, PS_COMM_OPS.PULL_REQ, part_id)),
+                    self.gen_comm_full_name((assigned_server, worker_name, tensor_name, PS_COMM_OPS.PULL_RES, part_id)))
                 )
                 edges_to_add.append(
-                    self.gen_comp_full_name(
+                    (self.gen_comp_full_name(
                         (assigned_server, 
                         tensor_name, 
-                        COMP_OPS.COPY_MERGED, 
-                        self.comp_ops_tid[(assigned_server, tensor_name, COMP_OPS.COPY_MERGED, part_id)],
+                        PS_COMP_OPS.COPY_MERGED, 
+                        self.comp_ops_tid[(assigned_server, tensor_name, PS_COMP_OPS.COPY_MERGED, part_id)],
                         part_id)
                         ),
-                    self.gen_comm_full_name((assigned_server, worker_name, tensor_name, COMM_OPS.PULL_RES, part_id)),
-                    weight=0
+                    self.gen_comm_full_name((assigned_server, worker_name, tensor_name, PS_COMM_OPS.PULL_RES, part_id)))
                 )
         
         self.graph.add_edges_from(edges_to_add)
         ### check the dag
         
     def is_server_comp(self, name):
-        for op in [COMP_OPS.COPY_FIRST, COMP_OPS.SUM]:
+        for op in [PS_COMP_OPS.COPY_FIRST, PS_COMP_OPS.SUM]:
             if op in name:
                 return True
         return False
@@ -994,7 +1001,7 @@ class bytepsGraph:
 
         for key, durations in self.comm_durations.items():
             source, target, tensor_name, op, part_id = key
-            if op == COMM_OPS.PUSH_REQ:
+            if op == PS_COMM_OPS.PUSH_REQ:
                 for st, ed in durations:
                     if source not in interval:
                         interval[source] = IntervalTree()

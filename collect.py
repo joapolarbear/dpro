@@ -1760,7 +1760,13 @@ class Collector(object):
             print("Name: {}, min_gap: {} ({})".format(name, depend['min_gap'], depend['min_node']))
 
     def all_pid(self):
-        return list(self.nccl_graph.prefix2rank.keys())
+        if self.nccl_graph is not None:
+            return list(self.nccl_graph.prefix2rank.keys())
+        else:
+            print(self.byteps_graph.pid_to_target)
+            print(self.byteps_graph.pid_to_server)
+            raise
+            return list(self.pid_to_target.keys())
     
     def collect_trial_dag_v2(self, nrank=4):
         SingleLogger().info("Convert Large DFG to smaller one ...")

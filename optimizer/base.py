@@ -68,6 +68,7 @@ class Optimizer:
         self.platform = self.clct.platform
         self.comm_backend = self.clct.comm_backend
         self.memory_estimator = MemoryEstimator(self.platform)
+        self.cord_pid = "host0.rank0" if self.clct.comm_backend == "NCCL" else "traces_0.rank0"
 
         self.step = 0
         if args_.relabel:

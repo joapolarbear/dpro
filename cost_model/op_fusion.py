@@ -78,7 +78,7 @@ class XLAGraphPass(_BaseGraphPass):
         if args_.layer_by_layer:
             self.xla_init_forbid_bw = True
 
-        self.cord_pid = "host0.rank0" if self.opt.clct.comm_backend == "NCCL" else "traces_0.rank0"
+        self.cord_pid = self.opt.cord_pid
 
         self.init_dfg = None
         self.init_op2fused = None
