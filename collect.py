@@ -1763,10 +1763,7 @@ class Collector(object):
         if self.nccl_graph is not None:
             return list(self.nccl_graph.prefix2rank.keys())
         else:
-            print(self.byteps_graph.pid_to_target)
-            print(self.byteps_graph.pid_to_server)
-            raise
-            return list(self.pid_to_target.keys())
+            return [pid for pid in self.traceM.all_prefix if pid.startswith("traces_")]
     
     def collect_trial_dag_v2(self, nrank=4):
         SingleLogger().info("Convert Large DFG to smaller one ...")

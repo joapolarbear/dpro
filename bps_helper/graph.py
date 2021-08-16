@@ -46,12 +46,13 @@ class ServerOpCounter(object):
     def get_next_op(self, name):
         raw_name = parse_rawname(name)
         source, target, tensor_name, sub_op, part_id = self.byteps_graph.parse_comm_event_name(raw_name)
+        tensor_name_with_part_id = tensor_name + part_id
         if target in self.server_op_counter:
             # is a push or pull request to servers
             if sub_op == PS_COMM_OPS.PUSH_REQ:
-                if tensor_name not in self.server_op_counter[target]:
-                    self.server_op_counter[target][tensor_name] = 0
-                if self.server_op_counter[target][tensor_name] == 0:
+                if tensor_name_with_part_id not in self.server_op_counter[target]:
+                    self.server_op_counter[target][tensor_name_with_part_id] = 0
+                if self.server_op_counter[target][tensor_name_with_part_id] == 0:
                     # first push, a copy_first sub_op
                     comp_key = (target, tensor_name, PS_COMP_OPS.COPY_FIRST,
                         self.byteps_graph.comp_ops_tid[(target, tensor_name, PS_COMP_OPS.COPY_FIRST, part_id)],
@@ -61,9 +62,9 @@ class ServerOpCounter(object):
                     comp_key = (target, tensor_name, PS_COMP_OPS.SUM,
                         self.byteps_graph.comp_ops_tid[(target, tensor_name, PS_COMP_OPS.SUM, part_id)],
                         part_id)
-                    res_name = self.byteps_graph.gen_comp_full_name(comp_key, sum_index=self.server_op_counter[target][tensor_name]-1)
-                self.server_op_counter[target][tensor_name] += 1
-                self.server_op_counter[target][tensor_name] = self.server_op_counter[target][tensor_name] % self.num_workers
+                    res_name = self.byteps_graph.gen_comp_full_name(comp_key, sum_index=self.server_op_counter[target][tensor_name_with_part_id]-1)
+                self.server_op_counter[target][tensor_name_with_part_id] += 1
+                self.server_op_counter[target][tensor_name_with_part_id] = self.server_op_counter[target][tensor_name_with_part_id] % self.num_workers
             else:
                 res_name = None
         else:

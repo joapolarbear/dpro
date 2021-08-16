@@ -502,7 +502,8 @@ class Optimizer:
         # assert False, "Shouldn't get here"
         return choices[0]
 
-    def _op_to_coarse_grained_comm_time(self, bw_op, _dag, ref_pid):
+    def _op_to_coarse_grained_comm_time(self, bw_op, _dag, topo_order=None):
+        ref_pid = parse_pid_from_name(bw_op)
         comm_t = 0
         def ret_comm_time(comm_op):
             avg_sum = _dag.nodes[comm_op]["avg"]
@@ -511,13 +512,36 @@ class Optimizer:
                 if "Comm" in comm_succ and ref_pid == _pid:
                     avg_sum += ret_comm_time(comm_succ)
             return avg_sum
-        for _succ in _dag.successors(bw_op):
-            if "Comm" in _succ:
-                if self.comm_backend == "NCCL":
+        if self.comm_backend == "NCCL":
+            for _succ in _dag.successors(bw_op):
+                if "Comm" in _succ:
                     comm_t += ret_comm_time(_succ)
-                else:
-                    ### PS
-                    ### TODO (huhanpeng): is there only one comm sub operator ???
-                    raise NotImplementedError()
-                    comm_t += _dag.nodes[_succ]["avg"]
-        return comm_t
+            return comm_t
+        else:
+            bw_op_std_name = parse_rawname(bw_op)
+            ### PS
+            local_dfg = self.clct.dag
+            succ_list = [succ_ for succ_ in local_dfg.successors(bw_op_std_name) if "Comm" in succ_]
+            if len(succ_list) == 0:
+                return None
+            else:
+                comm_delay_in_ms = 0
+                for comm_succ in succ_list:
+                    succ_list = [succ_ for succ_ in local_dfg.successors(comm_succ) if "UPDATE_" in succ_]
+                    assert len(succ_list) == 1, (bw_op, comm_succ, succ_list)
+                    update_op = gen_long_name(ref_pid, succ_list[0])
+                    topo_order = dict(topo_order)
+                    bw_op_et = topo_order[bw_op] + _dag.nodes[bw_op]["avg"] * 1000
+                    try:
+                        update_op_st = topo_order[update_op]
+                    except:
+                        tmp_list = [name.split("->")[1] for name in topo_order.keys() if "UPDATE_" in name]
+                        print(bw_op, update_op)
+                        import code
+                        code.interact(local=locals())
+                        raise
+                    comm_delay_in_ms = max(comm_delay_in_ms, (update_op_st - bw_op_et) / 1000)
+                return comm_delay_in_ms
+
+                # traces_0.rank1->UPDATE_.Distributed_Push_Pull/truediv_212
+        

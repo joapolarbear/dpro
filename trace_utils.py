@@ -143,6 +143,8 @@ def _parse_long_name(long_name):
         sub_op = None
     elif len(name_split) == 3:
         _, op_name, sub_op = name_split
+    else:
+        raise ValueError(long_name)
     return pid, std_name, op_name, sub_op, suffix
 
 def parse_op_name(name):
@@ -156,6 +158,8 @@ def parse_rawname(name):
         return name.split(DEL)[1]
 
 def parse_pid_from_name(name):
+    if "+" in name and "Comm" not in name:
+        name = name.split("+")[0]
     pid, std_name, op_name, sub_op, suffix = _parse_long_name(name)
     return "none" if pid is None else pid
 
@@ -435,6 +439,7 @@ class TraceManager:
 
         self.name2sta = None
         self.cat2sta = None
+        self.all_prefix = None
         self.ret_stat()
 
     def dump(self, dir_):
@@ -444,7 +449,7 @@ class TraceManager:
     def _dump(self, dir_):
         rst_traces = sorted(self.traces, key=lambda x: (x["pid"], x["tid"]))
         with open(os.path.join(dir_, FileName.TRACE.value), 'w') as f:
-            json.dump(rst_traces, f)
+            json.dump({"traces": rst_traces, "all_prefix": self.all_prefix}, f)
         str_ = "%d,%d,%d,%f\n"%(self.dir_level.value, self.max_step, self.opt_step, self.iter_time)
         str_ += str(self.name2sta) + "\n"
         str_ += str(self.cat2sta)
@@ -452,7 +457,10 @@ class TraceManager:
             fp.write(str_)
 
     def load(self, dir_):
-        self.traces = read_traces(os.path.join(dir_, FileName.TRACE.value))
+        with open(os.path.join(dir_, FileName.TRACE.value), 'r') as fp:
+            _info = json.load(fp)
+        self.traces = _info["traces"]
+        self.all_prefix = _info["all_prefix"]
         self.traces = sorted(self.traces, key=lambda x: (x["ts"], x["name"]), reverse=False)
         with open(os.path.join(dir_, FileName.STATISTIC.value), 'r') as fp:
             str_ = fp.read().split("\n")
@@ -732,6 +740,8 @@ class TraceManager:
 
         for name, statistic in self.name2sta.items():
             statistic["var"] = statistic["var"] / float(statistic["cnt"])
+        
+        self.all_prefix = list(prefix_dict.keys())
 
     def print_stat(self, sort=True, line_num=None):
         if sort:
@@ -791,6 +801,10 @@ class TraceManager:
             # SingleLogger().warn("Fail to find the trace of %s" % unique_name)
             return 0.0
         else:
+            if _field == "avg" and \
+                math.sqrt(self.name2sta[unique_name]["var"]) / self.name2sta[unique_name]["avg"] > 1:
+                ### If an operator's execution time is unstable, use median instead
+                self.name2sta[unique_name]["median"]
             return self.name2sta[unique_name][_field]
 
     def has_prefix(self, name):

@@ -410,7 +410,7 @@ class Replayer:
                     continue
                 (n, t) = device.queue.pop(0)
                 if self.recd_topo_order:
-                    self.topo_ord.append(n)
+                    self.topo_ord.append((n, t))
                 self.record_queue_status(t)
                 device.exct(n, t, step_idx)
                 return 0
@@ -421,7 +421,7 @@ class Replayer:
             else:
                 (n, t) = self.queue.pop(0)
                 if self.recd_topo_order:
-                    self.topo_ord.append(n)
+                    self.topo_ord.append((n, t))
                 device = self.name2device(n)
                 device.exct(n, t, step_idx)
                 return 0
