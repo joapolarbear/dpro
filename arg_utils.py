@@ -72,6 +72,9 @@ group_opt.add_argument("--workspace", type=str, default=None, help="Workerspace 
 group_opt.add_argument("--memory_budget", type=float, default=16, help="GPU Memory budget")
 
 group_opt.add_argument("--search_ts_group_num", action="store_true", help="Search the optimal tensor group numbers if set")
+group_opt.add_argument("--fit_data_save_dir", type=str, default=None, help="Dump the data used to fit the tensor fusion cost model")
+group_opt.add_argument("--test_ts_group_num", type=int, default=None, help="Test the simulation result of fusing"
+	"tensors to a spcific numbertensor group, defaul tensor partition size ~ 4 MB")
 
 ### Operator fusion
 group_xla = parser.add_argument_group('Operator Fusion')

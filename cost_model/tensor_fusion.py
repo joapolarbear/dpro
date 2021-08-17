@@ -4,6 +4,7 @@ import os
 import pickle
 import numpy as np
 import math
+import random
 import ujson as json
 from tqdm import tqdm, trange
 from scipy.optimize import curve_fit
@@ -156,7 +157,7 @@ class TensorFusionGraphPass(_BaseGraphPass):
         groups = self._sorted_all_tensor_groups()
         for grp in groups:
             grp_info = self._parse_tensor_group_info(grp)
-            old_partition_num = len(grp_info["partitions"])
+            old_partition_num = grp_info["part_num"]
             new_part_num = math.ceil(float(grp_info['size']) / part_size_in_B)
             if old_partition_num == new_part_num:
                 continue
@@ -301,6 +302,9 @@ class TensorFusionGraphPass(_BaseGraphPass):
         for tensor_id in op_name.split("+"):
             self.cur_tensor2group[int(tensor_id)] = op_name
 
+    def _from_tensor_name2rawname(self, tensor_name):
+        return "Comm.{}".format(tensor_name)
+
     def _wrap_parse_all_info(self, n):
         pid, std_name, cat, suffix = parse_allinfo_from_name(n)
         name_splits = std_name.split(".")
@@ -330,8 +334,8 @@ class TensorFusionGraphPass(_BaseGraphPass):
                     self.num_grp = n
                 elif isinstance(n, tuple):
                     ### Tensor partition for PS
-                    tensor_grp_name, partitions = n
-                    self.tensor_group_info[tensor_grp_name]["partitions"] = partitions
+                    tensor_grp_name, part_num = n
+                    self.tensor_group_info[tensor_grp_name]["part_num"] = part_num
                 elif isinstance(n, str):
                     ### Tensor fusion
                     self._update_tensor2grp(n)
@@ -487,6 +491,10 @@ class TensorFusionGraphPass(_BaseGraphPass):
 
         return edges_to_add, edges_to_rm, nodes_to_add, nodes_to_rm
     
+    def _gen_fused_tensor_name(self, tensor_u, tensor_v):
+        sorted_tensor_ids = sorted([int(id_str) for id_str in tensor_u.split("+") + tensor_v.split("+")])
+        return "+".join([str(id) for id in sorted_tensor_ids])
+
     def _ps_tensor_fusion_impl(self, _dag, _pkg: PKGraph,
         u_, v_, pair_all_infos, tensor_group_infos, new_part_num=None):
         edges_to_add = []
@@ -498,35 +506,33 @@ class TensorFusionGraphPass(_BaseGraphPass):
         entry_sub_ops = [PS_COMM_OPS.PUSH_REQ, PS_COMP_OPS.COPY_FIRST]
 
         tensor_name_u, tensor_name_v = pair_all_infos[0][2], pair_all_infos[1][2]
-        part_num_u, part_num_v = len(tensor_group_infos[0]["partitions"]), len(tensor_group_infos[1]["partitions"])
+        part_num_u, part_num_v = tensor_group_infos[0]["part_num"], tensor_group_infos[1]["part_num"]
         new_part_num = max(part_num_u, part_num_v) if new_part_num is None else new_part_num
         new_tensor_size = tensor_group_infos[0]["size"] + tensor_group_infos[1]["size"]
         new_partition_size = new_tensor_size / new_part_num
 
-        sorted_tensor_ids = sorted([int(id_str) for id_str in tensor_name_u.split("+") + tensor_name_v.split("+")])
-        fused_tensor_name = "+".join([str(id) for id in sorted_tensor_ids])
-        assert fused_tensor_name not in self.tensor_group_info, (fused_tensor_name, self.tensor_group_info[fused_tensor_name])
+        fused_tensor_name = self._gen_fused_tensor_name(tensor_name_u, tensor_name_v)
+        ### Comment this assertion, since we may test whether fusion is better in advance
+        #   which introduce `fused_tensor_name` to `self.tensor_group_info`
+        # assert fused_tensor_name not in self.tensor_group_info, (fused_tensor_name, self.tensor_group_info[fused_tensor_name])
         self.tensor_group_info[fused_tensor_name] = {
             'size': new_tensor_size,
-            'partitions': list(range(new_part_num))
+            'part_num': new_part_num
         }
 
         # print("[TSFS] Fuse {} {}, from partition num: ".format(u_, v_), part_num_u, part_num_v, "to", new_part_num)
         
-        def __update_node_attr(__node, __all_info, __dag):
-            sub_op = __all_info[3]
-            _pid = __all_info[0]
+        def __update_node_attr(fused_u_v, _pid, sub_op, __dag):
             fused_time = self.predict_comm_time(new_partition_size, _pid, sub_op)
-            fused_v = self._gen_analogous_name(__node, new_part_id=None, new_tensor_name=tensor_name_v)
             attr_dict = {}
-            for attr_ in set(__dag.nodes[__node].keys()).union(set(__dag.nodes[fused_v].keys())):
+            for attr_ in set(__dag.nodes[fused_u_v[0]].keys()).union(set(__dag.nodes[fused_u_v[1]].keys())):
                 if attr_ == "avg":
                     attr_dict["avg"] = fused_time
                 else:
                     # attr_dict[attr_] = (__dag.nodes[__node].get(attr_, 0) * part_num_u \
                     #     + __dag.nodes[fused_v].get(attr_, 0) * part_num_v) / new_part_num
-                    attr_dict[attr_] = max(__dag.nodes[__node].get(attr_, 0), 
-                        __dag.nodes[fused_v].get(attr_, 0))
+                    attr_dict[attr_] = max(__dag.nodes[fused_u_v[0]].get(attr_, 0), 
+                        __dag.nodes[fused_u_v[1]].get(attr_, 0))
             return attr_dict
 
         for node in _dag.nodes():
@@ -541,14 +547,30 @@ class TensorFusionGraphPass(_BaseGraphPass):
             if part_id != '0':
                 continue
             
+            edges_to_process = []
+            cur_node_copy = self._gen_analogous_name(node, new_part_id=0, new_tensor_name=tensor_name_v)
             if node_all_info[3] == PS_COMP_OPS.COPY_FIRST:
                 ### No bw predecessors
-                edges_to_process = [(node, succ_) for succ_ in _dag.successors(node)]
-            else:
-                edges_to_process = [(bw_op, node) for bw_op in _dag.predecessors(node)]
+                for succ_ in _dag.successors(node):
+                    edge_u = (node, succ_)
+                    edge_v = (cur_node_copy,
+                        self._gen_analogous_name(succ_, new_part_id=0, new_tensor_name=tensor_name_v))
+                    edges_to_process.append((edge_u, edge_v))
+            else:  
+                for pred_ in _dag.predecessors(node):
+                    assert "BW" in pred_
+                    edge_u = (pred_, node)
+                    edge_v = (pred_, cur_node_copy)
+                    edges_to_process.append((edge_u, edge_v))
+                for pred_ in _dag.predecessors(cur_node_copy):
+                    assert "BW" in pred_
+                    edge_u = (pred_, node)
+                    edge_v = (pred_, cur_node_copy)
+                    edges_to_process.append((edge_u, edge_v))
             
             while len(edges_to_process) > 0:
-                prev_node, cur_node = edges_to_process.pop(0)
+                edge_u, edge_v = edges_to_process.pop(0)
+                prev_node, cur_node = edge_u
                 # print("[TSFS] EDGE", prev_node, cur_node)
                 _pair_all_infos = [
                     self._wrap_parse_all_info(prev_node),
@@ -556,51 +578,80 @@ class TensorFusionGraphPass(_BaseGraphPass):
                 
                 ### remove edges related to node u
                 for part_id in range(part_num_u):
-                    prev_node_copy = self._gen_analogous_name(prev_node, new_part_id=part_id)
-                    cur_node_copy = self._gen_analogous_name(cur_node, new_part_id=part_id)
+                    _edge_u = (
+                        self._gen_analogous_name(edge_u[0], new_part_id=part_id),
+                        self._gen_analogous_name(edge_u[1], new_part_id=part_id)
+                    )
                     if _pair_all_infos[0][3] == PS_COMP_OPS.COPY_FIRST:
-                        nodes_to_rm.add(prev_node_copy)
-                    if cur_node not in processed_nodes and not "UPDATE_" in cur_node:
-                        nodes_to_rm.add(cur_node_copy)
-                    edges_to_rm.append((prev_node_copy, cur_node_copy))
-                    # print("DELETE_", prev_node, cur_node, prev_node_copy, cur_node_copy)
+                        nodes_to_rm.add(_edge_u[0])
+                    if edge_u[1] not in processed_nodes and not "UPDATE_" in edge_u[1]:
+                        nodes_to_rm.add(_edge_u[1])
+                    edges_to_rm.append(_edge_u)
+                    # print("DELETE_", edge_u[0], edge_u[1], _edge_u[0], _edge_u[1])
                 
                 for part_id in range(part_num_v):
-                    prev_node_copy = self._gen_analogous_name(prev_node, new_part_id=part_id, new_tensor_name=tensor_name_v)
-                    cur_node_copy = self._gen_analogous_name(cur_node, new_part_id=part_id, new_tensor_name=tensor_name_v)
+                    _edge_v = (
+                        self._gen_analogous_name(edge_v[0], new_part_id=part_id),
+                        self._gen_analogous_name(edge_v[1], new_part_id=part_id)
+                    )
                     if _pair_all_infos[0][3] == PS_COMP_OPS.COPY_FIRST:
-                        nodes_to_rm.add(prev_node_copy)
-                    if cur_node not in processed_nodes and not "UPDATE_" in cur_node:
-                        nodes_to_rm.add(cur_node_copy)
-                    edges_to_rm.append((prev_node_copy, cur_node_copy))
-                    # print("DELETE_", prev_node, cur_node, prev_node_copy, cur_node_copy)
-                
+                        nodes_to_rm.add(_edge_v[0])
+                    if edge_u[1] not in processed_nodes and not "UPDATE_" in edge_u[1]:
+                        nodes_to_rm.add(_edge_v[1])
+                    edges_to_rm.append(_edge_v)
+                    # print("DELETE_", edge_v[0], edge_v[1], _edge_v[0], _edge_v[1])
+
+                ### Parse node attributes  
                 if _pair_all_infos[0][3] == PS_COMP_OPS.COPY_FIRST:
-                    prev_attr_dict = __update_node_attr(prev_node, _pair_all_infos[0], _dag)
+                    prev_attr_dict = __update_node_attr(
+                        (edge_u[0], edge_v[0]), _pair_all_infos[0][0], _pair_all_infos[0][3], _dag)
                 else:
                     prev_attr_dict = {}
-                if cur_node not in processed_nodes and not "UPDATE_" in cur_node:
-                    attr_dict = __update_node_attr(cur_node, _pair_all_infos[1], _dag)
+                if edge_u[1] not in processed_nodes and not "UPDATE_" in edge_u[1]:
+                    attr_dict = __update_node_attr(
+                        (edge_u[1], edge_v[1]), _pair_all_infos[1][0], _pair_all_infos[1][3], _dag)
                 else:
                     attr_dict = {}
                 ### Add new edges
                 ### Need to add edges, basically, copy
                 for part_id in range(new_part_num):
-                    prev_node_copy = self._gen_analogous_name(prev_node, new_part_id=part_id,
-                        new_tensor_name=fused_tensor_name, create_node=True)
-                    cur_node_copy = self._gen_analogous_name(cur_node, new_part_id=part_id,
-                        new_tensor_name=fused_tensor_name, create_node=True)
+                    new_edge = (
+                        self._gen_analogous_name(prev_node, new_part_id=part_id,
+                            new_tensor_name=fused_tensor_name, create_node=True),
+                        self._gen_analogous_name(cur_node, new_part_id=part_id,
+                            new_tensor_name=fused_tensor_name, create_node=True)
+                    )
                     if _pair_all_infos[0][3] == PS_COMP_OPS.COPY_FIRST:
-                        nodes_to_add.append((prev_node_copy, prev_attr_dict))
+                        nodes_to_add.append((new_edge[0], prev_attr_dict))
                     if cur_node not in processed_nodes and not "UPDATE_" in cur_node:
-                        nodes_to_add.append((cur_node_copy, attr_dict))
-                    edges_to_add.append((prev_node_copy, cur_node_copy))
-                    # print("ADD", prev_node, cur_node, prev_node_copy, cur_node_copy)
+                        nodes_to_add.append((new_edge[1], attr_dict))
+                    edges_to_add.append(new_edge)
+                    # print("ADD", prev_node, cur_node, new_edge[0], new_edge[1])
 
-                if cur_node not in processed_nodes and not "UPDATE_" in cur_node:
+                if edge_u[1] not in processed_nodes and not "UPDATE_" in edge_u[1]:
                     ### Hanle suceesors
-                    processed_nodes.add(cur_node)
-                    edges_to_process += [(cur_node, succ_) for succ_ in _dag.successors(cur_node)]
+                    processed_nodes.add(edge_u[1])
+                    is_last_comm = False
+                    for succ_ in _dag.successors(edge_u[1]):
+                        if "UPDATE_" in succ_:
+                            is_last_comm = True
+                            break
+                        _edge_u = (edge_u[1], succ_)
+                        _edge_v = (edge_v[1],
+                            self._gen_analogous_name(succ_, new_part_id=0, new_tensor_name=tensor_name_v))
+                        edges_to_process.append((_edge_u, _edge_v))
+
+                    if is_last_comm:
+                        for update_op in _dag.successors(edge_u[1]):
+                            assert "UPDATE_" in update_op
+                            _edge_u = (edge_u[1], update_op)
+                            _edge_v = (edge_v[1], update_op)
+                            edges_to_process.append((_edge_u, _edge_v))
+                        for update_op in _dag.successors(edge_v[1]):
+                            assert "UPDATE_" in update_op
+                            _edge_u = (edge_u[1], update_op)
+                            _edge_v = (edge_v[1], update_op)
+                            edges_to_process.append((_edge_u, _edge_v))
         return edges_to_add, edges_to_rm, nodes_to_add, nodes_to_rm
 
     def _gen_analogous_name(self, origin_name, new_part_id=None, new_tensor_name=None, create_node=False):
@@ -669,13 +720,12 @@ class TensorFusionGraphPass(_BaseGraphPass):
         processed_nodes = set()
 
         # all_pid = sorted(self.opt.clct.all_pid())
-        old_parititons = grp_info["partitions"]
-        old_partition_num = len(old_parititons)
+        old_partition_num = grp_info["part_num"]
         if k_star == old_partition_num:
             return
         
-        new_partitions = list([str(part_id) for part_id in range(k_star)])
-        new_partition_size = grp_info["size"] / k_star
+        new_part_num = k_star
+        new_partition_size = grp_info["size"] / new_part_num
         # print("[TSFS] From partition: ", old_parititons, "to", new_partitions)
         
         def __update_node_attr(__node, __all_info, __dag):
@@ -688,7 +738,7 @@ class TensorFusionGraphPass(_BaseGraphPass):
                 if attr_ == "avg":
                     attr_dict["avg"] = fused_time
                 else:
-                    # attr_dict[attr_] = __dag.nodes[__node][attr_] * old_partition_num / k_star
+                    # attr_dict[attr_] = __dag.nodes[__node][attr_] * old_partition_num / new_part_num
                     attr_dict[attr_] = __dag.nodes[__node][attr_]
             return attr_dict
 
@@ -729,7 +779,7 @@ class TensorFusionGraphPass(_BaseGraphPass):
                 else:
                     attr_dict = {}
 
-                for part_id in range(k_star):
+                for part_id in range(new_part_num):
                     if part_id < old_partition_num:
                         ### only need to update node attributeds
                         prev_node_copy = self._gen_analogous_name(prev_node, new_part_id=part_id, create_node=False)
@@ -739,7 +789,7 @@ class TensorFusionGraphPass(_BaseGraphPass):
                         if cur_node not in processed_nodes and not "UPDATE_" in cur_node:
                             nodes_to_update[cur_node_copy] = attr_dict
                     else:
-                        ### k_star > old_partition_num
+                        ### new_part_num > old_partition_num
                         ### Need to add edges, basically, copy
                         prev_node_copy = self._gen_analogous_name(prev_node, new_part_id=part_id, create_node=True)
                         cur_node_copy = self._gen_analogous_name(cur_node, new_part_id=part_id, create_node=True)
@@ -750,9 +800,9 @@ class TensorFusionGraphPass(_BaseGraphPass):
                         edges_to_add.append((prev_node, cur_node_copy))
                         # print("ADD_", prev_node_copy, cur_node_copy)
                 
-                if k_star < old_partition_num:
+                if new_part_num < old_partition_num:
                     ### Need to delete edges
-                    for part_id in range(k_star, old_partition_num):
+                    for part_id in range(new_part_num, old_partition_num):
                         prev_node_copy = self._gen_analogous_name(prev_node, new_part_id=part_id, create_node=False)
                         cur_node_copy = self._gen_analogous_name(cur_node, new_part_id=part_id, create_node=False)
                         if _pair_all_infos[0][3] == PS_COMP_OPS.COPY_FIRST:
@@ -767,7 +817,7 @@ class TensorFusionGraphPass(_BaseGraphPass):
                     processed_nodes.add(cur_node)
                     edges_to_process += [(cur_node, succ_) for succ_ in _dag.successors(cur_node)]
 
-        self.cache_change.append((tensor_grp_name, new_partitions))
+        self.cache_change.append((tensor_grp_name, new_part_num))
         _dag.add_edges_from(edges_to_add)
         _dag.add_nodes_from(nodes_to_add)
         _dag.remove_edges_from(edges_to_rm)
@@ -794,9 +844,7 @@ class TensorFusionGraphPass(_BaseGraphPass):
         pair_all_infos = [
             self._wrap_parse_all_info(u_),
             self._wrap_parse_all_info(v_)]
-        sorted_tensor_ids = sorted([int(n) for n in pair_all_infos[0][2].split(
-            "+") + pair_all_infos[1][2].split("+")])
-        new_raw_name = "+".join([str(n) for n in sorted_tensor_ids])
+        new_raw_name = self._gen_fused_tensor_name(pair_all_infos[0][2], pair_all_infos[1][2])
         new_name = self._wrap_gen_long_name(pair_all_infos[0][0], pair_all_infos[0][1], new_raw_name, pair_all_infos[0][3], pair_all_infos[0][4])
         if new_raw_name not in self.tensor_group_info:
             self.tensor_group_info[new_raw_name] = self.tensor_group_info[pair_all_infos[base_idx][2]].copy()
@@ -983,7 +1031,7 @@ class TensorFusionGraphPass(_BaseGraphPass):
         if op_name not in self.tensor_group_info:
             if self.opt.comm_backend == "NCCL":
                 if ref is None:
-                    chunkNum, sliceNum, channelNum, loopNum = self.opt.clct.nccl_graph.get_IDnum("Comm." + op_name)
+                    chunkNum, sliceNum, channelNum, loopNum = self.opt.clct.nccl_graph.get_IDnum(self._from_tensor_name2rawname(op_name))
                     grp_info = {
                         "chunkNum": chunkNum,
                         "sliceNum": sliceNum,
@@ -996,7 +1044,7 @@ class TensorFusionGraphPass(_BaseGraphPass):
                     grp_info = self._parse_tensor_group_info(ref).copy()
             else:
                 grp_info = {
-                        "partitions": self.opt.clct.byteps_graph.partition_dict.get(op_name, ['0'])
+                        "part_num": len(self.opt.clct.byteps_graph.partition_dict.get(op_name, ['0']))
                     }
 
             total_size = self._tensor_grp_size(op_name)
@@ -1053,7 +1101,7 @@ class TensorFusionGraphPass(_BaseGraphPass):
             if all_info[3] not in self.pid_to_cm[all_info[0]]:
                 self.pid_to_cm[all_info[0]][all_info[3]] = {"data":[], "param": None}
             grp_info = self._parse_tensor_group_info(all_info[2])
-            _size = grp_info["size"] / len(grp_info["partitions"])
+            _size = grp_info["size"] / grp_info["part_num"]
 
             avg_list = [_avg for _avg in no_suffix_time[name_no_suffix] if _avg > 0]
             if len(avg_list) == 0:
@@ -1068,14 +1116,18 @@ class TensorFusionGraphPass(_BaseGraphPass):
         
         ### Fit the cost model for each GPU/pid/device
         SingleLogger().info("Fit the cost model for each GPU...")
+        fit_data_save_dir = args_.fit_data_save_dir
         for pid in sorted(self.pid_to_cm.keys()):
             for sub_op in sorted(self.pid_to_cm[pid].keys()):
                 data_param_dict = self.pid_to_cm[pid][sub_op]
                 if len(data_param_dict["data"]) == 0:
                     continue
-
+                
+                all_data = np.array(data_param_dict["data"])
+                if fit_data_save_dir is not None:
+                    np.savetxt(os.path.join(fit_data_save_dir, "{}_{}.txt".format(pid, sub_op)), all_data)
                 ### data shape = (n_dim, n_samples)
-                all_data = np.array(data_param_dict["data"]).T
+                all_data = all_data.T
                 n_dim, n_samples = all_data.shape
 
                 try_cnt = 0
@@ -1234,7 +1286,7 @@ class TensorFusionGraphPass(_BaseGraphPass):
         else:
             re_load = True
             
-        if re_load:
+        if re_load or args_.test_ts_group_num is not None:
             G = self.dag.copy() if G_prime is None else G_prime.copy()
             PKG = None
 
@@ -1246,19 +1298,25 @@ class TensorFusionGraphPass(_BaseGraphPass):
             else:
                 raise ValueError()
 
-            with open(init_ckpt_path, "wb") as f:
-                pickle.dump([G, PKG, trajectory, self.tensor_group_info,
-                    self.cur_tensor2group, self.num_grp, 
-                    self.history_num_grp, self.pid_to_cm,
-                    self.bw2tensor], f)
-            SingleLogger().info("Graph cache dumped to {}.".format(init_ckpt_path))
-        
+            if args_.test_ts_group_num is None:
+                ### By default, fuse tensors that connected to the same BW ops.
+                #   But when testing tensor group numbers, do not fuse those tensors
+                self.init_fuse_tensors(G, PKG)
+                with open(init_ckpt_path, "wb") as f:
+                    pickle.dump([G, PKG, trajectory, self.tensor_group_info,
+                        self.cur_tensor2group, self.num_grp, 
+                        self.history_num_grp, self.pid_to_cm,
+                        self.bw2tensor], f)
+                SingleLogger().info("Graph cache dumped to {}.".format(init_ckpt_path))
+            else:
+                SingleLogger().info(bcolors.CGREEN + "Test tensor fusion group: use {} tensor groups".format(
+                    args_.test_ts_group_num) + bcolors.ENDC)
+
         if IGNORE_SYNC and self.opt.comm_backend == "NCCL":
             for n in G.nodes():
                 if "Sync" in n:
                     G.nodes[n]["avg"] = 0
         
-        # self.init_fuse_tensors(G, PKG)
         self._tensor_level_send_recv_cm()
         self.dump_tensor_grp_mapping(_file_name="tensor_fusion_grp_mapping_init.json")
         self.cache_change = []
@@ -1276,12 +1334,12 @@ class TensorFusionGraphPass(_BaseGraphPass):
             if len(tensor_name_set) > 1]
         for tensors in tensors_to_fuse:
             SingleLogger().info("[TSFS] Init: fuse {}".format(tensors))
-            prev_tensor = "Comm." + tensors[0]
+            prev_tensor = self._from_tensor_name2rawname(tensors[0])
             for idx in range(1, len(tensors)):
-                tensor_v = "Comm." + tensors[idx]
+                tensor_v = self._from_tensor_name2rawname(tensors[idx])
                 _, nodes_introduced, _ = self._tensor_fusion(G, PKG, prev_tensor, tensor_v)
                 self.flush(True)
-                prev_tensor = "Comm." + parse_op_name(nodes_introduced[0])
+                prev_tensor = self._from_tensor_name2rawname(parse_op_name(nodes_introduced[0]))
 
     def dump_tensor_grp_mapping(self, _file_name=None):
         file_name = 'tensor_fusion_grp_mapping.json' if _file_name is None else _file_name
@@ -1324,7 +1382,7 @@ class TensorFusionGraphPass(_BaseGraphPass):
         self.recv_cm = (np.average(recv_bias_list), np.average(recv_slope_list))
         assert self.send_cm[0] > 0 and self.recv_cm[0] > 0
     
-    def if_fusion_better(self, op_name_u, op_name_v, dp_state):
+    def if_fusion_better(self, op_name_u, op_name_v, dp_state, _dag):
         ''' Decide if fusing two tensors (u, v) is better based on some heuristics
             Return a tuple (is_fuse, k_star), 
             where `is_fuse` denotes whether to fuse the two tensors
@@ -1335,15 +1393,56 @@ class TensorFusionGraphPass(_BaseGraphPass):
         tensor_size_u = dp_state.q_m[-2]
         tensor_size_v = dp_state.q_m[-1]
         
-        k_star_fuse, t_sync_fuse = self.best_partition(tensor_size_u + tensor_size_v)
-        k_star_null, t_sync_null = self.best_partition(tensor_size_v)
+        ### Previous method
+        k_star_fuse, t_sync_fuse = self.best_partition_naive(tensor_size_u + tensor_size_v)
+        k_star_null, t_sync_null = self.best_partition_naive(tensor_size_v)
+
+        SingleLogger().info("xx \t k_star_fuse \t t_sync_fuse \t k_star_null \t t_sync_null")
+        SingleLogger().info("naive: \t {:.3f} \t {:.3f} \t {:.3f} \t {:.3f}".format(k_star_fuse, t_sync_fuse, k_star_null, t_sync_null))
+
+        ### Via partially replay
+        G_star = _dag.copy()
+        fused_tensor_name = self._gen_fused_tensor_name(op_name_u, op_name_v)
+        
+        self._tensor_fusion(G_star, None, self._from_tensor_name2rawname(op_name_u),
+            self._from_tensor_name2rawname(op_name_v))
+        self.flush(False)
+        k_star_fuse, t_sync_fuse = self.best_partition_partial_replay(fused_tensor_name, G_star)
+
+        ### Test 2
+        self._tensor_partition(G_star, None, fused_tensor_name, k_star_fuse)
+        self.flush(False)
+        partial_time_fuse = self.estimate_time_related_to_comm(
+            [fused_tensor_name], G_star,
+            "partial_replay_fuse.json")
+        full_time_fuse = self.opt.evaluate(G_star)[0]
+
+        
+
+        G_star = _dag.copy()
+        k_star_null, t_sync_null = self.best_partition_partial_replay(op_name_v, G_star)
+
+        ### Test 2
+        # self._tensor_partition(G_star, None, op_name_v, k_star_null)
+        # self.flush(False)
+        partial_time_origin = self.estimate_time_related_to_comm(
+            [op_name_u, op_name_v], _dag,
+            "partial_replay_origin.json")
+        full_time_origin = self.opt.evaluate(_dag)[0]
+
+        SingleLogger().info("Partial: \t {:.3f} \t {:.3f} \t {:.3f} \t {:.3f}".format(k_star_fuse, t_sync_fuse, k_star_null, t_sync_null))
+        print("Origin: partial: {:.3f}, full {:.3f}".format(partial_time_origin, full_time_origin))
+        print("Fuse: partial: {:.3f}, full {:.3f}".format(partial_time_fuse, full_time_fuse))
+        SingleLogger().info("q_n-1^e: {:.3f}, p_n^e: {:.3f}".format(end_comm_time_u, end_comp_time_v))
+        raise
+
         if end_comm_time_u > end_comp_time_v + t_sync_fuse - t_sync_null:
             ### Fusion is better
             return True, k_star_fuse, t_sync_fuse, t_sync_null
         else:
             return False, k_star_null, t_sync_fuse, t_sync_null
     
-    def best_partition(self, tensor_size, ref_time=None):
+    def best_partition_naive(self, tensor_size, ref_time=None):
         ''' Find the the optimal partition number given tensor size
             Return a tuple (k_star, sync_time), where `k_star` is the optimal patition number
             and `sync_time` is the estimated execution time of this tensor if it's
@@ -1373,4 +1472,81 @@ class TensorFusionGraphPass(_BaseGraphPass):
         else:
             sync_time = t_send + t_aggr + k_star * t_recv
         return k_star, sync_time
+
+    def best_partition_partial_replay(self, tensor_name, _dag):
+        ### `tensor_name` must be a tensor in `dag`
+        grp_info = self._parse_tensor_group_info(tensor_name)
+        MAX_TEST_TENSOR_GROUP_TIME = 5
+        sampled_partition_num = list(range(1, 2 * grp_info["part_num"]))
+        if len(sampled_partition_num) > MAX_TEST_TENSOR_GROUP_TIME:
+            sampled_partition_num = random.sample(sampled_partition_num, MAX_TEST_TENSOR_GROUP_TIME)
+
+        k_star = None
+        comm_time_star = None
+        for partition_num in sampled_partition_num:
+            G_star = _dag.copy()
+            self._tensor_partition(G_star, None, tensor_name, partition_num)
+            self.flush(False)
+            comm_time = self.estimate_comm_time_via_replay(tensor_name, G_star)
+            if k_star is None or comm_time < comm_time_star:
+                k_star = partition_num
+                comm_time_star = comm_time
+        return k_star, comm_time_star
+    
+    def estimate_comm_time_via_replay(self, tensor_name, _dag):
+        involved_comm_nodes = [_node for _node in _dag.nodes() if "Comm.{}.".format(tensor_name) in _node]
+        involved_bw_nodes = set()
+        for comm_op in involved_comm_nodes:
+            involved_bw_nodes = involved_bw_nodes.union([pred for pred in _dag.predecessors(comm_op) if "BW" in pred])
+        all_involved_nodes = involved_bw_nodes.union(involved_comm_nodes)
+        sub_graph = _dag.subgraph(all_involved_nodes)
+        # dump_path = "partial_replay.json"
+        dump_path = None
+        _output = False if dump_path is None else True
+        from replay import Replayer
+        replayer = Replayer(dag=sub_graph, _step_num=1,
+                            leaf_dirs=self.opt.clct.all_prefix_list(),
+                            dump_path=self.opt.clct.pm.path,
+                            comm_backend=self.opt.comm_backend,
+                            byteps_graph=self.opt.clct.byteps_graph,
+                            infi_para_update=args_.update_infi_para,
+                            recd_topo_order=False,
+                            partial=True
+                            )
+        step_end_time_list_in_us = replayer.replayAndDelay(
+            None, _output=_output, _path=dump_path, verbose=False)
+        for bw_op in involved_bw_nodes:
+            pid = parse_pid_from_name(bw_op)
+            step_end_time_list_in_us[pid] -= (_dag.nodes[bw_op]["avg"]) * 1000
+        return max(step_end_time_list_in_us.values()) / 1000
+    
+    def estimate_time_related_to_comm(self, tensor_names, _dag, dump_path=None):
+        involved_comm_nodes = set()
+        involved_bw_nodes = set()
+        for _node in _dag.nodes():
+            for tensor_name in tensor_names:
+                if "Comm.{}.".format(tensor_name) in _node:
+                    involved_comm_nodes.add(_node)
+                    for pred in _dag.predecessors(_node):
+                        if "BW" in pred:
+                            involved_bw_nodes.add(pred)
+
+        all_involved_nodes = involved_bw_nodes.union(involved_comm_nodes)
+        print(tensor_names, len(all_involved_nodes))
+        sub_graph = _dag.subgraph(all_involved_nodes)
+        from replay import Replayer
+        replayer = Replayer(dag=sub_graph, _step_num=1,
+                            leaf_dirs=self.opt.clct.all_prefix_list(),
+                            dump_path=self.opt.clct.pm.path,
+                            comm_backend=self.opt.comm_backend,
+                            byteps_graph=self.opt.clct.byteps_graph,
+                            infi_para_update=args_.update_infi_para,
+                            recd_topo_order=False,
+                            partial=True
+                            )
+        step_end_time_list_in_us = replayer.replayAndDelay(
+            None, _output=True if dump_path is not None else False,
+            _path=dump_path, verbose=False)
+        return max(step_end_time_list_in_us.values()) / 1000
+    
 

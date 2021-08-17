@@ -189,7 +189,7 @@ class Optimizer:
         else:
             return parse_op_name(name_), parse_pid_from_name(name_)
 
-    def evaluate(self, _dag, _path=None, _crit_filename=None, recd_topo_order=False):
+    def evaluate(self, _dag, _path=None, _crit_filename=None, recd_topo_order=False, partial=False):
         # t = time.time()
         ### input _dag is a dependency graph, using the replayer to get the simulated traces and execution graph
         ### Return the iteration time and the execution graph
@@ -200,7 +200,8 @@ class Optimizer:
                             comm_backend=self.comm_backend,
                             byteps_graph=self.clct.byteps_graph,
                             infi_para_update=args_.update_infi_para,
-                            recd_topo_order=recd_topo_order
+                            recd_topo_order=recd_topo_order,
+                            partial=partial
                             )
         step_end_time_ms = [t / 1000 for t in replayer.replayAndDelay(
             None, _output=_output, _path=_path, verbose=False).values()]

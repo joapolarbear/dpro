@@ -230,20 +230,21 @@ class DPOptimizer(Optimizer):
         SingleLogger().info(bcolors.CGREEN + "Start to search, the original iteration time is %f, init cost is %f" %
                             (self.base_cost, self.cur_cost) + bcolors.ENDC)
 
-        ### Some test cases
-        self.tsfs_pass.init_fuse_tensors = False
-        num_grp = 100
-        part_size_in_B = 4 * 1024 * 1000
-        self.tsfs_pass._apply_grp_num(G, PKG, num_grp)
-        self.tsfs_pass.flush(True)
-        self.tsfs_pass._apply_partition_size(G, PKG, part_size_in_B)
-        self.tsfs_pass.flush(True)
+        if args_.test_ts_group_num is not None:
+            ### Some test cases
+            self.tsfs_pass.init_fuse_tensors = False
+            num_grp = int(args_.test_ts_group_num)
+            part_size_in_B = 4 * 1024 * 1000
+            self.tsfs_pass._apply_grp_num(G, PKG, num_grp)
+            self.tsfs_pass.flush(True)
+            self.tsfs_pass._apply_partition_size(G, PKG, part_size_in_B)
+            self.tsfs_pass.flush(True)
 
-        _cost_star, _exct_dag_star, _mem_usage_star, topo_order = self.evaluate(
-            G, _path=os.path.join(ROOT_PATH, "test.json"),
-            recd_topo_order=True)
-        SingleLogger().info(bcolors.CGREEN + "New cost {}".format(_cost_star) + bcolors.ENDC)
-        raise 
+            _cost_star, _exct_dag_star, _mem_usage_star, topo_order = self.evaluate(
+                G, _path=os.path.join(ROOT_PATH, "test.json"),
+                recd_topo_order=True)
+            SingleLogger().info(bcolors.CGREEN + "New cost {}".format(_cost_star) + bcolors.ENDC)
+            exit(0) 
 
         def display_and_ckpt():
             SingleLogger().info(bcolors.CBLUE + "Step: %d - Current speedup to the origin: %6.4f %%" % (self.step,
@@ -390,7 +391,7 @@ class DPOptimizer(Optimizer):
                     op_name_v = tensor_v.pop()
                     if op_name_u != op_name_v and self.tsfs_pass is not None:
                         print(op_name_u, op_name_v)
-                        is_fuse_better, k_star, t_sync_fuse, t_sync_null = self.tsfs_pass.if_fusion_better(op_name_u, op_name_v, dp_state)
+                        is_fuse_better, k_star, t_sync_fuse, t_sync_null = self.tsfs_pass.if_fusion_better(op_name_u, op_name_v, dp_state, G_star)
                         if is_fuse_better:
                             SingleLogger().info("Tensor Fusion: fusing {} {} is better".format(op_name_u, op_name_v))
                             ### Tensor fusion is better, apply this strategy

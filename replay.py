@@ -312,7 +312,7 @@ class PSCommDevice(Device):
 
 class Replayer:
     def __init__(self, dag, _step_num, leaf_dirs, dump_path, comm_backend, byteps_graph, 
-                infi_para_update=False, show_queue=False, recd_topo_order=False):
+                infi_para_update=False, show_queue=False, recd_topo_order=False, partial=False):
         self.dag = dag
         self.infi_para_update = infi_para_update
         # self.preprocess_dag()
@@ -343,6 +343,10 @@ class Replayer:
         self.recd_topo_order = recd_topo_order
 
         self.replay_done = False
+
+        ### If the replayer is used to partially evaluate a dag, we do not check
+        #   the node type when initializing ready nodes at the beginning of simulation
+        self.partial = partial
 
     def ret_topo_ord(self):
         assert self.replay_done, "The DFG has not been replayed."
@@ -383,9 +387,7 @@ class Replayer:
         ### prepare nodes to be executed on each device
         for n, _status in self.node_status.items():
             if _status["in_degree"] == 0:
-                try:
-                    assert CatName.COMM.value not in n
-                except:
+                if not self.partial and CatName.COMM.value in n:
                     raise RuntimeError("Invalid nodes {} with in_degree=0".format(n))
                 pid = parse_pid_from_name(n)
                 _last_end = self.step_end_time[pid] if _status["ready"] is None else _status["ready"]
