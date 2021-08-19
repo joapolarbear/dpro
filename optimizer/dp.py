@@ -53,7 +53,15 @@ class DPState:
     
     def update_state_tsfs(self, tsfs_time):
         self.q_d[-1] = tsfs_time
-        self.q_e[-1] = max(self.p_e[-1], self.q_e[-3]) + self.q_d[-1]
+
+        # self.q_e[-1] = max(self.p_e[-1], self.q_e[-3]) + self.q_d[-1]
+        ### q_e[-3] may be none because it is fused with q_e[-2]
+        ### we need to find the first pred comm that q_e is not none
+        pred_comm_idx = -3
+        while (- pred_comm_idx) <= len(self.q_e) and self.q_e[pred_comm_idx] is None:
+            pred_comm_idx -= 1
+        self.q_e[-1] = max(self.p_e[-1], self.q_e[pred_comm_idx]) + self.q_d[-1]
+
         self.q_m[-1] += self.q_m[-2]
         self.q_e[-2] = None
         self.q_d[-2] = None
@@ -280,6 +288,7 @@ class DPOptimizer(Optimizer):
         
         local_dfg = self.clct.dag
 
+        # n = "server_2::worker_0->Comm.210+211.PUSH_RES~>server_2::worker_0::0"
         # node = "BW.gradient_tape/resnet50/conv5_block3_3_bn/FusedBatchNormGradV3"
         # import code
         # code.interact(local=locals())
@@ -321,6 +330,7 @@ class DPOptimizer(Optimizer):
             # for node_n, exct_time_n in critical_path:
             for node_n in topo_order_one_pid:
                 exct_time_n = G_star.nodes[node_n]["avg"]
+                model_changed = False
                 if prev_node is None:
                     ### The first node
                     prev_node = node_n
@@ -336,10 +346,10 @@ class DPOptimizer(Optimizer):
                     if self.opfs_pass is not None:
                         if_fusion_better, opfs_time = self.opfs_pass.is_fusion_better(_pred, node_n, G_star, PKG_star, dp_state)
                         if if_fusion_better:
-                            SingleLogger().info("Fusion {} {} is better ...".format(dp_state.node_num-1, dp_state.node_num))
+                            SingleLogger().info(bcolors.CGREEN + "Fusion {} {} is better ...".format(dp_state.node_num-1, dp_state.node_num) + bcolors.ENDC)
                             nodes_introduced = self.try_to_apply_opfs(_pred, node_n, G_star, PKG_star, applied_sts)
                             fused_comp_op = gen_long_name(ref_pid, parse_rawname(nodes_introduced.pop()))
-                            SingleLogger().info("Success !!!")
+                            # SingleLogger().info("Success !!!")
 
                             ### Update DP states after operator fusion
                             dp_state.update_state_opfs(opfs_time)
@@ -364,7 +374,7 @@ class DPOptimizer(Optimizer):
                                     dp_state.update_state_tsfs(tsfs_time)
                                     
                         else:
-                            SingleLogger().debug("Do not fuse {} {} ...".format(dp_state.node_num-1, dp_state.node_num))
+                            SingleLogger().debug(bcolors.CBLUE + "Do not fuse {} {} ...".format(dp_state.node_num-1, dp_state.node_num + bcolors.ENDC))
                             ### Not to fuse operators
                             if self.tsfs_pass is not None:
                                 tensor_name_v = self.comm_succs_of_comp_in_op_name(node_n, G_star)
@@ -391,9 +401,11 @@ class DPOptimizer(Optimizer):
                     op_name_v = tensor_v.pop()
                     if op_name_u != op_name_v and self.tsfs_pass is not None:
                         print(op_name_u, op_name_v)
-                        is_fuse_better, k_star, t_sync_fuse, t_sync_null = self.tsfs_pass.if_fusion_better(op_name_u, op_name_v, dp_state, G_star)
+                        is_fuse_better, k_star, t_sync_fuse, t_sync_null = self.tsfs_pass.if_fusion_better(
+                            op_name_u, op_name_v, dp_state, G_star, no_theorem=True)
+
                         if is_fuse_better:
-                            SingleLogger().info("Tensor Fusion: fusing {} {} is better".format(op_name_u, op_name_v))
+                            SingleLogger().info(bcolors.CGREEN + "Tensor Fusion: fusing {} {} is better".format(op_name_u, op_name_v) + bcolors.ENDC)
                             ### Tensor fusion is better, apply this strategy
                             pid = parse_pid_from_name(node_n)
                             if self.comm_backend == "NCCL":
@@ -406,7 +418,8 @@ class DPOptimizer(Optimizer):
                             _in_bw_list_v = list(G_star.predecessors(long_name_v))
 
                             nodes_introduced = self.try_to_apply_tsfs(long_name_u, long_name_v, G_star, PKG_star, applied_sts)
-                            
+                            model_changed = True
+
                             ### Apply the partition startegy
                             if self.tsfs_pass.enable_partition:
                                 fused_tensor_name = parse_op_name(nodes_introduced[0])
@@ -427,17 +440,27 @@ class DPOptimizer(Optimizer):
                                 dp_state.update_state_opfs(opfs_time)
 
                         else:
-                            SingleLogger().info("Tensor Fusion: fusing {} {} is worse".format(op_name_u, op_name_v))
+                            SingleLogger().info(bcolors.CBLUE + "Tensor Fusion: fusing {} {} is worse".format(op_name_u, op_name_v) + bcolors.ENDC)
                             ### Do NOT fuse tensors but tensor partition may be applied
                             if self.tsfs_pass.enable_partition:
                                 pid = parse_pid_from_name(node_n)
                                 ### Partition fused tensor to k_star pieces
                                 self.try_to_apply_ts_part([op_name_v], k_star, G_star, PKG_star, applied_sts)
-                            
+                                model_changed = True
                                 ### Update DP states with only tensor partition
                                 dp_state.update_state_only_ts_part(t_sync_null)
 
                 prev_node = node_n if fused_comp_op is None else fused_comp_op
+
+                ### debug
+                if model_changed:
+                    _cost_star, _exct_dag_star, _mem_usage_star, topo_order = self.evaluate(G_star, recd_topo_order=True)
+                    SingleLogger().info("Cost from {:.3f} to {:.3f}".format(self.cur_cost, _cost_star))
+
+                    # comm_node = "server_2::worker_0->Comm.210.PULL_RES~>server_2::worker_0::0"
+                    # comm_node1 = "server_2::worker_0->Comm.210+211.PULL_RES~>server_2::worker_0::0"
+                    # print(list(G_star.successors(comm_node1)))
+                    # raise
 
             _cost_star, _exct_dag_star, _mem_usage_star, topo_order = self.evaluate(G_star, recd_topo_order=True)
             SingleLogger().info("Cost from {:.3f} to {:.3f}".format(self.cur_cost, _cost_star))

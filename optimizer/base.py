@@ -189,7 +189,8 @@ class Optimizer:
         else:
             return parse_op_name(name_), parse_pid_from_name(name_)
 
-    def evaluate(self, _dag, _path=None, _crit_filename=None, recd_topo_order=False, partial=False):
+    def evaluate(self, _dag, _path=None, _crit_filename=None,
+        recd_topo_order=False, partial=False, name2mapping_fn=None):
         # t = time.time()
         ### input _dag is a dependency graph, using the replayer to get the simulated traces and execution graph
         ### Return the iteration time and the execution graph
@@ -201,7 +202,8 @@ class Optimizer:
                             byteps_graph=self.clct.byteps_graph,
                             infi_para_update=args_.update_infi_para,
                             recd_topo_order=recd_topo_order,
-                            partial=partial
+                            partial=partial,
+                            name2mapping_fn=name2mapping_fn
                             )
         step_end_time_ms = [t / 1000 for t in replayer.replayAndDelay(
             None, _output=_output, _path=_path, verbose=False).values()]
@@ -522,12 +524,12 @@ class Optimizer:
             bw_op_std_name = parse_rawname(bw_op)
             ### PS
             local_dfg = self.clct.dag
-            succ_list = [succ_ for succ_ in local_dfg.successors(bw_op_std_name) if "Comm" in succ_]
-            if len(succ_list) == 0:
+            comm_succ_list = [succ_ for succ_ in local_dfg.successors(bw_op_std_name) if "Comm" in succ_]
+            if len(comm_succ_list) == 0:
                 return None
             else:
                 comm_delay_in_ms = 0
-                for comm_succ in succ_list:
+                for comm_succ in comm_succ_list:
                     succ_list = [succ_ for succ_ in local_dfg.successors(comm_succ) if "UPDATE_" in succ_]
                     assert len(succ_list) == 1, (bw_op, comm_succ, succ_list)
                     update_op = gen_long_name(ref_pid, succ_list[0])
@@ -537,7 +539,7 @@ class Optimizer:
                         update_op_st = topo_order[update_op]
                     except:
                         tmp_list = [name.split("->")[1] for name in topo_order.keys() if "UPDATE_" in name]
-                        print(bw_op, update_op)
+                        print(bw_op, comm_succ, update_op)
                         import code
                         code.interact(local=locals())
                         raise

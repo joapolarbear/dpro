@@ -1,4 +1,4 @@
-import os 
+import os
 import ujson as json
 import networkx as nx
 import traceback
@@ -19,8 +19,10 @@ args_ = arg_utils.SingleArg().args
 
 if args_.comm_backend == "NCCL":
     from hvd.graph import *
+    comm_op_types = []
 elif args_.comm_backend == "BYTEPS":
     from bps_helper.graph import *
+    comm_op_types = [PS_COMM_OPS.PUSH_REQ, PS_COMM_OPS.PUSH_RES, PS_COMM_OPS.PULL_REQ, PS_COMM_OPS.PULL_RES]
 
 def ret_priority(n_):
     ### The smaller the rank is, the higher priority the node has
@@ -32,17 +34,16 @@ def ret_priority(n_):
         return 2
     elif "UPDATE_" in n_:
         return 3
+    elif "Comm" in n_:
+        for idx, comm_op_type in enumerate(comm_op_types):
+            if comm_op_type in n_:
+                return 4 + idx
+        return 100
     else:
-        return 4
+        return 100
 
-def _schedule(_a, _b):
-    _ap = ret_priority(_a[0])
-    _bp = ret_priority(_b[0])
-    if _ap == _bp:
-        ### The same priority, compare the start time		
-        return _a[1] < _b[1]
-    else:
-        return _ap < _bp
+def _repr_of_tensor(tensor_name):
+    return min([int(tensor_id) for tensor_id in tensor_name.split("+")])
 
 class Device:
     def __init__(self, device_name, _replayer, infi_para=False, comm_backend = "NCCL"):
@@ -114,7 +115,7 @@ class Device:
             self.prev_name_dur = (name, 0, start_t)
         else:
             event = {
-                        "name": raw_name,
+                        "name": raw_name if self.replayer.name2mapping_fn is None else self.replayer.name2mapping_fn(raw_name),
                         "ts": start_t,
                         "dur": duration,
                         "pid": pid,
@@ -187,7 +188,6 @@ class Device:
                     gap = 0
                     if GAP_STR_OP2COMM in self.replayer.dag.nodes[name] and next_cat == CatName.COMM.value \
                          and (this_cat == CatName.OPERATOR.value or "Sync" in name):
-                    # if GAP_STR_OP2COMM in self.replayer.dag.nodes[name] and next_cat == "Comm":
                         gap += self.replayer.dag.nodes[name][GAP_STR_OP2COMM]
                         if self.replayer.dag.nodes[name][GAP_STR_OP2COMM] > 10000:
                             SingleLogger().debug("Large OP2COMM gap detected, {} -> {},  gap: {}".format(name, _succ, self.replayer.dag.nodes[name][GAP_STR_OP2COMM]))
@@ -290,6 +290,7 @@ class PSCommDevice(Device):
         this_cat = parse_cat_from_name(name)
         actual_successors = list(self.replayer.dag.successors(name))
         if next_name is not None:
+            assert next_name in self.replayer.dag.nodes()
             actual_successors.append(next_name)
             # add an edge from this name to next_name in exct dag
             self.replayer.exct_dag.add_edge(name, next_name, weight=((_end_time - _start_t) / 1000.0))
@@ -305,6 +306,7 @@ class PSCommDevice(Device):
                         this_cat == CatName.COMM.value and \
                         next_cat == CatName.COMM.value:
                     gap += self.replayer.dag.nodes[name][GAP_STR_INTERNODE]
+                gap = 0
                 _status["ready"] = (_end_time + gap) if _status["ready"] is None else max(_end_time + gap, _status["ready"])
 
                 if _status["in_degree"] == 0:
@@ -312,7 +314,7 @@ class PSCommDevice(Device):
 
 class Replayer:
     def __init__(self, dag, _step_num, leaf_dirs, dump_path, comm_backend, byteps_graph, 
-                infi_para_update=False, show_queue=False, recd_topo_order=False, partial=False):
+                infi_para_update=False, show_queue=False, recd_topo_order=False, partial=False, name2mapping_fn=None):
         self.dag = dag
         self.infi_para_update = infi_para_update
         # self.preprocess_dag()
@@ -347,6 +349,8 @@ class Replayer:
         ### If the replayer is used to partially evaluate a dag, we do not check
         #   the node type when initializing ready nodes at the beginning of simulation
         self.partial = partial
+
+        self.name2mapping_fn = name2mapping_fn
 
     def ret_topo_ord(self):
         assert self.replay_done, "The DFG has not been replayed."
@@ -420,13 +424,13 @@ class Replayer:
         else:
             if len(self.queue) == 0:
                 return 1
-            else:
-                (n, t) = self.queue.pop(0)
-                if self.recd_topo_order:
-                    self.topo_ord.append((n, t))
-                device = self.name2device(n)
-                device.exct(n, t, step_idx)
-                return 0
+
+            (n, t) = self.queue.pop(0)
+            if self.recd_topo_order:
+                self.topo_ord.append((n, t))
+            device = self.name2device(n)
+            device.exct(n, t, step_idx)
+            return 0
 
     def record_queue_status(self, cur_time):
         if self.queue_status is None:
@@ -459,9 +463,9 @@ class Replayer:
             device = self.name2device(n)
             #! TODO (huhanpeng): if OPs are ranked, 
             # just to substitute func to compare their ranks.
-            self.insort_right(device.queue, (n, t), func=_schedule)
+            self.insort_right(device.queue, (n, t), func=self._a_has_larger_prior)
         else:
-            self.insort_right(self.queue, (n, t), func=_schedule)
+            self.insort_right(self.queue, (n, t), func=self._a_has_larger_prior)
 
     def insort_right(self, a, x, lo=0, hi=None, func=None):
         """Insert item x in list a, and keep it sorted assuming a is sorted.
@@ -497,6 +501,10 @@ class Replayer:
                 device_id = gen_long_name(pid, cat, "SEND")
             elif "RECV" in n:
                 device_id = gen_long_name(pid, cat, "RECV")
+            # elif "PUSH" in n:
+            #     device_id = gen_long_name(pid, cat, "PUSH")
+            # elif "PULL" in n:
+            #     device_id = gen_long_name(pid, cat, "PULL")
             elif "Sync" in n:
                 device_id = gen_long_name(pid, cat, "Sync")
             else:
@@ -531,7 +539,24 @@ class Replayer:
                 self.device_dict[device_id] = self.create_device(device_id)
 
         return self.device_dict[device_id]		
-        
+    
+    def _a_has_larger_prior(self, _a, _b):
+        # if "Comm" in _a[0] and "Comm" in _b[0] and self.name2device(_a[0]) == self.name2device(_b[0]):
+        #     tensor_a = parse_op_name(_a[0])
+        #     tensor_b = parse_op_name(_b[0])
+        #     if tensor_a == tensor_b:
+        #         return _a[1] < _b[1]
+        #     else:  
+        #         return _repr_of_tensor(tensor_a) > _repr_of_tensor(tensor_b)
+                
+        _ap = ret_priority(_a[0])
+        _bp = ret_priority(_b[0])
+        if _ap == _bp:
+            ### The same priority, compare the start time		
+            return _a[1] < _b[1]
+        else:
+            return _ap < _bp
+
     def create_device(self, device_name, infi_para=False):
         d = Device(device_name, self, comm_backend = self.comm_backend, infi_para=infi_para)
         return d

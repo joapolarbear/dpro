@@ -50,6 +50,19 @@ class ServerOpCounter(object):
         if target in self.server_op_counter:
             # is a push or pull request to servers
             if sub_op == PS_COMM_OPS.PUSH_REQ:
+                ### Fix order
+                # if source == "worker_0":
+                #     comp_key = (target, tensor_name, PS_COMP_OPS.COPY_FIRST,
+                #         self.byteps_graph.comp_ops_tid[(target, tensor_name, PS_COMP_OPS.COPY_FIRST, part_id)],
+                #         part_id)
+                #     res_name = self.byteps_graph.gen_comp_full_name(comp_key)
+                # else:
+                #     comp_key = (target, tensor_name, PS_COMP_OPS.SUM,
+                #         self.byteps_graph.comp_ops_tid[(target, tensor_name, PS_COMP_OPS.SUM, part_id)],
+                #         part_id)
+                #     worker_id = int(source.split("_")[1])
+                #     res_name = self.byteps_graph.gen_comp_full_name(comp_key, sum_index=worker_id-1)
+
                 if tensor_name_with_part_id not in self.server_op_counter[target]:
                     self.server_op_counter[target][tensor_name_with_part_id] = 0
                 if self.server_op_counter[target][tensor_name_with_part_id] == 0:
