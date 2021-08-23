@@ -230,6 +230,8 @@ class PKGraph(object):
         ### check cycles
         if u not in self.nx_graph or v not in self.nx_graph:
             raise RuntimeError("u ({}) and v ({}) must in the original networkx graph.".format(u, v))
+        if (u, v) not in self.nx_graph.edges():
+            return True
         self.nx_graph.remove_edge(u, v)
         is_reachable = self._is_reachable(u, v)
         self.nx_graph.add_edge(u, v)
@@ -268,7 +270,8 @@ class PKGraph(object):
         return new_node_name
     
     def contract_edge(self, u, v):
-        self.nx_graph.remove_edge(u, v)
+        if (u, v) in self.nx_graph.edges():
+            self.nx_graph.remove_edge(u, v)
         # if self._is_reachable(u, v):
         #     self.nx_graph.add_edge(u, v)
         #     return False

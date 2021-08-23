@@ -521,10 +521,12 @@ class Optimizer:
                     comm_t += ret_comm_time(_succ)
             return comm_t
         else:
-            bw_op_std_name = parse_rawname(bw_op)
             ### PS
             local_dfg = self.clct.dag
-            comm_succ_list = [succ_ for succ_ in local_dfg.successors(bw_op_std_name) if "Comm" in succ_]
+            bw_op_std_names = [parse_rawname(_op) for _op in bw_op.split("+")]
+            comm_succ_list = []
+            for bw_op_std_name in bw_op_std_names:
+                comm_succ_list += [succ_ for succ_ in local_dfg.successors(bw_op_std_name) if "Comm" in succ_]
             if len(comm_succ_list) == 0:
                 return None
             else:

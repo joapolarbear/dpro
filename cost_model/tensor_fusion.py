@@ -306,6 +306,8 @@ class TensorFusionGraphPass(_BaseGraphPass):
         return "Comm.{}".format(tensor_name)
 
     def _wrap_parse_all_info(self, n):
+        if "Comm" not in n and "+" in n:
+            return self._wrap_parse_all_info(n.split("+")[0])
         pid, std_name, cat, suffix = parse_allinfo_from_name(n)
         name_splits = std_name.split(".")
         if len(name_splits) == 3:
@@ -536,6 +538,8 @@ class TensorFusionGraphPass(_BaseGraphPass):
             return attr_dict
 
         for node in _dag.nodes():
+            if "Comm" not in node:
+                continue
             node_all_info = self._wrap_parse_all_info(node)
             if not (node_all_info[1] == "Comm" and node_all_info[2] == tensor_name_u and node_all_info[3] in entry_sub_ops):
                 continue
@@ -656,7 +660,7 @@ class TensorFusionGraphPass(_BaseGraphPass):
 
     def _gen_analogous_name(self, origin_name, new_part_id=None, new_tensor_name=None, create_node=False):
             __all_info = self._wrap_parse_all_info(origin_name)
-            if __all_info[1] in ["BW", "UPDATE_"]:
+            if __all_info[1] in ["BW", "UPDATE_", "FW"]:
                 return origin_name
             assert __all_info[1] == "Comm", origin_name
             if __all_info[3] in PS_COMM_OPS_SETS:
@@ -727,6 +731,7 @@ class TensorFusionGraphPass(_BaseGraphPass):
         if k_star == old_partition_num:
             SingleLogger().debug("[Tensor Partition] do nothing with the same partition number for {}".format(tensor_grp_name))
             return
+        SingleLogger().info("Partition tensor {} to {} pieces".format(tensor_grp_name, k_star))
         
         new_part_num = k_star
         new_partition_size = grp_info["size"] / new_part_num
@@ -747,6 +752,8 @@ class TensorFusionGraphPass(_BaseGraphPass):
             return attr_dict
 
         for node in _dag.nodes():
+            if "Comm" not in node:
+                continue
             node_all_info = self._wrap_parse_all_info(node)
             if not (node_all_info[1] == "Comm" and node_all_info[2] == tensor_grp_name and node_all_info[3] in entry_sub_ops):
                 continue
@@ -1341,6 +1348,7 @@ class TensorFusionGraphPass(_BaseGraphPass):
         
         self._tensor_level_send_recv_cm()
         self.dump_tensor_grp_mapping(_file_name="tensor_fusion_grp_mapping_init.json")
+        self.dump_tensor_partitions(_file_name="tensor_partition_init.json")
         self.cache_change = []
 
         ### Test
@@ -1374,6 +1382,15 @@ class TensorFusionGraphPass(_BaseGraphPass):
 
         with open(os.path.join(ROOT_PATH, file_name), 'w') as f:
             json.dump({"mapping": list(tensor_grps)}, f)
+    
+    def dump_tensor_partitions(self, _file_name=None):
+        file_name = 'tensor_partition_spec.txt' if _file_name is None else _file_name
+        tensor_ids, tensor_grps = zip(*list(self.cur_tensor2group.items()))
+        tensor_grps = set(tensor_grps)
+        with open(os.path.join(ROOT_PATH, file_name), 'w') as f:
+            for tensor_grp in tensor_grps:
+                grp_info = self.tensor_group_info[tensor_grp]
+                f.write("{} {}\n".format(tensor_grp, int(grp_info["size"] / grp_info["part_num"])))
     
     def _tensor_level_send_recv_cm(self):
         # self.pid_to_cm[all_info[0]] = {

@@ -1,4 +1,5 @@
 import os
+from threading import local
 import time
 import json
 import pickle
@@ -60,7 +61,10 @@ class DPState:
         pred_comm_idx = -3
         while (- pred_comm_idx) <= len(self.q_e) and self.q_e[pred_comm_idx] is None:
             pred_comm_idx -= 1
-        self.q_e[-1] = max(self.p_e[-1], self.q_e[pred_comm_idx]) + self.q_d[-1]
+        if (- pred_comm_idx) > len(self.q_e):
+            self.q_e[-1] = self.p_e[-1] + self.q_d[-1]
+        else:
+            self.q_e[-1] = max(self.p_e[-1], self.q_e[pred_comm_idx]) + self.q_d[-1]
 
         self.q_m[-1] += self.q_m[-2]
         self.q_e[-2] = None
@@ -75,7 +79,14 @@ class DPState:
         if self.q_e[-2] is None:
             ### q_n-1 and q_n has been fused
             # TODO (HHP): q_n-2 may also has been fused
-            self.q_e[-1] = max(self.p_e[-1], self.q_e[-3]) + self.q_d[-1]
+            ### find the first pred comm that q_e is not none
+            pred_comm_idx = -3
+            while (- pred_comm_idx) <= len(self.q_e) and self.q_e[pred_comm_idx] is None:
+                pred_comm_idx -= 1
+            if (- pred_comm_idx) > len(self.q_e):
+                self.q_e[-1] = self.p_e[-1] + self.q_d[-1]
+            else:
+                self.q_e[-1] = max(self.p_e[-1], self.q_e[pred_comm_idx]) + self.q_d[-1]
         else:
             self.q_e[-2] = max(self.p_e[-1], self.q_e[-3]) + self.q_d[-2]
             self.q_e[-1] = self.q_e[-2] + self.q_d[-1]
@@ -181,7 +192,7 @@ class DPOptimizer(Optimizer):
         '''
         if self.tsfs_pass is None:
             return []
-        SingleLogger().info("Partition tensor {} to {} pieces".format(tensor_name_list, k_star))
+        # SingleLogger().info("Partition tensor {} to {} pieces".format(tensor_name_list, k_star))
         for tensor_name in tensor_name_list:
             self.tsfs_pass._tensor_partition(_dag, _pkg, tensor_name, k_star)
             self.tsfs_pass.flush(True)
@@ -254,14 +265,18 @@ class DPOptimizer(Optimizer):
             SingleLogger().info(bcolors.CGREEN + "New cost {}".format(_cost_star) + bcolors.ENDC)
             exit(0) 
 
-        def display_and_ckpt():
-            SingleLogger().info(bcolors.CBLUE + "Step: %d - Current speedup to the origin: %6.4f %%" % (self.step,
-                                                                                                        100 * (self.base_cost - self.cur_cost) / self.base_cost) + bcolors.ENDC)
+        def write_time(cost=None):
+            cost = self.cur_cost if cost is None else cost
             with open(os.path.join(ROOT_PATH, "search_trajectory.txt"), "a") as f:
                 f.write(str(time.time()) + ": {},{},{}".format(
                     self.step,
-                    100 * (self.base_cost - self.cur_cost) / self.base_cost,
-                    100 * (self.base_cost - self.cur_cost) / self.base_cost) + "\n")
+                    100 * (self.base_cost - cost) / self.base_cost,
+                    100 * (self.base_cost - cost) / self.base_cost) + "\n")
+
+        def display_and_ckpt():
+            SingleLogger().info(bcolors.CBLUE + "Step: %d - Current speedup to the origin: %6.4f %%" % (self.step,
+                                                                                                        100 * (self.base_cost - self.cur_cost) / self.base_cost) + bcolors.ENDC)
+            write_time()
 
             with open(os.path.join(ROOT_PATH, "best_strategy.txt"), "w") as f:
                 json.dump({"best_strategy": self.trajectory}, f)
@@ -271,6 +286,14 @@ class DPOptimizer(Optimizer):
                 _cost_model.checkpoint()
             with open(graph_cache, "wb") as f:
                 pickle.dump([G, PKG, self.step, self.trajectory], f)
+            
+            if self.opfs_pass is not None:
+                self.opfs_pass._dump_cluster_mapping(
+                G, os.path.join(ROOT_PATH, "cluster_mapping.txt"), partition=True)
+
+            if self.tsfs_pass is not None:
+                self.tsfs_pass.dump_tensor_grp_mapping()
+                self.tsfs_pass.dump_tensor_partitions()
 
         def ret_standar_names(_long_name):
             ''' For non-comm ops,return std_name1+std_name2+ ...
@@ -348,7 +371,8 @@ class DPOptimizer(Optimizer):
                         if if_fusion_better:
                             SingleLogger().info(bcolors.CGREEN + "Fusion {} {} is better ...".format(dp_state.node_num-1, dp_state.node_num) + bcolors.ENDC)
                             nodes_introduced = self.try_to_apply_opfs(_pred, node_n, G_star, PKG_star, applied_sts)
-                            fused_comp_op = gen_long_name(ref_pid, parse_rawname(nodes_introduced.pop()))
+                            fused_comp_op = nodes_introduced.pop()
+                            fused_comp_op = "+".join([gen_long_name(ref_pid, parse_rawname(long_name)) for long_name in fused_comp_op.split("+")])
                             # SingleLogger().info("Success !!!")
 
                             ### Update DP states after operator fusion
@@ -356,7 +380,7 @@ class DPOptimizer(Optimizer):
                             
                             if self.tsfs_pass is not None:
                                 ### TODO (HHP): fuse corresponding tensors
-                                
+        
                                 tensor_long_name = self.comm_succs_of_comp_in_long_name(fused_comp_op, G_star)
                                 if len(tensor_long_name) > 1:
                                     assert len(tensor_long_name) == 2, tensor_long_name
@@ -364,26 +388,35 @@ class DPOptimizer(Optimizer):
                                     # long_name_v = self.comm_succs_of_comp_in_long_name(node_n, G_star)
                                     tensor_long_name = list(tensor_long_name)
                                     nodes_introduced = self.try_to_apply_tsfs(tensor_long_name[0], tensor_long_name[1], G_star, PKG_star, applied_sts)
-                                    k_star_fuse, tsfs_time = self.tsfs_pass.best_partition(dp_state.q_m[-2] + dp_state.q_m[-1])
+                                    model_changed = True
+
+                                    fused_tensor_name = parse_op_name(nodes_introduced[0])
+                                    k_star, ts_part_time = self.tsfs_pass.best_partition_partial_replay(
+                                        fused_tensor_name, G_star, no_throrem=True)
+                                    # k_star_fuse, tsfs_time = self.tsfs_pass.best_partition(dp_state.q_m[-2] + dp_state.q_m[-1])
                                     if self.tsfs_pass.enable_partition:
-                                        fused_tensor_name = parse_op_name(nodes_introduced[0])
                                         ### Do NOT fuse but tensor partition may be applied
                                         self.try_to_apply_ts_part([fused_tensor_name], k_star, G_star, PKG_star, applied_sts)
 
                                     ### Update DP states after tensor fusion/partition
                                     dp_state.update_state_tsfs(tsfs_time)
-                                    
                         else:
-                            SingleLogger().debug(bcolors.CBLUE + "Do not fuse {} {} ...".format(dp_state.node_num-1, dp_state.node_num + bcolors.ENDC))
-                            ### Not to fuse operators
+                            ### No fusion is better
+                            SingleLogger().debug(bcolors.CBLUE + "Do not fuse {} {} ...".format(
+                                dp_state.node_num-1, dp_state.node_num) + bcolors.ENDC)
                             if self.tsfs_pass is not None:
-                                tensor_name_v = self.comm_succs_of_comp_in_op_name(node_n, G_star)
-                                k_star, ts_part_time = self.tsfs_pass.best_partition(dp_state.q_m[-1])
-                                if self.tsfs_pass.enable_partition and len(tensor_name_v) > 0:
-                                    assert len(tensor_name_v) == 1
-                                    self.try_to_apply_ts_part([tensor_name_v.pop()], k_star_fuse)
-                                
+                                tensor_name_list = self.comm_succs_of_comp_in_op_name(node_n, G_star)
+                                if self.tsfs_pass.enable_partition and len(tensor_name_list) > 0:
+                                    assert len(tensor_name_list) == 1, (node_n, tensor_name_list)
+                                    tensor_name_v = tensor_name_list.pop()
+                                    k_star, ts_part_time = self.tsfs_pass.best_partition_partial_replay(
+                                        tensor_name_v, G_star, no_throrem=True)
+                                    self.try_to_apply_ts_part([tensor_name_v], k_star, G_star, PKG_star, applied_sts)
+                                    model_changed = True
+
                                     ### Update DP states with only tensor partition
+                                    ### TODO: ts_part_time includes BW, COMM and UPDATE time
+                                    ts_part_time = ts_part_time - exct_time_n
                                     dp_state.update_state_only_ts_part(ts_part_time)
                 else:
                     # print(prev_node, node_n)
@@ -414,8 +447,8 @@ class DPOptimizer(Optimizer):
                             else:
                                 long_name_u = self.comm_succs_of_comp_in_long_name(prev_node, G_star)[0]
                                 long_name_v = self.comm_succs_of_comp_in_long_name(node_n, G_star)[0]
-                            _in_bw_list_u = list(G_star.predecessors(long_name_u))
-                            _in_bw_list_v = list(G_star.predecessors(long_name_v))
+                            _bw_pred_list_u = [pred for pred in G_star.predecessors(long_name_u) if parse_pid_from_name(pred) == ref_pid]
+                            _bw_pred_list_v = [pred for pred in G_star.predecessors(long_name_v) if parse_pid_from_name(pred) == ref_pid]
 
                             nodes_introduced = self.try_to_apply_tsfs(long_name_u, long_name_v, G_star, PKG_star, applied_sts)
                             model_changed = True
@@ -432,11 +465,13 @@ class DPOptimizer(Optimizer):
 
                             ### TODO (HHP): fuse corresponding operatos
                             if self.opfs_pass is not None:
-                                assert len(_in_bw_list_v) == 0 and len(_in_bw_list_u) == 0
-                                self.try_to_apply_opfs(_in_bw_list_u[0], _in_bw_list_v[0], G_star, PKG_star, applied_sts)
+                                assert len(_bw_pred_list_v) == 1 and len(_bw_pred_list_u) == 1, (_bw_pred_list_v, _bw_pred_list_u)
+                                nodes_introduced = self.try_to_apply_opfs(_bw_pred_list_u[0], _bw_pred_list_v[0], G_star, PKG_star, applied_sts)
+                                fused_comp_op = nodes_introduced.pop()
+                                fused_comp_op = "+".join([gen_long_name(ref_pid, parse_rawname(long_name)) for long_name in fused_comp_op.split("+")])
 
                                 ### Update DP states after operator fusion
-                                opfs_time = self.opfs_pass._get_node_avg(_in_bw_list_u[0]+"+"+_in_bw_list_v[0])
+                                opfs_time = self.opfs_pass._get_node_avg(_bw_pred_list_u[0]+"+"+_bw_pred_list_v[0])
                                 dp_state.update_state_opfs(opfs_time)
 
                         else:
@@ -454,13 +489,9 @@ class DPOptimizer(Optimizer):
 
                 ### debug
                 if model_changed:
-                    _cost_star, _exct_dag_star, _mem_usage_star, topo_order = self.evaluate(G_star, recd_topo_order=True)
+                    _cost_star, _exct_dag_star, _mem_usage_star, _ = self.evaluate(G_star, recd_topo_order=True)
+                    write_time(cost=_cost_star)
                     SingleLogger().info("Cost from {:.3f} to {:.3f}".format(self.cur_cost, _cost_star))
-
-                    # comm_node = "server_2::worker_0->Comm.210.PULL_RES~>server_2::worker_0::0"
-                    # comm_node1 = "server_2::worker_0->Comm.210+211.PULL_RES~>server_2::worker_0::0"
-                    # print(list(G_star.successors(comm_node1)))
-                    # raise
 
             _cost_star, _exct_dag_star, _mem_usage_star, topo_order = self.evaluate(G_star, recd_topo_order=True)
             SingleLogger().info("Cost from {:.3f} to {:.3f}".format(self.cur_cost, _cost_star))
@@ -470,6 +501,7 @@ class DPOptimizer(Optimizer):
             self.cur_cost = _cost_star
             self.exct_dag = _exct_dag_star
             self.mem_usage = _mem_usage_star
+            self.topo_order = topo_order
             G = G_star
             PKG = PKG_star
             self.trajectory += applied_sts
@@ -477,9 +509,4 @@ class DPOptimizer(Optimizer):
             self.step += 1
 
         display_and_ckpt()
-        if self.opfs_pass is not None:
-            self.opfs_pass._dump_cluster_mapping(
-                G, os.path.join(ROOT_PATH, "cluster_mapping.txt"), partition=True)
 
-        if self.tsfs_pass is not None:
-            self.tsfs_pass.dump_tensor_grp_mapping()

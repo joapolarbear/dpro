@@ -424,6 +424,11 @@ class Replayer:
         else:
             if len(self.queue) == 0:
                 return 1
+            
+            ### check the frontier
+            # bw_ops = set([parse_op_name(op) for op, _ in self.queue if "BW" in op and "traces_0.rank0" in op])
+            # if len(bw_ops) > 1:
+            #     print(bw_ops)
 
             (n, t) = self.queue.pop(0)
             if self.recd_topo_order:
