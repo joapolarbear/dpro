@@ -663,15 +663,28 @@ class TensorFusionGraphPass(_BaseGraphPass):
         return edges_to_add, edges_to_rm, nodes_to_add, nodes_to_rm
 
     def _wrap_query_server_id(self, tensor_name, part_id):
-        if "+" in tensor_name:
-            grp_info = self.tensor_group_info[tensor_name]
-            if "server_id" not in grp_info:
-                tensor_name_w_part = self.opt.clct.byteps_graph._gen_partitioned_name(tensor_name.split("+")[0], part_id)
-                grp_info["server_id"] = self.opt.clct.byteps_graph.tensor_part2server[tensor_name_w_part]
-            return grp_info["server_id"]
-        else:
-            tensor_name_w_part = self.opt.clct.byteps_graph._gen_partitioned_name(tensor_name, part_id)
+        tensor_name_w_part = self.opt.clct.byteps_graph._gen_partitioned_name(tensor_name, part_id)
+        if tensor_name_w_part in self.opt.clct.byteps_graph.tensor_part2server:
             return self.opt.clct.byteps_graph.tensor_part2server[tensor_name_w_part]
+        ### For new tensors (fused tensors) or new part_id, we need to decide the new mapping to servers
+        grp_info = self.tensor_group_info[tensor_name]
+        if "server_id" not in grp_info:
+            grp_info["server_id"] = {}
+        if part_id not in grp_info["server_id"]:
+            ### Not cached
+            involved_server = {}
+            for _tensor_name in tensor_name.split("+"):
+                _grp_info = self.tensor_group_info[_tensor_name]
+                for _part_id in range(_grp_info["part_num"]):
+                    tensor_name_w_part = self.opt.clct.byteps_graph._gen_partitioned_name(_tensor_name, _part_id)
+                    server_id = self.opt.clct.byteps_graph.tensor_part2server[tensor_name_w_part]
+                    if server_id not in involved_server:
+                        involved_server[server_id] = 1
+                    else:
+                        involved_server[server_id] += 1
+            involved_server = sorted(list(involved_server.items()), key = lambda x: x[1])
+            grp_info["server_id"][part_id] = involved_server[0][0]
+        return grp_info["server_id"][part_id]
 
     def _gen_analogous_name(self, origin_name, new_part_id=None, new_tensor_name=None, create_node=False):
             __all_info = self._wrap_parse_all_info(origin_name)
@@ -683,6 +696,7 @@ class TensorFusionGraphPass(_BaseGraphPass):
                 part_id = part_id if new_part_id is None else new_part_id
                 if new_tensor_name is not None:
                     tensor_name = new_tensor_name
+                if new_part_id is not None or new_tensor_name is not None:
                     new_server_name = self._wrap_query_server_id(tensor_name, part_id)
                     if "server" in source:
                         source = new_server_name
@@ -695,6 +709,7 @@ class TensorFusionGraphPass(_BaseGraphPass):
                 part_id = part_id if new_part_id is None else new_part_id
                 if new_tensor_name is not None:
                     tensor_name = new_tensor_name
+                if new_part_id is not None or new_tensor_name is not None:
                     server_id = self._wrap_query_server_id(tensor_name, part_id)
                 if create_node:
                     ### Create a node that never occurs before, e.g., fused tensor or new partition id
@@ -1365,6 +1380,8 @@ class TensorFusionGraphPass(_BaseGraphPass):
                 ### By default, fuse tensors that connected to the same BW ops.
                 #   But when testing tensor group numbers, do not fuse those tensors
                 self.init_fuse_tensors(G, PKG)
+                ### Cache
+                self.opt.clct.byteps_graph._dump_cache()
                 with open(init_ckpt_path, "wb") as f:
                     pickle.dump([G, PKG, trajectory, self.tensor_group_info,
                         self.cur_tensor2group, self.num_grp, 

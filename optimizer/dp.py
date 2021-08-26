@@ -171,11 +171,11 @@ class DPOptimizer(Optimizer):
         applied_sts.append(opfs_sts)
         return nodes_introduced
     
-    def try_to_apply_tsfs(self, long_name_u, long_name_v, _dag, _pkg, applied_sts):
+    def try_to_apply_tsfs(self, tensor_name_u, tensor_name_v, _dag, _pkg, applied_sts):
         if self.tsfs_pass is None:
             return []
-        SingleLogger().info("Fuse tensor {} {}".format(long_name_u, long_name_v))
-        tsfs_sts = ("++", long_name_u, long_name_v)
+        SingleLogger().info("Fuse tensor {} {}".format(tensor_name_u, tensor_name_v))
+        tsfs_sts = ("++", tensor_name_u, tensor_name_v)
         _, _nodes_introduced, _nodes_removed = \
             self.tsfs_pass.apply(tsfs_sts, _dag, _pkg)
         self.tsfs_pass.flush(is_accept=True)
@@ -385,15 +385,16 @@ class DPOptimizer(Optimizer):
                             dp_state.update_state_opfs(opfs_time)
                             
                             if self.tsfs_pass is not None:
-                                ### TODO (HHP): fuse corresponding tensors
-        
-                                tensor_long_name = self.comm_succs_of_comp_in_long_name(fused_comp_op, G_star)
-                                if len(tensor_long_name) > 1:
-                                    assert len(tensor_long_name) == 2, tensor_long_name
+                                tensor_op_names = self.comm_succs_of_comp_in_op_name(fused_comp_op, G_star)
+                                if len(tensor_op_names) > 1:
+                                    assert len(tensor_op_names) == 2, tensor_op_names
                                     # long_name_u = self.comm_succs_of_comp_in_long_name(_pred, G_star)
                                     # long_name_v = self.comm_succs_of_comp_in_long_name(node_n, G_star)
-                                    tensor_long_name = list(tensor_long_name)
-                                    nodes_introduced = self.try_to_apply_tsfs(tensor_long_name[0], tensor_long_name[1], G_star, PKG_star, applied_sts)
+                                    tensor_op_names = list(tensor_op_names)
+                                    nodes_introduced = self.try_to_apply_tsfs(
+                                        "Comm." + tensor_op_names[0],
+                                        "Comm." + tensor_op_names[1],
+                                        G_star, PKG_star, applied_sts)
                                     model_changed = True
 
                                     fused_tensor_name = parse_op_name(nodes_introduced[0])
@@ -450,9 +451,11 @@ class DPOptimizer(Optimizer):
                             if self.comm_backend == "NCCL":
                                 long_name_u = gen_long_name(pid, "Comm.{}.Sync".format(op_name_u))
                                 long_name_v = gen_long_name(pid, "Comm.{}.Sync".format(op_name_v))
-                            else:
+                            elif self.comm_backend == "BYTEPS":
                                 long_name_u = self.comm_succs_of_comp_in_long_name(prev_node, G_star)[0]
                                 long_name_v = self.comm_succs_of_comp_in_long_name(node_n, G_star)[0]
+                            else:
+                                raise
                             _bw_pred_list_u = [pred for pred in G_star.predecessors(long_name_u) if parse_pid_from_name(pred) == ref_pid]
                             _bw_pred_list_v = [pred for pred in G_star.predecessors(long_name_v) if parse_pid_from_name(pred) == ref_pid]
 
@@ -484,7 +487,7 @@ class DPOptimizer(Optimizer):
                             SingleLogger().info(bcolors.CBLUE + "Tensor Fusion: fusing {} {} is worse".format(op_name_u, op_name_v) + bcolors.ENDC)
                             ### Do NOT fuse tensors but tensor partition may be applied
                             if self.tsfs_pass.enable_partition:
-                                pid = parse_pid_from_name(node_n)
+                                SingleLogger().info(bcolors.CBLUE + "Partition {} to {} pieces".format(op_name_v, k_star) + bcolors.ENDC)
                                 ### Partition fused tensor to k_star pieces
                                 self.try_to_apply_ts_part([op_name_v], k_star, G_star, PKG_star, applied_sts)
                                 model_changed = True
