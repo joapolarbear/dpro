@@ -331,9 +331,16 @@ class DPOptimizer(Optimizer):
         search_start_t = time.time()
         NO_SPEEDUP_STEP_BUDGET = 5
         SEARCH_TIME_BUDGET = 3600 * 5
+
+        prev_cost = self.cur_cost
         
         while no_speed_up_step <= NO_SPEEDUP_STEP_BUDGET and time.time() - search_start_t < SEARCH_TIME_BUDGET:
             critical_path = self.wrap_critical_path(self.exct_dag)
+
+            with open(os.path.join(ROOT_PATH, "crit_path_step{}.txt".format(self.step)), "w") as f:
+                for _node, _len in critical_path:
+                    f.write("{} {:.3f}\n".format(_node, _len))
+
             comp_op_on_critical_path_std_name = [
                 ret_standar_names(op) for op, _ in critical_path 
                     if parse_cat_fine_grained(op) in ["operator.FW", "operator.BW", "operator.FW+BW"]]
@@ -348,7 +355,6 @@ class DPOptimizer(Optimizer):
             prev_node = None
             dp_state = DPState(opt=self)
             applied_sts = []
-            comm_bound = False
 
             # for node_n, exct_time_n in critical_path:
             for node_n in topo_order_one_pid:
@@ -491,7 +497,11 @@ class DPOptimizer(Optimizer):
                 if model_changed:
                     _cost_star, _exct_dag_star, _mem_usage_star, _ = self.evaluate(G_star, recd_topo_order=True)
                     write_time(cost=_cost_star)
-                    SingleLogger().info("Cost from {:.3f} to {:.3f}".format(self.cur_cost, _cost_star))
+                    if prev_cost >= _cost_star:
+                        SingleLogger().info("Cost from {:.3f} to {:.3f}".format(prev_cost, _cost_star))
+                    else:
+                        SingleLogger().info(bcolors.CRED + "Cost from {:.3f} to {:.3f}".format(prev_cost, _cost_star) + bcolors.ENDC)
+                    prev_cost = _cost_star
 
             _cost_star, _exct_dag_star, _mem_usage_star, topo_order = self.evaluate(G_star, recd_topo_order=True)
             SingleLogger().info("Cost from {:.3f} to {:.3f}".format(self.cur_cost, _cost_star))

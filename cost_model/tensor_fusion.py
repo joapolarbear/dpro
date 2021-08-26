@@ -13,6 +13,7 @@ import arg_utils
 from .base import _BaseGraphPass
 from trace_utils import *
 from cost_model._xla.pk_graph import PKGraph
+from cost_model._tsfs.cost_model import predict_ps_inter_comm_time, predict_ps_intra_comm_time
 
 from bps_helper.graph import PS_COMM_OPS, PS_COMP_OPS, PS_COMM_OPS_SETS, PS_COMP_OPS_SETS
 
@@ -27,6 +28,9 @@ MAX_PARTITION_NUM = 5
 ROOT_PATH = os.path.join(
     args_.workspace if args_.workspace else args_.path, ".opt_ws")
 IGNORE_SYNC = True
+
+### For those sub ops, we assume that tensor size has little effect on the execution time 
+CONSTANT_SUB_OPS = [PS_COMM_OPS.PUSH_RES, PS_COMM_OPS.PULL_REQ] + list(PS_COMP_OPS_SETS)
 
 def func_tensor_size_to_time(s, k, b):
     return k * s + b
@@ -731,7 +735,7 @@ class TensorFusionGraphPass(_BaseGraphPass):
         if k_star == old_partition_num:
             SingleLogger().debug("[Tensor Partition] do nothing with the same partition number for {}".format(tensor_grp_name))
             return
-        SingleLogger().info("Partition tensor {} to {} pieces".format(tensor_grp_name, k_star))
+        SingleLogger().info("Partition tensor {} from {} to {} pieces".format(tensor_grp_name, old_partition_num, k_star))
         
         new_part_num = k_star
         new_partition_size = grp_info["size"] / new_part_num
@@ -1089,6 +1093,9 @@ class TensorFusionGraphPass(_BaseGraphPass):
         self.cache_change = []
 
     def predict_comm_time(self, _size, _pid, _sub_op):
+        if self.opt.comm_backend == "BYTEPS" and _sub_op in [PS_COMM_OPS.PUSH_REQ, PS_COMM_OPS.PULL_RES]:
+            return predict_ps_inter_comm_time(_size) / 2
+
         _pid = self._pid_used_for_cost_model(_pid)
         if _sub_op == "RECV" and _sub_op not in self.pid_to_cm[_pid]:
             params = self.pid_to_cm[_pid]["SEND"]["param"]
@@ -1145,42 +1152,51 @@ class TensorFusionGraphPass(_BaseGraphPass):
                 all_data = np.array(data_param_dict["data"])
                 if fit_data_save_dir is not None:
                     np.savetxt(os.path.join(fit_data_save_dir, "{}_{}.txt".format(pid, sub_op)), all_data)
-                ### data shape = (n_dim, n_samples)
                 all_data = all_data.T
+                ### data shape = (n_dim, n_samples), there are two dimensions: size and avg
                 n_dim, n_samples = all_data.shape
 
-                try_cnt = 0
-                while True:
-                    train_idx = np.random.choice(n_samples, int(TRAIN_PERCENT * n_samples), replace=False)
-                    mask = np.zeros(n_samples, dtype=bool)
-                    mask[train_idx] = True
-                    train_data = all_data[:, mask]
-                    test_data = all_data[:, ~mask]
-                    popt, pcov = curve_fit(func_tensor_size_to_time, train_data[0], train_data[1],
-                                        bounds=((0, 0), (np.inf, np.inf)), p0=(1, 1), maxfev=100000)
-                    pred_ = func_tensor_size_to_time(test_data[0], *popt)
-                    mape = 100 * np.average(np.abs(pred_ - test_data[1]) / test_data[1])  
-                    if mape < 60:
-                        SingleLogger().info(" - Tensor Fusion CM for {} {}: {} % "
-                            "({} training data, {} test data)".format(pid, sub_op, mape, train_data.shape[1], test_data.shape[1]))
-                        data_param_dict["param"] = [popt, pcov]
-                        data_param_dict["data"] = None
-                        break
-                    elif try_cnt < n_samples:
-                        try_cnt += 1
+                if self.opt.comm_backend == "BYTEPS":
+                    if sub_op in CONSTANT_SUB_OPS:
+                        ### For those sub ops, we assume that tensor size has little effect on the execution time 
+                        popt = [0, np.median(all_data[1])]
+                        data_param_dict["param"] = [popt, None]
+                        SingleLogger().info(" - Tensor Fusion CM for {} {} with a constant value {:.3f} ms".format(pid, sub_op, popt[1]))
                     else:
-                        if IGNORE_LARGE_ERROR:
+                        SingleLogger().info(" - Tensor Fusion CM for {} {} is ignored".format(pid, sub_op))
+                else:
+                    try_cnt = 0
+                    while True:
+                        train_idx = np.random.choice(n_samples, int(TRAIN_PERCENT * n_samples), replace=False)
+                        mask = np.zeros(n_samples, dtype=bool)
+                        mask[train_idx] = True
+                        train_data = all_data[:, mask]
+                        test_data = all_data[:, ~mask]
+                        popt, pcov = curve_fit(func_tensor_size_to_time, train_data[0], train_data[1],
+                                            bounds=((0, 0), (np.inf, np.inf)), p0=(1, 1), maxfev=100000)
+                        pred_ = func_tensor_size_to_time(test_data[0], *popt)
+                        mape = 100 * np.average(np.abs(pred_ - test_data[1]) / test_data[1])  
+                        if mape < 60:
                             SingleLogger().info(" - Tensor Fusion CM for {} {}: {} % "
                                 "({} training data, {} test data)".format(pid, sub_op, mape, train_data.shape[1], test_data.shape[1]))
                             data_param_dict["param"] = [popt, pcov]
                             data_param_dict["data"] = None
                             break
-                        # import code
-                        # code.interatct(local=locals())
-                        SingleLogger().warn(" - Fail to fit a linear Tensor Fusion CM "
-                            "for {} {} after {} times mape > 60, ".format(pid, sub_op, try_cnt))
-                        SingleLogger().debug("data: {}".format(str(all_data)))
-                        break
+                        elif try_cnt < n_samples:
+                            try_cnt += 1
+                        else:
+                            if IGNORE_LARGE_ERROR:
+                                SingleLogger().info(" - Tensor Fusion CM for {} {}: {} % "
+                                    "({} training data, {} test data)".format(pid, sub_op, mape, train_data.shape[1], test_data.shape[1]))
+                                data_param_dict["param"] = [popt, pcov]
+                                data_param_dict["data"] = None
+                                break
+                            # import code
+                            # code.interatct(local=locals())
+                            SingleLogger().warn(" - Fail to fit a linear Tensor Fusion CM "
+                                "for {} {} after {} times mape > 60, ".format(pid, sub_op, try_cnt))
+                            SingleLogger().debug("data: {}".format(str(all_data)))
+                            break
     
     def _update_bw2tensor(self, comm_node, _dag):
         tensor_name = parse_op_name(comm_node)
@@ -1346,7 +1362,7 @@ class TensorFusionGraphPass(_BaseGraphPass):
                 if "Sync" in n:
                     G.nodes[n]["avg"] = 0
         
-        self._tensor_level_send_recv_cm()
+        # self._tensor_level_send_recv_cm()
         self.dump_tensor_grp_mapping(_file_name="tensor_fusion_grp_mapping_init.json")
         self.dump_tensor_partitions(_file_name="tensor_partition_init.json")
         self.cache_change = []
@@ -1440,21 +1456,12 @@ class TensorFusionGraphPass(_BaseGraphPass):
             k_star_null, t_sync_null = self.best_partition_partial_replay(op_name_v, G_star, no_throrem=True)
 
 
-            # op_name_v = '196'
+            # op_name_v = '180'
             # partitions = self.opt.clct.byteps_graph.partition_dict.get(op_name_v, ['0'])
             # grp_info = self._parse_tensor_group_info(op_name_v)
             # print("old part num : {}".format(grp_info["part_num"]))
             # print("origin partitions {}".format(partitions))
             # name2mapping_fn = lambda x: x if "Comm.{}.".format(op_name_v) in x else "None"
-
-            # G_star = _dag.copy()
-            # self._tensor_partition(G_star, None, op_name_v, 1)
-            # self.flush(False)
-            # full_time_fuse = self.opt.evaluate(G_star, name2mapping_fn=name2mapping_fn, _path="full_replay_part1.json")[0]
-            # partial_time_origin = self.estimate_time_related_to_comm(
-            #     [op_name_v], G_star,
-            #     "partial_replay_part1.json")
-            # print(full_time_fuse, partial_time_origin)
 
             # G_star = _dag.copy()
             # self._tensor_partition(G_star, None, op_name_v, 2)
