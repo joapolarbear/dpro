@@ -662,6 +662,17 @@ class TensorFusionGraphPass(_BaseGraphPass):
                             edges_to_process.append((_edge_u, _edge_v))
         return edges_to_add, edges_to_rm, nodes_to_add, nodes_to_rm
 
+    def _wrap_query_server_id(self, tensor_name, part_id):
+        if "+" in tensor_name:
+            grp_info = self.tensor_group_info[tensor_name]
+            if "server_id" not in grp_info:
+                tensor_name_w_part = self.opt.clct.byteps_graph._gen_partitioned_name(tensor_name.split("+")[0], part_id)
+                grp_info["server_id"] = self.opt.clct.byteps_graph.tensor_part2server[tensor_name_w_part]
+            return grp_info["server_id"]
+        else:
+            tensor_name_w_part = self.opt.clct.byteps_graph._gen_partitioned_name(tensor_name, part_id)
+            return self.opt.clct.byteps_graph.tensor_part2server[tensor_name_w_part]
+
     def _gen_analogous_name(self, origin_name, new_part_id=None, new_tensor_name=None, create_node=False):
             __all_info = self._wrap_parse_all_info(origin_name)
             if __all_info[1] in ["BW", "UPDATE_", "FW"]:
@@ -670,7 +681,13 @@ class TensorFusionGraphPass(_BaseGraphPass):
             if __all_info[3] in PS_COMM_OPS_SETS:
                 source, target, tensor_name, sub_op, part_id = self.opt.clct.byteps_graph.parse_comm_event_name(origin_name)
                 part_id = part_id if new_part_id is None else new_part_id
-                tensor_name = tensor_name if new_tensor_name is None else new_tensor_name
+                if new_tensor_name is not None:
+                    tensor_name = new_tensor_name
+                    new_server_name = self._wrap_query_server_id(tensor_name, part_id)
+                    if "server" in source:
+                        source = new_server_name
+                    else:
+                        target = new_server_name
                 comm_key = (source, target, tensor_name, sub_op, str(part_id))
                 return self.opt.clct.byteps_graph.gen_comm_full_name(comm_key)
             else:
@@ -678,6 +695,7 @@ class TensorFusionGraphPass(_BaseGraphPass):
                 part_id = part_id if new_part_id is None else new_part_id
                 if new_tensor_name is not None:
                     tensor_name = new_tensor_name
+                    server_id = self._wrap_query_server_id(tensor_name, part_id)
                 if create_node:
                     ### Create a node that never occurs before, e.g., fused tensor or new partition id
                     # In this case, we use the default tid
@@ -1282,14 +1300,14 @@ class TensorFusionGraphPass(_BaseGraphPass):
         trajectory = []
         no_suffix_time = {}
         source_nodes = [n for n in _dag.nodes() if "Comm" in n]
-        only_pid = None
+        only_worker_name = None
         for comm_node in tqdm(source_nodes, total=len(source_nodes)):
             ### return all info including (pid, op_cat, op_name, sub_op, suffix)
             all_info = self._wrap_parse_all_info(comm_node)
 
-            if only_pid is None:
-                only_pid = all_info[0]
-            if only_pid == all_info[0]:
+            if only_worker_name is None:
+                only_worker_name = all_info[0].split("::")[0]
+            if only_worker_name == all_info[0].split("::")[0]:
                 self._update_tensor2grp(comm_node)
                 self._update_bw2tensor(comm_node, _dag)
 
