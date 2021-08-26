@@ -395,6 +395,11 @@ def preprocess_comm_timestamp(file_paths, node_ip_to_rank,
                 logs_dict[key] = val
             else:
                 logs_dict[key] += val
+        
+        node_rank = int(os.path.basename(path).split(".")[0].split("_")[1])
+        for node_meta in node_metas:
+            node_meta["node_rank_v2"] = node_rank
+
         all_node_metas += node_metas
     
     node_id_to_name = {}
@@ -402,7 +407,8 @@ def preprocess_comm_timestamp(file_paths, node_ip_to_rank,
         ip = node_meta["ip"]
         nid = int(node_meta["id"])
         role = node_meta["role"]
-        node_rank = node_ip_to_rank[ip]
+        # node_rank = node_ip_to_rank[ip]
+        node_rank = node_meta["node_rank_v2"]
         node_name = role + "_" + str(node_rank)
         node_id_to_name[nid] = node_name
 
