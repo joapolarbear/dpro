@@ -354,19 +354,23 @@ class TensorFusionGraphPass(_BaseGraphPass):
             self._wrap_parse_all_info(u_),
             self._wrap_parse_all_info(v_)]
         
-        assert pair_all_infos[0][0] == pair_all_infos[1][0] and \
-            pair_all_infos[0][1] == pair_all_infos[1][1] and \
-            pair_all_infos[0][3] == pair_all_infos[1][3], (u_, v_)
-
         tensor_group_infos = [
             self._parse_tensor_group_info(pair_all_infos[0][2]),
             self._parse_tensor_group_info(pair_all_infos[1][2])]
 
         if self.opt.comm_backend == "NCCL":
+            assert pair_all_infos[0][0] == pair_all_infos[1][0] and \
+                pair_all_infos[0][1] == pair_all_infos[1][1] and \
+                pair_all_infos[0][3] == pair_all_infos[1][3], (u_, v_)
+
             edges_to_add, edges_to_rm, nodes_to_add, nodes_to_rm = self._nccl_tensor_fusion_impl(
                 _dag, _pkg, u_, v_, pair_all_infos, tensor_group_infos
             )
         elif self.opt.comm_backend == "BYTEPS":
+            assert pair_all_infos[0][0].split("::")[0] == pair_all_infos[1][0].split("::")[0] and \
+                pair_all_infos[0][1] == pair_all_infos[1][1] and \
+                pair_all_infos[0][3] == pair_all_infos[1][3], (u_, v_)
+
             edges_to_add, edges_to_rm, nodes_to_add, nodes_to_rm = self._ps_tensor_fusion_impl(
                 _dag, _pkg, u_, v_, pair_all_infos, tensor_group_infos
             )
@@ -1127,7 +1131,14 @@ class TensorFusionGraphPass(_BaseGraphPass):
 
     def predict_comm_time(self, _size, _pid, _sub_op):
         if self.opt.comm_backend == "BYTEPS" and _sub_op in [PS_COMM_OPS.PUSH_REQ, PS_COMM_OPS.PULL_RES]:
-            return predict_ps_inter_comm_time(_size) / 2
+            inter_node_time = predict_ps_inter_comm_time(_size)
+            for other_sub_op in CONSTANT_SUB_OPS:
+                if other_sub_op in PS_COMP_OPS_SETS:
+                    __pid = "server_" + _pid[_pid.find("server_") + len("server_"):].split("::")[0]
+                else:
+                    __pid = _pid
+                inter_node_time -= self.predict_comm_time(_size, __pid, other_sub_op)
+            return inter_node_time / 2
 
         _pid = self._pid_used_for_cost_model(_pid)
         if _sub_op == "RECV" and _sub_op not in self.pid_to_cm[_pid]:
@@ -1141,6 +1152,12 @@ class TensorFusionGraphPass(_BaseGraphPass):
     def _pid_used_for_cost_model(self, _pid):
         if "server_" in _pid and "_t" in _pid:
             return _pid.split("_t")[0]
+        elif "worker_" in _pid and "server_" in _pid:
+            source, target = _pid.split("::")
+            if "worker_" in source:
+                return _pid
+            else:
+                return target + "::" + source
         else:
             return _pid
 
@@ -1189,15 +1206,18 @@ class TensorFusionGraphPass(_BaseGraphPass):
                 ### data shape = (n_dim, n_samples), there are two dimensions: size and avg
                 n_dim, n_samples = all_data.shape
 
+                fit_flag = True
                 if self.opt.comm_backend == "BYTEPS":
                     if sub_op in CONSTANT_SUB_OPS:
                         ### For those sub ops, we assume that tensor size has little effect on the execution time 
                         popt = [0, np.median(all_data[1])]
                         data_param_dict["param"] = [popt, None]
                         SingleLogger().info(" - Tensor Fusion CM for {} {} with a constant value {:.3f} ms".format(pid, sub_op, popt[1]))
-                    else:
-                        SingleLogger().info(" - Tensor Fusion CM for {} {} is ignored".format(pid, sub_op))
-                else:
+                        fit_flag = False
+                    # else:        
+                    #     SingleLogger().info(" - Tensor Fusion CM for {} {} is ignored".format(pid, sub_op))
+                
+                if fit_flag:
                     try_cnt = 0
                     while True:
                         train_idx = np.random.choice(n_samples, int(TRAIN_PERCENT * n_samples), replace=False)
@@ -1325,7 +1345,6 @@ class TensorFusionGraphPass(_BaseGraphPass):
             if only_worker_name == all_info[0].split("::")[0]:
                 self._update_tensor2grp(comm_node)
                 self._update_bw2tensor(comm_node, _dag)
-
             self._parse_tensor_group_info(all_info[2])
             name_no_suffix = self._wrap_gen_long_name(all_info[0], all_info[1], all_info[2], all_info[3], None)
             if name_no_suffix not in no_suffix_time:
@@ -1375,6 +1394,17 @@ class TensorFusionGraphPass(_BaseGraphPass):
                 trajectory = self._ps_load_init_ckpt(G, PKG)
             else:
                 raise ValueError()
+
+            ### Update nodes avg with tensor fusion cost model
+            for node in G.nodes():
+                if "Comm" not in node:
+                    continue
+                _pid, _, op_name, sub_op, _ = self._wrap_parse_all_info(node)
+                grp_info = self.tensor_group_info[op_name]
+                tensor_time = self.predict_comm_time(grp_info["size"], _pid, sub_op)
+                if "PUSH_REQ" in node or "PULL_RES" in node:
+                    print("Node {}: tensor size = {} B, profiled time = {:.3f} ms, predicted time = {:.3f} ms".format(node, grp_info["size"], G.nodes[node]["avg"], tensor_time))
+                G.nodes[node]["avg"] = tensor_time
 
             if args_.test_ts_group_num is None:
                 ### By default, fuse tensors that connected to the same BW ops.
@@ -1629,7 +1659,7 @@ class TensorFusionGraphPass(_BaseGraphPass):
         ### `tensor_name` must be a tensor in `dag`
         grp_info = self._parse_tensor_group_info(tensor_name)
         MAX_TEST_TENSOR_GROUP_TIME = 5
-        sampled_partition_num = list(range(1, 2 * grp_info["part_num"]))
+        sampled_partition_num = list(range(1, 2 * grp_info["part_num"] + 1))
         if len(sampled_partition_num) > MAX_TEST_TENSOR_GROUP_TIME:
             sampled_partition_num = random.sample(sampled_partition_num, MAX_TEST_TENSOR_GROUP_TIME)
 

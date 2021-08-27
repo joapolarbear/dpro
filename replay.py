@@ -22,7 +22,8 @@ if args_.comm_backend == "NCCL":
     comm_op_types = []
 elif args_.comm_backend == "BYTEPS":
     from bps_helper.graph import *
-    comm_op_types = [PS_COMM_OPS.PUSH_REQ, PS_COMM_OPS.PUSH_RES, PS_COMM_OPS.PULL_REQ, PS_COMM_OPS.PULL_RES]
+    comm_op_types = [PS_COMM_OPS.PULL_RES, PS_COMP_OPS.COPY_MERGED, PS_COMP_OPS.SUM, PS_COMP_OPS.COPY_FIRST,
+        PS_COMM_OPS.PULL_REQ, PS_COMM_OPS.PUSH_RES, PS_COMM_OPS.PUSH_REQ]
 
 def ret_priority(n_):
     ### The smaller the rank is, the higher priority the node has
@@ -35,6 +36,12 @@ def ret_priority(n_):
     elif "UPDATE_" in n_:
         return 3
     elif "Comm" in n_:
+        # for comm_op_type in [PS_COMM_OPS.PUSH_REQ, PS_COMM_OPS.PULL_REQ]:
+        #     if comm_op_type in n_:
+        #         return 4
+        # for comm_op_type in [PS_COMM_OPS.PUSH_RES, PS_COMM_OPS.PULL_RES]:
+        #     if comm_op_type in n_:
+        #         return 5
         for idx, comm_op_type in enumerate(comm_op_types):
             if comm_op_type in n_:
                 return 4 + idx
@@ -500,29 +507,28 @@ class Replayer:
         pid = parse_pid_from_name(n)
         cat = parse_cat_from_name(n)
         if cat == "Comm":
-            # if "SEND" in n or "RECV" in n:
-            #     device_id = gen_long_name(pid, cat)
-            if "SEND" in n:
-                device_id = gen_long_name(pid, cat, "SEND")
-            elif "RECV" in n:
-                device_id = gen_long_name(pid, cat, "RECV")
-            # elif "PUSH" in n:
-            #     device_id = gen_long_name(pid, cat, "PUSH")
-            # elif "PULL" in n:
-            #     device_id = gen_long_name(pid, cat, "PULL")
-            elif "Sync" in n:
-                device_id = gen_long_name(pid, cat, "Sync")
+            if self.comm_backend == "BYTEPS":
+                device_id = gen_long_name(pid, cat)
             else:
-                device_id = None
-                in_queue_type = False
-                for sub_op in QueueType().ret_list():
-                    if sub_op in n:
-                        device_id = gen_long_name(pid, cat, "Kernel")
-                        in_queue_type = True
-                        break
-                
-                if not in_queue_type:
-                    device_id = gen_long_name(pid, cat)
+                # if "SEND" in n or "RECV" in n:
+                #     device_id = gen_long_name(pid, cat)
+                if "SEND" in n:
+                    device_id = gen_long_name(pid, cat, "SEND")
+                elif "RECV" in n:
+                    device_id = gen_long_name(pid, cat, "RECV")
+                elif "Sync" in n:
+                    device_id = gen_long_name(pid, cat, "Sync")
+                else:
+                    device_id = None
+                    in_queue_type = False
+                    for sub_op in QueueType().ret_list():
+                        if sub_op in n:
+                            device_id = gen_long_name(pid, cat, "Kernel")
+                            in_queue_type = True
+                            break
+                    
+                    if not in_queue_type:
+                        device_id = gen_long_name(pid, cat)
         elif "UPDATE" in n and self.infi_para_update:
             # update node, generate a new device
             device_id = gen_long_name(pid, cat, "INFI_PARA_UPDATE")
