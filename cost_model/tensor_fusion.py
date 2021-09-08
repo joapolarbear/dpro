@@ -6,6 +6,7 @@ import numpy as np
 import math
 import random
 import ujson as json
+import collections
 from tqdm import tqdm, trange
 from scipy.optimize import curve_fit
 
@@ -676,18 +677,9 @@ class TensorFusionGraphPass(_BaseGraphPass):
             grp_info["server_id"] = {}
         if part_id not in grp_info["server_id"]:
             ### Not cached
-            involved_server = {}
-            for _tensor_name in tensor_name.split("+"):
-                _grp_info = self.tensor_group_info[_tensor_name]
-                for _part_id in range(_grp_info["part_num"]):
-                    tensor_name_w_part = self.opt.clct.byteps_graph._gen_partitioned_name(_tensor_name, _part_id)
-                    server_id = self.opt.clct.byteps_graph.tensor_part2server[tensor_name_w_part]
-                    if server_id not in involved_server:
-                        involved_server[server_id] = 1
-                    else:
-                        involved_server[server_id] += 1
-            involved_server = sorted(list(involved_server.items()), key = lambda x: x[1])
-            grp_info["server_id"][part_id] = involved_server[0][0]
+            involved_server = list(self.opt.clct.byteps_graph.tensor_part2server.values())
+            server_cnt = collections.Counter(involved_server)
+            grp_info["server_id"][part_id] = (sorted(list(server_cnt.items()), key = lambda x: x[1]))[0][0]
         return grp_info["server_id"][part_id]
 
     def _gen_analogous_name(self, origin_name, new_part_id=None, new_tensor_name=None, create_node=False):
@@ -1131,14 +1123,16 @@ class TensorFusionGraphPass(_BaseGraphPass):
 
     def predict_comm_time(self, _size, _pid, _sub_op):
         if self.opt.comm_backend == "BYTEPS" and _sub_op in [PS_COMM_OPS.PUSH_REQ, PS_COMM_OPS.PULL_RES]:
-            inter_node_time = predict_ps_inter_comm_time(_size)
-            for other_sub_op in CONSTANT_SUB_OPS:
-                if other_sub_op in PS_COMP_OPS_SETS:
-                    __pid = "server_" + _pid[_pid.find("server_") + len("server_"):].split("::")[0]
-                else:
-                    __pid = _pid
-                inter_node_time -= self.predict_comm_time(_size, __pid, other_sub_op)
-            return inter_node_time / 2
+            return predict_ps_inter_comm_time(_size, is_push=(_sub_op==PS_COMM_OPS.PUSH_REQ))
+            ### 20210827_01: Previous method using coarse grained profiled push_pull time
+            # inter_node_time = predict_ps_inter_comm_time(_size)
+            # for other_sub_op in CONSTANT_SUB_OPS:
+            #     if other_sub_op in PS_COMP_OPS_SETS:
+            #         __pid = "server_" + _pid[_pid.find("server_") + len("server_"):].split("::")[0]
+            #     else:
+            #         __pid = _pid
+            #     inter_node_time -= self.predict_comm_time(_size, __pid, other_sub_op)
+            # return inter_node_time / 2
 
         _pid = self._pid_used_for_cost_model(_pid)
         if _sub_op == "RECV" and _sub_op not in self.pid_to_cm[_pid]:

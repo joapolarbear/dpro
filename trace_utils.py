@@ -449,7 +449,7 @@ class TraceManager:
     def _dump(self, dir_):
         rst_traces = sorted(self.traces, key=lambda x: (x["pid"], x["tid"]))
         with open(os.path.join(dir_, FileName.TRACE.value), 'w') as f:
-            json.dump({"traces": rst_traces, "all_prefix": self.all_prefix}, f)
+            json.dump({"traceEvents": rst_traces, "all_prefix": self.all_prefix}, f)
         str_ = "%d,%d,%d,%f\n"%(self.dir_level.value, self.max_step, self.opt_step, self.iter_time)
         str_ += str(self.name2sta) + "\n"
         str_ += str(self.cat2sta)
@@ -459,7 +459,7 @@ class TraceManager:
     def load(self, dir_):
         with open(os.path.join(dir_, FileName.TRACE.value), 'r') as fp:
             _info = json.load(fp)
-        self.traces = _info["traces"]
+        self.traces = _info["traceEvents"]
         self.all_prefix = _info["all_prefix"]
         self.traces = sorted(self.traces, key=lambda x: (x["ts"], x["name"]), reverse=False)
         with open(os.path.join(dir_, FileName.STATISTIC.value), 'r') as fp:

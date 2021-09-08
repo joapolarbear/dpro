@@ -17,6 +17,9 @@ import arg_utils
 FIXED_GAP_us = 5
 args_ = arg_utils.SingleArg().args
 
+def short_name(n):
+    return n.split(".")[-1]
+
 if args_.comm_backend == "NCCL":
     from hvd.graph import *
     comm_op_types = []
@@ -45,6 +48,8 @@ def ret_priority(n_):
         for idx, comm_op_type in enumerate(comm_op_types):
             if comm_op_type in n_:
                 return 4 + idx
+        # if PS_COMM_OPS.PULL_REQ in n_:
+        #     return 4
         return 100
     else:
         return 100
@@ -344,6 +349,7 @@ class Replayer:
             self.op_counter = ServerOpCounter(self.byteps_graph)
 
         self.show_queue = show_queue
+        self.show_queue = True
         if not self.show_queue:	
             self.queue = []
         
@@ -473,7 +479,6 @@ class Replayer:
         '''
         if self.show_queue:
             device = self.name2device(n)
-            #! TODO (huhanpeng): if OPs are ranked, 
             # just to substitute func to compare their ranks.
             self.insort_right(device.queue, (n, t), func=self._a_has_larger_prior)
         else:
