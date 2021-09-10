@@ -58,9 +58,10 @@ def _repr_of_tensor(tensor_name):
     return min([int(tensor_id) for tensor_id in tensor_name.split("+")])
 
 class Device:
-    def __init__(self, device_name, _replayer, infi_para=False, comm_backend = "NCCL"):
+    def __init__(self, device_name, _replayer, infi_para=False, comm_backend = "NCCL", init_device_time_in_ms=0):
         self.replayer = _replayer
-        self.device_time = 0
+        self.init_device_time = init_device_time_in_ms * 1000
+        self.device_time = self.init_device_time
         self.device_name = device_name
         #! infi_para devices allow to excute in infinite parallelism
         self.infi_para = infi_para
@@ -72,7 +73,7 @@ class Device:
         self.queue = []
 
     def reset(self):
-        self.device_time = 0
+        self.device_time = self.init_device_time
         self.prev_name_dur = None
         self.queue = []
 
@@ -574,6 +575,10 @@ class Replayer:
             return _ap < _bp
 
     def create_device(self, device_name, infi_para=False):
+        # if device_name.startswith("traces_0."):
+        #     init_device_time = 11.5
+        #     SingleLogger().info(bcolors.CYELLOW + "Create device {} with {} init device time ... ".format(device_name, init_device_time) + bcolors.ENDC)
+        #     return Device(device_name, self, comm_backend = self.comm_backend, infi_para=infi_para, init_device_time_in_ms=init_device_time)
         d = Device(device_name, self, comm_backend = self.comm_backend, infi_para=infi_para)
         return d
 

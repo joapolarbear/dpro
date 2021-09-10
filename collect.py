@@ -852,18 +852,6 @@ class Collector(object):
             byteps_comm_detail_path = self.pm.search(FileName.BPS_COMM_DETAIL)
             if byteps_comm_detail_path is None or force_:
                 # need to run preprocessing
-                ip_to_rank_path = self.pm.search(FileName.IP_TO_RANK)
-                ip_to_rank_dict = {}
-                try:
-                    with open(ip_to_rank_path, "r") as f:
-                        for line in f:
-                            ip, rank = line.strip().split(":")
-                            ip = ip.strip()
-                            rank = rank.strip()
-                            ip_to_rank_dict[ip] = rank
-                except:
-                    SingleLogger().error("Failed to read ip to rank mapping.")
-                    exit(1)
                 
                 if self.platform == "MXNET":
                     gradient_name_list_path = self.pm.search(FileName.TENSOR_NAME)
@@ -877,12 +865,12 @@ class Collector(object):
                     pcap_paths = [os.path.join(args_.pcap_file_path, fn) for fn in pcap_fns]
                     process_names = [fn.split(".pcap")[0] for fn in pcap_fns]
                     SingleLogger().info("Preprocessing pcap files: {}.".format(pcap_paths))
-                    byteps_comm_detail_path = preprocess_pcap(pcap_paths, process_names, ip_to_rank_dict, key_dict_path, gradient_name_list_path=gradient_name_list_path, platform=self.platform)
+                    byteps_comm_detail_path = preprocess_pcap(pcap_paths, process_names, None, key_dict_path, gradient_name_list_path=gradient_name_list_path, platform=self.platform)
                 elif args_.zmq_log_path is not None:
                     zmq_log_fns = [fn for fn in os.listdir(args_.zmq_log_path) if (os.path.isfile(os.path.join(args_.zmq_log_path,fn)) and fn.endswith(".log"))]
                     zmq_log_paths = [os.path.join(args_.zmq_log_path, fn) for fn in zmq_log_fns]
                     SingleLogger().info("Preprocessing ZMQ log files: {}.".format(zmq_log_paths))
-                    byteps_comm_detail_path = preprocess_comm_timestamp(zmq_log_paths, ip_to_rank_dict, key_dict_path, gradient_name_list_path=gradient_name_list_path, platform=self.platform)
+                    byteps_comm_detail_path = preprocess_comm_timestamp(zmq_log_paths, key_dict_path, gradient_name_list_path=gradient_name_list_path, platform=self.platform)
                 else:
                     SingleLogger().error("Cannot find BytePS comm trace or pcap files.")
                     exit(1)
@@ -1512,6 +1500,7 @@ class Collector(object):
                 node_rank = pid.split(".")[0].split("_")[-1]
                 if "BW" in node_:
                     gap = self.byteps_graph.bw_delays["worker_"+node_rank]
+                    # print(node_, gap / 1000)
                     self.trail_dag.nodes[node_][GAP_STR_OP2COMM] = gap
                 elif "PUSH_REQ" in node_ or "PULL_REQ" in node_ \
                         or "PUSH_RES" in node_ or "PULL_RES" in node_:

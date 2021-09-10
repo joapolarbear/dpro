@@ -350,7 +350,7 @@ def __generate_comm_events_timestamp(logs, pid, key_to_tensor_name):
             events.append(event)
     return events
 
-def preprocess_comm_timestamp(file_paths, node_ip_to_rank, 
+def preprocess_comm_timestamp(file_paths, 
                             key_dict_path, gradient_name_list_path=None,
                             save_path=None, platform="TENSORFLOW"):
     """
@@ -360,10 +360,6 @@ def preprocess_comm_timestamp(file_paths, node_ip_to_rank,
     ----------
     file_paths : list
         Paths to timestamp files.
-    
-    node_ip_to_rank: dict
-        IP address to node rank mappings.
-        e.g. {'10.xx.x.12': 0, '10.xx.xx.13': 1}
     
     gradient_name_list_path: str
         Path to the file containing the list of gradient names. This is captured
@@ -404,10 +400,8 @@ def preprocess_comm_timestamp(file_paths, node_ip_to_rank,
     
     node_id_to_name = {}
     for node_meta in all_node_metas:
-        ip = node_meta["ip"]
         nid = int(node_meta["id"])
         role = node_meta["role"]
-        # node_rank = node_ip_to_rank[ip]
         node_rank = node_meta["node_rank_v2"]
         node_name = role + "_" + str(node_rank)
         node_id_to_name[nid] = node_name
