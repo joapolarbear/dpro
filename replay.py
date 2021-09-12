@@ -45,9 +45,9 @@ def ret_priority(n_):
         # for comm_op_type in [PS_COMM_OPS.PUSH_RES, PS_COMM_OPS.PULL_RES]:
         #     if comm_op_type in n_:
         #         return 5
-        for idx, comm_op_type in enumerate(comm_op_types):
-            if comm_op_type in n_:
-                return 4 + idx
+        # for idx, comm_op_type in enumerate(comm_op_types):
+        #     if comm_op_type in n_:
+        #         return 4 + idx
         # if PS_COMM_OPS.PULL_REQ in n_:
         #     return 4
         return 100
@@ -319,7 +319,7 @@ class PSCommDevice(Device):
                         this_cat == CatName.COMM.value and \
                         next_cat == CatName.COMM.value:
                     gap += self.replayer.dag.nodes[name][GAP_STR_INTERNODE]
-                gap = 0
+                # gap = 0
                 _status["ready"] = (_end_time + gap) if _status["ready"] is None else max(_end_time + gap, _status["ready"])
 
                 if _status["in_degree"] == 0:

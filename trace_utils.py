@@ -567,7 +567,16 @@ class TraceManager:
                 #         pid_info["cat_cnt"]["operator.BW"] > 0 and \
                 #         pid_info["cat_cnt"]["operator.UPDATE"] > 0:
                 #     pid_info["step_cnt"] += 1
-                event["args"]["step"] = pid_info["step_cnt"]
+                
+                if "server_" in prefix:
+                    ### For BytePS, Comm is not in the same pid as computation
+                    if "traces_0.rank0" in prefix_dict:
+                        ref_pid_info = prefix_dict["traces_0.rank0"]
+                        event["args"]["step"] = ref_pid_info["step_cnt"]
+                    else:
+                        event["args"]["step"] = -1          
+                else:
+                    event["args"]["step"] = pid_info["step_cnt"]
             else:
                 ### For TensorFlow 2.4, step info is directly given the TF profiler
                 event["args"]["step"] = int(event["args"]["step"])
@@ -638,7 +647,7 @@ class TraceManager:
                                                       CatName.PS_SERVER_OPERATOR.value]:
                 pid_info["trace_name_cursor"] = event["name"]
 
-        ### Step 2: calculate ithe teration time of each iteration
+        ### Step 2: calculate the iteration time of each iteration
         iter_list_all = []
         step_num_upper = None
         for prefix in sorted(prefix_dict.keys()):

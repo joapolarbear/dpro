@@ -1415,41 +1415,79 @@ class Collector(object):
             cat_ = parse_cat_from_name(event["name"])
             if self.comm_backend == "NCCL":
                 ### Calculate gaps for operator nodes now
-                is_need_gap = (cat_ in cur_pid_dict and cat_ == CatName.OPERATOR.value)
-
-                ### calculate gaps for BW -> Comm, only for one step
-                if event["args"]["step"] == self.traceM.opt_step:
-                    if "first_comm_op" not in prev_events_dict[event["pid"]] and "Comm" in event["name"] and "Sync" not in event["name"]:
-                        ### Handle the gap between BW and the first Comm node
-                        ### The gap is added to Sync nodes
-                        prev_events_dict[event["pid"]]["first_comm_op"] = event["name"]
-                        node_ = self.traceM.ret_unique_name(event)
-
-                        bw_nodes = []
-                        _to_process = [_in for _in, _  in self.trail_dag.in_edges(node_)]
-                        while len(_to_process) >0:
-                            _prev = _to_process.pop(0)
-                            if event["pid"] not in _prev:
-                                continue
-                            if "BW" in _prev and self.trail_dag.nodes[_prev]["avg"] > 0:
-                                bw_nodes.append(_prev)
-                            else:
-                                _to_process += [_in for _in, _ in self.trail_dag.in_edges(_prev)]
-                        
-                        u_idx_l = [self.traceM.map_name2idxlist(_node) for _node in bw_nodes]
-                        if len(u_idx_l) <= 0:
-                            import code
-                            code.interact(local=locals())
-                        assert len(u_idx_l) > 0, (node_, bw_nodes)
-                        bw_traces = [self.traceM.traces[u_idxs[self.traceM.opt_step]] for u_idxs in u_idx_l]
-                        last_bw_time = max([trace["ts"] + trace["dur"] for trace in bw_traces])
-                        gap = event["ts"] - last_bw_time
-                        assert gap > 0, (bw_nodes)
-                        prev_events_dict[event["pid"]][GAP_STR_OP2COMM] = gap
+                is_need_intra_device_gap = (cat_ in cur_pid_dict and cat_ == CatName.OPERATOR.value)
             else:
                 ### BYTEPS
-                is_need_gap = (cat_ in cur_pid_dict and (cat_ == CatName.OPERATOR.value or cat_ == CatName.COMM.value))
-            if is_need_gap:
+                is_need_intra_device_gap = (cat_ in cur_pid_dict and (cat_ == CatName.OPERATOR.value or cat_ == CatName.COMM.value))
+            
+            ### calculate inter-device gaps, for BW -> Comm, only for one step
+            if event["args"]["step"] == self.traceM.opt_step:
+                if "Comm" in event["name"] and "Sync" not in event["name"]:
+                    __prefix = event["pid"]
+                    if self.comm_backend == "NCCL":
+                        if "first_comm_op" in prev_events_dict[__prefix]:
+                            continue
+                        else:
+                            ### Handle the gap between BW and the first Comm node
+                            ### The gap is added to Sync nodes
+                            prev_events_dict[__prefix]["first_comm_op"] = event["name"]
+                            node_ = self.traceM.ret_unique_name(event)
+
+                            bw_nodes = []
+                            _to_process = list(self.trail_dag.predecessors(node_))
+                            while len(_to_process) >0:
+                                _prev = _to_process.pop(0)
+                                if __prefix not in _prev:
+                                    continue
+                                if "BW" in _prev and self.trail_dag.nodes[_prev]["avg"] > 0:
+                                    bw_nodes.append(_prev)
+                                else:
+                                    _to_process += [_in for _in, _ in self.trail_dag.in_edges(_prev)]
+                            
+                            u_idx_l = [self.traceM.map_name2idxlist(_node) for _node in bw_nodes]
+                            if len(u_idx_l) <= 0:
+                                import code
+                                code.interact(local=locals())
+                            assert len(u_idx_l) > 0, (node_, bw_nodes)
+                            bw_traces = [self.traceM.traces[u_idxs[self.traceM.opt_step]] for u_idxs in u_idx_l]
+                            last_bw_time = max([trace["ts"] + trace["dur"] for trace in bw_traces])
+                            gap = event["ts"] - last_bw_time
+                            assert gap > 0, (bw_nodes)
+                            prev_events_dict[__prefix][GAP_STR_OP2COMM] = gap
+
+                    if self.comm_backend == "BYTEPS":
+                        if "PUSH_REQ" not in event["name"]:
+                            continue
+                        node_ = self.traceM.ret_unique_name(event)
+                        bw_prefix_set = set([parse_pid_from_name(__node) for __node in self.trail_dag.predecessors(node_) if "BW." in __node])
+                        for __prefix in bw_prefix_set:
+                            if "first_comm_op" in prev_events_dict[__prefix]:
+                                continue
+                            prev_events_dict[__prefix]["first_comm_op"] = event["name"]
+                            bw_nodes = []
+                            _to_process = list(self.trail_dag.predecessors(node_))
+                            while len(_to_process) >0:
+                                _prev = _to_process.pop(0)
+                                if __prefix not in _prev:
+                                    continue
+                                if "BW" in _prev and self.trail_dag.nodes[_prev]["avg"] > 0:
+                                    bw_nodes.append(_prev)
+                                else:
+                                    _to_process += [_in for _in, _ in self.trail_dag.in_edges(_prev)]
+                            
+                            u_idx_l = [self.traceM.map_name2idxlist(_node) for _node in bw_nodes]
+                            if len(u_idx_l) <= 0:
+                                import code
+                                code.interact(local=locals())
+                            assert len(u_idx_l) > 0, (node_, bw_nodes)
+                            bw_traces = [self.traceM.traces[u_idxs[self.traceM.opt_step]] for u_idxs in u_idx_l]
+                            last_bw_time = max([trace["ts"] + trace["dur"] for trace in bw_traces])
+                            gap = event["ts"] - last_bw_time
+                            assert gap > 0, (bw_nodes)
+                            prev_events_dict[__prefix][GAP_STR_OP2COMM] = gap
+                    
+            ### calculate intra-device gaps
+            if is_need_intra_device_gap:
                 ### There are some prev events with the same pid and find-grained cat
                 prev_e = cur_pid_dict[cat_]
                 gap_string = GAP_STR_OP2OP if cat_ == CatName.OPERATOR.value else GAP_STR_COMM2COMM
@@ -1481,11 +1519,13 @@ class Collector(object):
 
         queue_type_ = QueueType().ret_list()[0]
         for node_ in self.trail_dag.nodes:
+            ### calculate intra-device gaps
             if GAP_STR_OP2OP in self.trail_dag.nodes[node_]:
                 self.trail_dag.nodes[node_][GAP_STR_OP2OP] /= self.trail_dag.nodes[node_]["cnt"]
             if GAP_STR_COMM2COMM in self.trail_dag.nodes[node_]:
                 self.trail_dag.nodes[node_][GAP_STR_COMM2COMM] /= self.trail_dag.nodes[node_]["cnt"]
 
+            ### calculate inter-device gaps,
             if self.comm_backend == "NCCL":
                 if "Sync" in node_:
                     prefix_ = parse_pid_from_name(node_)
@@ -1496,16 +1536,24 @@ class Collector(object):
             else:
                 ## Add BW -> Comm delays using byteps_graph
                 ## inter node delays are directly added in replayer
-                pid = parse_pid_from_name(node_)
-                node_rank = pid.split(".")[0].split("_")[-1]
-                if "BW" in node_:
-                    gap = self.byteps_graph.bw_delays["worker_"+node_rank]
-                    # print(node_, gap / 1000)
-                    self.trail_dag.nodes[node_][GAP_STR_OP2COMM] = gap
+                if "BW." in node_:
+                    pid = parse_pid_from_name(node_)
+                    if GAP_STR_OP2COMM in prev_events_dict[pid]:
+                        gap = prev_events_dict[pid][GAP_STR_OP2COMM]
+                        self.trail_dag.nodes[node_][GAP_STR_OP2COMM] = gap
+                        SingleLogger().debug("Add gap:{} to pid: {}".format(gap, pid))
+                    else:
+                        print(pid, prev_events_dict)
+                        raise
+                    # node_rank = pid.split(".")[0].split("_")[-1]
+                    # gap = self.byteps_graph.bw_delays["worker_"+node_rank]
+                    # # print(node_, gap / 1000)
+                    # self.trail_dag.nodes[node_][GAP_STR_OP2COMM] = gap
                 elif "PUSH_REQ" in node_ or "PULL_REQ" in node_ \
                         or "PUSH_RES" in node_ or "PULL_RES" in node_:
                     source, target, _, _, _ = self.byteps_graph.parse_comm_event_name(parse_rawname(node_))
                     gap = self.byteps_graph.comm_delays[(source, target)]
+                    # print(node_, gap / 1000)
                     self.trail_dag.nodes[node_][GAP_STR_INTERNODE] = gap
 
     def clip_recv_events(self, check_depd=False):
