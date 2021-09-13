@@ -163,7 +163,7 @@ class DPOptimizer(Optimizer):
     def try_to_apply_opfs(self, u, v, _dag, _pkg, applied_sts):
         if self.opfs_pass is None:
             return
-        SingleLogger().info("Fuse operator {} {}".format(u, v))
+        SingleLogger().info("Fuse operator {} {}".format(u[:60], v[:60]))
         opfs_sts = ("+", u, v)
         success, nodes_introduced, nodes_removed = \
             self.opfs_pass.apply(opfs_sts, _dag, _pkg)
@@ -174,7 +174,7 @@ class DPOptimizer(Optimizer):
     def try_to_apply_tsfs(self, tensor_name_u, tensor_name_v, _dag, _pkg, applied_sts):
         if self.tsfs_pass is None:
             return []
-        SingleLogger().info("Fuse tensor {} {}".format(tensor_name_u, tensor_name_v))
+        SingleLogger().info("Fuse tensor {} {}".format(tensor_name_u[:60], tensor_name_v[:60]))
         tsfs_sts = ("++", tensor_name_u, tensor_name_v)
         _, _nodes_introduced, _nodes_removed = \
             self.tsfs_pass.apply(tsfs_sts, _dag, _pkg)
@@ -194,8 +194,9 @@ class DPOptimizer(Optimizer):
             return []
         # SingleLogger().info("Partition tensor {} to {} pieces".format(tensor_name_list, k_star))
         for tensor_name in tensor_name_list:
-            self.tsfs_pass._tensor_partition(_dag, _pkg, tensor_name, k_star)
-            self.tsfs_pass.flush(True)
+            is_ok, _, _ = self.tsfs_pass._tensor_partition(_dag, _pkg, tensor_name, k_star)
+            if is_ok:
+                self.tsfs_pass.flush(True)
             applied_sts.append(("tspart", tensor_name, k_star))
     
     def comm_succs_of_comp_in_op_name(self, comp_op, _dag):
@@ -357,7 +358,7 @@ class DPOptimizer(Optimizer):
             applied_sts = []
 
             # for node_n, exct_time_n in critical_path:
-            for node_n in topo_order_one_pid:
+            for topo_idx, node_n in enumerate(topo_order_one_pid):
                 exct_time_n = G_star.nodes[node_n]["avg"]
                 model_changed = False
                 if prev_node is None:
@@ -369,17 +370,65 @@ class DPOptimizer(Optimizer):
                 dp_state.add_comp_op(node_n, exct_time_n, G_star)
                 
                 fused_comp_op = None
-                if ret_standar_names(node_n) in comp_op_on_critical_path_std_name:
+                if self.opfs_pass is not None and self.tsfs_pass is not None:
+                    if "BW." not in node_n:
+                        continue
+                    _pred = prev_node
+                    t_null = self.estimate_time_related_to_comp([_pred, node_n], G_star)
+
+                    ### Try to apply tensor fusion and operator fusion
+                    G_prime = G_star.copy()
+                    PKG_prime = PKG_star.copy()
+                    sts = []
+                    nodes_introduced = self.try_to_apply_opfs(_pred, node_n, G_prime, PKG_prime, sts)
+                    _fused_comp_op = nodes_introduced.pop()
+                    fused_comp_op = "+".join([gen_long_name(ref_pid, parse_rawname(long_name)) for long_name in _fused_comp_op.split("+")])
+                    tensor_op_names = self.comm_succs_of_comp_in_op_name(fused_comp_op, G_prime)
+                    if len(tensor_op_names) > 1:
+                        assert len(tensor_op_names) == 2, tensor_op_names
+                        # long_name_u = self.comm_succs_of_comp_in_long_name(_pred, G_star)
+                        # long_name_v = self.comm_succs_of_comp_in_long_name(node_n, G_star)
+                        tensor_op_names = list(tensor_op_names)
+                        nodes_introduced = self.try_to_apply_tsfs(
+                            "Comm." + tensor_op_names[0],
+                            "Comm." + tensor_op_names[1],
+                            G_prime, PKG_prime, sts)
+
+                        fused_tensor_name = parse_op_name(nodes_introduced[0])
+                        k_star, ts_part_time = self.tsfs_pass.best_partition_partial_replay(
+                            fused_tensor_name, G_prime, no_throrem=True)
+                        # k_star_fuse, tsfs_time = self.tsfs_pass.best_partition(dp_state.q_m[-2] + dp_state.q_m[-1])
+                        if self.tsfs_pass.enable_partition:
+                            ### Do NOT fuse but tensor partition may be applied
+                            self.try_to_apply_ts_part([fused_tensor_name], k_star, G_prime, PKG_prime, sts)
+                    t_fuse = self.estimate_time_related_to_comp([_fused_comp_op], G_prime)
+
+                    if t_fuse < t_null:
+                        G_star = G_prime
+                        PKG_star = PKG_prime
+                        model_changed = True
+                        applied_sts += sts
+                        SingleLogger().info(bcolors.CYELLOW + "Fuse {} {} and {}".format(_pred[:60], node_n[:60], str(tensor_op_names)) + bcolors.ENDC)
+                    else:      
+                        if len(tensor_op_names) > 1:
+                            for tensor_name in tensor_op_names:
+                                self.tsfs_pass.cache_change.append(tensor_name)
+                            self.tsfs_pass.flush(True)
+                        fused_comp_op = None
+
+                elif ret_standar_names(node_n) in comp_op_on_critical_path_std_name:
                     ### Computation operators are on the critical path
                     _pred = prev_node
                     if self.opfs_pass is not None:
-                        if_fusion_better, opfs_time = self.opfs_pass.is_fusion_better(_pred, node_n, G_star, PKG_star, dp_state)
+                        if_fusion_better, opfs_time = self.opfs_pass.is_fusion_better(
+                            _pred, node_n, G_star, PKG_star, dp_state, no_theorem=True)
                         if if_fusion_better:
                             SingleLogger().info(bcolors.CGREEN + "Fusion {} {} is better ...".format(dp_state.node_num-1, dp_state.node_num) + bcolors.ENDC)
                             nodes_introduced = self.try_to_apply_opfs(_pred, node_n, G_star, PKG_star, applied_sts)
                             fused_comp_op = nodes_introduced.pop()
                             fused_comp_op = "+".join([gen_long_name(ref_pid, parse_rawname(long_name)) for long_name in fused_comp_op.split("+")])
                             # SingleLogger().info("Success !!!")
+                            model_changed = True
 
                             ### Update DP states after operator fusion
                             dp_state.update_state_opfs(opfs_time)
@@ -395,7 +444,6 @@ class DPOptimizer(Optimizer):
                                         "Comm." + tensor_op_names[0],
                                         "Comm." + tensor_op_names[1],
                                         G_star, PKG_star, applied_sts)
-                                    model_changed = True
 
                                     fused_tensor_name = parse_op_name(nodes_introduced[0])
                                     k_star, ts_part_time = self.tsfs_pass.best_partition_partial_replay(
@@ -406,7 +454,7 @@ class DPOptimizer(Optimizer):
                                         self.try_to_apply_ts_part([fused_tensor_name], k_star, G_star, PKG_star, applied_sts)
 
                                     ### Update DP states after tensor fusion/partition
-                                    dp_state.update_state_tsfs(tsfs_time)
+                                    # dp_state.update_state_tsfs(tsfs_time)
                         else:
                             ### No fusion is better
                             SingleLogger().debug(bcolors.CBLUE + "Do not fuse {} {} ...".format(
@@ -501,9 +549,9 @@ class DPOptimizer(Optimizer):
                     _cost_star, _exct_dag_star, _mem_usage_star, _ = self.evaluate(G_star, recd_topo_order=True)
                     write_time(cost=_cost_star)
                     if prev_cost >= _cost_star:
-                        SingleLogger().info("Cost from {:.3f} to {:.3f}".format(prev_cost, _cost_star))
+                        SingleLogger().info("Step {}-{}: Cost from {:.3f} to {:.3f}".format(self.step, topo_idx, prev_cost, _cost_star))
                     else:
-                        SingleLogger().info(bcolors.CRED + "Cost from {:.3f} to {:.3f}".format(prev_cost, _cost_star) + bcolors.ENDC)
+                        SingleLogger().info(bcolors.CRED + "Step {}-{}: Cost from {:.3f} to {:.3f}".format(self.step, topo_idx, prev_cost, _cost_star) + bcolors.ENDC)
                     prev_cost = _cost_star
 
             _cost_star, _exct_dag_star, _mem_usage_star, topo_order = self.evaluate(G_star, recd_topo_order=True)

@@ -303,7 +303,10 @@ class TensorFusionGraphPass(_BaseGraphPass):
             return self._tensor_defusion(__dag, __pkg, target, next_)
 
     def _update_tensor2grp(self, n):
-        op_name = self._wrap_parse_all_info(n)[2]
+        if "." not in n:
+            op_name = n
+        else:
+            op_name = self._wrap_parse_all_info(n)[2]
         for tensor_id in op_name.split("+"):
             self.cur_tensor2group[int(tensor_id)] = op_name
 
@@ -333,6 +336,7 @@ class TensorFusionGraphPass(_BaseGraphPass):
             * If accepted, change the interal state of this Pass
             * Otherwise, keep it the same
         '''
+        assert len(self.cache_change) > 0
         if is_accept:
             for n in self.cache_change:
                 if isinstance(n, int):
@@ -763,7 +767,7 @@ class TensorFusionGraphPass(_BaseGraphPass):
         old_partition_num = grp_info["part_num"]
         if k_star == old_partition_num:
             SingleLogger().debug("[Tensor Partition] do nothing with the same partition number for {}".format(tensor_grp_name))
-            return
+            return False, None, None
         SingleLogger().info("Partition tensor {} from {} to {} pieces".format(tensor_grp_name, old_partition_num, k_star))
         
         new_part_num = k_star
@@ -1390,15 +1394,21 @@ class TensorFusionGraphPass(_BaseGraphPass):
                 raise ValueError()
 
             ### Update nodes avg with tensor fusion cost model
+            rst = []
             for node in G.nodes():
                 if "Comm" not in node:
                     continue
                 _pid, _, op_name, sub_op, _ = self._wrap_parse_all_info(node)
                 grp_info = self.tensor_group_info[op_name]
-                tensor_time = self.predict_comm_time(grp_info["size"], _pid, sub_op)
-                if "PUSH_REQ" in node or "PULL_RES" in node:
-                    print("Node {}: tensor size = {} B, profiled time = {:.3f} ms, predicted time = {:.3f} ms".format(node, grp_info["size"], G.nodes[node]["avg"], tensor_time))
-                G.nodes[node]["avg"] = tensor_time
+                tensor_size = int(grp_info["size"] / grp_info["part_num"])
+                tensor_time = self.predict_comm_time(tensor_size, _pid, sub_op)
+                if ("PUSH_REQ" in node or "PULL_RES" in node) and G.nodes[node]["avg"] > 0.1:
+                    rst.append([tensor_size, G.nodes[node]["avg"], tensor_time])
+                    print("Node {}: tensor size = {} B, profiled time = {:.3f} ms, predicted time = {:.3f} ms".format(
+                        node, tensor_size, G.nodes[node]["avg"], tensor_time))
+                G.nodes[node]["avg"] = 3 * tensor_time
+            rst = np.array(rst)
+            rst.dump(os.path.join(ROOT_PATH, "tsfs_profile_time_vs_predict.txt"))
 
             if args_.test_ts_group_num is None:
                 ### By default, fuse tensors that connected to the same BW ops.
@@ -1590,8 +1600,9 @@ class TensorFusionGraphPass(_BaseGraphPass):
         k_star_fuse, t_sync_fuse = self.best_partition_partial_replay(fused_tensor_name, G_star)
 
         # validate
-        self._tensor_partition(G_star, None, fused_tensor_name, k_star_fuse)
-        self.flush(False)
+        is_ok, _, _, = self._tensor_partition(G_star, None, fused_tensor_name, k_star_fuse)
+        if is_ok:
+            self.flush(False)
         partial_time_fuse = self.estimate_time_related_to_comm(
             [fused_tensor_name], G_star,
             "partial_replay_fuse.json")
@@ -1661,77 +1672,18 @@ class TensorFusionGraphPass(_BaseGraphPass):
         comm_time_star = None
         for partition_num in sampled_partition_num:
             G_star = _dag.copy()
-            self._tensor_partition(G_star, None, tensor_name, partition_num)
-            self.flush(False)
+            is_ok, _, _ = self._tensor_partition(G_star, None, tensor_name, partition_num)
+            if is_ok:
+                self.flush(False)
             if no_throrem:
-                comm_time = self.estimate_time_related_to_comm([tensor_name], G_star)
+                comm_time = self.opt.estimate_time_related_to_comm([tensor_name], G_star)
             else:
-                comm_time = self.estimate_comm_time_via_replay(tensor_name, G_star)
+                comm_time = self.opt.estimate_comm_time_via_replay(tensor_name, G_star)
             if k_star is None or comm_time < comm_time_star:
                 k_star = partition_num
                 comm_time_star = comm_time
         return k_star, comm_time_star
     
-    def estimate_comm_time_via_replay(self, tensor_name, _dag):
-        involved_comm_nodes = [_node for _node in _dag.nodes() if "Comm.{}.".format(tensor_name) in _node]
-        involved_bw_nodes = set()
-        for comm_op in involved_comm_nodes:
-            involved_bw_nodes = involved_bw_nodes.union([pred for pred in _dag.predecessors(comm_op) if "BW" in pred])
-        all_involved_nodes = involved_bw_nodes.union(involved_comm_nodes)
-        sub_graph = _dag.subgraph(all_involved_nodes)
-        # dump_path = "partial_replay.json"
-        dump_path = None
-        _output = False if dump_path is None else True
-        from replay import Replayer
-        replayer = Replayer(dag=sub_graph, _step_num=1,
-                            leaf_dirs=self.opt.clct.all_prefix_list(),
-                            dump_path=self.opt.clct.pm.path,
-                            comm_backend=self.opt.comm_backend,
-                            byteps_graph=self.opt.clct.byteps_graph,
-                            infi_para_update=args_.update_infi_para,
-                            recd_topo_order=False,
-                            partial=True
-                            )
-        step_end_time_list_in_us = replayer.replayAndDelay(
-            None, _output=_output, _path=dump_path, verbose=False)
-        for bw_op in involved_bw_nodes:
-            pid = parse_pid_from_name(bw_op)
-            step_end_time_list_in_us[pid] -= (_dag.nodes[bw_op]["avg"]) * 1000
-        return max(step_end_time_list_in_us.values()) / 1000
     
-    def estimate_time_related_to_comm(self, tensor_names, _dag, dump_path=None):
-        involved_comm_nodes = set()
-        involved_bw_nodes = set()
-        involved_update_nodes = set()
-        for _node in _dag.nodes():
-            for tensor_name in tensor_names:
-                if "Comm.{}.".format(tensor_name) in _node:
-                    involved_comm_nodes.add(_node)
-                    for pred in _dag.predecessors(_node):
-                        if "BW" in pred:
-                            involved_bw_nodes.add(pred)
-                    for succ in _dag.successors(_node):
-                        if "UPDATE_" in succ:
-                            involved_update_nodes.add(succ)
-
-        all_involved_nodes = involved_bw_nodes.union(involved_comm_nodes).union(involved_update_nodes)
-        # print(tensor_names, len(involved_comm_nodes), len(involved_bw_nodes), len(involved_update_nodes))
-        # print(involved_comm_nodes)
-
-        sub_graph = _dag.subgraph(all_involved_nodes)
-        from replay import Replayer
-        replayer = Replayer(dag=sub_graph, _step_num=1,
-                            leaf_dirs=self.opt.clct.all_prefix_list(),
-                            dump_path=self.opt.clct.pm.path,
-                            comm_backend=self.opt.comm_backend,
-                            byteps_graph=self.opt.clct.byteps_graph,
-                            infi_para_update=args_.update_infi_para,
-                            recd_topo_order=False,
-                            partial=True
-                            )
-        step_end_time_list_in_us = replayer.replayAndDelay(
-            None, _output=True if dump_path is not None else False,
-            _path=dump_path, verbose=False)
-        return max(step_end_time_list_in_us.values()) / 1000
     
 

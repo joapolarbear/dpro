@@ -549,4 +549,92 @@ class Optimizer:
                 return comm_delay_in_ms
 
                 # traces_0.rank1->UPDATE_.Distributed_Push_Pull/truediv_212
+
+    def estimate_time_involved_nodes(self, _dag, all_involved_nodes, dump_path):
+        sub_graph = _dag.subgraph(all_involved_nodes)
+        replayer = Replayer(dag=sub_graph, _step_num=1,
+                            leaf_dirs=self.clct.all_prefix_list(),
+                            dump_path=self.clct.pm.path,
+                            comm_backend=self.comm_backend,
+                            byteps_graph=self.clct.byteps_graph,
+                            infi_para_update=args_.update_infi_para,
+                            recd_topo_order=False,
+                            partial=True
+                            )
+        step_end_time_list_in_us = replayer.replayAndDelay(
+            None, _output=True if dump_path is not None else False,
+            _path=dump_path, verbose=False)
+        return max(step_end_time_list_in_us.values()) / 1000
+
+    def estimate_time_related_to_comp(self, comp_ops, _dag, dump_path=None):
+        involved_comm_nodes = set()
+        involved_bw_nodes = set(comp_ops)
+        involved_update_nodes = set()
+        involved_tensors = set()
+        for comp_op in comp_ops:
+            for succ in _dag.successors(comp_op):
+                if "Comm." in succ:
+                    tensor_name = parse_op_name(succ)
+                    involved_tensors.add(tensor_name)
         
+        for _node in _dag.nodes():
+            for tensor_name in involved_tensors:
+                if "Comm.{}.".format(tensor_name) in _node:
+                    involved_comm_nodes.add(_node)
+                    for pred in _dag.predecessors(_node):
+                        if "BW" in pred:
+                            involved_bw_nodes.add(pred)
+                    for succ in _dag.successors(_node):
+                        if "UPDATE_" in succ:
+                            involved_update_nodes.add(succ)
+
+        all_involved_nodes = involved_bw_nodes.union(involved_comm_nodes).union(involved_update_nodes)
+        return self.estimate_time_involved_nodes(_dag, all_involved_nodes, dump_path)
+
+    def estimate_time_related_to_comm(self, tensor_names, _dag, dump_path=None):
+        involved_comm_nodes = set()
+        involved_bw_nodes = set()
+        involved_update_nodes = set()
+        for _node in _dag.nodes():
+            for tensor_name in tensor_names:
+                if "Comm.{}.".format(tensor_name) in _node:
+                    involved_comm_nodes.add(_node)
+                    for pred in _dag.predecessors(_node):
+                        if "BW" in pred:
+                            involved_bw_nodes.add(pred)
+                    for succ in _dag.successors(_node):
+                        if "UPDATE_" in succ:
+                            involved_update_nodes.add(succ)
+
+        all_involved_nodes = involved_bw_nodes.union(involved_comm_nodes).union(involved_update_nodes)
+        # print(tensor_names, len(involved_comm_nodes), len(involved_bw_nodes), len(involved_update_nodes))
+        # print(involved_comm_nodes)
+
+        return self.estimate_time_involved_nodes(_dag, all_involved_nodes, dump_path)
+    
+    def estimate_comm_time_via_replay(self, tensor_name, _dag):
+        involved_comm_nodes = [_node for _node in _dag.nodes() if "Comm.{}.".format(tensor_name) in _node]
+        involved_bw_nodes = set()
+        for comm_op in involved_comm_nodes:
+            involved_bw_nodes = involved_bw_nodes.union([pred for pred in _dag.predecessors(comm_op) if "BW" in pred])
+        all_involved_nodes = involved_bw_nodes.union(involved_comm_nodes)
+        sub_graph = _dag.subgraph(all_involved_nodes)
+        # dump_path = "partial_replay.json"
+        dump_path = None
+        _output = False if dump_path is None else True
+        from replay import Replayer
+        replayer = Replayer(dag=sub_graph, _step_num=1,
+                            leaf_dirs=self.clct.all_prefix_list(),
+                            dump_path=self.clct.pm.path,
+                            comm_backend=self.comm_backend,
+                            byteps_graph=self.clct.byteps_graph,
+                            infi_para_update=args_.update_infi_para,
+                            recd_topo_order=False,
+                            partial=True
+                            )
+        step_end_time_list_in_us = replayer.replayAndDelay(
+            None, _output=_output, _path=dump_path, verbose=False)
+        for bw_op in involved_bw_nodes:
+            pid = parse_pid_from_name(bw_op)
+            step_end_time_list_in_us[pid] -= (_dag.nodes[bw_op]["avg"]) * 1000
+        return max(step_end_time_list_in_us.values()) / 1000

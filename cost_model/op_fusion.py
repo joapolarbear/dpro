@@ -663,10 +663,10 @@ class XLAGraphPass(_BaseGraphPass):
             target[GAP_STR_OP2COMM] = self._combine_gap(attr1[GAP_STR_OP2COMM], 0)
 
     def _get_node_avg(self, new_name, verbose=True):
-        if new_name in self.node_attr_cache:
-            return self.node_attr_cache[new_name]["avg"]
-        else:
-            return self._query_cost_model(new_name, verbose=verbose)
+        if new_name not in self.node_attr_cache:
+            _avg = self._query_cost_model(new_name, verbose=verbose)
+            self.node_attr_cache[new_name] = {"avg": _avg}
+        return self.node_attr_cache[new_name]["avg"]
 
     def _parse_node_attr(self, _dag, new_name, avg):
         ''' Parse the fused node attribute corresponding to `new_name` and set _dag
@@ -877,9 +877,26 @@ class XLAGraphPass(_BaseGraphPass):
                 len(all_fuse_nodes), fused_avg, avg_sum))
         raise RuntimeError()
 
-    def is_fusion_better(self, long_name_u, long_name_v, _dag, _pkg, dp_state):
+    def is_fusion_better(self, long_name_u, long_name_v, _dag, _pkg, dp_state, no_theorem=False):
         if (long_name_u, long_name_v) not in _dag.edges() or not self._wrap_can_fuse_to_b(_pkg, long_name_u, long_name_v):
             return False, None
+        
+        fused_time = self._get_node_avg(long_name_u+"+"+long_name_v, verbose=False)
+
+        if no_theorem:
+            t_null = self.opt.estimate_time_related_to_comp([long_name_u, long_name_v], _dag, dump_path=None)
+
+            G_star = _dag.copy()
+            pkg_star = _pkg.copy()
+
+            self.apply(("+", long_name_u, long_name_v), G_star, pkg_star)
+            self.flush(False)
+            t_fuse = self.opt.estimate_time_related_to_comp([long_name_u+"+"+long_name_v], G_star, dump_path=None)
+
+            if t_fuse < t_null:
+                return True, fused_time
+            else:
+                return False, fused_time
 
         # ref_pid = parse_pid_from_name(long_name_u)
         # comm_dur_u = self.opt._op_to_coarse_grained_comm_time(long_name_u, _dag, ref_pid) ### q_{n-1}^d
@@ -890,8 +907,6 @@ class XLAGraphPass(_BaseGraphPass):
         comp_dur_v = dp_state.p_d[-1]
         comp_dur_u = dp_state.p_d[-2]
 
-        ### TODO (HHP): cache fused time to avoid repeatedly running the XLA cost model
-        fused_time = self._get_node_avg(long_name_u+"+"+long_name_v, verbose=False)
         if comm_dur_u < comp_dur_v + comp_dur_u - fused_time:
             ### operator fusion leads to better performance
             return True, fused_time
