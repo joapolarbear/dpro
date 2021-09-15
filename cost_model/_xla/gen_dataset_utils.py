@@ -39,6 +39,7 @@ from .process_trace import *
 from .xlatools import *
 from .utils import CMPaths, CMEnvs, parse_xla_candidate_ops, IGNORE_OP_TYPES
 from ml_platform.tensorflow.metadata import MetaInfo
+from logger_utils import SingleLogger
 
 MAX_OP_DUR_IN_US = 10000000
 
@@ -72,7 +73,7 @@ class XlaKernelDataset(object):
         self.test_size_ = test_size
         if not os.path.isdir(self._dataset_path):
             # not a dir, must be a pickled dataset
-            print("Loaded dumped dataset.")
+            SingleLogger().info("Loaded dumped dataset.")
             self._load_dataset(dataset_path)
         else:
             self._validate_dataset()
@@ -110,7 +111,6 @@ class XlaKernelDataset(object):
                 first_line = False
             else:
                 splitted_line = [value.strip() for value in line.split(",")]
-                # print(splitted_line)
                 op_name = splitted_line[0]
                 op_code_in_str = splitted_line[1]
                 op_code = int(splitted_line[2])
@@ -188,8 +188,8 @@ class XlaKernelDataset(object):
                     dedupedsid2finalsid[sid] = sample_ids[0]
                 label_dict[sample_ids[0]] = np.average(recorded_times)
 
-        print("All samples: {}, deduplicated: {}".format(num_all_samples, len(raw_feature_dict)))
-        print("Duplication mean RSD: {}%, max RSD: {}%, min RSD: {}%, median RSD: {}%" \
+        SingleLogger().info("All samples: {}, deduplicated: {}".format(num_all_samples, len(raw_feature_dict)))
+        SingleLogger().info("Duplication mean RSD: {}%, max RSD: {}%, min RSD: {}%, median RSD: {}%" \
                 .format(np.average(psd), max(psd), min(psd), np.median(psd)))
         self.label_dict = label_dict
         self.dedupedsid2finalsid = dedupedsid2finalsid
@@ -229,9 +229,9 @@ class XlaKernelDataset(object):
             ophash2index[op_hash] = index
             index2ophash[index] = op_hash
         
-        print("num opcodes: {}, num different op hashes: {}".format(
+        SingleLogger().info("num opcodes: {}, num different op hashes: {}".format(
                             len(sorted_op_codes), len(sorted_op_hashes)))
-        print("feature vector dim: {}".format(sum(max_input_dims) + max_output_dim))
+        SingleLogger().info("feature vector dim: {}".format(sum(max_input_dims) + max_output_dim))
         self.max_fusion_type = max_fusion_type
         self.opcode2index = opcode2index
         self.ophash2index = ophash2index
@@ -259,7 +259,7 @@ class XlaKernelDataset(object):
         for index in range(len(input_shapes), len(self.max_input_dims)):
             subop_vector += [0] * self.max_input_dims[index]
         if len(subop_vector) != sum(self.max_input_dims):
-            print("len vec: {}, should be: {}".format(len(subop_vector), sum(self.max_input_dims)))
+            SingleLogger().error("len vec: {}, should be: {}".format(len(subop_vector), sum(self.max_input_dims)))
             exit(-1)
         # output
         subop_vector += output_shape
@@ -278,7 +278,7 @@ class XlaKernelDataset(object):
             if op_hash in self.ophash2index:
                 op_hashes_in_sample.append(self.ophash2index[op_hash] + 1)
             else:
-                # print("[WARNING] Unseen Op hash {}".format(op_hash))
+                # SingleLogger().warn("Unseen Op hash {}".format(op_hash))
                 op_hashes_in_sample.append(random.randint(1, len(self.index2ophash)))
             feature_vectors_in_sample.append(self._gen_feature_vector(input_shapes, output_shape))
         return fusion_type_one_hot, op_codes_in_sample, op_hashes_in_sample, feature_vectors_in_sample
@@ -427,7 +427,7 @@ class XlaModuleTestSet():
                             (adj, fusion_type, computation_hash, subop_infos) \
                                 = self._training_dataset._parse_feature_file(f_kernel)
                         if (computation_hash != fused_op_hash):
-                            print("Inconsistent hashes for module SID: {}, kernel SID: {}" \
+                            SingleLogger().error("Inconsistent hashes for module SID: {}, kernel SID: {}" \
                                 .format(sample_id, kernel_sid))
                             assert False
                         # generate representations
@@ -491,7 +491,7 @@ def get_next_sample_id(feature_dir):
 
 def gen_max_cluster_kernel_samples_using_replay(sample_generator, dataset_dir, dataset_hlo_dir, 
                     profile_dir, min_cluster_size=4, debug_dir = None, fuse_all_fw=False, metadata=None):
-    print("Sampling using max cluster...")
+    SingleLogger().info("Sampling using max cluster...")
     # generate one sample
     raw_subgraph_dir = os.path.join(dataset_dir, CMPaths.RAW_SUBGRAPH_DIR)
     if not os.path.isdir(raw_subgraph_dir):
@@ -509,7 +509,7 @@ def gen_max_cluster_kernel_samples_using_replay(sample_generator, dataset_dir, d
         func_gen, num_clusters = sample_generator.gen_max_cluster(random_sample=True)
     total_fused_hashes = []
     sample_id = get_next_sample_id(feature_dir)
-    print("Trying to compile and profile clusters...")
+    SingleLogger().info("Trying to compile and profile clusters...")
     for gen_config_fun in tqdm(func_gen, total=num_clusters):
         try:
             graph_def_path, graph_def_config_path, _ = gen_config_fun(raw_subgraph_dir, sample_id)
@@ -528,18 +528,15 @@ def gen_max_cluster_kernel_samples_using_replay(sample_generator, dataset_dir, d
         opt_path = os.path.join(dataset_hlo_dir, "{}_opt_hlo.txt".format(sample_id))
         try:
             compile_to_hlo(def_path, config_path, unopt_path, opt_path)
-            # print("[INFO] Successfully compile to HLO code.")
         except:
-            print("[WARNING] Failed to compile to HLO code.")
+            SingleLogger().warn("Failed to compile to HLO code.")
             exit(0)
             clean_up_dir(profile_dir)
             clean_up_dir(raw_subgraph_dir)
             continue
         if not os.path.exists(unopt_path):
-            print("[WARNING] Failed to compile to HLO code: {}.".format(unopt_path))
+            SingleLogger().warn("Failed to compile to HLO code: {}.".format(unopt_path))
             exit(0)
-            # print(def_path)
-            # os.abort()
             clean_up_dir(profile_dir)
             clean_up_dir(raw_subgraph_dir)
             continue
@@ -555,7 +552,7 @@ def gen_max_cluster_kernel_samples_using_replay(sample_generator, dataset_dir, d
         try:
             replay_and_generate_kernel_sample(sample_id, unopt_path, profile_dir, dataset_dir)
         except:
-            print("[WARNING] Failed to replay HLO code and generate samples.")
+            SingleLogger().warn("Failed to replay HLO code and generate samples.")
             clean_up_dir(profile_dir)
             clean_up_dir(raw_subgraph_dir)
             continue
@@ -567,7 +564,7 @@ def gen_max_cluster_kernel_samples_using_replay(sample_generator, dataset_dir, d
         module_dir = os.path.join(dataset_dir, CMPaths.MODULES_DIR)
         sample_config_p = os.path.join(module_dir, "{}_config.txt".format(sample_id))
         if not os.path.exists(sample_config_p):
-            print("[WARNING] Failed to replay HLO code and generate samples.")
+            SingleLogger().warn("Failed to replay HLO code and generate samples.")
             continue
         with open(sample_config_p, "r") as f:
             for line in f:
@@ -602,12 +599,12 @@ def gen_kernel_sample_once_using_replay(sample_generator, dataset_dir, dataset_h
     try:
         compile_to_hlo(def_path, config_path, unopt_path, opt_path)
     except:
-        print("[WARNING] Failed to compile to HLO code.")
+        SingleLogger().warn("Failed to compile to HLO code.")
         clean_up_dir(profile_dir)
         clean_up_dir(raw_subgraph_dir)
         return False, False, []
     if not os.path.exists(unopt_path):
-        print("[WARNING] Failed to compile to HLO code.")
+        SingleLogger().warn("Failed to compile to HLO code.")
         clean_up_dir(profile_dir)
         clean_up_dir(raw_subgraph_dir)
         return False, False, []
@@ -623,7 +620,7 @@ def gen_kernel_sample_once_using_replay(sample_generator, dataset_dir, dataset_h
     try:
         replay_and_generate_kernel_sample(sample_id, unopt_path, profile_dir, dataset_dir)
     except:
-        print("[WARNING] Failed to compile to HLO code: {}.".format(unopt_path))
+        SingleLogger().warn("Failed to compile to HLO code: {}.".format(unopt_path))
         clean_up_dir(profile_dir)
         clean_up_dir(raw_subgraph_dir)
         return False, False, []
@@ -635,7 +632,7 @@ def gen_kernel_sample_once_using_replay(sample_generator, dataset_dir, dataset_h
     module_dir = os.path.join(dataset_dir, CMPaths.MODULES_DIR)
     sample_config_p = os.path.join(module_dir, "{}_config.txt".format(sample_id))
     if not os.path.exists(sample_config_p):
-        print("[WARNING] Failed to replay HLO code and generate samples.")
+        SingleLogger().warn("Failed to replay HLO code and generate samples.")
         return False, False, []
     with open(sample_config_p, "r") as f:
         for line in f:
@@ -737,7 +734,13 @@ def parse_graph_def(trace_dir, dataset_dir, shape_dict, metadata):
     # TF2XLA supported ops
     # candidate_ops, _ = parse_xla_candidate_ops(metadata)
 
-    graph_def_path = os.path.join(trace_dir, CMPaths.AFTER_OPT_TF_DAG_FILE)
+    graph_def_path = os.environ.get("GRAPH_DEF_PATH", None)
+    if graph_def_path is None:
+        graph_def_path = os.path.join(trace_dir, CMPaths.AFTER_OPT_TF_DAG_FILE)
+    else:
+        graph_def_path = os.path.join(os.path.dirname(graph_def_path), ".xla_dump/before_mark_for_compilation.pbtxt")
+    SingleLogger().info("Parse Graph Def at {}".format(graph_def_path))
+    
     with open(graph_def_path, "r") as f:
         if graph_def_path.endswith("pbtxt"):
             pb = f.read()
@@ -783,7 +786,7 @@ def parse_graph_def(trace_dir, dataset_dir, shape_dict, metadata):
         for node in graph_nodes:
             if node["name"] not in pruned_node:
                 graph_def_as_json["node"].append(node)
-        # print("Prune graph from {} nodes to {} nodes".format(len(graph_nodes), len(graph_def_as_json["node"])))
+        # SingleLogger().info("Prune graph from {} nodes to {} nodes".format(len(graph_nodes), len(graph_def_as_json["node"])))
         
         for node in graph_def_as_json["node"]:
             if "input" in node:
@@ -843,7 +846,7 @@ def gen_kernel_dataset(trace_dir, result_dir, num_samples=2000, num_max_cluster_
     # create directory structure
     if not os.path.isdir(result_dir):
         os.makedirs(result_dir)
-        print("Result dir not exist. Created result dir at {}.".format(result_dir))
+        SingleLogger().info("Result dir not exist. Created result dir at {}.".format(result_dir))
     dataset_dir = os.path.join(result_dir, CMPaths.DATASET_DIR)
     debug_dir = os.path.join(result_dir, CMPaths.DEBUG_DIR)
     dataset_hlo_dir = os.path.join(dataset_dir, CMPaths.HLO_DIR)
@@ -868,7 +871,7 @@ def gen_kernel_dataset(trace_dir, result_dir, num_samples=2000, num_max_cluster_
     sample_generator = SampleGenerator(graph_def=graph_def, \
                             shape_dict=shape_dict, ignored_nodes=ignored_node)    
 
-    print("Start generation.")
+    SingleLogger().info("Start generation.")
     completed_samples = 0
     op_hash_set = set()
     unique_op_history = []
@@ -881,21 +884,21 @@ def gen_kernel_dataset(trace_dir, result_dir, num_samples=2000, num_max_cluster_
                 unique_ops_in_this_step += 1
         unique_op_history.append(unique_ops_in_this_step)
         
-    print("Entering max cluster sample iterations...")
+    SingleLogger().info("Entering max cluster sample iterations...")
     # generate fuse all FW samples
-    print(" - generate a sample where all FW ops are fused")
+    SingleLogger().info(" - generate a sample where all FW ops are fused")
     fused_op_hashes = gen_max_cluster_kernel_samples_using_replay(
         sample_generator, dataset_dir, dataset_hlo_dir, profile_dir, debug_dir=debug_dir, fuse_all_fw=True, metadata=metadata)
     _parse_op_hashes(fused_op_hashes)
     # generate max cluster samples
     while completed_samples < num_max_cluster_samples:
-        print(" - max clustering: {} ...".format(completed_samples))
+        SingleLogger().info(" - max clustering: {} ...".format(completed_samples))
         fused_op_hashes = gen_max_cluster_kernel_samples_using_replay(
             sample_generator, dataset_dir, dataset_hlo_dir, profile_dir, debug_dir=debug_dir, fuse_all_fw=False, metadata=metadata)
         _parse_op_hashes(fused_op_hashes)
         completed_samples += 1
 
-    print("Entering random sample iterations...")
+    SingleLogger().info("Entering random sample iterations...")
     pbar = tqdm(total=num_samples)
     early_stop_counter = 0
     while completed_samples < num_samples:
@@ -912,7 +915,7 @@ def gen_kernel_dataset(trace_dir, result_dir, num_samples=2000, num_max_cluster_
         elif should_early_stop:
             early_stop_counter += 1
             if early_stop_counter >= 3:
-                print("Early stopping because no new subgraphs can be generated.")
+                SingleLogger().info("Early stopping because no new subgraphs can be generated.")
                 break
     pbar.close()
 
@@ -922,4 +925,4 @@ def gen_kernel_dataset(trace_dir, result_dir, num_samples=2000, num_max_cluster_
         for count in unique_op_history:
             f.write(str(count))
             f.write("\n")
-    print("Dataset generation complete.")
+    SingleLogger().info("Dataset generation complete.")

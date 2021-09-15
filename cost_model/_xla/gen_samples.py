@@ -22,9 +22,14 @@ from .pk_graph import PKGraph, contract_nodes_nx, \
                         subgraph_partition_connected_nx
 from .utils import CMPaths
 import networkx as nx
-
+from logger_utils import SingleLogger
 try:
     import horovod.tensorflow as hvd
+except:
+    pass
+
+try:
+    import byteps.tensorflow as bps
 except:
     pass
 
@@ -586,7 +591,7 @@ class SampleGenerator():
                 with open(cache_path, "rb") as f:
                     clusters = pickle.load(f)
                 compute_cluster = False
-                print("Load max_cluster.pickle use cache under {}".format(cache_dir))
+                SingleLogger().info("Load max_cluster.pickle use cache under {}".format(cache_dir))
             else:
                 compute_cluster = True
         else:

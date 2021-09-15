@@ -49,7 +49,7 @@ def compile_to_hlo(graph_path, config_path, dump_path_unopt, dump_path_opt, comp
         else:
             compile_exec = "/root/tensorflow/bazel-bin/tensorflow/compiler/byteprofile_xlatools/tfcompile_hlo"
     if not os.path.exists(compile_exec):
-        print("Cannot find the path to replay_computation_gpu.")
+        print("Cannot find the path to replay_computation_gpu: {}.".format(compile_exec))
         exit(-1)
 
     _check_arg_types([graph_path, config_path, dump_path_unopt, dump_path_opt], [str] * 4)
