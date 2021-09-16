@@ -83,9 +83,6 @@ class XLAGraphPass(_BaseGraphPass):
         self.init_dfg = None
         self.init_op2fused = None
 
-    def flush(self, is_accept):
-        pass
-
     def load_init_ckpt(self, G_prime=None):
         ''' Other cost model may initialize the DFG, init DFG based on that
         '''
@@ -890,7 +887,6 @@ class XLAGraphPass(_BaseGraphPass):
             pkg_star = _pkg.copy()
 
             self.apply(("+", long_name_u, long_name_v), G_star, pkg_star)
-            self.flush(False)
             t_fuse = self.opt.estimate_time_related_to_comp([long_name_u+"+"+long_name_v], G_star, dump_path=None)
 
             if t_fuse < t_null:

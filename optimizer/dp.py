@@ -167,7 +167,6 @@ class DPOptimizer(Optimizer):
         opfs_sts = ("+", u, v)
         success, nodes_introduced, nodes_removed = \
             self.opfs_pass.apply(opfs_sts, _dag, _pkg)
-        self.opfs_pass.flush(is_accept=True)
         applied_sts.append(opfs_sts)
         return nodes_introduced
     
@@ -178,7 +177,6 @@ class DPOptimizer(Optimizer):
         tsfs_sts = ("++", tensor_name_u, tensor_name_v)
         _, _nodes_introduced, _nodes_removed = \
             self.tsfs_pass.apply(tsfs_sts, _dag, _pkg)
-        self.tsfs_pass.flush(is_accept=True)
         applied_sts.append(tsfs_sts)
 
         ### DEBUG
@@ -194,9 +192,7 @@ class DPOptimizer(Optimizer):
             return []
         # SingleLogger().info("Partition tensor {} to {} pieces".format(tensor_name_list, k_star))
         for tensor_name in tensor_name_list:
-            is_ok, _, _ = self.tsfs_pass._tensor_partition(_dag, _pkg, tensor_name, k_star)
-            if is_ok:
-                self.tsfs_pass.flush(True)
+            self.tsfs_pass._tensor_partition(_dag, _pkg, tensor_name, k_star)
             applied_sts.append(("tspart", tensor_name, k_star))
     
     def comm_succs_of_comp_in_op_name(self, comp_op, _dag):
@@ -256,9 +252,7 @@ class DPOptimizer(Optimizer):
             num_grp = int(args_.test_ts_group_num)
             part_size_in_B = 4 * 1024 * 1000
             self.tsfs_pass._apply_grp_num(G, PKG, num_grp)
-            self.tsfs_pass.flush(True)
             self.tsfs_pass._apply_partition_size(G, PKG, part_size_in_B)
-            self.tsfs_pass.flush(True)
 
             _cost_star, _exct_dag_star, _mem_usage_star, topo_order = self.evaluate(
                 G, _path=os.path.join(ROOT_PATH, "test.json"),
@@ -379,12 +373,15 @@ class DPOptimizer(Optimizer):
                     ### Try to apply tensor fusion and operator fusion
                     G_prime = G_star.copy()
                     PKG_prime = PKG_star.copy()
+                    old_tsfs_state = None
                     sts = []
                     nodes_introduced = self.try_to_apply_opfs(_pred, node_n, G_prime, PKG_prime, sts)
                     _fused_comp_op = nodes_introduced.pop()
                     fused_comp_op = "+".join([gen_long_name(ref_pid, parse_rawname(long_name)) for long_name in _fused_comp_op.split("+")])
                     tensor_op_names = self.comm_succs_of_comp_in_op_name(fused_comp_op, G_prime)
                     if len(tensor_op_names) > 1:
+                        old_tsfs_state = self.tsfs_pass.tsfs_state.copy()
+
                         assert len(tensor_op_names) == 2, tensor_op_names
                         # long_name_u = self.comm_succs_of_comp_in_long_name(_pred, G_star)
                         # long_name_v = self.comm_succs_of_comp_in_long_name(node_n, G_star)
@@ -409,11 +406,10 @@ class DPOptimizer(Optimizer):
                         model_changed = True
                         applied_sts += sts
                         SingleLogger().info(bcolors.CYELLOW + "Fuse {} {} and {}".format(_pred[:60], node_n[:60], str(tensor_op_names)) + bcolors.ENDC)
-                    else:      
-                        if len(tensor_op_names) > 1:
-                            for tensor_name in tensor_op_names:
-                                self.tsfs_pass.cache_change.append(tensor_name)
-                            self.tsfs_pass.flush(True)
+                    else:
+                        ### Fusion is worse, retrieve the original tensor fusion pass state
+                        if old_tsfs_state is not None:
+                            self.tsfs_pass.tsfs_state = old_tsfs_state
                         fused_comp_op = None
 
                 elif ret_standar_names(node_n) in comp_op_on_critical_path_std_name:
