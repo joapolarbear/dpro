@@ -18,6 +18,9 @@ class _BaseGraphPass:
         self.token = None
         self.meta_info = self.opt.clct.para_dict
 
+        self.ckpt_dir = self.opt.ckpt_dir
+        self.spec_dir = self.opt.spec_dir
+
     def init_search_space(self, *args, **kwargs):
         raise NotImplementedError()
 
