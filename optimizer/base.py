@@ -33,7 +33,7 @@ class CostModelManager:
         # if "amp" in args_.sub_option:
         #     self.cost_model_list.append(AMPGraphPass(opt))
         if "tensor_fusion" in args_.sub_option:
-            self.cost_model_list.append(TensorFusionGraphPass(opt))
+            self.cost_model_list.append(TensorFusionGraphPass(opt, ROOT_PATH))
         if "xla" in args_.sub_option:
             self.cost_model_list.append(XLAGraphPass(opt, ROOT_PATH))
         
@@ -100,6 +100,12 @@ class Optimizer:
             os.makedirs(ROOT_PATH)
         if not os.path.exists(os.path.join(ROOT_PATH, "searched_graph")):
             os.makedirs(os.path.join(ROOT_PATH, "searched_graph"))
+        self.ckpt_dir = os.path.join(ROOT_PATH, "ckpt")
+        if not os.path.exists(self.ckpt_dir):
+            os.makedirs(self.ckpt_dir)
+        self.spec_dir = os.path.join(ROOT_PATH, "spec")
+        if not os.path.exists(self.spec_dir):
+            os.makedirs(self.spec_dir)
 
         # if "BPF_DUMP_INIT_GRAPH_TO" in os.environ:
         #     bpf_dump_init_graph_to = os.environ["BPF_DUMP_INIT_GRAPH_TO"]

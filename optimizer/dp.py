@@ -201,7 +201,7 @@ class DPOptimizer(Optimizer):
     def comm_succs_of_comp_in_long_name(self, comp_op, _dag):
         return [n for n in _dag.successors(comp_op) if parse_cat_from_name(n) == CatName.COMM.value]
 
-    def search(self, graph_cache=os.path.join(ROOT_PATH, "graph_cache.pickle")):
+    def search(self, graph_cache=None):
 
         SingleLogger().info(bcolors.CGREEN + "Start to search using DP" + bcolors.ENDC)
 
@@ -220,6 +220,7 @@ class DPOptimizer(Optimizer):
             self.trajectory += _trajectory
 
         ### load checkpoint
+        graph_cache = os.path.join(self.ckpt_dir, "graph_cache.pickle") if graph_cache is None else graph_cache
         if args_.ckpt and graph_cache is not None and os.path.isfile(graph_cache):
             ### TODO (hhp): need to guarantee the consistence of checkpoints of both cost models and DFG states
             for _cost_model in self.cst_md_mng.cost_model_list:
@@ -284,7 +285,7 @@ class DPOptimizer(Optimizer):
             
             if self.opfs_pass is not None:
                 self.opfs_pass._dump_cluster_mapping(
-                G, os.path.join(ROOT_PATH, "cluster_mapping.txt"), partition=True)
+                G, os.path.join(self.spec_dir, "cluster_mapping.txt"), partition=True)
 
             if self.tsfs_pass is not None:
                 self.tsfs_pass.dump_tensor_grp_mapping()

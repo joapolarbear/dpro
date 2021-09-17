@@ -68,7 +68,7 @@ class XLAGraphPass(_BaseGraphPass):
         self.token = ["+", "-"]
 
         ### Need to cache
-        self.ckpt_path = os.path.join(self.root_path, "xla_ckpt.pickle")
+        self.ckpt_path = os.path.join(self.ckpt_dir, "xla_ckpt.pickle")
         ### Used to cache the node attribtue
         self.node_attr_cache = AttrCache()
 
@@ -86,7 +86,7 @@ class XLAGraphPass(_BaseGraphPass):
     def load_init_ckpt(self, G_prime=None):
         ''' Other cost model may initialize the DFG, init DFG based on that
         '''
-        init_ckpt_path = os.path.join(self.root_path, "xla_init_ckpt.pickle")
+        init_ckpt_path = os.path.join(self.ckpt_dir, "xla_init_ckpt.pickle")
         trajectory = []
         if os.path.isfile(init_ckpt_path):
             with open(init_ckpt_path, "rb") as f:
@@ -139,7 +139,7 @@ class XLAGraphPass(_BaseGraphPass):
 
         ### Dump the default tensor fusion pattern
         comm_set = set([parse_op_name(n) for n in self.init_dfg.nodes if "Comm" in n and self.cord_pid in n])
-        with open(os.path.join(self.root_path, "tensor_grp.json"), 'w') as fp:
+        with open(os.path.join(self.spec_dir, "tensor_grp.json"), 'w') as fp:
             json.dump({"mapping": list(comm_set)}, fp, indent=4)
 
         return G, PKG, trajectory
@@ -159,7 +159,7 @@ class XLAGraphPass(_BaseGraphPass):
         models_dir = os.path.join(os.path.dirname(os.path.abspath(
             __file__)), "_xla/.cost_model")
 
-        cost_model_tmp_dir = os.path.join(self.root_path, "cost_model_tmp")
+        cost_model_tmp_dir = os.path.join(self.root_path, "xla_cm_tmp")
         if not os.path.exists(cost_model_tmp_dir):
             os.makedirs(cost_model_tmp_dir)
         SingleLogger().info("Searching for XLA Cost Model dumps in {}".format(models_dir))
@@ -220,7 +220,7 @@ class XLAGraphPass(_BaseGraphPass):
                         layer_num_limit = _layer_num_limit
                     )
             self._dump_cluster_mapping(partition_G, os.path.join(
-                self.root_path, "cluster_mapping_layer_num_limit_{}.txt".format(_layer_num_limit)))
+                self.spec_dir, "cluster_mapping_layer_num_limit_{}.txt".format(_layer_num_limit)))
             
             G_copy = G.copy()
             PKG_copy = PKG.copy()
@@ -229,7 +229,7 @@ class XLAGraphPass(_BaseGraphPass):
             SingleLogger().info(bcolors.CYELLOWBG +
                                 "_layer_num_limit: {} ==> cost: {}".format(_layer_num_limit, cost) + bcolors.ENDC)
 
-        SingleLogger().info("Done. Strategies are stored at {}".format(self.root_path))
+        SingleLogger().info("Done. Strategies are stored at {}".format(self.spec_dir))
 
     def _init_partition(self, G, PKG):
         ''' Initialize the graph with a default operator fusion strategy
@@ -292,7 +292,7 @@ class XLAGraphPass(_BaseGraphPass):
                 list_of_group = list_of_group)
 
         self._dump_cluster_mapping(partition_G, os.path.join(
-                self.root_path, "cluster_mapping_after_initialization.txt"))
+                self.spec_dir, "cluster_mapping_after_initialization.txt"))
 
         SingleLogger().info("Start to init partition graph ... ")
         return self._create_clusters(G, PKG, partition_G)

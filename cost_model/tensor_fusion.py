@@ -42,9 +42,7 @@ class TensorFusionState:
         self.opt = self.graph_pass.opt
         
         self.ckpt_path = os.path.join(self.graph_pass.ckpt_dir, "ckpt_tensor_fusion_state.pickle")
-        self.spec_dir = os.path.join(ROOT_PATH, "spec")
-        if not os.path.exists(self.spec_dir):
-            os.makedirs(self.spec_dir)
+        self.spec_dir = self.graph_pass.spec_dir
             
         self.cur_tensor2group = {}
         self.num_grp = 1 if args_.search_ts_group_num else None
@@ -165,12 +163,12 @@ class TensorFusionState:
         
     def dump_tensor_partitions(self, _file_name=None):
         file_name = 'tensor_partition_spec.txt' if _file_name is None else _file_name
-        tensor_ids, tensor_grps = zip(*list(self.cur_tensor2group.items()))
+        tensor_grps = list(self.cur_tensor2group.values())
         tensor_grps = set(tensor_grps)
         with open(os.path.join(self.spec_dir, file_name), 'w') as f:
             for tensor_grp in tensor_grps:
                 grp_info = self.tensor_group_info[tensor_grp]
-                f.write("{} {}\n".format(tensor_grp, int(grp_info["size"] / grp_info["part_num"])))
+                f.write("Distributed_Push_Pull/BytePSPushPull.{} {}\n".format(tensor_grp.replace("+", "_"), int(grp_info["size"] / grp_info["part_num"])))
     
     def update_tensor2grp(self, n):
         if "." not in n:
@@ -202,12 +200,10 @@ class TensorFusionState:
 class TensorFusionGraphPass(_BaseGraphPass):
     ''' This is a cost model for HOROVOD tensor fusion
     '''
-    def __init__(self, opt):
+    def __init__(self, opt, root_path):
         super().__init__(opt)
 
-        self.ckpt_dir = os.path.join(ROOT_PATH, "ckpt")
-        if not os.path.exists(self.ckpt_dir):
-            os.makedirs(self.ckpt_dir)
+        self.root_path = root_path
         self.ckpt_path = os.path.join(self.ckpt_dir, "ckpt_tensor_fusion.pickle")
 
         self.token = ["++", "--"]
