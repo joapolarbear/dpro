@@ -134,3 +134,55 @@ python3 mg_generate_dataset.py --option optimize --sub_option train_gpu --platfo
         1 + H & &, fusion \quad strategy\\
         1  + \frac{1}{H+1} - 1 = \frac{1}{H+1} & & , partition \quad strategy\\
         \end{array} \right.$$
+
+
+## Apply strategies
+
+### Operator Fusion
+We know XLA is enabled by setting `TF_XLA_FLAGS="--tf_xla_auto_jit=2"`, to apply customized XLA clustering strategies, set `XLA_CLUSTER_SPEC` to the path of the clustering specification file, where each row is in the format of `operator name` `cluster_id`
+
+Besides, We can set `XLA_DUMP_DIR` to the path to store the intermediate informantion, which can be used to train the XLA cost model.
+* `xla_candidates.txt`: candidates
+* `unsafe_resource_deps.txt`: unsafe_resource_deps, __currently this file also contains xla_candidates.__
+* `xla_clustering.txt`: the clustring strategies being applied, exits only when using default XLA (`XLA_CLUSTER_SPEC` is not set)
+
+We can further set `TF_DUMP_GRAPH_PREFIX=${XLA_DUMP_DIR} TF_XLA_FLAGS="--tf_xla_clustering_debug --tf_xla_auto_jit=2"` to dump graph_def.
+
+
+### Tensor Fusion
+
+#### BytePS
+Use https://github.com/joapolarbear/byteps.git:byteprofile_rdma
+
+You can also configure to fuse tensors to multiple tensor groups, by 
+1. specifying the number of tensor groups by setting `BYTEPS_TENSOR_GROUP_NUM=x`
+2. using a specification file by setting `BYTEPS_TENSOR_GROUP_FILE=/path/to/spec`. The file should be a json file and in the following format, where `0, 1, ...` denotes the indexes of tensors. Note that all tensor indexes should be specificed, even if one tensor is not fused with other tensors.
+```
+{
+    "mapping": [
+        "0+1+2",
+        "3+4"
+    ]
+}
+```
+
+You can also configure the tensor partition size for each tensor use a specification file. Each line of the specification file should follow the format of `<tensor_name> <partition_size_in_bytes>`.
+```
+export BYTEPS_PARTITION_SPEC_FILE=/path/to/spec
+```
+Another way to specify the tensor partition size for a tensor is to use `BYTEPS_PARTITION_SPEC=<tensor_name>=<partition_size_in_bytes>`. You can also specify the tensor size for multiple tensors by seperating their specification with comma.
+
+#### Horovod
+Use https://github.com/joapolarbear/horovod:b_v0.21.0
+
+You can also configure to fuse tensors to multiple tensor groups, by 
+1. specifying the number of tensor groups by setting `HOROVOD_TENSOR_GROUP_NUM=x`
+2. using a specification file by setting `HOROVOD_TENSOR_GROUP_FILE=/path/to/spec`. The file should be a json file and in the following format, where `0, 1, ...` denotes the indexes of tensors. Note that all tensor indexes should be specificed, even if one tensor is not fused with other tensors.
+```
+{
+    "mapping": [
+        "0+1+2",
+        "3+4"
+    ]
+}
+```

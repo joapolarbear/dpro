@@ -1,16 +1,17 @@
-import ctypes
 from pathlib import Path
 import subprocess
 import os
 import re
 
 from cost_model._xla.utils import CMEnvs
+from logger_utils import SingleLogger
+from base import bcolors
 
 if CMEnvs.TF_PATH in os.environ:
     BPF_TF_PREFIX = os.environ[CMEnvs.TF_PATH]
 else:
     BPF_TF_PREFIX = None
-    print("[WARNING] Environment {} not set. Guessing default TF location.".format(CMEnvs.TF_PATH))
+    SingleLogger().warn(bcolors.CRED + "Environment {} not set. Guessing default TF location.".format(CMEnvs.TF_PATH) + bcolors.ENDC)
 
 if CMEnvs.CM_PROFILE_GPU in os.environ:
     try:
