@@ -32,7 +32,7 @@ class CostModelManager:
         self.strategy2model = {}
         # if "amp" in args_.sub_option:
         #     self.cost_model_list.append(AMPGraphPass(opt))
-        if "tensor_fusion" in args_.sub_option:
+        if "tensor_fusion" in args_.sub_option or "tsfs" in args_.sub_option:
             self.cost_model_list.append(TensorFusionGraphPass(opt, ROOT_PATH))
         if "xla" in args_.sub_option:
             self.cost_model_list.append(XLAGraphPass(opt, ROOT_PATH))

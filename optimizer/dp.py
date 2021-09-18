@@ -1,12 +1,12 @@
 import os
-from threading import local
 import time
 import json
 import pickle
+from tqdm import tqdm
 
 from optimizer.base import Optimizer, args_, ROOT_PATH
 from logger_utils import SingleLogger
-from cost_model._xla.pk_graph import PKGraph
+from cost_model._xla.pk_graph import PKGraph, PKGraphCycleError
 from base import bcolors
 from trace_utils import gen_long_name, parse_allinfo_from_name, parse_cat_fine_grained, \
     parse_cat_from_name, parse_op_name, parse_pid_from_name, CatName, parse_rawname
@@ -160,20 +160,26 @@ class DPOptimizer(Optimizer):
         ### Return a combination of them, i.e., [s1, s2, [s1, s2]]
         return self.powerset(rst_sts)
     '''
-    def try_to_apply_opfs(self, u, v, _dag, _pkg, applied_sts):
+    def try_to_apply_opfs(self, u, v, _dag, _pkg, applied_sts, verbose=True):
         if self.opfs_pass is None:
             return
-        SingleLogger().info("Fuse operator {} {}".format(u[:60], v[:60]))
+        if verbose:
+            SingleLogger().info("Fuse operator {} {}".format(u[:60], v[:60]))
         opfs_sts = ("+", u, v)
-        success, nodes_introduced, nodes_removed = \
-            self.opfs_pass.apply(opfs_sts, _dag, _pkg)
+        try:
+            success, nodes_introduced, nodes_removed = \
+                self.opfs_pass.apply(opfs_sts, _dag, _pkg)
+        except PKGraphCycleError:
+            return False, None
+
         applied_sts.append(opfs_sts)
-        return nodes_introduced
+        return True, nodes_introduced
     
-    def try_to_apply_tsfs(self, tensor_name_u, tensor_name_v, _dag, _pkg, applied_sts):
+    def try_to_apply_tsfs(self, tensor_name_u, tensor_name_v, _dag, _pkg, applied_sts, verbose=True):
         if self.tsfs_pass is None:
             return []
-        SingleLogger().info("Fuse tensor {} {}".format(tensor_name_u[:60], tensor_name_v[:60]))
+        if verbose:
+            SingleLogger().info("Fuse tensor {} {}".format(tensor_name_u[:60], tensor_name_v[:60]))
         tsfs_sts = ("++", tensor_name_u, tensor_name_v)
         _, _nodes_introduced, _nodes_removed = \
             self.tsfs_pass.apply(tsfs_sts, _dag, _pkg)
@@ -184,13 +190,14 @@ class DPOptimizer(Optimizer):
 
         return _nodes_introduced
     
-    def try_to_apply_ts_part(self, tensor_name_list, k_star, _dag, _pkg, applied_sts):
+    def try_to_apply_ts_part(self, tensor_name_list, k_star, _dag, _pkg, applied_sts, verbose=True):
         ''' Partition tensors to k_star pieces
         tensor_name_list: list
         '''
         if self.tsfs_pass is None:
             return []
-        # SingleLogger().info("Partition tensor {} to {} pieces".format(tensor_name_list, k_star))
+        if verbose:
+            SingleLogger().info("Partition tensor {} to {} pieces".format(tensor_name_list, k_star))
         for tensor_name in tensor_name_list:
             self.tsfs_pass._tensor_partition(_dag, _pkg, tensor_name, k_star)
             applied_sts.append(("tspart", tensor_name, k_star))
@@ -353,7 +360,8 @@ class DPOptimizer(Optimizer):
             applied_sts = []
 
             # for node_n, exct_time_n in critical_path:
-            for topo_idx, node_n in enumerate(topo_order_one_pid):
+            SingleLogger().info("Step {}".format(self.step))
+            for topo_idx, node_n in tqdm(enumerate(topo_order_one_pid), total=len(topo_order_one_pid)):
                 exct_time_n = G_star.nodes[node_n]["avg"]
                 model_changed = False
                 if prev_node is None:
@@ -376,10 +384,17 @@ class DPOptimizer(Optimizer):
                     PKG_prime = PKG_star.copy()
                     old_tsfs_state = None
                     sts = []
-                    nodes_introduced = self.try_to_apply_opfs(_pred, node_n, G_prime, PKG_prime, sts)
-                    _fused_comp_op = nodes_introduced.pop()
-                    fused_comp_op = "+".join([gen_long_name(ref_pid, parse_rawname(long_name)) for long_name in _fused_comp_op.split("+")])
-                    tensor_op_names = self.comm_succs_of_comp_in_op_name(fused_comp_op, G_prime)
+                    opfs_succeed, nodes_introduced = self.try_to_apply_opfs(_pred, node_n, G_prime, PKG_prime, sts, verbose=False)
+                    if opfs_succeed:
+                        _fused_comp_op = nodes_introduced.pop()
+                        fused_comp_op = "+".join([gen_long_name(ref_pid, parse_rawname(long_name)) for long_name in _fused_comp_op.split("+")])
+                        tensor_op_names = self.comm_succs_of_comp_in_op_name(fused_comp_op, G_prime)
+                    else:
+                        tensor_u = self.comm_succs_of_comp_in_op_name(prev_node, G_star)
+                        tensor_v = self.comm_succs_of_comp_in_op_name(node_n, G_star)
+                        tensor_op_names = tensor_u.union(tensor_v)
+                        G_prime = G_star.copy()
+                        PKG_prime = PKG_star.copy()
                     if len(tensor_op_names) > 1:
                         old_tsfs_state = self.tsfs_pass.tsfs_state.copy()
 
@@ -390,7 +405,7 @@ class DPOptimizer(Optimizer):
                         nodes_introduced = self.try_to_apply_tsfs(
                             "Comm." + tensor_op_names[0],
                             "Comm." + tensor_op_names[1],
-                            G_prime, PKG_prime, sts)
+                            G_prime, PKG_prime, sts, verbose=False)
 
                         fused_tensor_name = parse_op_name(nodes_introduced[0])
                         k_star, ts_part_time = self.tsfs_pass.best_partition_partial_replay(
@@ -398,8 +413,12 @@ class DPOptimizer(Optimizer):
                         # k_star_fuse, tsfs_time = self.tsfs_pass.best_partition(dp_state.q_m[-2] + dp_state.q_m[-1])
                         if self.tsfs_pass.enable_partition:
                             ### Do NOT fuse but tensor partition may be applied
-                            self.try_to_apply_ts_part([fused_tensor_name], k_star, G_prime, PKG_prime, sts)
-                    t_fuse = self.estimate_time_related_to_comp([_fused_comp_op], G_prime)
+                            self.try_to_apply_ts_part([fused_tensor_name], k_star, 
+                                G_prime, PKG_prime, sts, verbose=False)
+                    if opfs_succeed:
+                        t_fuse = self.estimate_time_related_to_comp([_fused_comp_op], G_prime)
+                    else:
+                        t_fuse = self.estimate_time_related_to_comp([prev_node, node_n], G_prime)
 
                     if t_fuse < t_null:
                         G_star = G_prime
@@ -421,7 +440,9 @@ class DPOptimizer(Optimizer):
                             _pred, node_n, G_star, PKG_star, dp_state, no_theorem=True)
                         if if_fusion_better:
                             SingleLogger().info(bcolors.CGREEN + "Fusion {} {} is better ...".format(dp_state.node_num-1, dp_state.node_num) + bcolors.ENDC)
-                            nodes_introduced = self.try_to_apply_opfs(_pred, node_n, G_star, PKG_star, applied_sts)
+                            succeed, nodes_introduced = self.try_to_apply_opfs(_pred, node_n, G_star, PKG_star, applied_sts)
+                            if not succeed:
+                                continue
                             fused_comp_op = nodes_introduced.pop()
                             fused_comp_op = "+".join([gen_long_name(ref_pid, parse_rawname(long_name)) for long_name in fused_comp_op.split("+")])
                             # SingleLogger().info("Success !!!")
@@ -480,11 +501,14 @@ class DPOptimizer(Optimizer):
                         # SingleLogger().warn("Have no comm succes")
                         continue
                     
+                    if self.tsfs_pass is None:
+                        continue
+
                     assert len(tensor_u) == 1, (prev_node, tensor_u)
                     assert len(tensor_v) == 1, (node_n, tensor_v)
                     op_name_u = tensor_u.pop()
                     op_name_v = tensor_v.pop()
-                    if op_name_u != op_name_v and self.tsfs_pass is not None:
+                    if op_name_u != op_name_v:
                         print(op_name_u, op_name_v)
                         is_fuse_better, k_star, t_sync_fuse, t_sync_null = self.tsfs_pass.if_fusion_better(
                             op_name_u, op_name_v, dp_state, G_star, no_theorem=True)
@@ -520,14 +544,14 @@ class DPOptimizer(Optimizer):
                             ### TODO (HHP): fuse corresponding operatos
                             if self.opfs_pass is not None:
                                 assert len(_bw_pred_list_v) == 1 and len(_bw_pred_list_u) == 1, (_bw_pred_list_v, _bw_pred_list_u)
-                                nodes_introduced = self.try_to_apply_opfs(_bw_pred_list_u[0], _bw_pred_list_v[0], G_star, PKG_star, applied_sts)
-                                fused_comp_op = nodes_introduced.pop()
-                                fused_comp_op = "+".join([gen_long_name(ref_pid, parse_rawname(long_name)) for long_name in fused_comp_op.split("+")])
+                                succeed, nodes_introduced = self.try_to_apply_opfs(_bw_pred_list_u[0], _bw_pred_list_v[0], G_star, PKG_star, applied_sts)
+                                if succeed:
+                                    fused_comp_op = nodes_introduced.pop()
+                                    fused_comp_op = "+".join([gen_long_name(ref_pid, parse_rawname(long_name)) for long_name in fused_comp_op.split("+")])
 
-                                ### Update DP states after operator fusion
-                                opfs_time = self.opfs_pass._get_node_avg(_bw_pred_list_u[0]+"+"+_bw_pred_list_v[0])
-                                dp_state.update_state_opfs(opfs_time)
-
+                                    ### Update DP states after operator fusion
+                                    opfs_time = self.opfs_pass._get_node_avg(_bw_pred_list_u[0]+"+"+_bw_pred_list_v[0])
+                                    dp_state.update_state_opfs(opfs_time)
                         else:
                             SingleLogger().info(bcolors.CBLUE + "Tensor Fusion: fusing {} {} is worse".format(op_name_u, op_name_v) + bcolors.ENDC)
                             ### Do NOT fuse tensors but tensor partition may be applied

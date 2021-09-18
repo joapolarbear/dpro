@@ -65,6 +65,8 @@ class XLAGraphPass(_BaseGraphPass):
 
         if not args_.simulate:
             self.cost_models = self._load_cm()
+        else:
+            self.cost_models = None
         self.forbidden_list = set()
         self.initial_forbidden_list = set()
         # self._init_forbidden_list()
@@ -76,7 +78,7 @@ class XLAGraphPass(_BaseGraphPass):
         self.node_attr_cache = AttrCache()
         ### Cache iteration time on single GPU
         self.iter_time_single_gpu = None
-        self.iter_time_single_gpu_path = os.path.join(self.ckpt_dir, "xla_iter_time_single_gpu.pickle")
+        self.iter_time_single_gpu_path = os.path.join(self.ckpt_dir, "xla_iter_time_single_gpu.json")
 
         self.explore_fusion = True
         self.enable_partition = True
@@ -89,9 +91,24 @@ class XLAGraphPass(_BaseGraphPass):
         self.init_dfg = None
         self.init_op2fused = None
 
+        self.base_cmd = os.getenv("REPLAY_CMD", None)
+        if self.base_cmd is None:
+            SingleLogger().warn(bcolors.CRED + "The replay command is not set by REPLAY_CMD, use the default cmd" + bcolors.ENDC)
+            self.base_cmd = ['python3', '/usr/local/byteps/launcher/launch.py',
+                        'python3', '/home/tiger/horovod_examples/tensorflow2/tensorflow2_synthetic_benchmark.py',
+                        '--comm_backend', 'bps']
+        else:
+            self.base_cmd = [sub_cmd for sub_cmd in self.base_cmd.split(" ") if len(sub_cmd) > 0]
+
     def load_init_ckpt(self, G_prime=None):
         ''' Other cost model may initialize the DFG, init DFG based on that
         '''
+        if os.path.isfile(self.iter_time_single_gpu_path):
+            with open(self.iter_time_single_gpu_path, "r") as f:
+                self.iter_time_single_gpu = json.load(f)
+        else:
+            self.iter_time_single_gpu = {}
+
         init_ckpt_path = os.path.join(self.ckpt_dir, "xla_init_ckpt.pickle")
         trajectory = []
         if os.path.isfile(init_ckpt_path):
@@ -121,17 +138,13 @@ class XLAGraphPass(_BaseGraphPass):
                 pickle.dump([G, PKG, self.node_attr_cache, initial_partitions_formed,
                              self.forbidden_list, self.init_op2fused], f)
             SingleLogger().info("Graph cache dumped to {}.".format(init_ckpt_path))
-
-        if os.path.isfile(self.iter_time_single_gpu_path):
-            with open(self.iter_time_single_gpu_path, "rb") as f:
-                self.iter_time_single_gpu = pickle.load(f)
-        else:
-            self.iter_time_single_gpu = {}
         
         if "BPF_DUMP_INIT_CLUSTER_TO" in os.environ:
             self._dump_cluster_mapping(G, os.environ["BPF_DUMP_INIT_CLUSTER_TO"], partition=True)
         SingleLogger().info("Successfully initialized {} partitions.".format(initial_partitions_formed))
 
+        self.checkpoint()
+        
         # self._check_dag_avg(G)
         self.init_dfg = G.copy()
 
@@ -164,14 +177,14 @@ class XLAGraphPass(_BaseGraphPass):
 
         if os.path.isfile(self.iter_time_single_gpu_path):
             with open(self.iter_time_single_gpu_path, "rb") as f:
-                self.iter_time_single_gpu = pickle.load(f)
+                self.iter_time_single_gpu = json.load(f)
 
     def checkpoint(self):
         with open(self.ckpt_path, "wb") as f:
             pickle.dump(self.node_attr_cache, f)
         
-        with open(self.iter_time_single_gpu_path, "wb") as f:
-            pickle.dump(self.iter_time_single_gpu, f)
+        with open(self.iter_time_single_gpu_path, "w") as f:
+            json.dump(self.iter_time_single_gpu, f)
 
     def _load_cm(self):
         cost_models = {}
@@ -258,7 +271,8 @@ class XLAGraphPass(_BaseGraphPass):
         partition_PKG = PKGraph(partition_G)
 
         if args_.layer_by_layer:
-            self.cost_models["default"].silent = True
+            if not args_.simulate:
+                self.cost_models["default"].silent = True
 
             model_name = self.opt.clct.para_dict.parse_model_name()
             parse_layer_method = 2
@@ -333,7 +347,8 @@ class XLAGraphPass(_BaseGraphPass):
                     compilable=True
                 except (OptQueryCostModelError, ValueError):
                     compilable=False
-                if compilable:
+                
+                if compilable or avg is not None:
                     for _node_name in [node_name] + self.opt._debug_convert_to_other_machines(node_name):
                         ns = _node_name.split("+")
 
@@ -647,33 +662,45 @@ class XLAGraphPass(_BaseGraphPass):
                         "[COST MODEL QUERY] {} Nodes to fuse ...".format(len(nodes_to_fuse)))
 
             predicted_time = self._wrap_xla_predict(u_pid, nodes_to_fuse, new_name, simulate=args_.simulate)
-            if predicted_time < 0:
-                if args_.disable_estimate:
-                    raise OptQueryCostModelError("Failed to query cost model.")
+            if predicted_time is not None:
+                if predicted_time < 0:
+                    if args_.disable_estimate:
+                        raise OptQueryCostModelError("Failed to query cost model.")
+                    else:
+                        predicted_time = self._wrap_xla_predict(
+                            u_pid, nodes_to_fuse, new_name, simulate=True)
+                        if verbose:
+                            SingleLogger().warn(
+                                "[COST MODEL QUERY] Exec time {}ESTIMATED{}: {}".format(bcolors.CYELLOWBG, bcolors.ENDC, predicted_time))
                 else:
-                    predicted_time = self._wrap_xla_predict(
-                        u_pid, nodes_to_fuse, new_name, simulate=True)
                     if verbose:
-                        SingleLogger().warn(
-                            "[COST MODEL QUERY] Exec time {}ESTIMATED{}: {}".format(bcolors.CYELLOWBG, bcolors.ENDC, predicted_time))
-            else:
-                if verbose:
-                    SingleLogger().info("[COST MODEL QUERY] Exec time predicted: {} (Avg. sum of origin: {}".format(
-                        predicted_time, sum([self._get_node_avg(n) for n in new_name.split("+")])))
-                pass
-
+                        SingleLogger().info("[COST MODEL QUERY] Exec time predicted: {} (Avg. sum of origin: {}".format(
+                            predicted_time, sum([self._get_node_avg(n) for n in new_name.split("+")])))
+                    pass
             self.node_attr_cache[new_name] = {"avg": predicted_time}
         return self.node_attr_cache[new_name]["avg"]
 
-    def _estimate_time_real_replay(self, cmd, env, time_limit=60):
+    def _estimate_time_real_replay(self, cmd, env, time_limit=60, verbose=False):
         st = time.time()
         while True:
             try:
                 ret = subprocess.check_output(cmd, 
-                    stderr=subprocess.DEVNULL, env=env).decode('utf-8')
+                    stderr=subprocess.STDOUT, env=env).decode('utf-8')
             except:
                 return None
+            
+            if re.search("tensorflow.python.framework.errors_impl.InvalidArgumentError: \d+ nodes in a cycle", ret):
+                ### Introduce a cycle
+                return None
             match = re.findall("iteration time (\d+[.\d]*) ms", ret)
+            if len(match) == 0 or verbose:
+                print(cmd)
+                for line in ret.split("\n"):
+                    print(line)
+                subprocess.check_output(cmd, env=env
+                    )
+            if len(match) == 0:
+                exit(-1)
             match = np.array([float(itt) for itt in match])
             iter_time = np.average(match)
             stdev = np.std(match)
@@ -694,39 +721,44 @@ class XLAGraphPass(_BaseGraphPass):
             # for idx in range(len(origin_nodes) - 1):
             #     _sum += self.node_attr_cache[origin_nodes[idx]]["avg"]
             # return _sum * FUSION_TIME_ESTIMATE_RATIO + self.node_attr_cache[origin_nodes[-1]]["avg"]
-            
+            my_env = os.environ.copy()
+            my_env["CUDA_VISIBLE_DEVICES"] = '0'
+            if "BYTEPS_TRACE_ON" in my_env:
+                my_env.pop("BYTEPS_TRACE_ON")
+            if "XLA_DUMP_DIR" in my_env:
+                my_env.pop("XLA_DUMP_DIR")
+
             key = "fuse-" + "+".join(sorted(nodes_to_fuse))
+            sum_time = sum([self._get_node_avg(n) for n in fused_u_.split("+")])
+            if sum_time == 0:
+                return 0
             if key not in self.iter_time_single_gpu:
                 with open("/tmp/xla_spec.txt", 'w') as fp:
                     for orig_node_name in nodes_to_fuse:
                         fp.write("{} {}\n".format(orig_node_name, 0))
-
-                base_cmd = ['python3', '/usr/local/byteps/launcher/launch.py',
-                        'python3', '/home/tiger/horovod_examples/tensorflow2/tensorflow2_synthetic_benchmark.py',
-                        '--comm_backend', 'bps']
-                my_env = os.environ.copy()
-                my_env["CUDA_VISIBLE_DEVICES"] = '0'
                 my_env["XLA_CLUSTER_SPEC"] = '/tmp/xla_spec.txt'
                 my_env["TF_XLA_FLAGS"] = "--tf_xla_auto_jit=2"
-                self.iter_time_single_gpu[key] = self._estimate_time_real_replay(base_cmd, my_env)
+                self.iter_time_single_gpu[key] = self._estimate_time_real_replay(self.base_cmd, my_env)
 
             iter_time_after_fuse = self.iter_time_single_gpu[key]
             if iter_time_after_fuse is None:
-                raise ValueError("Fail to fuse {}".format(nodes_to_fuse))
+                SingleLogger().warn("Fail to fuse {}".format(nodes_to_fuse))
+                return None
 
             if "baseline_single_gpu" not in self.iter_time_single_gpu:
-                base_cmd = ['python3', '/usr/local/byteps/launcher/launch.py',
-                        'python3', '/home/tiger/horovod_examples/tensorflow2/tensorflow2_synthetic_benchmark.py',
-                        '--comm_backend', 'bps']
-                my_env = os.environ.copy()
-                my_env["CUDA_VISIBLE_DEVICES"] = '0'
-                avg = self._estimate_time_real_replay(base_cmd, my_env)
+                my_env.pop("XLA_CLUSTER_SPEC")
+                my_env.pop("TF_XLA_FLAGS")
+                avg = self._estimate_time_real_replay(self.base_cmd, my_env)
                 assert avg is not None
                 self.iter_time_single_gpu['baseline_single_gpu'] = avg
             before_fuse = self.iter_time_single_gpu['baseline_single_gpu']
-            sum_time = sum([self._get_node_avg(n) for n in fused_u_.split("+")])
-            fused_time = sum_time + iter_time_after_fuse - before_fuse
+            fused_time = max(0, sum_time + iter_time_after_fuse - before_fuse)
             SingleLogger().info("From {} to {}".format(sum_time, fused_time))
+            if fused_time > 10 * sum_time:
+                my_env["XLA_CLUSTER_SPEC"] = '/tmp/xla_spec.txt'
+                my_env["TF_XLA_FLAGS"] = "--tf_xla_auto_jit=2"
+                self._estimate_time_real_replay(self.base_cmd, my_env, verbose=True)
+                exit(-1)  
             return fused_time
         else:
             # return self.cost_models[pid].predict(nodes_to_fuse)
@@ -947,6 +979,8 @@ class XLAGraphPass(_BaseGraphPass):
             return False, None
         
         fused_time = self._get_node_avg(long_name_u+"+"+long_name_v, verbose=False)
+        if fused_time is None:
+            return False, None
 
         if no_theorem:
             t_null = self.opt.estimate_time_related_to_comp([long_name_u, long_name_v], _dag, dump_path=None)

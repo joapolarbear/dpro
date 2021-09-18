@@ -858,7 +858,7 @@ class TensorFusionGraphPass(_BaseGraphPass):
                             edges_to_process.append((_edge_u, _edge_v))
         return edges_to_add, edges_to_rm, nodes_to_add, nodes_to_rm
 
-    def _tensor_partition(self, _dag, _pkg: PKGraph, tensor_grp_name, k_star):
+    def _tensor_partition(self, _dag, _pkg: PKGraph, tensor_grp_name, k_star, verbose=True):
         ### return all info including (pid, op_cat, op_name, sub_op, suffix)
         grp_info = self.tsfs_state.parse_tensor_group_info(tensor_grp_name)
         
@@ -876,7 +876,8 @@ class TensorFusionGraphPass(_BaseGraphPass):
         if k_star == old_partition_num:
             SingleLogger().debug("[Tensor Partition] do nothing with the same partition number for {}".format(tensor_grp_name))
             return False, None, None
-        SingleLogger().info("Partition tensor {} from {} to {} pieces".format(tensor_grp_name, old_partition_num, k_star))
+        if verbose:
+            SingleLogger().info("Partition tensor {} from {} to {} pieces".format(tensor_grp_name, old_partition_num, k_star))
         
         new_part_num = k_star
         new_partition_size = grp_info["size"] / new_part_num
@@ -1360,7 +1361,7 @@ class TensorFusionGraphPass(_BaseGraphPass):
         
         # self._tensor_level_send_recv_cm()
         self.dump_tensor_grp_mapping(_file_name="tensor_fusion_grp_mapping_init.json")
-        self.dump_tensor_partitions(_file_name="tensor_partition_init.json")
+        self.dump_tensor_partitions(_file_name="tensor_partition_init.txt")
 
         ### Test
         # self._tensor_partition(G, PKG, "200", 6)
@@ -1585,7 +1586,7 @@ class TensorFusionGraphPass(_BaseGraphPass):
         k_star_fuse, t_sync_fuse = self.best_partition_partial_replay(fused_tensor_name, G_star)
         
         # validate
-        self._tensor_partition(G_star, None, fused_tensor_name, k_star_fuse)
+        self._tensor_partition(G_star, None, fused_tensor_name, k_star_fuse, verbose=False)
         self.tsfs_state = old_graph_state
 
         partial_time_fuse = self.estimate_time_related_to_comm(
@@ -1658,7 +1659,7 @@ class TensorFusionGraphPass(_BaseGraphPass):
         for partition_num in sampled_partition_num:
             old_graph_state = self.tsfs_state.copy()
             G_star = _dag.copy()
-            self._tensor_partition(G_star, None, tensor_name, partition_num)
+            self._tensor_partition(G_star, None, tensor_name, partition_num, verbose=False)
             self.tsfs_state = old_graph_state
             if no_throrem:
                 comm_time = self.opt.estimate_time_related_to_comm([tensor_name], G_star)
