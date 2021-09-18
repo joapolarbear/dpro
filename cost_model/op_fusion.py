@@ -7,6 +7,9 @@ import pickle
 import itertools
 import json
 from tqdm import tqdm, trange
+import subprocess
+import re
+import time
 
 import arg_utils
 from trace_utils import painted_timeline, parse_cat_from_name, parse_pid_from_name, \
@@ -71,6 +74,9 @@ class XLAGraphPass(_BaseGraphPass):
         self.ckpt_path = os.path.join(self.ckpt_dir, "xla_ckpt.pickle")
         ### Used to cache the node attribtue
         self.node_attr_cache = AttrCache()
+        ### Cache iteration time on single GPU
+        self.iter_time_single_gpu = None
+        self.iter_time_single_gpu_path = os.path.join(self.ckpt_dir, "xla_iter_time_single_gpu.pickle")
 
         self.explore_fusion = True
         self.enable_partition = True
@@ -116,6 +122,12 @@ class XLAGraphPass(_BaseGraphPass):
                              self.forbidden_list, self.init_op2fused], f)
             SingleLogger().info("Graph cache dumped to {}.".format(init_ckpt_path))
 
+        if os.path.isfile(self.iter_time_single_gpu_path):
+            with open(self.iter_time_single_gpu_path, "rb") as f:
+                self.iter_time_single_gpu = pickle.load(f)
+        else:
+            self.iter_time_single_gpu = {}
+        
         if "BPF_DUMP_INIT_CLUSTER_TO" in os.environ:
             self._dump_cluster_mapping(G, os.environ["BPF_DUMP_INIT_CLUSTER_TO"], partition=True)
         SingleLogger().info("Successfully initialized {} partitions.".format(initial_partitions_formed))
@@ -150,9 +162,16 @@ class XLAGraphPass(_BaseGraphPass):
                 node_attr_cache = pickle.load(f)
                 self.node_attr_cache = node_attr_cache
 
+        if os.path.isfile(self.iter_time_single_gpu_path):
+            with open(self.iter_time_single_gpu_path, "rb") as f:
+                self.iter_time_single_gpu = pickle.load(f)
+
     def checkpoint(self):
         with open(self.ckpt_path, "wb") as f:
             pickle.dump(self.node_attr_cache, f)
+        
+        with open(self.iter_time_single_gpu_path, "wb") as f:
+            pickle.dump(self.iter_time_single_gpu, f)
 
     def _load_cm(self):
         cost_models = {}
@@ -419,22 +438,6 @@ class XLAGraphPass(_BaseGraphPass):
     def _get_defused_node_names(self, fused_node_):
         return fused_node_.split("+")
 
-    def _wrap_xla_predict(self, pid, nodes_to_fuse, fused_u_, simulate=False):
-        ''' 
-        nodes_to_fuse: a list of layer names to fuse
-        fused_u_: a str of fused names with layer index
-        '''
-        if FORCE_ESTIMATE_FUSION_TIME or simulate:
-            _sum = 0
-            origin_nodes = self._get_defused_node_names(fused_u_)
-            for idx in range(len(origin_nodes) - 1):
-                _sum += self.node_attr_cache[origin_nodes[idx]]["avg"]
-            return _sum * FUSION_TIME_ESTIMATE_RATIO + self.node_attr_cache[origin_nodes[-1]]["avg"]
-        else:
-            # return self.cost_models[pid].predict(nodes_to_fuse)
-            predicted_time, brkdn_dict = self.cost_models["default"].predict(nodes_to_fuse)
-            return predicted_time / 1000
-
     def _wrap_xla_need_fuse(self, long_name):
         try:
             orig_name, pid = self.opt._get_original_name_pid_from_index(long_name)
@@ -456,36 +459,6 @@ class XLAGraphPass(_BaseGraphPass):
 
     def _wrap_xla_operation_names(self, pid):
         return self.cost_models["default"].graph_def_util.operation_names
-
-    def _query_cost_model(self, fused_u_, verbose=True):
-        assert "+" in fused_u_
-        # query cost model for exec time of a fused node u
-        nodes_in_u, u_pid = self._get_original_name_pid_from_fused_node(fused_u_)
-        nodes_to_fuse = set(nodes_in_u)
-        if verbose:
-            if len(nodes_to_fuse) < 10:
-                SingleLogger().info("[COST MODEL QUERY] {} Nodes to fuse: {}".format(
-                    len(nodes_to_fuse), nodes_to_fuse))
-            else:
-                SingleLogger().info(
-                    "[COST MODEL QUERY] {} Nodes to fuse ...".format(len(nodes_to_fuse)))
-
-        predicted_time = self._wrap_xla_predict(u_pid, nodes_to_fuse, fused_u_, simulate=args_.simulate)
-        if predicted_time < 0:
-            if args_.disable_estimate:
-                raise OptQueryCostModelError("Failed to query cost model.")
-            else:
-                predicted_time = self._wrap_xla_predict(
-                    u_pid, nodes_to_fuse, fused_u_, simulate=True)
-                if verbose:
-                    SingleLogger().warn(
-                        "[COST MODEL QUERY] Exec time {}ESTIMATED{}: {}".format(bcolors.CYELLOWBG, bcolors.ENDC, predicted_time))
-        else:
-            if verbose:
-                SingleLogger().info("[COST MODEL QUERY] Exec time predicted: {} (Avg. sum of origin: {}".format(
-                    predicted_time, sum([self._get_node_avg(n) for n in fused_u_.split("+")])))
-            pass
-        return predicted_time
         
     def _wrap_can_fuse_to_b(self, _pkg: PKGraph, a, b):
         ''' Return whether a can be fused with b
@@ -661,9 +634,104 @@ class XLAGraphPass(_BaseGraphPass):
 
     def _get_node_avg(self, new_name, verbose=True):
         if new_name not in self.node_attr_cache:
-            _avg = self._query_cost_model(new_name, verbose=verbose)
-            self.node_attr_cache[new_name] = {"avg": _avg}
+            assert "+" in new_name
+            # query cost model for exec time of a fused node u
+            nodes_in_u, u_pid = self._get_original_name_pid_from_fused_node(new_name)
+            nodes_to_fuse = set(nodes_in_u)
+            if verbose:
+                if len(nodes_to_fuse) < 10:
+                    SingleLogger().info("[COST MODEL QUERY] {} Nodes to fuse: {}".format(
+                        len(nodes_to_fuse), nodes_to_fuse))
+                else:
+                    SingleLogger().info(
+                        "[COST MODEL QUERY] {} Nodes to fuse ...".format(len(nodes_to_fuse)))
+
+            predicted_time = self._wrap_xla_predict(u_pid, nodes_to_fuse, new_name, simulate=args_.simulate)
+            if predicted_time < 0:
+                if args_.disable_estimate:
+                    raise OptQueryCostModelError("Failed to query cost model.")
+                else:
+                    predicted_time = self._wrap_xla_predict(
+                        u_pid, nodes_to_fuse, new_name, simulate=True)
+                    if verbose:
+                        SingleLogger().warn(
+                            "[COST MODEL QUERY] Exec time {}ESTIMATED{}: {}".format(bcolors.CYELLOWBG, bcolors.ENDC, predicted_time))
+            else:
+                if verbose:
+                    SingleLogger().info("[COST MODEL QUERY] Exec time predicted: {} (Avg. sum of origin: {}".format(
+                        predicted_time, sum([self._get_node_avg(n) for n in new_name.split("+")])))
+                pass
+
+            self.node_attr_cache[new_name] = {"avg": predicted_time}
         return self.node_attr_cache[new_name]["avg"]
+
+    def _estimate_time_real_replay(self, cmd, env, time_limit=60):
+        st = time.time()
+        while True:
+            try:
+                ret = subprocess.check_output(cmd, 
+                    stderr=subprocess.DEVNULL, env=env).decode('utf-8')
+            except:
+                return None
+            match = re.findall("iteration time (\d+[.\d]*) ms", ret)
+            match = np.array([float(itt) for itt in match])
+            iter_time = np.average(match)
+            stdev = np.std(match)
+            if stdev / iter_time < 0.2:
+                return iter_time
+            if time.time() - st > time_limit:
+                SingleLogger().warn("[XLA CM] return an unstable iter_time time {:.3f}(\u00B1{:.3f})ms, timelimit={:.1f} min".format(iter_time, stdev, int(time_limit/60)))
+                return iter_time
+
+    def _wrap_xla_predict(self, pid, nodes_to_fuse, fused_u_, simulate=False):
+        ''' 
+        nodes_to_fuse: a list of layer names to fuse
+        fused_u_: a str of fused names with layer index
+        '''
+        if FORCE_ESTIMATE_FUSION_TIME or simulate:
+            # _sum = 0
+            # origin_nodes = self._get_defused_node_names(fused_u_)
+            # for idx in range(len(origin_nodes) - 1):
+            #     _sum += self.node_attr_cache[origin_nodes[idx]]["avg"]
+            # return _sum * FUSION_TIME_ESTIMATE_RATIO + self.node_attr_cache[origin_nodes[-1]]["avg"]
+            
+            key = "fuse-" + "+".join(sorted(nodes_to_fuse))
+            if key not in self.iter_time_single_gpu:
+                with open("/tmp/xla_spec.txt", 'w') as fp:
+                    for orig_node_name in nodes_to_fuse:
+                        fp.write("{} {}\n".format(orig_node_name, 0))
+
+                base_cmd = ['python3', '/usr/local/byteps/launcher/launch.py',
+                        'python3', '/home/tiger/horovod_examples/tensorflow2/tensorflow2_synthetic_benchmark.py',
+                        '--comm_backend', 'bps']
+                my_env = os.environ.copy()
+                my_env["CUDA_VISIBLE_DEVICES"] = '0'
+                my_env["XLA_CLUSTER_SPEC"] = '/tmp/xla_spec.txt'
+                my_env["TF_XLA_FLAGS"] = "--tf_xla_auto_jit=2"
+                self.iter_time_single_gpu[key] = self._estimate_time_real_replay(base_cmd, my_env)
+
+            iter_time_after_fuse = self.iter_time_single_gpu[key]
+            if iter_time_after_fuse is None:
+                raise ValueError("Fail to fuse {}".format(nodes_to_fuse))
+
+            if "baseline_single_gpu" not in self.iter_time_single_gpu:
+                base_cmd = ['python3', '/usr/local/byteps/launcher/launch.py',
+                        'python3', '/home/tiger/horovod_examples/tensorflow2/tensorflow2_synthetic_benchmark.py',
+                        '--comm_backend', 'bps']
+                my_env = os.environ.copy()
+                my_env["CUDA_VISIBLE_DEVICES"] = '0'
+                avg = self._estimate_time_real_replay(base_cmd, my_env)
+                assert avg is not None
+                self.iter_time_single_gpu['baseline_single_gpu'] = avg
+            before_fuse = self.iter_time_single_gpu['baseline_single_gpu']
+            sum_time = sum([self._get_node_avg(n) for n in fused_u_.split("+")])
+            fused_time = sum_time + iter_time_after_fuse - before_fuse
+            SingleLogger().info("From {} to {}".format(sum_time, fused_time))
+            return fused_time
+        else:
+            # return self.cost_models[pid].predict(nodes_to_fuse)
+            predicted_time, brkdn_dict = self.cost_models["default"].predict(nodes_to_fuse)
+            return predicted_time / 1000
 
     def _parse_node_attr(self, _dag, new_name, avg):
         ''' Parse the fused node attribute corresponding to `new_name` and set _dag
