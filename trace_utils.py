@@ -115,6 +115,9 @@ def first_valid_dir(_path):
         return _dir
     raise ValueError("No valid directory under {}".format(_path))
 
+def formal_dpro_rawname(_name):
+    return _name.replace(".", "_")
+
 def gen_long_name(prefix, raw_name, suffix=None):
     if prefix is None:
         pre = ""
@@ -951,6 +954,7 @@ class PathManager:
         self.dirs = sorted([_d for _d in self.dirs if not _d.startswith(".")])
 
     def get_dir_level(self, _dir):
+        print(_dir)
         ''' return the level of the current dir '''
         def recur_look_up(_d):
             root, dirs, files = list(os.walk(_d))[0]
