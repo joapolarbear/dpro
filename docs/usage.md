@@ -166,6 +166,13 @@ You can also configure to fuse tensors to multiple tensor groups, by
 }
 ```
 
+
+You can also configure the tensor partition size. A smaller size improves BytePS pipelining, but may have higher other overhead like NCCL coordination, ZMQ message headers, etc. The default and recommended value is 4096000 (in bytes).
+
+```
+export BYTEPS_PARTITION_BYTES=y
+```
+
 You can also configure the tensor partition size for each tensor use a specification file. Each line of the specification file should follow the format of `<tensor_name> <partition_size_in_bytes>`.
 ```
 export BYTEPS_PARTITION_SPEC_FILE=/path/to/spec

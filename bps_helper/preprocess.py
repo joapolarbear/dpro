@@ -302,7 +302,11 @@ def __parse_timestamp_logs(log_lines, key_to_tensor_name):
         line = line.strip()
         if line.startswith("role"):
             continue
-        ts, is_start, is_push, is_req, tid, sender, recver = line.split()
+        try:
+            ts, is_start, is_push, is_req, tid, sender, recver = line.split()
+        except:
+            print("preprocess warning: {}".format(line))
+            continue
         tid = int(tid)
         ts = int(ts)
         sender = int(sender)
