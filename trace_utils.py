@@ -573,11 +573,11 @@ class TraceManager:
                 
                 if "server_" in prefix:
                     ### For BytePS, Comm is not in the same pid as computation
-                    if "traces_0.rank0" in prefix_dict:
-                        ref_pid_info = prefix_dict["traces_0.rank0"]
-                        event["args"]["step"] = ref_pid_info["step_cnt"]
-                    else:
-                        event["args"]["step"] = -1          
+                    event["args"]["step"] = -1
+                    for ref_pid, ref_pid_info in prefix_dict.items():
+                        if "server_" not in ref_pid and "step_cnt" in ref_pid_info and ref_pid_info["step_cnt"] >= 0:
+                            event["args"]["step"] = ref_pid_info["step_cnt"]
+                            break
                 else:
                     event["args"]["step"] = pid_info["step_cnt"]
             else:
@@ -954,7 +954,6 @@ class PathManager:
         self.dirs = sorted([_d for _d in self.dirs if not _d.startswith(".")])
 
     def get_dir_level(self, _dir):
-        print(_dir)
         ''' return the level of the current dir '''
         def recur_look_up(_d):
             root, dirs, files = list(os.walk(_d))[0]

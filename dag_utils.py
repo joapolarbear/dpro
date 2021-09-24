@@ -519,15 +519,24 @@ class DAGManager:
                 except:
                     SingleLogger().warn("{} is not in comm dag. Ignoring.".format(tensor_name))
                     return
-                prev_bw_nodes = [_u for _u, _ in graph.in_edges(u)]
+                prev_bw_nodes = []
+                for each_tensor_name in tensor_name.split("+"):
+                    prev_bw_nodes += [_u for _u in graph.predecessors("Comm.{}".format(each_tensor_name))]
+                prev_bw_nodes = set(prev_bw_nodes)
                 for prev_bw_node in prev_bw_nodes:
                     prev_name = self.add_prefix(prev_bw_node)
                     for push_req_node in push_req_nodes:
                         self.wrap_add_dag(prev_name, push_req_node)
                 # add dependencies to v
+                update_nodes = []
+                for each_tensor_name in tensor_name.split("+"):
+                    update_nodes += [_n for _n in graph.successors("Comm.{}".format(each_tensor_name))]
+                update_nodes = set(update_nodes)
                 pull_res_nodes = self.byteps_graph.get_pull_res_node(wk_rank, tensor_name)
-                for pull_res_node in pull_res_nodes:
-                    self.wrap_add_dag(pull_res_node, self.add_prefix(v))
+                for update_node in update_nodes:
+                    next_name = self.add_prefix(update_node)
+                    for pull_res_node in pull_res_nodes:
+                        self.wrap_add_dag(pull_res_node, next_name)
             else:
                 raise NotImplementedError("Tensorflow + NCCL not yet implemented.")
         elif "Comm." in v:
@@ -627,7 +636,13 @@ class DAGManager:
                         post_nodes += post_update_nodes
                   
                 done_comm.append(u)
-                
+            elif "Comm." in u and self.byteps_graph is not None:
+                tensor_name = u.split("Comm.")[1]
+                u = "Comm." + self.byteps_graph.parse_tensor_grp_name(tensor_name)
+                if u in done_comm:
+                    continue
+                done_comm.append(u)
+
             if self.byteps_graph is not None:
                 self._process_edge_byteps(mygraph, queue_type_list, u, v)
             elif self.nccl_graph is not None:

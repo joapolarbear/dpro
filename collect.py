@@ -998,7 +998,6 @@ class Collector(object):
         
         if self.comm_backend == "BYTEPS":
             rst_traces += self.byteps_graph.gen_compatible_trace(dump_path=os.path.join(self.pm.path, FileName.BPS_ALIGNED_TRACE.value))
-
         SingleLogger().info("Take {:.3f} s to combine all traces of length {}".format(time.time() - ts_, len(rst_traces)))
         # rst_traces = sorted(rst_traces, key=lambda x: (x["pid"], x["tid"]))
         # with open(os.path.join(self.pm.path, FileName.TRACE.value), 'w') as f:
@@ -1419,7 +1418,6 @@ class Collector(object):
             else:
                 ### BYTEPS
                 is_need_intra_device_gap = (cat_ in cur_pid_dict and (cat_ == CatName.OPERATOR.value or cat_ == CatName.COMM.value))
-            
             ### calculate inter-device gaps, for BW -> Comm, only for one step
             if event["args"]["step"] == self.traceM.opt_step:
                 if "Comm" in event["name"] and "Sync" not in event["name"]:
@@ -1485,7 +1483,6 @@ class Collector(object):
                             gap = event["ts"] - last_bw_time
                             assert gap > 0, (bw_nodes)
                             prev_events_dict[__prefix][GAP_STR_OP2COMM] = gap
-                    
             ### calculate intra-device gaps
             if is_need_intra_device_gap:
                 ### There are some prev events with the same pid and find-grained cat

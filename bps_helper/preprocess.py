@@ -1,4 +1,3 @@
-from networkx.utils.rcm import reverse_cuthill_mckee_ordering
 from scapy.all import *
 from scapy.layers.inet import TCP
 from scapy.layers.inet import IP
@@ -184,6 +183,8 @@ def __populate_key_name_mapping(key_dict_path, gradient_name_list_path = None, p
                     continue
                 if "BytePSPushPull" in name or "grad" in name:
                     tensor_name = name.strip()
+                    tensor_name_split = tensor_name.split(".")
+                    tensor_name = "{}.{}".format(tensor_name_split[0], tensor_name_split[1].replace("_", "+"))
                     key_list = keys.split()
                     try:
                         if len(key_list) > 1:
@@ -530,6 +531,8 @@ def parse_server_logs(server_log_paths, node_rank_list, key_dict_path,
                     continue
                 if "BytePSPushPull" in name or "grad" in name:
                     tensor_name = name.strip()
+                    tensor_name_split = tensor_name.split(".")
+                    tensor_name = "{}.{}".format(tensor_name_split[0], tensor_name_split[1].replace("_", "+"))
                     key_list = keys.split()
                     try:
                         if len(key_list) > 1:

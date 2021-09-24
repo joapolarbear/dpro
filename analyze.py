@@ -246,15 +246,18 @@ if __name__ == '__main__':
         elif args.sub_option == "xlsx":
             clct.traceM.export2xlsx(path_list[0])
         elif args.sub_option == "tensor_size2avg":
-            tensor_size_avg = []
+            tensor_size_avg = {}
             for long_name, stat in clct.traceM.name2sta.items():
                 if "Comm." not in long_name:
                     continue
-                op_name = parse_op_name(long_name)
-                tensor_size = clct.para_dict.tensor_grp_size(op_name)
-                tensor_size_avg.append((tensor_size, stat["avg"]))
-            np.savetxt(os.path.join(path_list[0], "tensor_size2avg.txt"),
-                np.array(tensor_size_avg))
+                op_name, sub_op, _ = parse_allinfo_from_name_v2(long_name)
+                tensor_size = sum([clct.para_dict.tensor_grp_size(tensor_name) for tensor_name in op_name.split("+")])
+                part_num = len(clct.byteps_graph.partition_dict.get(op_name, ['0']))
+                if sub_op not in tensor_size_avg:
+                    tensor_size_avg[sub_op] = []
+                tensor_size_avg[sub_op].append((tensor_size/part_num, stat["avg"]))
+            with open(os.path.join(path_list[0], "tensor_size2avg.txt"), 'w') as fp:
+                json.dump(tensor_size_avg, fp)
         elif args.sub_option == "visual_dag":
             clct.traceM.export2xlsx(path_list[0])
         elif args.sub_option == "iter_time":

@@ -122,6 +122,7 @@ def optimize_time_shift(shift_constraints: dict):
         return basis_id, shift_map
     else:
         print("[BPS ALIGN] Problem is {}".format(prob.status))
+        return basis_id, shift_map
         exit(-1)
 
 class bytepsGraph:
@@ -151,6 +152,7 @@ class bytepsGraph:
         self.comp_durations = {}
         self.servers_threads = {}
         self.partition_dict = {}
+        self.tensor_id2grp = {"grp_names": [], "tensor2grpID": {}}
         self.bw_delays = None
         self.comp_ops_tid = {}
         self.workers = set()
@@ -206,7 +208,7 @@ class bytepsGraph:
          self.comp_ops_tid, self.workers, self.graph,
          self.master_host_id, self.time_drift, 
          self.comm_delays, self.bw_delays, self.van_type,
-         self.pid_to_server, self.pid_to_target) = state
+         self.pid_to_server, self.pid_to_target, self.tensor_id2grp) = state
         self._inited = True
     
     def _dump_cache(self, cache_path=None):
@@ -218,7 +220,7 @@ class bytepsGraph:
                  self.comp_ops_tid, self.workers, self.graph,
                  self.master_host_id, self.time_drift, 
                  self.comm_delays, self.bw_delays, self.van_type,
-                 self.pid_to_server, self.pid_to_target)
+                 self.pid_to_server, self.pid_to_target, self.tensor_id2grp)
         with open(cache_path, "wb") as f:
             pickle.dump(state, f)
 
@@ -268,7 +270,14 @@ class bytepsGraph:
                 self.partition_dict[tensor_name_wo_part] = set([part_id])
         else:
             tensor_name_wo_part, part_id = tensor_name, '0'
+        if tensor_name_wo_part not in self.tensor_id2grp["grp_names"]:
+            for each_tensor_name in tensor_name_wo_part.split("+"):
+                self.tensor_id2grp["tensor2grpID"][each_tensor_name] = len(self.tensor_id2grp["grp_names"])
+            self.tensor_id2grp["grp_names"].append(tensor_name_wo_part)
         return tensor_name_wo_part, part_id
+    
+    def parse_tensor_grp_name(self, tensor_name):
+        return self.tensor_id2grp["grp_names"][self.tensor_id2grp["tensor2grpID"][tensor_name]]
 
     def _gen_partitioned_name(self, tensor_name, part_id):
         return tensor_name + PART_DEL + str(part_id)
