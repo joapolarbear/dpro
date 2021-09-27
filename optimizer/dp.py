@@ -1,4 +1,5 @@
 import os
+import re
 import time
 import json
 import pickle
@@ -262,9 +263,26 @@ class DPOptimizer(Optimizer):
             self.tsfs_pass._apply_grp_num(G, PKG, num_grp)
             self.tsfs_pass._apply_partition_size(G, PKG, part_size_in_B)
 
+            ### decide the tensor_id + part_id to server mapping
+            servre_num = len(self.clct.byteps_graph.pid_to_server.values())
+            grp_part_id2server = {}
+            soreted_groups = self.tsfs_pass.tsfs_state.sorted_all_tensor_groups()
+            key = 0
+            for grp in soreted_groups:
+                grp_info = self.tsfs_pass.tsfs_state.parse_tensor_group_info(grp)
+                part_num = grp_info["part_num"]
+                grp_part_id2server[grp] = {}
+                for part_id in range(part_num):
+                    grp_part_id2server[grp][part_id] = key % servre_num
+                    key += 1
+
+            self.clct.byteps_graph.grp_part_id2server = grp_part_id2server
+
+            # nx.relabel_nodes(G, relabel_map, copy=False)
+
             _cost_star, _exct_dag_star, _mem_usage_star, topo_order = self.evaluate(
                 G, _path=os.path.join(ROOT_PATH, "test.json"),
-                recd_topo_order=True)
+                recd_topo_order=True, visual_bw2comm=True)
             SingleLogger().info(bcolors.CGREEN + "New cost {}".format(_cost_star) + bcolors.ENDC)
             exit(0) 
 

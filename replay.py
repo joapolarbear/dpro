@@ -13,6 +13,7 @@ from tqdm import tqdm
 import logger_utils
 import debug_utils
 import arg_utils
+from bps_helper.graph import PS_COMP_OPS_SETS, PS_COMM_OPS_SETS
 
 FIXED_GAP_us = 5
 args_ = arg_utils.SingleArg().args
@@ -509,11 +510,28 @@ class Replayer:
                 lo = mid+1
         a.insert(lo, x)
 
+    def relabel_map(self, name):
+        if "Comm." not in name:
+            return name
+        grp, sub_op, suffix = parse_allinfo_from_name_v2(name)
+        if sub_op in PS_COMM_OPS_SETS:
+            part_id = int(re.findall("::(\d+)", suffix)[0])
+        elif sub_op in PS_COMP_OPS_SETS:
+            part_id = int(re.findall("::~PART(\d+)", suffix)[0])
+        else:
+            raise ValueError(name)
+        server_id = self.byteps_graph.grp_part_id2server[grp][part_id]
+        return re.sub("server_\d+", "server_{}".format(server_id), name)
+
     def name2device(self, n):
         pid = parse_pid_from_name(n)
         cat = parse_cat_from_name(n)
         if cat == "Comm":
             if self.comm_backend == "BYTEPS":
+                if hasattr(self.byteps_graph, 'grp_part_id2server'):
+                    n = self.relabel_map(n)
+                    pid = parse_pid_from_name(n)
+                    cat = parse_cat_from_name(n)
                 device_id = gen_long_name(pid, cat)
             else:
                 # if "SEND" in n or "RECV" in n:
@@ -619,7 +637,7 @@ class Replayer:
             lambda event: "Y" if event["args"]["name"] in critical_path else "N",
             dump_path)
     
-    def paint_bw_comm_depend(self, traceM=None, one_pid=None):
+    def paint_bw_comm_depend(self, _path=None, traceM=None, one_pid=None):
         ''' Paint the timeline to show the dependency between BW nodes and Comm nodes
         * E.g., if there is an edge from BW.A to Comm.1.Sync, BW.A would be renamed with Comm.1.Sync
         * This is useful when considering tensor fusion
@@ -642,41 +660,17 @@ class Replayer:
                     if self.dag.nodes[succ_]["avg"] == 0:
                         ret += map_bw_2_comm(succ_)
             return list(set(ret))
-        
-        if traceM is not None:
-            start_ts = None
-            for trace in traceM.traces:
-                if one_pid is None or trace["pid"] != one_pid or trace["args"]["step"] != traceM.opt_step:
-                    continue
-                if "BW" in trace["name"]:
-                    long_name = traceM.ret_unique_name(trace)
-                    comm_succs = map_bw_2_comm(long_name)
-                    assert len(comm_succs) <= 1, (trace["name"], comm_succs)
-                    if len(comm_succs) > 0:
-                        rawname = parse_rawname(comm_succs[0])
-                        trace["name"] = "BW." + rawname
-                    else:
-                        trace["name"] = "BW"
-                elif "Comm" in trace["name"]:
-                    pass
-                else:
-                    trace["name"] = "others"
-                trace["pid"] += ".real"
-                if start_ts is None:
-                    start_ts = trace["ts"]
-                trace["ts"] -= start_ts
-                final_trace.append(trace)
-
         start_ts = None
-        for trace in self.rst_traces:
-            if one_pid is None or trace["pid"] != one_pid:
+        traces = traceM.traces if traceM is not None else self.rst_traces
+        for trace in traces:
+            if traceM is not None and trace["args"]["step"] != traceM.opt_step:
                 continue
             if "BW" in trace["name"]:
-                long_name = trace["args"]["name"]
+                long_name = traceM.ret_unique_name(trace) if traceM is not None else trace["args"]["name"]
                 comm_succs = map_bw_2_comm(long_name)
-                assert len(comm_succs) <= 1, (trace["name"], comm_succs)
+                # assert len(comm_succs) <= 1, (trace["name"], comm_succs)
                 if len(comm_succs) > 0:
-                    rawname = parse_rawname(comm_succs[0])
+                    rawname = parse_op_name(comm_succs[0])
                     trace["name"] = "BW." + rawname
                 else:
                     trace["name"] = "BW"
@@ -684,12 +678,16 @@ class Replayer:
                 pass
             else:
                 trace["name"] = "others"
-            trace["pid"] += ".replay"
+                
+            trace["pid"] += ".real" if traceM is not None else ".replay"
             if start_ts is None:
                 start_ts = trace["ts"]
             trace["ts"] -= start_ts
             final_trace.append(trace)
-        with open(os.path.join(self.dump_path, "compare_replay_real.json"), 'w') as f:
+
+        if _path is None:
+            _path = os.path.join(self.dump_path, "bw2comm_timeline.json")
+        with open(_path, 'w') as f:
             json.dump(final_trace, f)
 
     def output_traces(self, _path=None, verbose=True):

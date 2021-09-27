@@ -930,7 +930,7 @@ class Collector(object):
                     if fix_bias is not None:
                         bias = fix_bias
                     elif self.byteps_graph is not None:
-                        bias = self.byteps_graph.time_drift[host_id]
+                        bias = self.byteps_graph.time_drift.get(host_id, 0)
                     else:
                         bias = self.nccl_graph.time_drift[host_id]
                     SingleLogger().info("Align - add {} us to host {}".format(bias, host_id))    
@@ -988,7 +988,8 @@ class Collector(object):
         else:
             host_ids = [int(host_id_str.split(".rank")[0].split("_")[-1]) for _, _, host_id_str in arg_list]
             for host_id in host_ids:
-                assert host_id in self.byteps_graph.time_drift
+                pass
+                # assert host_id in self.byteps_graph.time_drift, (host_id, self.byteps_graph.time_drift)
         ### align the time
         rst_traces = self.clock_align(traces_list, host_ids, fix_bias=(None if ALIGN_BASED_SYNC else 0))
         # self.single = (len(rst) == 1)
@@ -1480,8 +1481,8 @@ class Collector(object):
                             assert len(u_idx_l) > 0, (node_, bw_nodes)
                             bw_traces = [self.traceM.traces[u_idxs[self.traceM.opt_step]] for u_idxs in u_idx_l]
                             last_bw_time = max([trace["ts"] + trace["dur"] for trace in bw_traces])
-                            gap = event["ts"] - last_bw_time
-                            assert gap > 0, (bw_nodes)
+                            gap = max(event["ts"] - last_bw_time, 0)
+                            assert gap >= 0, (bw_nodes)
                             prev_events_dict[__prefix][GAP_STR_OP2COMM] = gap
             ### calculate intra-device gaps
             if is_need_intra_device_gap:
@@ -1535,8 +1536,9 @@ class Collector(object):
                 ## inter node delays are directly added in replayer
                 if "BW." in node_:
                     pid = parse_pid_from_name(node_)
-                    if GAP_STR_OP2COMM in prev_events_dict[pid]:
+                    if GAP_STR_OP2COMM in prev_events_dict[pid]:    
                         gap = prev_events_dict[pid][GAP_STR_OP2COMM]
+                        assert gap < 10
                         self.trail_dag.nodes[node_][GAP_STR_OP2COMM] = gap
                         SingleLogger().debug("Add gap:{} to pid: {}".format(gap, pid))
                     else:

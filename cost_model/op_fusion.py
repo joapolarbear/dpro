@@ -348,7 +348,7 @@ class XLAGraphPass(_BaseGraphPass):
                 except (OptQueryCostModelError, ValueError):
                     compilable=False
                 
-                if compilable or avg is not None:
+                if compilable and avg is not None:
                     for _node_name in [node_name] + self.opt._debug_convert_to_other_machines(node_name):
                         ns = _node_name.split("+")
 
@@ -700,6 +700,7 @@ class XLAGraphPass(_BaseGraphPass):
                 subprocess.check_output(cmd, env=env
                     )
             if len(match) == 0:
+                SingleLogger().error("Fail to match iteration time")
                 exit(-1)
             match = np.array([float(itt) for itt in match])
             iter_time = np.average(match)
@@ -754,9 +755,10 @@ class XLAGraphPass(_BaseGraphPass):
             before_fuse = self.iter_time_single_gpu['baseline_single_gpu']
             fused_time = max(0, sum_time + iter_time_after_fuse - before_fuse)
             SingleLogger().info("From {} to {}".format(sum_time, fused_time))
-            if fused_time > 10 * sum_time:
+            if sum_time > 0.5 and fused_time > 10 * sum_time:
                 my_env["XLA_CLUSTER_SPEC"] = '/tmp/xla_spec.txt'
                 my_env["TF_XLA_FLAGS"] = "--tf_xla_auto_jit=2"
+                SingleLogger().warn("Extremely large fused time from {} to {}".format(sum_time, fused_time))
                 self._estimate_time_real_replay(self.base_cmd, my_env, verbose=True)
                 exit(-1)  
             return fused_time

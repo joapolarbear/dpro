@@ -196,7 +196,8 @@ class Optimizer:
             return parse_op_name(name_), parse_pid_from_name(name_)
 
     def evaluate(self, _dag, _path=None, _crit_filename=None,
-        recd_topo_order=False, partial=False, name2mapping_fn=None):
+        recd_topo_order=False, partial=False, name2mapping_fn=None,
+        visual_bw2comm=False):
         # t = time.time()
         ### input _dag is a dependency graph, using the replayer to get the simulated traces and execution graph
         ### Return the iteration time and the execution graph
@@ -213,6 +214,9 @@ class Optimizer:
                             )
         step_end_time_ms = [t / 1000 for t in replayer.replayAndDelay(
             None, _output=_output, _path=_path, verbose=False).values()]
+        
+        if visual_bw2comm:
+            replayer.paint_bw_comm_depend()
         # print("Evaluate time {}".format(time.time() - t))
         if _crit_filename is not None:
             prefix, crit_file_name = os.path.split(_crit_filename)
@@ -546,11 +550,20 @@ class Optimizer:
                     try:
                         update_op_st = topo_order[update_op]
                     except:
-                        tmp_list = [name.split("->")[1] for name in topo_order.keys() if "UPDATE_" in name]
-                        print(bw_op, comm_succ, update_op)
-                        import code
-                        code.interact(local=locals())
-                        raise
+                        update_op_st = None
+                        for _update_op in topo_order:
+                            if "UPDATE_" not in _update_op:
+                                continue
+                            if update_op in _update_op:
+                                update_op_st = topo_order[_update_op]
+                                break
+                        if update_op_st is None:
+                            SingleLogger().warn("No update nodes found")
+                            tmp_list = [name.split("->")[1] for name in topo_order.keys() if "UPDATE_" in name]
+                            print(bw_op, comm_succ, update_op)
+                            import code
+                            code.interact(local=locals())
+                            raise
                     comm_delay_in_ms = max(comm_delay_in_ms, (update_op_st - bw_op_et) / 1000)
                 return comm_delay_in_ms
 
