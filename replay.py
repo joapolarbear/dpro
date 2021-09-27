@@ -528,7 +528,7 @@ class Replayer:
         cat = parse_cat_from_name(n)
         if cat == "Comm":
             if self.comm_backend == "BYTEPS":
-                if hasattr(self.byteps_graph, 'grp_part_id2server'):
+                if self.byteps_graph.grp_part_id2server is not None:
                     n = self.relabel_map(n)
                     pid = parse_pid_from_name(n)
                     cat = parse_cat_from_name(n)

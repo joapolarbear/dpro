@@ -78,6 +78,7 @@ class XLAGraphPass(_BaseGraphPass):
         self.node_attr_cache = AttrCache()
         ### Cache iteration time on single GPU
         self.iter_time_single_gpu = None
+        self.iter_time_single_gpu_base_line = None
         self.iter_time_single_gpu_path = os.path.join(self.ckpt_dir, "xla_iter_time_single_gpu.json")
 
         self.explore_fusion = True
@@ -752,15 +753,31 @@ class XLAGraphPass(_BaseGraphPass):
                 avg = self._estimate_time_real_replay(self.base_cmd, my_env)
                 assert avg is not None
                 self.iter_time_single_gpu['baseline_single_gpu'] = avg
+            elif self.iter_time_single_gpu_base_line is None:
+                if "XLA_CLUSTER_SPEC" in my_env:
+                    my_env.pop("XLA_CLUSTER_SPEC")
+                if "TF_XLA_FLAGS" in my_env:
+                    my_env.pop("TF_XLA_FLAGS")
+                avg = self._estimate_time_real_replay(self.base_cmd, my_env)
+                assert avg is not None
+                self.iter_time_single_gpu_base_line = avg
+                SingleLogger().info("Base Iter Time: Before {}, Now {}".format(
+                    self.iter_time_single_gpu['baseline_single_gpu'], self.iter_time_single_gpu_base_line))
+                if abs(avg - self.iter_time_single_gpu['baseline_single_gpu']) / self.iter_time_single_gpu['baseline_single_gpu'] > 0.1:
+                    SingleLogger().warn("Inconsistent baseline, go on?")
+                    name = input("Input your command[Y/n]: ")
+                    if name.lower() in ["q", 'n', "no"]:
+                        exit(0)
+                
             before_fuse = self.iter_time_single_gpu['baseline_single_gpu']
             fused_time = max(0, sum_time + iter_time_after_fuse - before_fuse)
-            SingleLogger().info("From {} to {}".format(sum_time, fused_time))
+            SingleLogger().info("[OPFS CM] From {} to {}".format(sum_time, fused_time))
             if sum_time > 0.5 and fused_time > 10 * sum_time:
-                my_env["XLA_CLUSTER_SPEC"] = '/tmp/xla_spec.txt'
-                my_env["TF_XLA_FLAGS"] = "--tf_xla_auto_jit=2"
-                SingleLogger().warn("Extremely large fused time from {} to {}".format(sum_time, fused_time))
-                self._estimate_time_real_replay(self.base_cmd, my_env, verbose=True)
-                exit(-1)  
+                SingleLogger().warn("Extremely large fused time from {} to {}, nodes {}".format(sum_time, fused_time, nodes_to_fuse))
+                # my_env["XLA_CLUSTER_SPEC"] = '/tmp/xla_spec.txt'
+                # my_env["TF_XLA_FLAGS"] = "--tf_xla_auto_jit=2"
+                # self._estimate_time_real_replay(self.base_cmd, my_env, verbose=True)
+                # exit(-1)  
             return fused_time
         else:
             # return self.cost_models[pid].predict(nodes_to_fuse)

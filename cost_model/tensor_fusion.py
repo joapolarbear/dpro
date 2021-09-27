@@ -48,6 +48,8 @@ class TensorFusionState:
         self.num_grp = 1 if args_.search_ts_group_num else None
         self.history_num_grp = {}
         self.tensor_group_info = {}
+
+        self.grp_part_id2server = None
     
     def ps_new_tensor_group(self, fused_tensor_name, new_tensor_size, new_part_num):
         self.tensor_group_info[fused_tensor_name] = {
@@ -196,6 +198,20 @@ class TensorFusionState:
         new_instance.num_grp = self.num_grp
         new_instance.history_num_grp = self.history_num_grp.copy()
         return new_instance
+    
+    def update_tensor2server(self):
+        servre_num = len(self.opt.clct.byteps_graph.pid_to_server.values())
+        grp_part_id2server = {}
+        soreted_groups = self.sorted_all_tensor_groups()
+        key = 0
+        for grp in soreted_groups:
+            grp_info = self.parse_tensor_group_info(grp)
+            part_num = grp_info["part_num"]
+            grp_part_id2server[grp] = {}
+            for part_id in range(part_num):
+                grp_part_id2server[grp][part_id] = key % servre_num
+                key += 1
+        self.grp_part_id2server = grp_part_id2server
 
 class TensorFusionGraphPass(_BaseGraphPass):
     ''' This is a cost model for HOROVOD tensor fusion
@@ -1212,7 +1228,7 @@ class TensorFusionGraphPass(_BaseGraphPass):
                         ### For those sub ops, we assume that tensor size has little effect on the execution time 
                         popt = [0, np.median(all_data[1])]
                         data_param_dict["param"] = [popt, None]
-                        SingleLogger().info(" - Tensor Fusion CM for {} {} with a constant value {:.3f} ms".format(pid, sub_op, popt[1]))
+                        SingleLogger().debug(" - Tensor Fusion CM for {} {} with a constant value {:.3f} ms".format(pid, sub_op, popt[1]))
                         fit_flag = False
                     # else:        
                     #     SingleLogger().info(" - Tensor Fusion CM for {} {} is ignored".format(pid, sub_op))
@@ -1230,7 +1246,7 @@ class TensorFusionGraphPass(_BaseGraphPass):
                         pred_ = func_tensor_size_to_time(test_data[0], *popt)
                         mape = 100 * np.average(np.abs(pred_ - test_data[1]) / test_data[1])  
                         if mape < 60:
-                            SingleLogger().info(" - Tensor Fusion CM for {} {}: {} % "
+                            SingleLogger().debug(" - Tensor Fusion CM for {} {}: {} % "
                                 "({} training data, {} test data)".format(pid, sub_op, mape, train_data.shape[1], test_data.shape[1]))
                             data_param_dict["param"] = [popt, pcov]
                             data_param_dict["data"] = None
@@ -1239,7 +1255,7 @@ class TensorFusionGraphPass(_BaseGraphPass):
                             try_cnt += 1
                         else:
                             if IGNORE_LARGE_ERROR:
-                                SingleLogger().info(" - Tensor Fusion CM for {} {}: {} % "
+                                SingleLogger().debug(" - Tensor Fusion CM for {} {}: {} % "
                                     "({} training data, {} test data)".format(pid, sub_op, mape, train_data.shape[1], test_data.shape[1]))
                                 data_param_dict["param"] = [popt, pcov]
                                 data_param_dict["data"] = None
@@ -1333,7 +1349,7 @@ class TensorFusionGraphPass(_BaseGraphPass):
                 tensor_time = self.predict_comm_time(tensor_size, _pid, sub_op)
                 if ("PUSH_REQ" in node or "PULL_RES" in node) and G.nodes[node]["avg"] > 0.1:
                     rst.append([tensor_size, G.nodes[node]["avg"], tensor_time])
-                    SingleLogger().info("{}: size={}B, t_profile={:.3f}ms, t_predict={:.3f}ms".format(
+                    SingleLogger().debug("{}: size={}B, t_profile={:.3f}ms, t_predict={:.3f}ms".format(
                         node.split("->Comm.")[1], tensor_size, G.nodes[node]["avg"], tensor_time))
                 G.nodes[node]["avg"] = tensor_time
             rst = np.array(rst)
@@ -1698,3 +1714,5 @@ class TensorFusionGraphPass(_BaseGraphPass):
             current_comm_nodes.add(self._wrap_gen_long_name(pid, CatName.COMM.value, group_name, "MEMCPY_OUT_FUSION_BUFFER", suffix))
         return current_comm_nodes
 
+    def update_tensor2server(self):
+        self.tsfs_state.update_tensor2server()

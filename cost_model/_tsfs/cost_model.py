@@ -1,4 +1,8 @@
 import numpy as np
+import os
+import json
+from logger_utils import SingleLogger
+from base import bcolors
 
 def piecewise_linear_3seg(x, x0, y0, x1, y1, k2):
     return np.piecewise(x, [x <= x0, x > x1], 
@@ -76,12 +80,19 @@ pull_data.para_3seg = [4.7581024691199625, -1.6513319055201428, 626.264129285281
 # pull_data = DataRepo(None)
 # pull_data.para_3seg = push_data.para_3seg
 
-import json
+
 # data_table_path = "/home/tiger/sub_op2tensor_size2avg.json"
 # data_table_path = "/home/tiger/sub_op2tensor_size2avg_tcp_vgg16.json"
-data_table_path = "/home/tiger/sub_op2tensor_size2avg_tcp_icptv3.json"
-with open(data_table_path, 'r') as fp:
-    data_table = json.load(fp)
+# data_table_path = "/home/tiger/sub_op2tensor_size2avg_tcp_icptv3.json"
+data_table_path = os.environ.get("SUBOP_TENSORSIZE_AVG_PATH", None)
+if data_table_path is None:
+    data_table = None
+else:
+    with open(data_table_path, 'r') as fp:
+        data_table = json.load(fp)
+    SingleLogger().info(bcolors.CGREEN + \
+        "Read tensor_size2avg mapping from {}".format(data_table_path) + bcolors.ENDC)
+        
 def interpolation(tensor_size, tensor_size2avg):
     tensor_size_list = list(tensor_size2avg.keys())
     available_tensor_size = sorted(
@@ -94,10 +105,10 @@ def interpolation(tensor_size, tensor_size2avg):
         i += 1
     if i == 0:
         i = 1
-        print("[TSFS CM] warning", (tensor_size, i, available_tensor_size[:5]))
+        SingleLogger().warn("[TSFS CM] small tensor size {}".format(tensor_size))
     elif i == len(available_tensor_size):
         i = len(available_tensor_size) - 1
-        print("[TSFS CM] warning", (tensor_size, i, available_tensor_size[:5]))
+        SingleLogger().warn("[TSFS CM] large tensor size {}".format(tensor_size))
     x1, x2 = available_tensor_size[i-1][1], available_tensor_size[i][1]
     y1 = tensor_size2avg[tensor_size_list[available_tensor_size[i-1][0]]]
     y2 = tensor_size2avg[tensor_size_list[available_tensor_size[i][0]]]
@@ -108,7 +119,11 @@ piecewise_linear_func = piecewise_linear_3seg
 def predict_ps_intra_comm_time(tensor_size):
     return wrap_predict(piecewise_linear_func, intra_2GPU_para.para_3seg, tensor_size)
 
-USE_INTERPOLATION=False
+USE_INTERPOLATION=True
+if USE_INTERPOLATION and data_table is None:
+    SingleLogger().error("{} must be set if interpolation is used".format("SUBOP_TENSORSIZE_AVG_PATH"))
+    exit(-1)
+
 def predict_ps_inter_comm_time(tensor_size, is_push):
     if USE_INTERPOLATION:
         if is_push:

@@ -1,20 +1,19 @@
-import tensorflow as tf
-import numpy as np
-import math
-from tensorflow import keras
-
-from tensorflow.keras import layers, Model
-import shutil
-import copy
-import random
-from multiprocessing import Pool
-from tqdm import tqdm
-
-import scipy.optimize as scipy_optimize
-
 import os
 import pickle
 import json
+import math
+import shutil
+import copy
+import random
+import traceback
+import numpy as np
+from multiprocessing import Pool
+from tqdm import tqdm, trange
+import scipy.optimize as scipy_optimize
+from collections import defaultdict
+import tensorflow as tf
+from tensorflow import keras
+from tensorflow.keras import layers, Model
 try:
     GraphDef = tf.GraphDef
 except:
@@ -24,9 +23,6 @@ from google.protobuf.json_format import Parse
 from cost_model._xla.gen_dataset_utils import XlaKernelDataset, XlaModuleTestSet
 from cost_model._xla.gen_samples import GraphDefUtil, GSInternalErrors
 from cost_model._xla.utils import CMPaths
-from tqdm import tqdm, trange
-from collections import defaultdict
-import traceback
 
 ### Compatible with trained cost model after modify the file structure
 #      refer to: https://stackoverflow.com/questions/3073211/how-to-substitute-module-class-to-locally-defined-class-when-loading-with-py

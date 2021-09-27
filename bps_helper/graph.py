@@ -120,8 +120,8 @@ class bytepsGraph:
             self.PROFILE_ITER_START = 10
             SingleLogger().warn("[BYTEPS] profile_start_step UNSET. USING DEFAULT VALUE {}.".format(self.PROFILE_ITER_START))
         else:
-            self.PROFILE_ITER_START = args_.profile_start_step
-            SingleLogger().info("[BYTEPS] Using profile_start_step = {}.".format(self.PROFILE_ITER_START))
+            self.PROFILE_ITER_START = args_.profile_start_step + 1
+            SingleLogger().info("[BYTEPS] Using profile_start_step = {}.".format(self.PROFILE_ITER_START-1))
         if args_.profile_duration is None:
             self.PROFILE_ITER_DURATION = 10
             SingleLogger().warn("[BYTEPS] profile_duration UNSET. USING DEFAULT VALUE {}.".format(self.PROFILE_ITER_DURATION))
@@ -150,6 +150,8 @@ class bytepsGraph:
         self._manual_delay = 0
         self._ignored_tensors = set()
         self._inited = False
+
+        self.grp_part_id2server = None
 
     def init(self, comm_trace_path, server_trace_path, van_type="ZMQ"):
         if van_type not in ["ZMQ", "RDMA"]:

@@ -107,14 +107,7 @@ class Optimizer:
         if not os.path.exists(self.spec_dir):
             os.makedirs(self.spec_dir)
 
-        # if "BPF_DUMP_INIT_GRAPH_TO" in os.environ:
-        #     bpf_dump_init_graph_to = os.environ["BPF_DUMP_INIT_GRAPH_TO"]
-        # else:
-        #     bpf_dump_init_graph_to = None
-        self.base_cost, self.exct_dag, self.base_mem_usage = self.evaluate(
-            self.dag, _path=os.path.join(ROOT_PATH, "searched_graph/base.json"))
-
-        ### Budget, in GB
+        ### Memory Budget, in GB
         self.memory_budget = args_.memory_budget
 
         ### Some hyper-parameter
@@ -124,8 +117,13 @@ class Optimizer:
         self.cost_model_error = []
 
         self.cst_md_mng = CostModelManager(self)
+        self.opfs_pass = self.cst_md_mng.strategy2model.get("+", None)
+        self.tsfs_pass = self.cst_md_mng.strategy2model.get("++", None)
 
         self.use_heat = True
+
+        self.base_cost, self.exct_dag, self.base_mem_usage = self.evaluate(
+            self.dag, _path=os.path.join(ROOT_PATH, "searched_graph/base.json"))
 
     def relabel_dag_node(self, _dag) -> nx.DiGraph:
         def relabel_func(old_label):
@@ -198,6 +196,9 @@ class Optimizer:
     def evaluate(self, _dag, _path=None, _crit_filename=None,
         recd_topo_order=False, partial=False, name2mapping_fn=None,
         visual_bw2comm=False):
+
+        if self.tsfs_pass is not None:
+            self.clct.byteps_graph.grp_part_id2server = self.tsfs_pass.tsfs_state.grp_part_id2server
         # t = time.time()
         ### input _dag is a dependency graph, using the replayer to get the simulated traces and execution graph
         ### Return the iteration time and the execution graph
@@ -228,7 +229,8 @@ class Optimizer:
         # critical_path = self.wrap_critical_path(replayer.exct_dag)
         # replayer.dump_critical_path("critical_path_{}.json".format(self.tmp_id), [n for (n, e) in critical_path])
         # self.tmp_id += 1
-        
+        self.clct.byteps_graph.grp_part_id2server = None
+
         ### Whether to record the topological order
         if recd_topo_order:
             return max(step_end_time_ms), replayer.exct_dag, estimated_memory_usage, replayer.ret_topo_ord()

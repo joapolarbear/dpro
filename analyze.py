@@ -3,7 +3,7 @@ import os
 import ujson as json
 import networkx as nx
 import sys
-# from pathlib import Path
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 
 import arg_utils
 import logger_utils

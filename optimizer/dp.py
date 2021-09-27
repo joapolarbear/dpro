@@ -110,9 +110,6 @@ class DPOptimizer(Optimizer):
         
         self.use_heat = False
 
-        self.opfs_pass = self.cst_md_mng.strategy2model.get("+", None)
-        self.tsfs_pass = self.cst_md_mng.strategy2model.get("++", None)
-
         if self.opfs_pass is not None:
             self.opfs_pass.explore_fusion = False
             self.opfs_pass.enable_partition = False
@@ -263,22 +260,8 @@ class DPOptimizer(Optimizer):
             self.tsfs_pass._apply_grp_num(G, PKG, num_grp)
             self.tsfs_pass._apply_partition_size(G, PKG, part_size_in_B)
 
-            ### decide the tensor_id + part_id to server mapping
-            servre_num = len(self.clct.byteps_graph.pid_to_server.values())
-            grp_part_id2server = {}
-            soreted_groups = self.tsfs_pass.tsfs_state.sorted_all_tensor_groups()
-            key = 0
-            for grp in soreted_groups:
-                grp_info = self.tsfs_pass.tsfs_state.parse_tensor_group_info(grp)
-                part_num = grp_info["part_num"]
-                grp_part_id2server[grp] = {}
-                for part_id in range(part_num):
-                    grp_part_id2server[grp][part_id] = key % servre_num
-                    key += 1
-
-            self.clct.byteps_graph.grp_part_id2server = grp_part_id2server
-
-            # nx.relabel_nodes(G, relabel_map, copy=False)
+            ### Update the tensor_id + part_id to server mapping
+            self.tsfs_pass.update_tensor2server()
 
             _cost_star, _exct_dag_star, _mem_usage_star, topo_order = self.evaluate(
                 G, _path=os.path.join(ROOT_PATH, "test.json"),
@@ -433,6 +416,7 @@ class DPOptimizer(Optimizer):
                             ### Do NOT fuse but tensor partition may be applied
                             self.try_to_apply_ts_part([fused_tensor_name], k_star, 
                                 G_prime, PKG_prime, sts, verbose=False)
+                        self.tsfs_pass.update_tensor2server()
                     if opfs_succeed:
                         t_fuse = self.estimate_time_related_to_comp([_fused_comp_op], G_prime)
                     else:
@@ -489,6 +473,7 @@ class DPOptimizer(Optimizer):
                                         ### Do NOT fuse but tensor partition may be applied
                                         self.try_to_apply_ts_part([fused_tensor_name], k_star, G_star, PKG_star, applied_sts)
 
+                                    self.tsfs_pass.update_tensor2server()
                                     ### Update DP states after tensor fusion/partition
                                     # dp_state.update_state_tsfs(tsfs_time)
                         else:
@@ -509,6 +494,8 @@ class DPOptimizer(Optimizer):
                                     ### TODO: ts_part_time includes BW, COMM and UPDATE time
                                     ts_part_time = ts_part_time - exct_time_n
                                     dp_state.update_state_only_ts_part(ts_part_time)
+
+                                    self.tsfs_pass.update_tensor2server()
                 else:
                     # print(prev_node, node_n)
                     ### Communication operators are on the critical path
@@ -570,6 +557,8 @@ class DPOptimizer(Optimizer):
                                     ### Update DP states after operator fusion
                                     opfs_time = self.opfs_pass._get_node_avg(_bw_pred_list_u[0]+"+"+_bw_pred_list_v[0])
                                     dp_state.update_state_opfs(opfs_time)
+
+                            self.tsfs_pass.update_tensor2server()
                         else:
                             SingleLogger().info(bcolors.CBLUE + "Tensor Fusion: fusing {} {} is worse".format(op_name_u, op_name_v) + bcolors.ENDC)
                             ### Do NOT fuse tensors but tensor partition may be applied
@@ -580,6 +569,8 @@ class DPOptimizer(Optimizer):
                                 model_changed = True
                                 ### Update DP states with only tensor partition
                                 dp_state.update_state_only_ts_part(t_sync_null)
+
+                                self.tsfs_pass.update_tensor2server()
 
                 prev_node = node_n if fused_comp_op is None else fused_comp_op
 

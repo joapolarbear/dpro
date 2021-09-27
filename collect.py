@@ -1538,11 +1538,13 @@ class Collector(object):
                     pid = parse_pid_from_name(node_)
                     if GAP_STR_OP2COMM in prev_events_dict[pid]:    
                         gap = prev_events_dict[pid][GAP_STR_OP2COMM]
-                        assert gap < 10
+                        if gap > 10:
+                            SingleLogger().debug("Large gap {} for {}, use 10 instead".format(gap, node_))
+                            gap = 10
                         self.trail_dag.nodes[node_][GAP_STR_OP2COMM] = gap
                         SingleLogger().debug("Add gap:{} to pid: {}".format(gap, pid))
                     else:
-                        print(pid, prev_events_dict)
+                        print(pid, prev_events_dict, self.traceM.opt_step)
                         raise
                     # node_rank = pid.split(".")[0].split("_")[-1]
                     # gap = self.byteps_graph.bw_delays["worker_"+node_rank]
