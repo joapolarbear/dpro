@@ -64,16 +64,64 @@ pull_data = DataRepo(None)
 pull_data.para_2seg = [4.671509439964712, -1.6513319055098747]
 pull_data.para_3seg = [4.7581024691199625, -1.6513319055201428, 626.2641292852817, 619.9640547461936, 1.063909142047732]
 
-def predict_ps_intra_comm_time(tensor_size):
-    return wrap_predict(piecewise_linear_3seg, intra_2GPU_para.para_3seg, tensor_size)
+### 20210926 profile PUSH and PULL in a completed ResNet50 model
+# push_data = DataRepo(None) 
+# push_data.para_3seg =  [1.394117768140235, -2.7347276537801393, 6.265639039503503, 0.12958045808905536, 0.7140396422668894]
+# pull_data = DataRepo(None)
+# pull_data.para_3seg = push_data.para_3seg
+# # pull_data.para_3seg = [2.866912655486207, -2.4697033402682265, 4.575557144977073, -1.5755571450053836, 1.3329606768736635]
 
+# push_data = DataRepo(None) 
+# push_data.para_3seg =  [2.403217615362119, -1.548809007772742, 9.522663714692643, 3.443890309353957, 0.5209623472565877]
+# pull_data = DataRepo(None)
+# pull_data.para_3seg = push_data.para_3seg
+
+import json
+# data_table_path = "/home/tiger/sub_op2tensor_size2avg.json"
+# data_table_path = "/home/tiger/sub_op2tensor_size2avg_tcp_vgg16.json"
+data_table_path = "/home/tiger/sub_op2tensor_size2avg_tcp_icptv3.json"
+with open(data_table_path, 'r') as fp:
+    data_table = json.load(fp)
+def interpolation(tensor_size, tensor_size2avg):
+    tensor_size_list = list(tensor_size2avg.keys())
+    available_tensor_size = sorted(
+        enumerate([float(key) for key in tensor_size_list]),
+        key=lambda x: x[1])
+    i = 0
+    while i < len(available_tensor_size):
+        if tensor_size < available_tensor_size[i][1]:
+            break
+        i += 1
+    if i == 0:
+        i = 1
+        print("[TSFS CM] warning", (tensor_size, i, available_tensor_size[:5]))
+    elif i == len(available_tensor_size):
+        i = len(available_tensor_size) - 1
+        print("[TSFS CM] warning", (tensor_size, i, available_tensor_size[:5]))
+    x1, x2 = available_tensor_size[i-1][1], available_tensor_size[i][1]
+    y1 = tensor_size2avg[tensor_size_list[available_tensor_size[i-1][0]]]
+    y2 = tensor_size2avg[tensor_size_list[available_tensor_size[i][0]]]
+    return ((y1 - y2) / (x1 - x2)) * (tensor_size - x1) + y1
+
+piecewise_linear_func = piecewise_linear_3seg
+
+def predict_ps_intra_comm_time(tensor_size):
+    return wrap_predict(piecewise_linear_func, intra_2GPU_para.para_3seg, tensor_size)
+
+USE_INTERPOLATION=False
 def predict_ps_inter_comm_time(tensor_size, is_push):
-    if is_push:
-        return wrap_predict(piecewise_linear_3seg, push_data.para_3seg, tensor_size)
+    if USE_INTERPOLATION:
+        if is_push:
+            return interpolation(tensor_size, data_table["PUSH_REQ"])
+        else:
+            return interpolation(tensor_size, data_table["PULL_RES"])
     else:
-        return wrap_predict(piecewise_linear_3seg, pull_data.para_3seg, tensor_size)
-    ### 20210827_01: Previous method using coarse grained profiled push_pull time
-    # all_time = wrap_predict(piecewise_linear_3seg, inter_100Gb_para.para_3seg, tensor_size)
-    # intra_time = predict_ps_intra_comm_time(tensor_size)
-    # return all_time - intra_time
+        if is_push:
+            return wrap_predict(piecewise_linear_func, push_data.para_3seg, tensor_size)
+        else:
+            return wrap_predict(piecewise_linear_func, pull_data.para_3seg, tensor_size)
+        ### 20210827_01: Previous method using coarse grained profiled push_pull time
+        # all_time = wrap_predict(piecewise_linear_3seg, inter_100Gb_para.para_3seg, tensor_size)
+        # intra_time = predict_ps_intra_comm_time(tensor_size)
+        # return all_time - intra_time
 
