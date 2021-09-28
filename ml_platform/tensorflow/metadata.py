@@ -355,9 +355,9 @@ class MetaInfo:
 
         _name = self.remove_last_trival_slash(_name)
         
-        bps_tensor_match = re.search("BytePSPushPull[_.](\d+)$", _name)
+        bps_tensor_match = re.search("BytePSPushPull[_.]([\d_]+)$", _name)
         if bps_tensor_match:
-            _name = "Comm." + bps_tensor_match.group(1)
+            _name = "Comm." + bps_tensor_match.group(1).replace("_", "+")
         elif "input_barrier" in _name:
             _name = "FW." + formal_dpro_rawname(_name)
         elif "allreduce" in _name.lower():
@@ -433,7 +433,6 @@ class MetaInfo:
             # mygraph = nx.read_gml(gml_path)
             dfg_with_var = self.read_dfg_with_var()
             mygraph = dfg_with_var
-
             ### Mark comm operators
             edges_to_add = []
             edges_to_rm = []
@@ -532,6 +531,7 @@ class MetaInfo:
         nx.relabel_nodes(new_graph, relabel_map, copy=False)
 
         self.local_dfg = new_graph
+        nx.write_gml(new_graph, "tmp.gml")
 
     def standard_name(self, op_name):
         assert self.update_nodes_in_dag is not None and self.bw_nodes_in_dag is not None

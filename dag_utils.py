@@ -520,8 +520,11 @@ class DAGManager:
                     SingleLogger().warn("{} is not in comm dag. Ignoring.".format(tensor_name))
                     return
                 prev_bw_nodes = []
-                for each_tensor_name in tensor_name.split("+"):
-                    prev_bw_nodes += [_u for _u in graph.predecessors("Comm.{}".format(each_tensor_name))]
+                if "Comm.{}".format(tensor_name) in graph.nodes:
+                    prev_bw_nodes += [_u for _u in graph.predecessors("Comm.{}".format(tensor_name))]
+                else:
+                    for each_tensor_name in tensor_name.split("+"):
+                        prev_bw_nodes += [_u for _u in graph.predecessors("Comm.{}".format(each_tensor_name))]
                 prev_bw_nodes = set(prev_bw_nodes)
                 for prev_bw_node in prev_bw_nodes:
                     prev_name = self.add_prefix(prev_bw_node)
@@ -529,8 +532,11 @@ class DAGManager:
                         self.wrap_add_dag(prev_name, push_req_node)
                 # add dependencies to v
                 update_nodes = []
-                for each_tensor_name in tensor_name.split("+"):
-                    update_nodes += [_n for _n in graph.successors("Comm.{}".format(each_tensor_name))]
+                if "Comm.{}".format(tensor_name) in graph.nodes:
+                    update_nodes += [_n for _n in graph.successors("Comm.{}".format(tensor_name))]
+                else:
+                    for each_tensor_name in tensor_name.split("+"):
+                        update_nodes += [_n for _n in graph.successors("Comm.{}".format(each_tensor_name))]
                 update_nodes = set(update_nodes)
                 pull_res_nodes = self.byteps_graph.get_pull_res_node(wk_rank, tensor_name)
                 for update_node in update_nodes:
@@ -638,7 +644,8 @@ class DAGManager:
                 done_comm.append(u)
             elif "Comm." in u and self.byteps_graph is not None:
                 tensor_name = u.split("Comm.")[1]
-                u = "Comm." + self.byteps_graph.parse_tensor_grp_name(tensor_name)
+                u = "Comm." + (tensor_name if "+" \
+                    in tensor_name else self.byteps_graph.parse_tensor_grp_name(tensor_name))
                 if u in done_comm:
                     continue
                 done_comm.append(u)

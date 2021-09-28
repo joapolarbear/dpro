@@ -119,7 +119,7 @@ piecewise_linear_func = piecewise_linear_3seg
 def predict_ps_intra_comm_time(tensor_size):
     return wrap_predict(piecewise_linear_func, intra_2GPU_para.para_3seg, tensor_size)
 
-USE_INTERPOLATION=True
+USE_INTERPOLATION=False
 if USE_INTERPOLATION and data_table is None:
     SingleLogger().error("{} must be set if interpolation is used".format("SUBOP_TENSORSIZE_AVG_PATH"))
     exit(-1)
@@ -131,10 +131,11 @@ def predict_ps_inter_comm_time(tensor_size, is_push):
         else:
             return interpolation(tensor_size, data_table["PULL_RES"])
     else:
+        RATIO = 1.8
         if is_push:
-            return wrap_predict(piecewise_linear_func, push_data.para_3seg, tensor_size)
+            return RATIO * wrap_predict(piecewise_linear_func, push_data.para_3seg, tensor_size)
         else:
-            return wrap_predict(piecewise_linear_func, pull_data.para_3seg, tensor_size)
+            return RATIO * wrap_predict(piecewise_linear_func, pull_data.para_3seg, tensor_size)
         ### 20210827_01: Previous method using coarse grained profiled push_pull time
         # all_time = wrap_predict(piecewise_linear_3seg, inter_100Gb_para.para_3seg, tensor_size)
         # intra_time = predict_ps_intra_comm_time(tensor_size)

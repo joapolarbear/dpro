@@ -156,7 +156,7 @@ Use https://github.com/joapolarbear/byteps.git:byteprofile_rdma
 
 You can also configure to fuse tensors to multiple tensor groups, by 
 1. specifying the number of tensor groups by setting `BYTEPS_TENSOR_GROUP_NUM=x`
-2. using a specification file by setting `BYTEPS_TENSOR_GROUP_FILE=/path/to/spec`. The file should be a json file and in the following format, where `0, 1, ...` denotes the indexes of tensors. Note that all tensor indexes should be specificed, even if one tensor is not fused with other tensors.
+2. using a specification file by setting `BYTEPS_TENSOR_GROUP_FILE=/path/to/spec`. The file should be a json file and in the following format, where `0, 1, ...` denotes the indexes of tensors.
 ```
 {
     "mapping": [
