@@ -258,10 +258,11 @@ class DPOptimizer(Optimizer):
             num_grp = int(args_.test_ts_group_num)
             part_size_in_B = 4 * 1024 * 1000
             self.tsfs_pass._apply_grp_num(G, PKG, num_grp)
-            self.tsfs_pass._apply_partition_size(G, PKG, part_size_in_B)
-
-            ### Update the tensor_id + part_id to server mapping
-            self.tsfs_pass.update_tensor2server()
+            
+            if self.comm_backend == "BYTEPS":
+                self.tsfs_pass._apply_partition_size(G, PKG, part_size_in_B)
+                ### Update the tensor_id + part_id to server mapping
+                self.tsfs_pass.update_tensor2server()
 
             _cost_star, _exct_dag_star, _mem_usage_star, topo_order = self.evaluate(
                 G, _path=os.path.join(ROOT_PATH, "test.json"),

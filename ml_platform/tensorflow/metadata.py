@@ -86,19 +86,23 @@ class MetaInfo:
 
     def find_effective_bw_of_comm(self, comm_op, tensor_name):
         to_process = set(self.local_dfg.predecessors(comm_op))
+        second_bws = []
         while len(to_process) > 0:
             bw_op = to_process.pop()
             assert bw_op.startswith("BW"), (comm_op, bw_op)
             bw_op_name = parse_op_name(bw_op)
             if bw_op_name.startswith("gradient_tape") or bw_op_name.startswith("gradients"):
-                return bw_op_name
+                return bw_op_name, second_bws
             elif bw_op_name.endswith("/tensor"):
                 for pre in self.local_dfg.predecessors(bw_op):
                     pred_op_name = parse_op_name(pre)
                     if tensor_name.startswith(pred_op_name):
-                        return pred_op_name
+                        return pred_op_name, second_bws
                 raise ValueError(comm_op, bw_op_name, list(self.local_dfg.predecessors(bw_op)))
             else:
+                if bw_op_name.startswith("DistributedGradientTape_Allreduce/cond_"):
+                    bw_op_name = "/".join(bw_op_name.split("/")[2:])
+                    second_bws.append(bw_op_name)
                 to_process = to_process.union(
                     set([pre for pre in self.local_dfg.predecessors(bw_op) if "BW" in pre]))
         raise ValueError("Fail to find corresponding bw op for {}".format(comm_op))
@@ -107,16 +111,19 @@ class MetaInfo:
         tensor_name = self.gradient_name_list[tensor_id]
         weight_name = self.tensor_name2weight_name(tensor_name)
         
-        bw_op_name = self.find_effective_bw_of_comm("Comm.{}".format(tensor_id), tensor_name)
+        bw_op_name, second_bws = self.find_effective_bw_of_comm("Comm.{}".format(tensor_id), tensor_name)
 
-        outputs = self.tf_meta[bw_op_name]["output"]
-        for output in outputs:
-            if output["name"] == weight_name:
-                dtype_size = self.dtype2size(output["dtype"])
-                return np.prod(output["shape"]) * dtype_size
+        for bw_op_name_ in [bw_op_name]+second_bws:
+            if bw_op_name_ not in self.tf_meta:
+                continue
+            outputs = self.tf_meta[bw_op_name_]["output"]
+            for output in outputs:
+                if output["name"] == weight_name:
+                    dtype_size = self.dtype2size(output["dtype"])
+                    return np.prod(output["shape"]) * dtype_size
 
-        raise ValueError("Fail to find the weight variable {}, bw_op_name: {}, tensor_id: {}".format(
-            weight_name, bw_op_name, tensor_id))
+        raise ValueError("Fail to find the weight variable {}, bw_op_name: {} {}, tensor_id: {}".format(
+            weight_name, bw_op_name, second_bws, tensor_id))
     
     def ret_output_size_inB(self, op_name):
         raise NotImplementedError("Distinguish weights and activations")

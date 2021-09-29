@@ -79,7 +79,7 @@ class XLAGraphPass(_BaseGraphPass):
         ### Cache iteration time on single GPU
         self.iter_time_single_gpu = None
         self.iter_time_single_gpu_base_line = None
-        self.iter_time_single_gpu_path = os.path.join(self.ckpt_dir, "xla_iter_time_single_gpu.json")
+        self.iter_time_single_gpu_path = os.path.join(args_.path, "xla_iter_time_single_gpu.json")
 
         self.explore_fusion = True
         self.enable_partition = True
@@ -324,12 +324,39 @@ class XLAGraphPass(_BaseGraphPass):
                 partition_G, partition_PKG, 
                 forbidden_list=self.forbidden_list,
                 list_of_group = list_of_group)
+        
+        G, initial_partitions_formed = self._create_clusters(G, PKG, partition_G)
+        self._dump_cluster_mapping(G, os.path.join(
+                self.spec_dir, "cluster_mapping_after_initialization.txt"), partition=True)
 
-        self._dump_cluster_mapping(partition_G, os.path.join(
-                self.spec_dir, "cluster_mapping_after_initialization.txt"))
+        if False:
+            my_env = os.environ.copy()
+            my_env["CUDA_VISIBLE_DEVICES"] = '0'
+            if "BYTEPS_TRACE_ON" in my_env:
+                my_env.pop("BYTEPS_TRACE_ON")
+            if "XLA_DUMP_DIR" in my_env:
+                my_env.pop("XLA_DUMP_DIR")
+
+            my_env["XLA_CLUSTER_SPEC"] = os.path.join(
+                self.spec_dir, "cluster_mapping_after_initialization.txt")
+            my_env["TF_XLA_FLAGS"] = "--tf_xla_auto_jit=2"
+            init_fused_time = self._estimate_time_real_replay(self.base_cmd, my_env)
+            if init_fused_time is None:
+                SingleLogger().warn("Fail to run init")
+                exit(1)
+
+            if "baseline_single_gpu" not in self.iter_time_single_gpu:
+                my_env.pop("XLA_CLUSTER_SPEC")
+                my_env.pop("TF_XLA_FLAGS")
+                avg = self._estimate_time_real_replay(self.base_cmd, my_env)
+                assert avg is not None
+                self.iter_time_single_gpu['baseline_single_gpu'] = avg
+            SingleLogger().info("Origin time {} ==> fused time {} ".format(
+                self.iter_time_single_gpu['baseline_single_gpu'], init_fused_time))
+            exit(0)
 
         SingleLogger().info("Start to init partition graph ... ")
-        return self._create_clusters(G, PKG, partition_G)
+        return G, initial_partitions_formed
 
     def _create_clusters(self, G, PKG, partition_G):
         ''' Init partition on `G` based on the the pre-partitioned DFG `partition_G`
@@ -711,7 +738,7 @@ class XLAGraphPass(_BaseGraphPass):
             if time.time() - st > time_limit:
                 SingleLogger().warn("[XLA CM] return an unstable iter_time time {:.3f}(\u00B1{:.3f})ms, timelimit={:.1f} min".format(iter_time, stdev, int(time_limit/60)))
                 return iter_time
-
+    
     def _wrap_xla_predict(self, pid, nodes_to_fuse, fused_u_, simulate=False):
         ''' 
         nodes_to_fuse: a list of layer names to fuse

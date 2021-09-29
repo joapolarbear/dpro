@@ -57,13 +57,11 @@ class TensorFusionState:
             'part_num': new_part_num
         }
     
-    def nccl_new_tensor_grp(self, new_tensor_grp, tensor_grp_u, tensor_grp_v, refer_grp=None):
+    def nccl_new_tensor_grp(self, new_tensor_grp, op_names, refer_grp=None):
         if self.is_tensor_grp_exist(new_tensor_grp):
             return
         self.tensor_group_info[new_tensor_grp] = self.tensor_group_info[refer_grp].copy()
-        self.tensor_group_info[new_tensor_grp]["size"] = \
-            self.tensor_group_info[tensor_grp_u]["size"] + \
-            self.tensor_group_info[tensor_grp_v]["size"]
+        self.tensor_group_info[new_tensor_grp]["size"] = sum([self.tensor_group_info[op_name]["size"] for op_name in op_names])
     
     def is_tensor_grp_exist(self, grp_name):
         return grp_name in self.tensor_group_info
@@ -82,7 +80,7 @@ class TensorFusionState:
                         "sliceNum": sliceNum,
                         "channelNum": channelNum,
                         "loopNum": loopNum,
-                        "part_num": loopNum*channelNum*sliceNum*(chunkNum/2 + 1)
+                        "part_num": int(loopNum*channelNum*sliceNum*(chunkNum/2 + 1))
                     }
                 else:
                     ### some group may not occur in the traces, ref to other groups
@@ -381,40 +379,78 @@ class TensorFusionGraphPass(_BaseGraphPass):
         tensor_num = self.tsfs_state.parse_tensor_num()
         num_per_grp, _ = divmod(tensor_num, num_grp)
         
+        
         trajectory = []
-        residual = []
         groups = self.tsfs_state.sorted_all_tensor_groups()
-        for grp in groups:
-            tensor_ids = grp.split("+")
-            if len(residual) + len(tensor_ids) == num_per_grp:
-                if len(residual) > 0:
-                    to_fuse_u = self._wrap_gen_long_name(self.cord_pid, "Comm", "+".join(residual), "Sync", None)
-                    to_fuse_v = self._wrap_gen_long_name(self.cord_pid, "Comm", "+".join(tensor_ids), "Sync", None)
-                    trajectory.append(("++", to_fuse_u, to_fuse_v))
-                    residual = []
-            elif len(residual) + len(tensor_ids) < num_per_grp:
-                if len(residual) > 0:
-                    to_fuse_u = self._wrap_gen_long_name(self.cord_pid, "Comm", "+".join(residual), "Sync", None)
-                    to_fuse_v = self._wrap_gen_long_name(self.cord_pid, "Comm", "+".join(tensor_ids), "Sync", None)
-                    trajectory.append(("++", to_fuse_u, to_fuse_v))
-                residual += tensor_ids
-            else:
-                if len(residual) > 0:
-                    tensor_name = self._wrap_gen_long_name(self.cord_pid, "Comm", "+".join(tensor_ids), "Sync", None)
-                    trajectory.append(("--", tensor_name, num_per_grp - len(residual)))
-                    to_fuse_u = self._wrap_gen_long_name(self.cord_pid, "Comm", "+".join(residual), "Sync", None)
-                    to_fuse_v = self._wrap_gen_long_name(
-                        self.cord_pid, "Comm", "+".join(tensor_ids[:(num_per_grp - len(residual))]), "Sync", None)
-                    trajectory.append(("++", to_fuse_u, to_fuse_v))
-                    tensor_ids = tensor_ids[(num_per_grp - len(residual)):]
-                while len(tensor_ids) > num_per_grp:
-                    tensor_name = self._wrap_gen_long_name(self.cord_pid, "Comm", "+".join(tensor_ids), "Sync", None)
-                    trajectory.append(("--", tensor_name, num_per_grp))
-                    tensor_ids = tensor_ids[num_per_grp:]
-                if len(tensor_ids) < num_per_grp:
-                    residual = tensor_ids
+        if self.opt.comm_backend == "BYTEPS":
+            residual = [] # a list of tensor ids
+            for grp in groups:
+                tensor_ids = grp.split("+")
+                if len(residual) + len(tensor_ids) == num_per_grp:
+                    if len(residual) > 0:
+                        to_fuse_u = self._wrap_gen_long_name(self.cord_pid, "Comm", "+".join(residual), "Sync", None)
+                        to_fuse_v = self._wrap_gen_long_name(self.cord_pid, "Comm", "+".join(tensor_ids), "Sync", None)
+                        trajectory.append(("++", to_fuse_u, to_fuse_v))
+                        residual = []
+                elif len(residual) + len(tensor_ids) < num_per_grp:
+                    if len(residual) > 0:
+                        to_fuse_u = self._wrap_gen_long_name(self.cord_pid, "Comm", "+".join(residual), "Sync", None)
+                        to_fuse_v = self._wrap_gen_long_name(self.cord_pid, "Comm", "+".join(tensor_ids), "Sync", None)
+                        trajectory.append(("++", to_fuse_u, to_fuse_v))
+                    residual += tensor_ids
                 else:
-                    residual = []
+                    if len(residual) > 0:
+                        tensor_name = self._wrap_gen_long_name(self.cord_pid, "Comm", "+".join(tensor_ids), "Sync", None)
+                        trajectory.append(("--", tensor_name, num_per_grp - len(residual)))
+                        to_fuse_u = self._wrap_gen_long_name(self.cord_pid, "Comm", "+".join(residual), "Sync", None)
+                        to_fuse_v = self._wrap_gen_long_name(
+                            self.cord_pid, "Comm", "+".join(tensor_ids[:(num_per_grp - len(residual))]), "Sync", None)
+                        trajectory.append(("++", to_fuse_u, to_fuse_v))
+                        tensor_ids = tensor_ids[(num_per_grp - len(residual)):]
+                    while len(tensor_ids) > num_per_grp:
+                        tensor_name = self._wrap_gen_long_name(self.cord_pid, "Comm", "+".join(tensor_ids), "Sync", None)
+                        trajectory.append(("--", tensor_name, num_per_grp))
+                        tensor_ids = tensor_ids[num_per_grp:]
+                    if len(tensor_ids) < num_per_grp:
+                        residual = tensor_ids
+                    else:
+                        residual = []
+        else:
+            residual_list = [] # a list of the list of tensor ids
+            residual_num = 0
+            for grp in groups:
+                tensor_ids = grp.split("+")
+                if residual_num + len(tensor_ids) == num_per_grp:
+                    if residual_num > 0:
+                        to_fuse_u_list = [self._wrap_gen_long_name(self.cord_pid, "Comm", "+".join(residual), "Sync", None) for residual in residual_list]
+                        to_fuse_v = self._wrap_gen_long_name(self.cord_pid, "Comm", "+".join(tensor_ids), "Sync", None)
+                        to_fuse_u_list.append(to_fuse_v)
+                        trajectory.append(("++", to_fuse_u_list, None))
+                        residual_list = []
+                        residual_num = 0
+                elif residual_num + len(tensor_ids) < num_per_grp:
+                    residual_list.append(tensor_ids)
+                    residual_num += len(tensor_ids)
+                else:
+                    if residual_num > 0:
+                        tensor_name = self._wrap_gen_long_name(self.cord_pid, "Comm", "+".join(tensor_ids), "Sync", None)
+                        trajectory.append(("--", tensor_name, num_per_grp - residual_num))
+                        to_fuse_u_list = [self._wrap_gen_long_name(self.cord_pid, "Comm", "+".join(residual), "Sync", None) for residual in residual_list]   
+                        to_fuse_v = self._wrap_gen_long_name(
+                            self.cord_pid, "Comm", "+".join(tensor_ids[:(num_per_grp - residual_num)]), "Sync", None)
+                        to_fuse_u_list.append(to_fuse_v)
+                        trajectory.append(("++", to_fuse_u_list, None))
+                        tensor_ids = tensor_ids[(num_per_grp - residual_num):]
+                    while len(tensor_ids) > num_per_grp:
+                        tensor_name = self._wrap_gen_long_name(self.cord_pid, "Comm", "+".join(tensor_ids), "Sync", None)
+                        trajectory.append(("--", tensor_name, num_per_grp))
+                        tensor_ids = tensor_ids[num_per_grp:]
+                    if len(tensor_ids) < num_per_grp:
+                        residual_list = [tensor_ids]
+                        residual_num = len(tensor_ids)
+                    else:
+                        residual_list = []
+                        residual_num = 0
 
         SingleLogger().info("From {} groups to {} groups, apply {} strategies in totoal ...".format(self.tsfs_state.num_grp, num_grp, len(trajectory)))
         rst = [True, [], []]
@@ -457,7 +493,7 @@ class TensorFusionGraphPass(_BaseGraphPass):
         nodes_to_rm = set()
         all_pid = sorted(self.opt.clct.all_pid())
         for _pid in all_pid:
-            _pid_sync = self._wrap_gen_long_name(_pid, all_infos[1], all_infos[2], all_infos[3], all_infos[4])
+            _pid_sync = self._wrap_gen_long_name(_pid, all_infos[1], all_infos[2], "Sync", all_infos[4])
             
             ### add new node: sync
             new_part_names, part_times = self._defuse_name_avg(_dag, _pid_sync, rawnames)
@@ -569,29 +605,29 @@ class TensorFusionGraphPass(_BaseGraphPass):
     def _tensor_fusion(self, _dag, _pkg: PKGraph, u_, v_):
         # SingleLogger().info("Fusing Tensor {} & {}.".format(u_, v_))
         ### All infos including [pid, op_cat, op_name, sub_op, suffix]
-        pair_all_infos = [
-            self._wrap_parse_all_info(u_),
-            self._wrap_parse_all_info(v_)]
-        
-        tensor_group_infos = [
-            self.tsfs_state.parse_tensor_group_info(pair_all_infos[0][2]),
-            self.tsfs_state.parse_tensor_group_info(pair_all_infos[1][2])]
+        if isinstance(u_, list):
+            assert v_ is None
+            nodes_to_fuse = u_
+        else:
+            nodes_to_fuse = [u_, v_]
+        pair_all_infos = [self._wrap_parse_all_info(_n) for _n in nodes_to_fuse]
+        tensor_group_infos = [self.tsfs_state.parse_tensor_group_info(_info[2]) for _info in pair_all_infos]
 
         if self.opt.comm_backend == "NCCL":
             assert pair_all_infos[0][0] == pair_all_infos[1][0] and \
                 pair_all_infos[0][1] == pair_all_infos[1][1] and \
-                pair_all_infos[0][3] == pair_all_infos[1][3], (u_, v_)
+                pair_all_infos[0][3] == pair_all_infos[1][3], (nodes_to_fuse)
 
             edges_to_add, edges_to_rm, nodes_to_add, nodes_to_rm = self._nccl_tensor_fusion_impl(
-                _dag, _pkg, u_, v_, pair_all_infos, tensor_group_infos
+                _dag, _pkg, nodes_to_fuse, pair_all_infos, tensor_group_infos
             )
         elif self.opt.comm_backend == "BYTEPS":
             assert pair_all_infos[0][0].split("::")[0] == pair_all_infos[1][0].split("::")[0] and \
                 pair_all_infos[0][1] == pair_all_infos[1][1] and \
-                pair_all_infos[0][3] == pair_all_infos[1][3], (u_, v_)
+                pair_all_infos[0][3] == pair_all_infos[1][3], (nodes_to_fuse)
 
             edges_to_add, edges_to_rm, nodes_to_add, nodes_to_rm = self._ps_tensor_fusion_impl(
-                _dag, _pkg, u_, v_, pair_all_infos, tensor_group_infos
+                _dag, _pkg, nodes_to_fuse, pair_all_infos, tensor_group_infos
             )
         else:
             raise ValueError()
@@ -613,35 +649,31 @@ class TensorFusionGraphPass(_BaseGraphPass):
         return True, [n for n, _ in nodes_to_add], nodes_to_rm
 
     def _nccl_tensor_fusion_impl(self, _dag, _pkg: PKGraph,
-        u_, v_, pair_all_infos, tensor_group_infos):
-        if self.opt.comm_backend == "NCCL":
-            ### select the base_idx, according to loopNum
-            if tensor_group_infos[0]["sliceNum"] >= tensor_group_infos[1]["sliceNum"] and \
-                    tensor_group_infos[0]["loopNum"] >= tensor_group_infos[1]["loopNum"] and \
-                    tensor_group_infos[0]["channelNum"] >= tensor_group_infos[1]["channelNum"]:
-                base_idx = 0
-            elif tensor_group_infos[1]["sliceNum"] >= tensor_group_infos[0]["sliceNum"] and \
-                tensor_group_infos[1]["loopNum"] >= tensor_group_infos[0]["loopNum"] and \
-                tensor_group_infos[1]["channelNum"] >= tensor_group_infos[0]["channelNum"]:
-                base_idx = 1
-            else:
-                raise ValueError("Invalid tensor group info for {} and {}: {}".format(
-                    u_, v_, tensor_group_infos))
-        else:
-            base_idx = 0
+        nodes_to_fuse, pair_all_infos, tensor_group_infos):
+        ### select the base_idx, according to loopNum
+        max_triple = [0, 0, 0]
+        base_idx = None
+        for idx, grp_info in enumerate(tensor_group_infos):
+            if grp_info["sliceNum"] >= max_triple[0] and \
+                    grp_info["loopNum"] >= max_triple[1] and \
+                    grp_info["channelNum"] >= max_triple[2]:
+                base_idx = idx
+                max_triple = [grp_info["sliceNum"], grp_info["loopNum"],grp_info["channelNum"]]
+        if base_idx is None:
+            raise ValueError("Invalid tensor group info for {} and {}: {}".format(
+                nodes_to_fuse, tensor_group_infos))
 
         edges_to_add = []
         edges_to_rm = []
         nodes_to_add = []
         nodes_to_rm = set()
         all_pid = sorted(self.opt.clct.all_pid())
+        num_nodes_to_fuse = len(nodes_to_fuse)
         for _pid in all_pid:
-            _pid_sync = [
-                self._wrap_gen_long_name(_pid, pair_all_infos[0][1], pair_all_infos[0][2], pair_all_infos[0][3], pair_all_infos[0][4]),
-                self._wrap_gen_long_name(_pid, pair_all_infos[1][1], pair_all_infos[1][2], pair_all_infos[1][3], pair_all_infos[1][4])]
+            _pid_sync = [self._wrap_gen_long_name(_pid, _info[1], _info[2], "Sync", _info[4]) for _info in pair_all_infos]
 
             ### add new node: sync
-            new_fused_name, fused_time = self._nccl_concat_name_avg(_dag, _pid_sync[0], _pid_sync[1], base_idx=base_idx)
+            new_fused_name, fused_time = self._nccl_concat_name_avg(_dag, _pid_sync, base_idx=base_idx)
             nodes_to_add.append((new_fused_name, {"avg": fused_time}))
             # if self.cord_pid == _pid:
             #     print("add node {}".format(new_fused_name))
@@ -653,40 +685,44 @@ class TensorFusionGraphPass(_BaseGraphPass):
                 edges_to_add += [(_bw, new_fused_name) for _bw in _in_bw]
                 edges_to_rm += [(_bw, _sync) for _bw in _in_bw]     
                 nodes_to_rm.add(_sync)
-
+            
             prev_fused_name = new_fused_name
 
-            def fused_with(_node, _idx=0):
+            def fused_with(to_fuse_list, _node, _idx=0):
                 _all_info = self._wrap_parse_all_info(_node)
-                assert _all_info[2] == pair_all_infos[_idx][2], (_all_info, pair_all_infos[_idx][2])
-                return self._wrap_gen_long_name(_all_info[0], _all_info[1],
-                            pair_all_infos[1-_idx][2], _all_info[3], _all_info[4])
+                # assert _all_info[2] == pair_all_infos[_idx][2], (_all_info, pair_all_infos[_idx][2])
+                for target_idx in range(num_nodes_to_fuse):
+                    if target_idx == _idx:
+                        to_fuse_list[target_idx] = _node
+                    else:
+                        to_fuse_list[target_idx] =  self._wrap_gen_long_name(
+                            _all_info[0], _all_info[1],
+                            pair_all_infos[target_idx][2], _all_info[3], _all_info[4])
 
             ### edges_to_handel, each element is a triple of 
-            ### (prev_fused_name, prev_name, cur_name)
+            ### ==> (prev_fused_name, prev_name, cur_name)
+            ### where (prev_name->cur_name) is an edge before fusion
 
             edges_to_handel = []
             for to_fuse_u in _dag.successors(_pid_sync[base_idx]):
                 edges_to_handel.append((prev_fused_name, _pid_sync[base_idx], to_fuse_u))
 
             while len(edges_to_handel) > 0:
-                to_fuses = [None, None]
-                prev_names = [None, None]
+                to_fuses = [None] * num_nodes_to_fuse
+                prev_names = [None] * num_nodes_to_fuse
                 prev_fused_name, prev_name_, to_fuse_ = edges_to_handel.pop(0)
-                to_fuses[base_idx] = to_fuse_
-                to_fuses[1-base_idx] = fused_with(to_fuse_, base_idx)
-                prev_names[base_idx] = prev_name_
-                prev_names[1-base_idx] = fused_with(prev_name_, base_idx)
-                edges_to_rm += [(prev_names[0], to_fuses[0]), (prev_names[1], to_fuses[1])]
-                nodes_to_rm.update((to_fuses[0], to_fuses[1]))
+                fused_with(to_fuses, to_fuse_, base_idx)
+                fused_with(prev_names, prev_name_, base_idx)
+                edges_to_rm += [(prev_names[_idx], to_fuses[_idx]) for _idx in range(num_nodes_to_fuse)]
+                nodes_to_rm.update(to_fuses)
 
                 ### add new node and edge
-                new_fused_name, fused_time = self._nccl_concat_name_avg(
-                    _dag, to_fuses[0], to_fuses[1], base_idx)
+                new_fused_name, fused_time = self._nccl_concat_name_avg(_dag, to_fuses, base_idx)
                 nodes_to_add.append((new_fused_name, {"avg": fused_time}))
                 edges_to_add.append((prev_fused_name, new_fused_name))
 
                 # if self.cord_pid == _pid:
+                #     print(self.cord_pid, _pid)
                 #     print("add node {}".format(new_fused_name))
                 #     print("add edge {} {}".format(prev_fused_name, new_fused_name))
 
@@ -714,21 +750,19 @@ class TensorFusionGraphPass(_BaseGraphPass):
                     ### For last communication tensor (MEMCOPY)
                     if last_comm:
                         update_list = []
-                        for succ_ in _dag.successors(to_fuses[0]):
-                            assert "UPDATE_" in succ_
-                            update_list.append(succ_)
-                            edges_to_rm.append((to_fuses[0], succ_))
-                        for succ_ in _dag.successors(to_fuses[1]):
-                            assert "UPDATE_" in succ_
-                            update_list.append(succ_)
-                            edges_to_rm.append((to_fuses[1], succ_))
+                        for to_fuse_ in to_fuses:
+                            for succ_ in _dag.successors(to_fuse_):
+                                assert "UPDATE_" in succ_
+                                update_list.append(succ_)
+                                edges_to_rm.append((to_fuse_, succ_))
                         for _update_op in update_list:
                             edges_to_add.append((new_fused_name, _update_op))      
 
         return edges_to_add, edges_to_rm, nodes_to_add, nodes_to_rm
     
     def _ps_tensor_fusion_impl(self, _dag, _pkg: PKGraph,
-        u_, v_, pair_all_infos, tensor_group_infos, new_part_num=None):
+        nodes_to_fuse, pair_all_infos, tensor_group_infos, new_part_num=None):
+        assert len(nodes_to_fuse) == 2
         edges_to_add = []
         edges_to_rm = []
         nodes_to_add = []
@@ -737,13 +771,13 @@ class TensorFusionGraphPass(_BaseGraphPass):
 
         entry_sub_ops = [PS_COMM_OPS.PUSH_REQ, PS_COMP_OPS.COPY_FIRST]
 
-        tensor_name_u, tensor_name_v = pair_all_infos[0][2], pair_all_infos[1][2]
-        part_num_u, part_num_v = tensor_group_infos[0]["part_num"], tensor_group_infos[1]["part_num"]
-        new_part_num = max(part_num_u, part_num_v) if new_part_num is None else new_part_num
-        new_tensor_size = tensor_group_infos[0]["size"] + tensor_group_infos[1]["size"]
+        op_names = [_info[2] for _info in pair_all_infos]
+        part_num_list = [grp_info["part_num"] for grp_info in tensor_group_infos]
+        new_part_num = max(part_num_list) if new_part_num is None else new_part_num
+        new_tensor_size = sum([grp_info["size"] for grp_info in tensor_group_infos])
         new_partition_size = new_tensor_size / new_part_num
 
-        fused_tensor_name = self._gen_fused_tensor_name(tensor_name_u, tensor_name_v)
+        fused_tensor_name = self._gen_fused_tensor_name(op_names)
         self.tsfs_state.ps_new_tensor_group(fused_tensor_name, new_tensor_size, new_part_num)
 
         def __update_node_attr(fused_u_v, _pid, sub_op, __dag):
@@ -763,7 +797,7 @@ class TensorFusionGraphPass(_BaseGraphPass):
             if "Comm" not in node:
                 continue
             node_all_info = self._wrap_parse_all_info(node)
-            if not (node_all_info[1] == "Comm" and node_all_info[2] == tensor_name_u and node_all_info[3] in entry_sub_ops):
+            if not (node_all_info[1] == "Comm" and node_all_info[2] == op_names[0] and node_all_info[3] in entry_sub_ops):
                 continue
             if node_all_info[3] == PS_COMM_OPS.PUSH_REQ:
                 source, target, tensor_name, sub_op, part_id = self.opt.clct.byteps_graph.parse_comm_event_name(node)
@@ -774,13 +808,13 @@ class TensorFusionGraphPass(_BaseGraphPass):
                 continue
             
             edges_to_process = []
-            cur_node_copy = self._gen_analogous_name(node, new_part_id=0, new_tensor_name=tensor_name_v)
+            cur_node_copy = self._gen_analogous_name(node, new_part_id=0, new_tensor_name=op_names[1])
             if node_all_info[3] == PS_COMP_OPS.COPY_FIRST:
                 ### No bw predecessors
                 for succ_ in _dag.successors(node):
                     edge_u = (node, succ_)
                     edge_v = (cur_node_copy,
-                        self._gen_analogous_name(succ_, new_part_id=0, new_tensor_name=tensor_name_v))
+                        self._gen_analogous_name(succ_, new_part_id=0, new_tensor_name=op_names[1]))
                     edges_to_process.append((edge_u, edge_v))
             else:  
                 for pred_ in _dag.predecessors(node):
@@ -803,7 +837,7 @@ class TensorFusionGraphPass(_BaseGraphPass):
                     self._wrap_parse_all_info(cur_node)]
                 
                 ### remove edges related to node u
-                for part_id in range(part_num_u):
+                for part_id in range(part_num_list[0]):
                     _edge_u = (
                         self._gen_analogous_name(edge_u[0], new_part_id=part_id),
                         self._gen_analogous_name(edge_u[1], new_part_id=part_id)
@@ -815,7 +849,7 @@ class TensorFusionGraphPass(_BaseGraphPass):
                     edges_to_rm.append(_edge_u)
                     # print("DELETE_", edge_u[0], edge_u[1], _edge_u[0], _edge_u[1])
                 
-                for part_id in range(part_num_v):
+                for part_id in range(part_num_list[1]):
                     _edge_v = (
                         self._gen_analogous_name(edge_v[0], new_part_id=part_id),
                         self._gen_analogous_name(edge_v[1], new_part_id=part_id)
@@ -864,7 +898,7 @@ class TensorFusionGraphPass(_BaseGraphPass):
                             break
                         _edge_u = (edge_u[1], succ_)
                         _edge_v = (edge_v[1],
-                            self._gen_analogous_name(succ_, new_part_id=0, new_tensor_name=tensor_name_v))
+                            self._gen_analogous_name(succ_, new_part_id=0, new_tensor_name=op_names[1]))
                         edges_to_process.append((_edge_u, _edge_v))
 
                     if is_last_comm:
@@ -1026,8 +1060,12 @@ class TensorFusionGraphPass(_BaseGraphPass):
     def _wrap_gen_long_name(self, pid, op_cat, op_name, sub_op, suffix):
         return gen_long_name(pid, "{}.{}.{}".format(op_cat, op_name, sub_op), suffix)
     
-    def _gen_fused_tensor_name(self, tensor_u, tensor_v):
-        sorted_tensor_ids = sorted([int(id_str) for id_str in tensor_u.split("+") + tensor_v.split("+")])
+    def _gen_fused_tensor_name(self, tensor_u, tensor_v=None):
+        if isinstance(tensor_u, list):
+            assert tensor_v is None
+            sorted_tensor_ids = sorted([int(id) for tensors in tensor_u for id in tensors.split("+")])
+        else:
+            sorted_tensor_ids = sorted([int(id_str) for id_str in tensor_u.split("+") + tensor_v.split("+")])
         return "+".join([str(id) for id in sorted_tensor_ids])
 
     def _wrap_query_server_id(self, tensor_name, part_id):
@@ -1089,35 +1127,33 @@ class TensorFusionGraphPass(_BaseGraphPass):
                         print(grp_info)
                     raise ValueError("{} is still in the dag: node {}".format(f, n))
 
-    def _nccl_concat_name_avg(self, _dag, u_, v_, base_idx=0):
+    def _nccl_concat_name_avg(self, _dag, nodes_to_fuse, base_idx=0):
         ''' Concate u_ and v_ into a new tensor name and calculate the new tensor's time
         * NOTE: u_/v_ may not exist in _dag, since two tensors needed to be fused may have 
         * different loopid, channelid, and sliceid
         '''
-        pair_all_infos = [
-            self._wrap_parse_all_info(u_),
-            self._wrap_parse_all_info(v_)]
-        new_raw_name = self._gen_fused_tensor_name(pair_all_infos[0][2], pair_all_infos[1][2])
+        pair_all_infos = [self._wrap_parse_all_info(_n) for _n in nodes_to_fuse]
+        op_names = [_info[2] for _info in pair_all_infos]
+        new_raw_name = self._gen_fused_tensor_name(op_names)
         new_name = self._wrap_gen_long_name(pair_all_infos[0][0], pair_all_infos[0][1], new_raw_name, pair_all_infos[0][3], pair_all_infos[0][4])
-        self.tsfs_state.nccl_new_tensor_grp(new_raw_name, pair_all_infos[0][2], pair_all_infos[1][2], refer_grp=pair_all_infos[base_idx][2])
+        self.tsfs_state.nccl_new_tensor_grp(new_raw_name, op_names, refer_grp=op_names[base_idx])
 
         if pair_all_infos[0][3] in ["SEND", "RECV"]:
-            grp_infos = [
-                self.tsfs_state.parse_tensor_group_info(pair_all_infos[0][2]),
-                self.tsfs_state.parse_tensor_group_info(pair_all_infos[1][2])]
-            sizes = [grp_info["size"] for grp_info in grp_infos]
-            fused_time = self.predict_comm_time(
-                (sizes[0] + sizes[1])/grp_infos[base_idx]["part_num"], pair_all_infos[0][0], pair_all_infos[0][3])
+            grp_infos = [self.tsfs_state.parse_tensor_group_info(_info[2]) for _info in pair_all_infos]
+            new_size = sum([grp_info["size"] for grp_info in grp_infos]) / grp_infos[base_idx]["part_num"]
+            fused_time = self.predict_comm_time(new_size, pair_all_infos[0][0], pair_all_infos[0][3])
         elif pair_all_infos[0][3] in ["QUEUE", "MEMCPY_IN_FUSION_BUFFER", "NCCL_ALLREDUCE", "MEMCPY_OUT_FUSION_BUFFER"]:
-            fused_time = FUSION_RATIO * max(_dag.nodes[u_]["avg"], _dag.nodes[v_]["avg"])
+            avg_list = [_dag.nodes[_n]["avg"] for _n in nodes_to_fuse]
+            fused_time = FUSION_RATIO * max(avg_list)
         elif pair_all_infos[0][3] in ["Sync"]:
             if IGNORE_SYNC:
                 fused_time = 0
             else:
-                fused_time = FUSION_RATIO * max(_dag.nodes[u_]["avg"], _dag.nodes[v_]["avg"])
+                avg_list = [_dag.nodes[_n]["avg"] for _n in nodes_to_fuse]
+                fused_time = FUSION_RATIO * max(avg_list)
         else:
             raise ValueError("Unrecognized sub op name {} ({})".format(
-                pair_all_infos[0][3], u_))
+                pair_all_infos[0][3], nodes_to_fuse[0]))
         return new_name, fused_time
     
     def _update_bw2tensor(self, comm_node, _dag):
@@ -1373,7 +1409,8 @@ class TensorFusionGraphPass(_BaseGraphPass):
                 #   But when testing tensor group numbers, do not fuse those tensors
                 self.init_fuse_tensors(G, PKG)
                 ### Cache
-                self.opt.clct.byteps_graph._dump_cache()
+                if self.opt.comm_backend != "NCCL":
+                    self.opt.clct.byteps_graph._dump_cache()
                 with open(init_ckpt_path, "wb") as f:
                     pickle.dump([G, PKG, trajectory, self.pid_to_cm,
                         self.bw2tensor], f)
@@ -1490,7 +1527,8 @@ class TensorFusionGraphPass(_BaseGraphPass):
 
     def checkpoint(self):
         ### Need to cache byteps graph state, e.g. comp_ops_tid
-        self.opt.clct.byteps_graph._dump_cache()
+        if self.opt.comm_backend != "NCCL":
+            self.opt.clct.byteps_graph._dump_cache()
         self.tsfs_state.dump()
         
     def load_ckpt(self):
@@ -1498,7 +1536,8 @@ class TensorFusionGraphPass(_BaseGraphPass):
         byteps_cache_path = self.opt.clct.pm.search(FileName.BYTEPS_CACHE)
         assert byteps_cache_path is not None
         SingleLogger().info("Inited BytePS graph helper from cache: {}.".format(byteps_cache_path))
-        self.opt.clct.byteps_graph.init_from_cache(byteps_cache_path)
+        if self.opt.comm_backend != "NCCL":
+            self.opt.clct.byteps_graph.init_from_cache(byteps_cache_path)
         
         self.tsfs_state.load()
 
@@ -1673,26 +1712,32 @@ class TensorFusionGraphPass(_BaseGraphPass):
 
     def best_partition_partial_replay(self, tensor_name, _dag, no_throrem=False):
         ### `tensor_name` must be a tensor in `dag`
-        grp_info = self.tsfs_state.parse_tensor_group_info(tensor_name)
-        MAX_TEST_TENSOR_GROUP_TIME = 5
-        sampled_partition_num = list(range(1, 2 * grp_info["part_num"] + 1))
-        if len(sampled_partition_num) > MAX_TEST_TENSOR_GROUP_TIME:
-            sampled_partition_num = random.sample(sampled_partition_num, MAX_TEST_TENSOR_GROUP_TIME)
-
         k_star = None
         comm_time_star = None
-        for partition_num in sampled_partition_num:
-            old_graph_state = self.tsfs_state.copy()
-            G_star = _dag.copy()
-            self._tensor_partition(G_star, None, tensor_name, partition_num, verbose=False)
-            self.tsfs_state = old_graph_state
+        if self.enable_partition:
+            grp_info = self.tsfs_state.parse_tensor_group_info(tensor_name)
+            MAX_TEST_TENSOR_GROUP_TIME = 5
+            sampled_partition_num = list(range(1, 2 * grp_info["part_num"] + 1))
+            if len(sampled_partition_num) > MAX_TEST_TENSOR_GROUP_TIME:
+                sampled_partition_num = random.sample(sampled_partition_num, MAX_TEST_TENSOR_GROUP_TIME)
+            
+            for partition_num in sampled_partition_num:
+                old_graph_state = self.tsfs_state.copy()
+                G_star = _dag.copy()
+                self._tensor_partition(G_star, None, tensor_name, partition_num, verbose=False)
+                self.tsfs_state = old_graph_state
+                if no_throrem:
+                    comm_time = self.opt.estimate_time_related_to_comm([tensor_name], G_star)
+                else:
+                    comm_time = self.opt.estimate_comm_time_via_replay(tensor_name, G_star)
+                if k_star is None or comm_time < comm_time_star:
+                    k_star = partition_num
+                    comm_time_star = comm_time
+        else:
             if no_throrem:
-                comm_time = self.opt.estimate_time_related_to_comm([tensor_name], G_star)
+                comm_time_star = self.opt.estimate_time_related_to_comm([tensor_name], _dag)
             else:
-                comm_time = self.opt.estimate_comm_time_via_replay(tensor_name, G_star)
-            if k_star is None or comm_time < comm_time_star:
-                k_star = partition_num
-                comm_time_star = comm_time
+                comm_time_star = self.opt.estimate_comm_time_via_replay(tensor_name, _dag)
         return k_star, comm_time_star
     
     def get_current_comm_from_unfused_bw(self, _node):
@@ -1724,4 +1769,5 @@ class TensorFusionGraphPass(_BaseGraphPass):
         return current_comm_nodes
 
     def update_tensor2server(self):
-        self.tsfs_state.update_tensor2server()
+        if self.opt.comm_backend != "NCCL":
+            self.tsfs_state.update_tensor2server()
