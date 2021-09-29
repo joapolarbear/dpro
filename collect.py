@@ -860,20 +860,30 @@ class Collector(object):
 
                 key_dict_path = self.pm.search(FileName.KEY_DICT)
 
-                if args_.pcap_file_path is not None:
-                    pcap_fns = [fn for fn in os.listdir(args_.pcap_file_path) if (os.path.isfile(os.path.join(args_.pcap_file_path,fn)) and fn.endswith(".pcap"))]
-                    pcap_paths = [os.path.join(args_.pcap_file_path, fn) for fn in pcap_fns]
-                    process_names = [fn.split(".pcap")[0] for fn in pcap_fns]
-                    SingleLogger().info("Preprocessing pcap files: {}.".format(pcap_paths))
-                    byteps_comm_detail_path = preprocess_pcap(pcap_paths, process_names, None, key_dict_path, gradient_name_list_path=gradient_name_list_path, platform=self.platform)
-                elif args_.zmq_log_path is not None:
+                if args_.van_type.upper() == "ZMQ":
+                    assert args_.zmq_log_path is not None
                     zmq_log_fns = [fn for fn in os.listdir(args_.zmq_log_path) if (os.path.isfile(os.path.join(args_.zmq_log_path,fn)) and fn.endswith(".log"))]
                     zmq_log_paths = [os.path.join(args_.zmq_log_path, fn) for fn in zmq_log_fns]
                     SingleLogger().info("Preprocessing ZMQ log files: {}.".format(zmq_log_paths))
                     byteps_comm_detail_path = preprocess_comm_timestamp(zmq_log_paths, key_dict_path, gradient_name_list_path=gradient_name_list_path, platform=self.platform)
+                elif args_.van_type.upper() == "RDMA":
+                    assert args_.zmq_log_path is not None
+                    zmq_log_fns = [fn for fn in os.listdir(args_.zmq_log_path) if (os.path.isfile(os.path.join(args_.zmq_log_path, fn)) and fn.startswith("rdma_"))]
+                    zmq_log_paths = [os.path.join(args_.zmq_log_path, fn) for fn in zmq_log_fns]
+                    SingleLogger().info("Preprocessing RDMA log files: {}.".format(zmq_log_paths))
+                    byteps_comm_detail_path = preprocess_comm_timestamp(zmq_log_paths, key_dict_path, gradient_name_list_path=gradient_name_list_path, platform=self.platform)
                 else:
-                    SingleLogger().error("Cannot find BytePS comm trace or pcap files.")
-                    exit(1)
+                    raise ValueError("Invalide VAN type: {}".format(args_.van_type))
+                
+                # if args_.pcap_file_path is not None:
+                #     pcap_fns = [fn for fn in os.listdir(args_.pcap_file_path) if (os.path.isfile(os.path.join(args_.pcap_file_path,fn)) and fn.endswith(".pcap"))]
+                #     pcap_paths = [os.path.join(args_.pcap_file_path, fn) for fn in pcap_fns]
+                #     process_names = [fn.split(".pcap")[0] for fn in pcap_fns]
+                #     SingleLogger().info("Preprocessing pcap files: {}.".format(pcap_paths))
+                #     byteps_comm_detail_path = preprocess_pcap(pcap_paths, process_names, None, key_dict_path, gradient_name_list_path=gradient_name_list_path, platform=self.platform) 
+                # else:
+                #     SingleLogger().error("Cannot find BytePS comm trace or pcap files.")
+                #     exit(1)
             else:
                 SingleLogger().info("Found BytePS comm trace file in {}.".format(byteps_comm_detail_path))
             # read or generate BPS server trace

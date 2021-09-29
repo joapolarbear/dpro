@@ -397,7 +397,7 @@ def preprocess_comm_timestamp(file_paths,
             else:
                 logs_dict[key] += val
         
-        node_rank = int(os.path.basename(path).split(".")[0].split("_")[1])
+        node_rank = int(os.path.basename(path).split(".")[0].split("_")[-1])
         for node_meta in node_metas:
             node_meta["node_rank_v2"] = node_rank
 

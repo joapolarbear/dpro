@@ -538,21 +538,19 @@ class bytepsGraph:
         for key, durations in self.comm_durations.items():
             source, target, tensor_name, op, part_id = key
             if van_type == "ZMQ":
-                if self._get_node_from_dev_name(target) in trace_shifts:
-                    delay = trace_shifts[self._get_node_from_dev_name(target)]
+                if target in trace_shifts:
+                    delay = trace_shifts[target]
                     new_durations = []
                     for st, ed in durations:
                         new_durations.append((st+delay, ed+delay))
                     self.comm_durations[key] = new_durations
             else:
-                source_rank = self._get_node_from_dev_name(source)
-                target_rank = self._get_node_from_dev_name(target)
                 source_delay = 0
                 target_delay = 0
-                if source_rank in trace_shifts:
-                    source_delay = trace_shifts[source_rank]
-                if target_rank in trace_shifts:
-                    target_delay = trace_shifts[target_rank]
+                if source in trace_shifts:
+                    source_delay = trace_shifts[source]
+                if target in trace_shifts:
+                    target_delay = trace_shifts[target]
                 new_durations = []
                 for st, ed in durations:
                     assert st+source_delay <= ed+target_delay
@@ -586,28 +584,27 @@ class bytepsGraph:
             unique_tensors.add(tensor_name)
             source_rank = self._get_node_from_dev_name(source)
             if source.startswith("server"):
-                server_ranks.add(source_rank)
+                server_ranks.add(source)
             else:
-                worker_ranks.add(source_rank)
-            source_ranks.add(source_rank)
+                worker_ranks.add(source)
+            source_ranks.add(source)
 
-            if source_rank not in durations_dict:
-                durations_dict[source_rank] = {}
+            if source not in durations_dict:
+                durations_dict[source] = {}
             if (source, target) not in intervals:
                 intervals[(source, target)] = IntervalTree()
             for st, ed in durations:
                 if st != ed:
                     intervals[(source, target)][st:ed] = True
-            durations_dict[source_rank][key] = durations
+            durations_dict[source][key] = durations
 
         send_delays = {}
         send_delay_keys = {}
 
         for r0 in server_ranks:
             for r1 in worker_ranks:
-                if r0 != r1:
-                    send_delays[(r0, r1)] = float('inf')
-                    send_delays[(r1, r0)] = float('inf')
+                send_delays[(r0, r1)] = float('inf')
+                send_delays[(r1, r0)] = float('inf')
 
         trace_shifts = {}
         for source_rank, key_dict in durations_dict.items():
@@ -620,29 +617,29 @@ class bytepsGraph:
                                 "[BPS ALIGN]: Length mismatch between {} and {} on tensor {}".format(
                                     source, target, tensor_name))
                         continue
-                    target_node_id = self._get_node_from_dev_name(target)
-                    if source_rank == target_node_id:
+                    # target_node_id = self._get_node_from_dev_name(target)
+                    if source_rank == target:
                         continue
                     for index in range(len(durations)):
                         # find the corresponding push_req
                         push_res_st, push_res_ed = durations[index]
-                        _, push_req_ed = durations_dict[target_node_id] \
+                        _, push_req_ed = durations_dict[target] \
                                                     [(target, source, tensor_name, PS_COMM_OPS.PUSH_REQ, part_id)] \
                                                     [index]
                         # if push_response not queued on server->worker
                         if not intervals[(source, target)].overlap(push_res_st-500, push_res_st-1):
-                            if push_res_st - push_req_ed < send_delays[(source_rank, target_node_id)]:
-                                send_delay_keys[(source_rank, target_node_id)] = (key, index)
-                                send_delays[(source_rank, target_node_id)] = push_res_st - push_req_ed
+                            if push_res_st - push_req_ed < send_delays[(source_rank, target)]:
+                                send_delay_keys[(source_rank, target)] = (key, index)
+                                send_delays[(source_rank, target)] = push_res_st - push_req_ed
                         # find the corresponding pull_req
-                        pull_req_st, pull_req_ed = durations_dict[target_node_id] \
+                        pull_req_st, pull_req_ed = durations_dict[target] \
                                                     [(target, source, tensor_name, PS_COMM_OPS.PULL_REQ, part_id)] \
                                                     [index]
                         # if pull_req not queued on worker->server
                         if not intervals[(target, source)].overlap(pull_req_st - 500, pull_req_st-1):
-                            if pull_req_st - push_res_ed < send_delays[(target_node_id, source_rank)]:
-                                send_delay_keys[(target_node_id, source_rank)] = (key, index)
-                                send_delays[(target_node_id, source_rank)] = pull_req_st - push_res_ed
+                            if pull_req_st - push_res_ed < send_delays[(target, source_rank)]:
+                                send_delay_keys[(target, source_rank)] = (key, index)
+                                send_delays[(target, source_rank)] = pull_req_st - push_res_ed
 
         master_node, trace_shifts = optimize_time_shift(send_delays)
 
@@ -657,26 +654,23 @@ class bytepsGraph:
         for key, durations in self.comm_durations.items():
             source, target, tensor_name, op, part_id = key
             unique_tensors.add(tensor_name)
-            source_rank = self._get_node_from_dev_name(source)
+            # source_rank = self._get_node_from_dev_name(source)
             if source.startswith("server"):
-                server_ranks.add(source_rank)
+                server_ranks.add(source)
             else:
-                worker_ranks.add(source_rank)
+                worker_ranks.add(source)
         
         node_delays = {}
 
         for r0 in server_ranks:
             for r1 in worker_ranks:
-                if r0 != r1:
-                    node_delays[(r0, r1)] = float('inf')
-                    node_delays[(r1, r0)] = float('inf')
+                node_delays[(r0, r1)] = float('inf')
+                node_delays[(r1, r0)] = float('inf')
 
         for key, durations in self.comm_durations.items():
             source, target, tensor_name, op, part_id = key
-            source_rank  = self._get_node_from_dev_name(source)
-            target_rank = self._get_node_from_dev_name(target)
             for (st, ed) in durations:
-                node_delays[(source_rank, target_rank)] = min(node_delays[(source_rank, target_rank)], ed - st)
+                node_delays[(source, target)] = min(node_delays[(source, target)], ed - st)
 
         master_node, trace_shifts = optimize_time_shift(node_delays)
         self._apply_shift_on_trace(master_node, trace_shifts, van_type="RDMA")
