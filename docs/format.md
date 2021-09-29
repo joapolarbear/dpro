@@ -21,7 +21,7 @@
 
 - `op_cat` is one of `BW`, `FW`, `Comm`, `UPDATE_`, or specially, `trace["name"] = UPDATE_...`, e.g., `UPDATE_CAL`, `UPDATE_0`, `UPDATE_1`, ...  And `trace["name"] = I/O_...`
 - `op_name` is the raw name profiled by the built-in profiler of each ML framework.
-- For `Comm`, `sub_op` could be `SEND`, `REC`, and `suffix` could be `0_1_6_0` denotes `loopId`, `channelId`, `chunkId`, and `liceId` respectively
+- For `Comm`, `sub_op` could be `SEND`, `RECV`, and `suffix` could be `0_1_6_0` (for NCCL) denoteing `loopId`, `channelId`, `chunkId`, and `liceId` respectively
   
 We call the names follow the format of `op_cat.op_name.sub_op` as `standard name`
 

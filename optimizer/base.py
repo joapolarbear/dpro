@@ -122,6 +122,9 @@ class Optimizer:
 
         self.use_heat = True
 
+        if self.comm_backend == "NCCL" and self.tsfs_pass is not None:
+            self.tsfs_pass.enable_partition = False
+
         self.base_cost, self.exct_dag, self.base_mem_usage = self.evaluate(
             self.dag, _path=os.path.join(ROOT_PATH, "searched_graph/base.json"))
 
@@ -197,7 +200,7 @@ class Optimizer:
         recd_topo_order=False, partial=False, name2mapping_fn=None,
         visual_bw2comm=False):
 
-        if self.tsfs_pass is not None:
+        if self.tsfs_pass is not None and self.clct.byteps_graph is not None:
             self.clct.byteps_graph.grp_part_id2server = self.tsfs_pass.tsfs_state.grp_part_id2server
         # t = time.time()
         ### input _dag is a dependency graph, using the replayer to get the simulated traces and execution graph
@@ -229,7 +232,8 @@ class Optimizer:
         # critical_path = self.wrap_critical_path(replayer.exct_dag)
         # replayer.dump_critical_path("critical_path_{}.json".format(self.tmp_id), [n for (n, e) in critical_path])
         # self.tmp_id += 1
-        self.clct.byteps_graph.grp_part_id2server = None
+        if self.clct.byteps_graph is not None:
+            self.clct.byteps_graph.grp_part_id2server = None
 
         ### Whether to record the topological order
         if recd_topo_order:

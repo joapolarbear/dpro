@@ -82,7 +82,7 @@ class TensorFusionState:
                         "sliceNum": sliceNum,
                         "channelNum": channelNum,
                         "loopNum": loopNum,
-                        "partNum": loopNum*channelNum*sliceNum*(chunkNum/2 + 1)
+                        "part_num": loopNum*channelNum*sliceNum*(chunkNum/2 + 1)
                     }
                 else:
                     ### some group may not occur in the traces, ref to other groups
@@ -602,7 +602,11 @@ class TensorFusionGraphPass(_BaseGraphPass):
         _dag.remove_nodes_from(nodes_to_rm)
 
         forbidden_list = [_info[2] for _info in pair_all_infos]
-        self._check_dag_not_contain(_dag, forbidden_list, tensor_group_infos)
+        try:
+            self._check_dag_not_contain(_dag, forbidden_list, tensor_group_infos)
+        except:
+            import code
+            code.interact(local=locals())
 
         for n, _ in nodes_to_add:
             self.tsfs_state.update_tensor2grp(n)
@@ -613,10 +617,12 @@ class TensorFusionGraphPass(_BaseGraphPass):
         if self.opt.comm_backend == "NCCL":
             ### select the base_idx, according to loopNum
             if tensor_group_infos[0]["sliceNum"] >= tensor_group_infos[1]["sliceNum"] and \
-                    tensor_group_infos[0]["loopNum"] >= tensor_group_infos[1]["loopNum"]:
+                    tensor_group_infos[0]["loopNum"] >= tensor_group_infos[1]["loopNum"] and \
+                    tensor_group_infos[0]["channelNum"] >= tensor_group_infos[1]["channelNum"]:
                 base_idx = 0
             elif tensor_group_infos[1]["sliceNum"] >= tensor_group_infos[0]["sliceNum"] and \
-                tensor_group_infos[1]["loopNum"] >= tensor_group_infos[0]["loopNum"]:
+                tensor_group_infos[1]["loopNum"] >= tensor_group_infos[0]["loopNum"] and \
+                tensor_group_infos[1]["channelNum"] >= tensor_group_infos[0]["channelNum"]:
                 base_idx = 1
             else:
                 raise ValueError("Invalid tensor group info for {} and {}: {}".format(
@@ -1101,7 +1107,7 @@ class TensorFusionGraphPass(_BaseGraphPass):
                 self.tsfs_state.parse_tensor_group_info(pair_all_infos[1][2])]
             sizes = [grp_info["size"] for grp_info in grp_infos]
             fused_time = self.predict_comm_time(
-                (sizes[0] + sizes[1])/grp_infos[base_idx]["partNum"], pair_all_infos[0][0], pair_all_infos[0][3])
+                (sizes[0] + sizes[1])/grp_infos[base_idx]["part_num"], pair_all_infos[0][0], pair_all_infos[0][3])
         elif pair_all_infos[0][3] in ["QUEUE", "MEMCPY_IN_FUSION_BUFFER", "NCCL_ALLREDUCE", "MEMCPY_OUT_FUSION_BUFFER"]:
             fused_time = FUSION_RATIO * max(_dag.nodes[u_]["avg"], _dag.nodes[v_]["avg"])
         elif pair_all_infos[0][3] in ["Sync"]:
@@ -1132,7 +1138,7 @@ class TensorFusionGraphPass(_BaseGraphPass):
         for idx, new_name in enumerate(new_part_names):
             if all_infos[3] in ["SEND", "RECV"]:
                 part_time = self.predict_comm_time(
-                    grp_infos[idx]["size"]/grp_infos[idx]["partNum"], all_infos[0], all_infos[3])
+                    grp_infos[idx]["size"]/grp_infos[idx]["part_num"], all_infos[0], all_infos[3])
             elif all_infos[3] in ["QUEUE", "MEMCPY_IN_FUSION_BUFFER", "NCCL_ALLREDUCE", "MEMCPY_OUT_FUSION_BUFFER"]:
                 part_time = _dag.nodes[u]["avg"] / FUSION_RATIO
             elif all_infos[3] in ["Sync"]:
@@ -1344,6 +1350,13 @@ class TensorFusionGraphPass(_BaseGraphPass):
                 if "Comm" not in node:
                     continue
                 _pid, _, op_name, sub_op, _ = self._wrap_parse_all_info(node)
+                if self.opt.comm_backend == "NCCL":
+                    if IGNORE_SYNC and "Sync" in node:
+                        G.nodes[node]["avg"] = 0
+                        continue
+                    elif sub_op not in ["SEND", "RECV"]:
+                        continue
+
                 grp_info = self.tsfs_state.parse_tensor_group_info(op_name)
                 tensor_size = int(grp_info["size"] / grp_info["part_num"])
                 tensor_time = self.predict_comm_time(tensor_size, _pid, sub_op)
@@ -1369,11 +1382,6 @@ class TensorFusionGraphPass(_BaseGraphPass):
             else:
                 SingleLogger().info(bcolors.CGREEN + "Test tensor fusion group: use {} tensor groups".format(
                     args_.test_ts_group_num) + bcolors.ENDC)
-
-        if IGNORE_SYNC and self.opt.comm_backend == "NCCL":
-            for n in G.nodes():
-                if "Sync" in n:
-                    G.nodes[n]["avg"] = 0
         
         # self._tensor_level_send_recv_cm()
         self.dump_tensor_grp_mapping(_file_name="tensor_fusion_grp_mapping_init.json")
@@ -1509,7 +1517,8 @@ class TensorFusionGraphPass(_BaseGraphPass):
         self.tsfs_state.dump_tensor_grp_mapping(_file_name)
     
     def dump_tensor_partitions(self, _file_name=None):
-        self.tsfs_state.dump_tensor_partitions(_file_name)
+        if self.enable_partition:
+            self.tsfs_state.dump_tensor_partitions(_file_name)
     
     def if_fusion_better(self, op_name_u, op_name_v, dp_state, _dag, no_theorem=False):
         ''' Decide if fusing two tensors (u, v) is better based on some heuristics
