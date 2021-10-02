@@ -87,6 +87,7 @@ class PlatformName(Enum):
 GAP_STR_OP2OP = "%sGAP%s"%(CatName.OPERATOR.value, CatName.OPERATOR.value)
 GAP_STR_COMM2COMM = "%sGAP%s"%(CatName.COMM.value, CatName.COMM.value)
 GAP_STR_OP2COMM = "%sGAP%s"%(CatName.OPERATOR.value, CatName.COMM.value)
+GAP_STR_COMM2OP = "%sGAP%s"%(CatName.COMM.value, CatName.OPERATOR.value)
 GAP_STR_COMM2SVOP = "%sGAP%s"%(CatName.COMM.value, CatName.PS_SERVER_OPERATOR.value)
 GAP_STR_SVOP2COMM = "%sGAP%s"%(CatName.PS_SERVER_OPERATOR.value, CatName.COMM.value)
 GAP_STR_INTERNODE = "INTERNODEGAP"
@@ -659,7 +660,7 @@ class TraceManager:
             pid_info = prefix_dict[prefix]
 
             ### Check and statistic the LAST iteration
-            if not pid_info["fw_end"] or not pid_info["bw_end"] or not pid_info["bw_start"]:
+            if len(pid_info["iter_multi_steps"]) > 0 and (not pid_info["fw_end"] or not pid_info["bw_end"] or not pid_info["bw_start"]):
                 ### TODO (hhp): ignore the last iteration now, since sometimes the last iteration
                 #   is not completed
                 pass
@@ -813,7 +814,7 @@ class TraceManager:
             # SingleLogger().warn("Fail to find the trace of %s" % unique_name)
             return 0.0
         else:
-            if _field == "avg" and \
+            if _field == "avg" and self.name2sta[unique_name]["avg"] > 0 and \
                 math.sqrt(self.name2sta[unique_name]["var"]) / self.name2sta[unique_name]["avg"] > 1:
                 ### If an operator's execution time is unstable, use median instead
                 self.name2sta[unique_name]["median"]
@@ -889,6 +890,8 @@ class TraceManager:
 
         '''
         assert self.has_prefix(name) or name == "END", name
+        if name not in self.name2sta:
+            return None
         return self.name2sta[name]["step_ids"]
 
 

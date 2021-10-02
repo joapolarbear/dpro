@@ -535,6 +535,7 @@ class MetaInfo:
             if "BW" in _op:
                 self.bw_nodes_in_dag.add(parse_op_name(_op))
                 recur_update_fw2bw(_op)
+        # if "bert" not in self.model_name:
         nx.relabel_nodes(new_graph, relabel_map, copy=False)
 
         self.local_dfg = new_graph

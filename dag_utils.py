@@ -601,7 +601,7 @@ class DAGManager:
                         print(u, v)
                         print(tensor_id)
                         print(self.nccl_graph.nccl_fusion["grp_names"])
-                    raise
+                    continue
                 
                 if VIRTUAL_SYNC_OP:
                     nccl_grp_name_sync = nccl_grp_name

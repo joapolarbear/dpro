@@ -27,6 +27,7 @@ GAP_THRESHOLD_COMP = 1000
 GAP_THRESHOLD_COMM = 1000
 
 ### Clock Sychronization mode
+#   -1: no sync
 #   0: based on sync op
 #   1: based on constraints, objective: mean square error
 #   2: based on constraints, objective: recv dur close to median
@@ -843,7 +844,7 @@ class Collector(object):
 
     def _collect_bps_graph(self, force_):
         byteps_cache_path = self.pm.search(FileName.BYTEPS_CACHE)
-        if byteps_cache_path is not None:
+        if byteps_cache_path is not None and not force_:
             SingleLogger().info("Inited BytePS graph helper from cache: {}.".format(byteps_cache_path))
             self.byteps_graph.init_from_cache(byteps_cache_path)
         else:
@@ -906,7 +907,7 @@ class Collector(object):
             else:
                 SingleLogger().info("Found BytePS server trace file in {}".format(byteps_server_trace_path))
             # initialize BytePS graph helper
-            self.byteps_graph.init(byteps_comm_detail_path, byteps_server_trace_path, van_type=args_.van_type)
+            self.byteps_graph.init(byteps_comm_detail_path, byteps_server_trace_path, van_type=args_.van_type, align_trace=(SYNC_MODE >= 0))
 
     def clock_align(self, traces_list, host_ids=None, fix_bias=None):
         SingleLogger().info("Combine and align traces ...")
@@ -1041,6 +1042,12 @@ class Collector(object):
                 nrank += len(worker_dirs)
             critical_path = [None] * nrank
             worker_dag_list = [None] * nrank
+        
+        # if len(worker_dag_list) > 32:
+        #     critical_path = [None]
+        #     worker_dag_list = [None]
+        #     SingleLogger().warn(bcolors.CRED + "Large cluster with {} ranks, use one rank to simulate".format(len(worker_dag_list)) + bcolors.ENDC)
+        #     self.single = True
 
         if self.single:
             worker_path = os.path.join(self.pm.path, self.pm.dirs[0])
@@ -1161,7 +1168,8 @@ class Collector(object):
         self.add_avg_to_nodes()
         self.add_gap_to_nodes()
         if self.comm_backend == "NCCL":
-            self.clip_recv_events()
+            if SYNC_MODE >= 0:
+                self.clip_recv_events()
 
     def calculate_bandwidth(self):
         ### TODO (hhp): how to select pid who is involved to inter-node communication
@@ -1309,11 +1317,12 @@ class Collector(object):
             elif mode == 2:
                 
                 ### TODO (huhanpeng): parse from metadta
-                raise NotImplementedError()
-                hosts_grouped_by_node = [
-                    [0, 1, 2],
-                    [3, 4, 5, 6, 7]
-                ]
+                # raise NotImplementedError()
+                # hosts_grouped_by_node = [
+                #     [0, 1, 2],
+                #     [3, 4, 5, 6, 7]
+                # ]
+                hosts_grouped_by_node = []
 
                 obj1 = 0
                 scale1 = 0
@@ -1337,6 +1346,8 @@ class Collector(object):
                             dur_after_clip = (recv_end_t_l[idx] + drift_list[recv_host_l[idx]]) \
                                 - (sent_ts_l[idx] + drift_list[send_host_l[idx]])
                             dur_list.append(dur)
+                    if len(dur_list) == 0:
+                        continue
                     _sum = cp.sum(dur_list)
                     _ave = _sum / len(dur_list)
                     for dur in dur_list:
@@ -1412,6 +1423,9 @@ class Collector(object):
     def add_gap_to_nodes(self):
         ''' Add gaps for each node '''
         SingleLogger().info("Add gap to dependency DAG nodes...")
+        ### A dict to count the operators appear in the same pid
+        #   key is the pid, value is a cat to event dict, 
+        #   each event is the latest event of this cat in this pid 
         prev_events_dict = {}
         for idx, event in enumerate(self.traceM.traces):
             if self.traceM._is_ignore_for_sta(event):
@@ -1429,19 +1443,21 @@ class Collector(object):
             else:
                 ### BYTEPS
                 is_need_intra_device_gap = (cat_ in cur_pid_dict and (cat_ == CatName.OPERATOR.value or cat_ == CatName.COMM.value))
-            ### calculate inter-device gaps, for BW -> Comm, only for one step
+            
+            ### Count inter-device gaps, for BW -> Comm, only for one step
             if event["args"]["step"] == self.traceM.opt_step:
                 if "Comm" in event["name"] and "Sync" not in event["name"]:
                     __prefix = event["pid"]
                     if self.comm_backend == "NCCL":
-                        if "first_comm_op" in prev_events_dict[__prefix]:
+                        if "first_comm_op" in cur_pid_dict:
                             continue
                         else:
                             ### Handle the gap between BW and the first Comm node
                             ### The gap is added to Sync nodes
-                            prev_events_dict[__prefix]["first_comm_op"] = event["name"]
+                            cur_pid_dict["first_comm_op"] = event["name"]
                             node_ = self.traceM.ret_unique_name(event)
-
+                            if self.single and node_ not in self.trail_dag.nodes:
+                                continue
                             bw_nodes = []
                             _to_process = list(self.trail_dag.predecessors(node_))
                             while len(_to_process) >0:
@@ -1460,9 +1476,9 @@ class Collector(object):
                             assert len(u_idx_l) > 0, (node_, bw_nodes)
                             bw_traces = [self.traceM.traces[u_idxs[self.traceM.opt_step]] for u_idxs in u_idx_l]
                             last_bw_time = max([trace["ts"] + trace["dur"] for trace in bw_traces])
-                            gap = event["ts"] - last_bw_time
-                            assert gap > 0, (bw_nodes)
-                            prev_events_dict[__prefix][GAP_STR_OP2COMM] = gap
+                            gap = max(0, event["ts"] - last_bw_time)
+                            # assert gap > 0, (bw_nodes)
+                            cur_pid_dict[GAP_STR_OP2COMM] = gap
 
                     if self.comm_backend == "BYTEPS":
                         if "PUSH_REQ" not in event["name"]:
@@ -1494,7 +1510,28 @@ class Collector(object):
                             gap = max(event["ts"] - last_bw_time, 0)
                             assert gap >= 0, (bw_nodes)
                             prev_events_dict[__prefix][GAP_STR_OP2COMM] = gap
-            ### calculate intra-device gaps
+                
+                if self.comm_backend == "NCCL":
+                    if "UPDATE_" in event["name"]:
+                        node_ = self.traceM.ret_unique_name(event)
+                        if self.single and node_ not in self.trail_dag.nodes:
+                            continue
+                        last_comm_event = None
+                        for pred in self.trail_dag.predecessors(node_):
+                            if "Comm." in pred:
+                                op_name = parse_op_name(pred)
+                                tensor_list = op_name.split("+")
+                                if "0" in tensor_list:
+                                    idx_list = self.traceM.map_name2idxlist(pred)
+                                    if idx_list is None or len(idx_list) <= 0:
+                                        continue
+                                    last_comm_event = self.traceM.traces[idx_list[self.traceM.opt_step]]
+                                    gap = event["ts"] - (last_comm_event["ts"] + last_comm_event["dur"])
+                                    SingleLogger.info(bcolors.CYELLOWBG + "add {} gap to {}: {}".format(GAP_STR_COMM2OP, pred, gap))
+                                    self.trail_dag.nodes[node_][GAP_STR_COMM2OP] = gap
+                                    break
+
+            ### Count intra-device gaps
             if is_need_intra_device_gap:
                 ### There are some prev events with the same pid and find-grained cat
                 prev_e = cur_pid_dict[cat_]
@@ -1511,8 +1548,17 @@ class Collector(object):
                     ### TODO (huhanpeng): test whether to use this threshold
                     if gap < 0:
                         continue
-                    if self.comm_backend == "NCCL" and gap > prev_e["dur"]:
-                        gap = 10
+                    if gap > prev_e["dur"]:
+                        if self.comm_backend == "NCCL":
+                            if "bert" in self.para_dict.parse_model_name():
+                                if "UPDATE_" in prev_e["name"]:
+                                    gap = 10
+                                else:
+                                    pass
+                            else:
+                                gap = 10
+                    # if self.comm_backend == "NCCL" and  and \
+                    #     not ("bert" in self.para_dict.parse_model_name()):
                     if gap < gap_threshold or self.comm_backend == "NCCL":
                         prev_name = self.traceM.ret_unique_name(prev_e)
                         if prev_name not in self.trail_dag.nodes:
@@ -1527,13 +1573,13 @@ class Collector(object):
 
         queue_type_ = QueueType().ret_list()[0]
         for node_ in self.trail_dag.nodes:
-            ### calculate intra-device gaps
+            ### Calculate intra-device gaps
             if GAP_STR_OP2OP in self.trail_dag.nodes[node_]:
                 self.trail_dag.nodes[node_][GAP_STR_OP2OP] /= self.trail_dag.nodes[node_]["cnt"]
             if GAP_STR_COMM2COMM in self.trail_dag.nodes[node_]:
                 self.trail_dag.nodes[node_][GAP_STR_COMM2COMM] /= self.trail_dag.nodes[node_]["cnt"]
 
-            ### calculate inter-device gaps,
+            ### Calculate inter-device gaps,
             if self.comm_backend == "NCCL":
                 if "Sync" in node_:
                     prefix_ = parse_pid_from_name(node_)

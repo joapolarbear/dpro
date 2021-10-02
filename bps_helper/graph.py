@@ -153,7 +153,7 @@ class bytepsGraph:
 
         self.grp_part_id2server = None
 
-    def init(self, comm_trace_path, server_trace_path, van_type="ZMQ"):
+    def init(self, comm_trace_path, server_trace_path, van_type="ZMQ", align_trace=True):
         if van_type not in ["ZMQ", "RDMA"]:
             raise ArgumentError("Unknown van type: {}".format(van_type))
         self.van_type = van_type
@@ -180,10 +180,11 @@ class bytepsGraph:
         # parse tensor assignment information
         self._parse_trace()
         self._build_comm_graph()
-        if van_type == "ZMQ":
-            self._align_traces_zmq()
-        else:
-            self._align_traces_rdma()
+        if align_trace:
+            if van_type == "ZMQ":
+                self._align_traces_zmq()
+            else:
+                self._align_traces_rdma()
         self._calc_comm_delays()
         self._dump_cache()
         self._inited = True
@@ -701,6 +702,10 @@ class bytepsGraph:
             for st, ed in durations:
                 min_start_time = min(min_start_time, st)
                 if st != ed:
+                    if st > ed:
+                        # SingleLogger().warn("Tensor {}::{}->{}_{}, st - ed = {}".format(
+                        #     source, target, tensor_name, op, st - ed))
+                        continue
                     intervals[(source, target)][st:ed] = (tensor_name, op)
             if op == PS_COMM_OPS.PUSH_REQ:
                 if (source, target) not in push_req_ops:
@@ -1012,6 +1017,8 @@ class bytepsGraph:
                     if source not in interval:
                         interval[source] = IntervalTree()
                     if st != ed:
+                        if st > ed:
+                            continue
                         interval[source][st:ed] = tensor_name
                 if source not in push_req_ops:
                     push_req_ops[source] = {}

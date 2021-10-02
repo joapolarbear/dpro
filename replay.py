@@ -177,6 +177,8 @@ class Device:
         if gap < 0:
             raise RuntimeError(
                 "Negative GAP detected: {}, gap = {}".format(name, gap))
+        # TODO (huhanpeng): decide the minimun gap automatically
+        # self.device_time = _end_time + max(gap, 20)
         self.device_time = _end_time + gap
 
     def mark_as_exct(self, name, _start_t, _end_time):
@@ -367,6 +369,8 @@ class Replayer:
 
         self.name2mapping_fn = name2mapping_fn
 
+        self.allow_comm_init_frontier = False
+
     def ret_topo_ord(self):
         assert self.replay_done, "The DFG has not been replayed."
         return self.topo_ord
@@ -406,8 +410,11 @@ class Replayer:
         ### prepare nodes to be executed on each device
         for n, _status in self.node_status.items():
             if _status["in_degree"] == 0:
-                if not self.partial and CatName.COMM.value in n:
-                    raise RuntimeError("Invalid nodes {} with in_degree=0".format(n))
+                if not self.allow_comm_init_frontier and not self.partial and CatName.COMM.value in n:
+                    if input("Invalid nodes {} with in_degree=0, Continue: (Y/n)".format(n)).lower() in ["", "y", "yes"]:
+                        self.allow_comm_init_frontier = True
+                    else:
+                        exit(1)
                 pid = parse_pid_from_name(n)
                 _last_end = self.step_end_time[pid] if _status["ready"] is None else _status["ready"]
                 self.insert_next_node(n, _last_end)
@@ -534,12 +541,12 @@ class Replayer:
                     cat = parse_cat_from_name(n)
                 device_id = gen_long_name(pid, cat)
             else:
-                # if "SEND" in n or "RECV" in n:
-                #     device_id = gen_long_name(pid, cat)
-                if "SEND" in n:
-                    device_id = gen_long_name(pid, cat, "SEND")
-                elif "RECV" in n:
-                    device_id = gen_long_name(pid, cat, "RECV")
+                if "SEND" in n or "RECV" in n:
+                    device_id = gen_long_name(pid, cat)
+                # if "SEND" in n:
+                #     device_id = gen_long_name(pid, cat, "SEND")
+                # elif "RECV" in n:
+                #     device_id = gen_long_name(pid, cat, "RECV")
                 elif "Sync" in n:
                     device_id = gen_long_name(pid, cat, "Sync")
                 else:

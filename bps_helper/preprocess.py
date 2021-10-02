@@ -286,6 +286,9 @@ def preprocess_pcap(pcap_paths, process_names_list, node_ip_to_rank,
 
 ############################# TIME STAMP PARSING ###############################
 
+SIMULATE_TIME_DRIFT = None
+# SIMULATE_TIME_DRIFT = [10*1000, 17]
+
 def __parse_timestamp_logs(log_lines, key_to_tensor_name):
     # parse header
     node_metas = []
@@ -324,6 +327,11 @@ def __parse_timestamp_logs(log_lines, key_to_tensor_name):
             is_req = True
         else:
             is_req = False
+        
+        if SIMULATE_TIME_DRIFT is not None and \
+            int(node_metas[0]["id"]) == SIMULATE_TIME_DRIFT[1]:
+            ts += SIMULATE_TIME_DRIFT[0]
+
         if tid in key_to_tensor_name:
             if (sender, recver) not in logs:
                 logs[(sender, recver)] = []
