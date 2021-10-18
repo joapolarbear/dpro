@@ -193,3 +193,24 @@ You can also configure to fuse tensors to multiple tensor groups, by
     ]
 }
 ```
+
+# 3rdparty version
+
+## Frameworks
+* [MXNet](https://github.com/joapolarbear/incubator-mxnet/tree/mlsys2022)
+* [TensorFlow](https://github.com/joapolarbear/tensorflow/tree/mlsys2022)
+* [BytePS](https://github.com/joapolarbear/byteps/tree/mlsys2022)
+* [pslite](https://github.com/joapolarbear/ps-lite/tree/mlsys2022)
+* [ZMQ](https://github.com/chenyu-jiang/libzmq/commit/5ed25589f000dc613e1a8575ba193eb78eb9b86e)
+* [Horovod](https://github.com/joapolarbear/horovod/tree/mlsys2022)
+* [NCCL](https://github.com/joapolarbear/nccl/tree/mlsys2022)
+
+
+## Benchmarks
+* [BERT]( https://github.com/joapolarbear/bert/tree/mlsys2022)
+* [gluon-nlp](https://github.com/joapolarbear/gluon-nlp/tree/mlsys2022)
+
+## Tools
+* [spdlog](https://github.com/gabime/spdlog/commit/6aafa89d20eef25ec75462ffb7eedc328f135638)
+* [nvprof2json](https://github.com/joapolarbear/nvprof2json): convert nvprof results to JSON format
+* [catapult](https://github.com/joapolarbear/catapult): convert JSON files to a HTML in the format of chrome://tracing.
