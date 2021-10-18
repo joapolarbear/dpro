@@ -13,6 +13,10 @@ from trace_utils import gen_long_name, parse_allinfo_from_name, parse_cat_fine_g
     parse_cat_from_name, parse_op_name, parse_pid_from_name, CatName, parse_rawname
 
 DEBUG = False
+DISABLE_LAYER_VIEW=False
+DISABLE_CRITICAL_PATH=False
+DISABLE_SYMMETRY=False
+DISABLE_PARTIAL_REPLAY=False
 
 class DPState:
     def __init__(self, opt):
@@ -113,6 +117,11 @@ class DPOptimizer(Optimizer):
         if self.opfs_pass is not None:
             self.opfs_pass.explore_fusion = False
             self.opfs_pass.enable_partition = False
+        
+        if DISABLE_SYMMETRY:
+            self.disable_symmetry = True
+        if DISABLE_PARTIAL_REPLAY:
+            self.disable_partial_replay = True
     
     def current_op_in_graph(self, original_name) -> str:
         return self.op2cur_op[original_name]
@@ -376,7 +385,7 @@ class DPOptimizer(Optimizer):
                 
                 fused_comp_op = None
                 if self.opfs_pass is not None and self.tsfs_pass is not None:
-                    if "BW." not in node_n:
+                    if not DISABLE_LAYER_VIEW and "BW." not in node_n:
                         continue
                     _pred = prev_node
                     t_null = self.estimate_time_related_to_comp([_pred, node_n], G_star)
@@ -454,7 +463,7 @@ class DPOptimizer(Optimizer):
                             ### Update DP states after operator fusion
                             dp_state.update_state_opfs(opfs_time)
                             
-                            if self.tsfs_pass is not None:
+                            if not DISABLE_LAYER_VIEW and self.tsfs_pass is not None:
                                 tensor_op_names = self.comm_succs_of_comp_in_op_name(fused_comp_op, G_star)
                                 if len(tensor_op_names) > 1:
                                     assert len(tensor_op_names) == 2, tensor_op_names
@@ -484,7 +493,7 @@ class DPOptimizer(Optimizer):
                             if self.tsfs_pass is not None:
                                 tensor_name_list = self.comm_succs_of_comp_in_op_name(node_n, G_star)
                                 if self.tsfs_pass.enable_partition and len(tensor_name_list) > 0:
-                                    assert len(tensor_name_list) == 1, (node_n, tensor_name_list)
+                                    assert not DISABLE_LAYER_VIEW and len(tensor_name_list) == 1, (node_n, tensor_name_list)
                                     tensor_name_v = tensor_name_list.pop()
                                     k_star, ts_part_time = self.tsfs_pass.best_partition_partial_replay(
                                         tensor_name_v, G_star, no_throrem=True)
@@ -510,10 +519,18 @@ class DPOptimizer(Optimizer):
                     if self.tsfs_pass is None:
                         continue
 
-                    assert len(tensor_u) == 1, (prev_node, tensor_u)
-                    assert len(tensor_v) == 1, (node_n, tensor_v)
-                    op_name_u = tensor_u.pop()
-                    op_name_v = tensor_v.pop()
+                    if DISABLE_LAYER_VIEW:
+                        op_name_u = tensor_u.pop()
+                        if len(tensor_u) > 0:
+                            op_name_v = tensor_u.pop()
+                        else:
+                            op_name_v = tensor_v.pop()
+                    else:
+                        assert len(tensor_u) == 1, (prev_node, tensor_u)
+                        assert len(tensor_v) == 1, (node_n, tensor_v)
+                        op_name_u = tensor_u.pop()
+                        op_name_v = tensor_v.pop()
+
                     if op_name_u != op_name_v:
                         print(op_name_u, op_name_v)
                         is_fuse_better, k_star, t_sync_fuse, t_sync_null = self.tsfs_pass.if_fusion_better(
@@ -548,7 +565,7 @@ class DPOptimizer(Optimizer):
                             dp_state.update_state_tsfs(tsfs_time)
 
                             ### TODO (HHP): fuse corresponding operatos
-                            if self.opfs_pass is not None:
+                            if not DISABLE_LAYER_VIEW and self.opfs_pass is not None:
                                 assert len(_bw_pred_list_v) == 1 and len(_bw_pred_list_u) == 1, (_bw_pred_list_v, _bw_pred_list_u)
                                 succeed, nodes_introduced = self.try_to_apply_opfs(_bw_pred_list_u[0], _bw_pred_list_v[0], G_star, PKG_star, applied_sts)
                                 if succeed:

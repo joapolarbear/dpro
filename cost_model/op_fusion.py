@@ -30,6 +30,7 @@ args_ = arg_utils.SingleArg().args
 FUSION_TIME_ESTIMATE_RATIO = 0.8
 FORCE_ESTIMATE_FUSION_TIME = False
 ENABLE_PRUNING = False
+NAIVE_SIMULATE = False
 
 class AttrCache():
     def __init__(self):
@@ -745,11 +746,12 @@ class XLAGraphPass(_BaseGraphPass):
         fused_u_: a str of fused names with layer index
         '''
         if FORCE_ESTIMATE_FUSION_TIME or simulate:
-            # _sum = 0
-            # origin_nodes = self._get_defused_node_names(fused_u_)
-            # for idx in range(len(origin_nodes) - 1):
-            #     _sum += self.node_attr_cache[origin_nodes[idx]]["avg"]
-            # return _sum * FUSION_TIME_ESTIMATE_RATIO + self.node_attr_cache[origin_nodes[-1]]["avg"]
+            if NAIVE_SIMULATE:
+                _sum = 0
+                origin_nodes = self._get_defused_node_names(fused_u_)
+                for idx in range(len(origin_nodes) - 1):
+                    _sum += self.node_attr_cache[origin_nodes[idx]]["avg"]
+                return _sum * FUSION_TIME_ESTIMATE_RATIO + self.node_attr_cache[origin_nodes[-1]]["avg"]
             my_env = os.environ.copy()
             my_env["CUDA_VISIBLE_DEVICES"] = '0'
             if "BYTEPS_TRACE_ON" in my_env:

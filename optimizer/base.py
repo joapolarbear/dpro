@@ -128,6 +128,9 @@ class Optimizer:
         self.base_cost, self.exct_dag, self.base_mem_usage = self.evaluate(
             self.dag, _path=os.path.join(ROOT_PATH, "searched_graph/base.json"))
 
+        self.disable_symmetry = False
+        self.disable_partial_replay = False
+
     def relabel_dag_node(self, _dag) -> nx.DiGraph:
         def relabel_func(old_label):
             if ("BW" in old_label or "FW" in old_label or "Comm" in old_label or "UPDATE" in old_label) and "^" not in old_label:
@@ -165,6 +168,8 @@ class Optimizer:
         return int(name_.split("[")[1].split("]")[0])
     
     def _debug_convert_to_other_machines(self, name_):
+        if self.disable_symmetry:
+            return []
         if not "+" in name_:
             ret = []
             if args_.relabel:
@@ -576,6 +581,10 @@ class Optimizer:
                 # traces_0.rank1->UPDATE_.Distributed_Push_Pull/truediv_212
 
     def estimate_time_involved_nodes(self, _dag, all_involved_nodes, dump_path):
+        if self.disable_partial_replay:
+            sub_graph = _dag
+        else:
+            sub_graph = _dag.subgraph(all_involved_nodes)
         sub_graph = _dag.subgraph(all_involved_nodes)
         replayer = Replayer(dag=sub_graph, _step_num=1,
                             leaf_dirs=self.clct.all_prefix_list(),
