@@ -21,7 +21,7 @@ parser.add_argument("--debug_traces", action="store_true", help="If set, output 
 
 ### collect
 group_clct = parser.add_argument_group('Trace Collection')
-group_clct.add_argument("--comm_backend", type=str, default="NCCL", choices=["NCCL", "BYTEPS"], help="Communication backend")
+group_clct.add_argument("--comm_backend", type=str, default="NCCL", choices=["NCCL", "BYTEPS", "NONE"], help="Communication backend")
 group_clct.add_argument("--platform", type=str, default="TENSORFLOW", choices=["TENSORFLOW", "MXNET"], help="Platform used to run the model")
 group_clct.add_argument("--nccl_algo", type=str, default=None, help="NCCL algorithm, Tree or Ring")
 group_clct.add_argument("--trace_level", type=str, choices=["debug", "info"], default="info", help="if set to debug, show some trival traces")

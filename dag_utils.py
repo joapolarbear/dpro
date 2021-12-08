@@ -222,7 +222,7 @@ class DAGManager:
     └─────────┘                                                                                                                               
                                                                                        
     '''
-    def __init__(self, path, traceM, nccl_graph=None, byteps_graph=None, platform="TENSORFLOW", single=False, metadata=None):
+    def __init__(self, path, traceM, nccl_graph=None, byteps_graph=None, platform="TENSORFLOW", single=False):
         self.pm = PathManager(path)
         self.platform = platform
         ### traceM's DirLevel = TRAIL
@@ -238,16 +238,14 @@ class DAGManager:
         self._topo_sort = []
         self.topo_sorts = []
 
-        ### For fine-grained communication dependency
-        # one and only one of NCCL_GRAPH or BYTEPS_GRAPH can be set at a time
-        assert (nccl_graph or byteps_graph) and not (nccl_graph and byteps_graph)
-        self.nccl_graph = nccl_graph
-        self.byteps_graph = byteps_graph
-
         ### is the dag for single rank
         self.single = single
 
-        self.metadata = metadata
+        ### For fine-grained communication dependency
+        # one and only one of NCCL_GRAPH or BYTEPS_GRAPH can be set at a time
+        assert self.single or ((nccl_graph or byteps_graph) and not (nccl_graph and byteps_graph))
+        self.nccl_graph = nccl_graph
+        self.byteps_graph = byteps_graph
 
     def wrap_add_dag(self, u, v):
         self.dag.append((u, v))
@@ -654,7 +652,9 @@ class DAGManager:
                 self._process_edge_byteps(mygraph, queue_type_list, u, v)
             elif self.nccl_graph is not None:
                 self._process_edge_nccl(mygraph, queue_type_list, u, v, para_dict=para_dict, pre_nodes=pre_nodes, post_nodes=post_nodes)
-
+            elif self.single:
+                self._process_edge_nccl(mygraph, queue_type_list, u, v, para_dict=para_dict, pre_nodes=pre_nodes, post_nodes=post_nodes)
+                
         if self.byteps_graph is not None and self.platform == "MXNET":
             for update_id in range(para_dict.tensor_id2update_id("max") + 1):
                 update_name = self.add_prefix("UPDATE_%d"%update_id)

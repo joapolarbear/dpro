@@ -1,3 +1,4 @@
+from multiprocessing import Value
 import networkx as nx
 import random
 import time
@@ -68,7 +69,7 @@ class Optimizer:
         self.platform = self.clct.platform
         self.comm_backend = self.clct.comm_backend
         self.memory_estimator = MemoryEstimator(self.platform)
-        self.cord_pid = "host0.rank0" if self.clct.comm_backend == "NCCL" else "traces_0.rank0"
+        self.cord_pid = gen_pid_name(self.comm_backend, None, None)
 
         self.step = 0
         if args_.relabel:
@@ -541,7 +542,7 @@ class Optimizer:
                 if "Comm" in _succ:
                     comm_t += ret_comm_time(_succ)
             return comm_t
-        else:
+        elif self.comm_backend == "BYTEPS":
             ### PS
             local_dfg = self.clct.dag
             bw_op_std_names = [parse_rawname(_op) for _op in bw_op.split("+")]
@@ -579,7 +580,9 @@ class Optimizer:
                 return comm_delay_in_ms
 
                 # traces_0.rank1->UPDATE_.Distributed_Push_Pull/truediv_212
-
+        else:
+            raise ValueError(self.comm_backend)
+            
     def estimate_time_involved_nodes(self, _dag, all_involved_nodes, dump_path):
         if self.disable_partial_replay:
             sub_graph = _dag

@@ -1,3 +1,4 @@
+from multiprocessing import Value
 import networkx as nx
 import os
 import pickle
@@ -85,10 +86,12 @@ class TensorFusionState:
                 else:
                     ### some group may not occur in the traces, ref to other groups
                     grp_info = self.parse_tensor_group_info(ref).copy()
-            else:
+            elif self.opt.comm_backend == "BYTEPS":
                 grp_info = {
                         "part_num": len(self.opt.clct.byteps_graph.partition_dict.get(op_name, ['0']))
                     }
+            else:
+                raise ValueError("Unsupported comm backend {} for tensor fusion".format(self.opt.comm_backend))
 
             total_size = self._tensor_grp_size(op_name)
             grp_info["size"] = total_size
@@ -415,7 +418,7 @@ class TensorFusionGraphPass(_BaseGraphPass):
                         residual = tensor_ids
                     else:
                         residual = []
-        else:
+        elif self.opt.comm_backend == "NCCL":
             residual_list = [] # a list of the list of tensor ids
             residual_num = 0
             for grp in groups:
@@ -451,6 +454,8 @@ class TensorFusionGraphPass(_BaseGraphPass):
                     else:
                         residual_list = []
                         residual_num = 0
+        else:
+            raise ValueError("Unsupported comm backend {} for tensor fusion".format(self.opt.comm_backend))
 
         SingleLogger().info("From {} groups to {} groups, apply {} strategies in totoal ...".format(self.tsfs_state.num_grp, num_grp, len(trajectory)))
         rst = [True, [], []]
@@ -477,7 +482,7 @@ class TensorFusionGraphPass(_BaseGraphPass):
             self._tensor_partition(G, PKG, grp, new_part_num)
 
     def _tensor_defusion(self, _dag, _pkg: PKGraph, u, loc):
-        if self.opt.comm_backend == "BYTEPS":
+        if self.opt.comm_backend == "BYTEPS" or self.opt.comm_backend == "NONE":
             raise NotImplementedError()
         ### need to use original local DFG to parse dependency info
         local_dfg = self.opt.clct.dag
@@ -1325,7 +1330,7 @@ class TensorFusionGraphPass(_BaseGraphPass):
             send_sub_op = PS_COMM_OPS.PUSH_REQ
             recv_sub_op = PS_COMM_OPS.PULL_REQ
         else:
-            raise
+            raise ValueError()
         for _dict in self.pid_to_cm.values():
             if send_sub_op in _dict and _dict[send_sub_op]["param"] is not None:
                 send_slope_list.append(_dict[send_sub_op]["param"][0][0])

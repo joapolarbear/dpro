@@ -81,7 +81,8 @@ class Collector(object):
         self.traceM = None
         self.comm_backend = comm_backend.upper()
         self.platform = platform.upper()
-        if self.comm_backend not in ["NCCL", "BYTEPS"]:
+        if self.comm_backend not in ["NCCL", "BYTEPS", "NONE"]:
+            ### "None" denotes single-gpu cases
             raise RuntimeError("Unsupported communication backend {}. Must use NCCL or BytePS.".format(self.comm_backend))
         if self.platform not in ["MXNET", "TENSORFLOW"]:
             raise RuntimeError("Unsupported platform {}. Must be one of MXNET or TENSORFLOW.".format(self.platform))
@@ -89,7 +90,7 @@ class Collector(object):
         self.byteps_graph = None
         if self.comm_backend == "NCCL":
             self.nccl_graph = ncclGraph()
-        else:
+        elif self.comm_backend == "BYTEPS":
             # BYTEPS
             self.byteps_graph = bytepsGraph()
 
@@ -100,7 +101,6 @@ class Collector(object):
         self.dag = None
         self.para_dict = None
         self.trail_dag = None # global dag
-        self.single = False # use to denote whether this is a single-GPU trial
 
     def _collect_rank_traces(self, *args):
         tmp_pm, pid, host_id = args[0]
@@ -114,7 +114,7 @@ class Collector(object):
         assert tmp_pm.dir_level == DirLevel.GPU
         add_trace_safe(self._collect_rank_comp(tmp_pm, pid, host_id))
         add_trace_safe(self._collect_rank_io(tmp_pm, pid, host_id))
-        if not self.single:
+        if self.comm_backend != "NONE":
             add_trace_safe(self._collect_rank_comm_detail(tmp_pm, pid, host_id))
             add_trace_safe(self._collect_rank_comm(tmp_pm, pid, host_id))
         return self.rst_traces, self.ref_name, self.ref_time, self.raw_name2IDnum
@@ -929,7 +929,7 @@ class Collector(object):
             traceM.ret_stat()
             return
         elif isinstance(traces_list[0], list):
-            if self.single:
+            if self.comm_backend == "NONE":
                 assert len(traces_list) == 1
                 return traces_list[0]
             rst = []
@@ -959,7 +959,6 @@ class Collector(object):
         assert self.pm.dir_level == DirLevel.TRIAL
 
         arg_list = []
-        self.single = False
         if self.comm_backend == "NCCL":
             self.nccl_graph.map_host_prefix_id(self.pm.dirs)
         for _dir in self.pm.dirs:
@@ -968,21 +967,21 @@ class Collector(object):
             worker_dirs = sorted([_d for _d in worker_dirs if not _d.startswith(".")])
 
             if len(self.pm.dirs) * len(worker_dirs) == 1:
-                self.single = True
+                self.comm_backend == "NONE"
 
             for __dir in worker_dirs:
                 self.time_dict = {"traceEvents":[]} 
                 gpu_path = os.path.join(worker_root, __dir)
-                tmp_pm, pid, host_id_str = PathManager(gpu_path), str(_dir)+".rank%s"%__dir, _dir
+                tmp_pm, pid, host_id_str = PathManager(gpu_path), gen_pid_name(self.comm_backend, _dir, __dir), _dir
                 arg_list.append([tmp_pm, pid, host_id_str])
-                if not self.single and self.comm_backend == "NCCL":
+                if self.comm_backend == "NCCL":
                     self._collect_nccl_graph(tmp_pm, pid, host_id_str)
         with multiprocessing.Pool(len(arg_list)) as p:
             rst = p.map(self._collect_rank_traces, arg_list)
         traces_list, ref_name_list, ref_time_list, raw_name2IDnum_list = zip(*rst)
 
         host_ids = None
-        if self.single:
+        if self.comm_backend == "NONE":
             host_ids = [self.nccl_graph.host_prefix2id[host_id_str] for _, _, host_id_str in arg_list]
         elif self.comm_backend == "NCCL":
             host_ids = [self.nccl_graph.host_prefix2id[host_id_str] for _, _, host_id_str in arg_list]
@@ -1003,7 +1002,6 @@ class Collector(object):
                 # assert host_id in self.byteps_graph.time_drift, (host_id, self.byteps_graph.time_drift)
         ### align the time
         rst_traces = self.clock_align(traces_list, host_ids, fix_bias=(None if ALIGN_BASED_SYNC else 0))
-        # self.single = (len(rst) == 1)
 
         if self.comm_backend == "NCCL" and not args_.pretty:
             self.nccl_graph.print_graph()
@@ -1022,7 +1020,7 @@ class Collector(object):
 
     def _collect_rank_dag(self, gpu_path, worker_dag_list, critical_path, index):
         SingleLogger().info("Collect DAG in %s ..." % (gpu_path))
-        dagmanager = DAGManager(gpu_path, self.traceM, self.nccl_graph, self.byteps_graph, platform=self.platform, metadata=self.para_dict)
+        dagmanager = DAGManager(gpu_path, self.traceM, self.nccl_graph, self.byteps_graph, platform=self.platform)
         max_para_degree, _critical_path = dagmanager.gen_gpu_dag(self.dag, _pretty=args_.pretty, para_dict=self.para_dict)
         worker_dag_list[index] = dagmanager.dag
         critical_path[index] = _critical_path
@@ -1034,7 +1032,7 @@ class Collector(object):
         if self.comm_backend == "NCCL":
             critical_path = [None] * self.nccl_graph.nrank
             worker_dag_list = [None] * self.nccl_graph.nrank
-        else:
+        elif self.comm_backend == "BYTEPS":
             nrank = 0
             for _dir in self.pm.dirs:
                 worker_path = os.path.join(self.pm.path, _dir)
@@ -1042,14 +1040,18 @@ class Collector(object):
                 nrank += len(worker_dirs)
             critical_path = [None] * nrank
             worker_dag_list = [None] * nrank
-        
+        else:
+            ### Single-GPU case
+            critical_path = [None]
+            worker_dag_list = [None]
+
         # if len(worker_dag_list) > 32:
         #     critical_path = [None]
         #     worker_dag_list = [None]
         #     SingleLogger().warn(bcolors.CRED + "Large cluster with {} ranks, use one rank to simulate".format(len(worker_dag_list)) + bcolors.ENDC)
-        #     self.single = True
+        #     self.comm_backend = "NONE"
 
-        if self.single:
+        if self.comm_backend == "NONE":
             worker_path = os.path.join(self.pm.path, self.pm.dirs[0])
             gpu_path = os.path.join(worker_path, first_valid_dir(worker_path))
             worker_dag_list = [None]
@@ -1093,9 +1095,11 @@ class Collector(object):
 
         if self.comm_backend == "NCCL":
             nccl_graph_path = self.pm.search(FileName.NCCL_GRAPH)
-        else:
+        elif self.comm_backend == "BYTEPS":
             nccl_graph_path = None
             self._collect_bps_graph(force_)
+        else:
+            nccl_graph_path = None
             
         ### Collect metadata
         self.collect_para_dict()
@@ -1440,10 +1444,12 @@ class Collector(object):
             if self.comm_backend == "NCCL":
                 ### Calculate gaps for operator nodes now
                 is_need_intra_device_gap = (cat_ in cur_pid_dict and cat_ == CatName.OPERATOR.value)
-            else:
+            elif self.comm_backend == "BYTEPS":
                 ### BYTEPS
                 is_need_intra_device_gap = (cat_ in cur_pid_dict and (cat_ == CatName.OPERATOR.value or cat_ == CatName.COMM.value))
-            
+            else:
+                is_need_intra_device_gap = False
+
             ### Count inter-device gaps, for BW -> Comm, only for one step
             if event["args"]["step"] == self.traceM.opt_step:
                 if "Comm" in event["name"] and "Sync" not in event["name"]:
@@ -1456,8 +1462,6 @@ class Collector(object):
                             ### The gap is added to Sync nodes
                             cur_pid_dict["first_comm_op"] = event["name"]
                             node_ = self.traceM.ret_unique_name(event)
-                            if self.single and node_ not in self.trail_dag.nodes:
-                                continue
                             bw_nodes = []
                             _to_process = list(self.trail_dag.predecessors(node_))
                             while len(_to_process) >0:
@@ -1514,8 +1518,6 @@ class Collector(object):
                 if self.comm_backend == "NCCL":
                     if "UPDATE_" in event["name"]:
                         node_ = self.traceM.ret_unique_name(event)
-                        if self.single and node_ not in self.trail_dag.nodes:
-                            continue
                         last_comm_event = None
                         for pred in self.trail_dag.predecessors(node_):
                             if "Comm." in pred:
@@ -1587,7 +1589,7 @@ class Collector(object):
                         gap = prev_events_dict[prefix_][GAP_STR_OP2COMM]
                         self.trail_dag.nodes[node_][GAP_STR_OP2COMM] = gap
                         SingleLogger().debug("Add gap:{} to pid: {}".format(gap, prefix_))
-            else:
+            elif self.comm_backend == "BYTEPS":
                 ## Add BW -> Comm delays using byteps_graph
                 ## inter node delays are directly added in replayer
                 if "BW." in node_:
@@ -1866,20 +1868,19 @@ class Collector(object):
         if self.comm_backend == "NCCL":
             critical_path = [None] * nrank
             worker_dag_list = [None] * nrank
-        else:
-            raise NotImplementedError()
-            
-        if self.single:
+        elif self.comm_backend == "NONE":
             raise ValueError("Single Machine Case")
         else:
-            threads = []
-            for rank in range(nrank):
-                assert rank == len(threads)
-                t = threading.Thread(target=self._collect_rank_dag_v2, args=(nrank, worker_dag_list, critical_path, len(threads)))
-                t.start()
-                threads.append(t)
-            for t in threads:
-                t.join()
+            raise NotImplementedError()
+
+        threads = []
+        for rank in range(nrank):
+            assert rank == len(threads)
+            t = threading.Thread(target=self._collect_rank_dag_v2, args=(nrank, worker_dag_list, critical_path, len(threads)))
+            t.start()
+            threads.append(t)
+        for t in threads:
+            t.join()
 
         ### Combine all worker_dag_list on one worker, build the dependency
         SingleLogger().info("Compose all {} gpu DAGs together ... ".format(len(worker_dag_list)))

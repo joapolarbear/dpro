@@ -1,3 +1,4 @@
+from multiprocessing import Value
 import os
 import re
 import time
@@ -547,7 +548,7 @@ class DPOptimizer(Optimizer):
                                 long_name_u = self.comm_succs_of_comp_in_long_name(prev_node, G_star)[0]
                                 long_name_v = self.comm_succs_of_comp_in_long_name(node_n, G_star)[0]
                             else:
-                                raise
+                                raise ValueError(self.comm_backend)
                             _bw_pred_list_u = [pred for pred in G_star.predecessors(long_name_u) if parse_pid_from_name(pred) == ref_pid]
                             _bw_pred_list_v = [pred for pred in G_star.predecessors(long_name_v) if parse_pid_from_name(pred) == ref_pid]
 

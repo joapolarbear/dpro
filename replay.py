@@ -541,6 +541,7 @@ class Replayer:
                     cat = parse_cat_from_name(n)
                 device_id = gen_long_name(pid, cat)
             else:
+                assert self.comm_backend == "BYTEPS"
                 if "SEND" in n or "RECV" in n:
                     device_id = gen_long_name(pid, cat)
                 # if "SEND" in n:
@@ -732,7 +733,7 @@ class Replayer:
             _dag.add_edge(u, v)
             # edges_to_add.append((u, v))
 
-        one_pid = "host0.rank0" if self.comm_backend == "NCCL" else "traces_0.rank0"
+        one_pid = gen_pid_name(self.comm_backend, None, None)
         for u, v in self.dag.edges():
             u_pid, u_raw_name, u_cat, _ = parse_allinfo_from_name(u)
             v_pid, v_raw_name, v_cat, _ = parse_allinfo_from_name(v)

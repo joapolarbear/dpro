@@ -442,7 +442,7 @@ if __name__ == '__main__':
         pm = PathManager(path_list[0])
         assert pm.dir_level == DirLevel.GPU
         local_rank = int(pm.path.split("/")[-1])
-        dagmanager = DAGManager(pm.path, local_rank, platform=args.platform, metadata=clct.para_dict)
+        dagmanager = DAGManager(pm.path, local_rank, platform=args.platform)
         dagmanager.gen_fw_bw_dag()
 
     if args.option == "graph":
@@ -461,7 +461,7 @@ if __name__ == '__main__':
         #! used to store all dags generated from GPUs
         graphs = []
         for _dir in pm.dirs:
-            dagmanager = DAGManager(os.path.join(pm.path, _dir), platform=args.platform, metadata=clct.para_dict)
+            dagmanager = DAGManager(os.path.join(pm.path, _dir), platform=args.platform)
             dagmanager.gen_dag_with_prefix_weight()
             dag_longest_path(dagmanager.dag, dagmanager.pm, weight="weight", default_weight=0)
             graphs.append(dagmanager.dag)

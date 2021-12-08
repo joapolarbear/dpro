@@ -428,6 +428,13 @@ def load_list(path):
     l = l[:-1] if l[-1] == '' else l
     return l
 
+def gen_pid_name(comm_backend, worker_dir, gpu_id):
+    if comm_backend == "NONE":
+        return "default"
+    elif worker_dir is None and gpu_id is None:
+        return "host0.rank0" if comm_backend == "NCCL" else "traces_0.rank0"
+    else:
+        return str(worker_dir)+".rank{}".format(gpu_id)
 
 class TraceManager:
     def __init__(self, traces=None, dir_level=None, check=False):
