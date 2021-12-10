@@ -10,11 +10,11 @@ from ...arg_utils import SingleArg
 args_ = SingleArg().args
 
 if args_.platform == "MXNET":
-    from ml_platform.mxnet.metadata import MetaInfo, FULL_HEADERS, OP_HYPER_PARAMETERS, BASE_HEADER_LEN
-    from ml_platform.mxnet.metadata import GFLOPS_FP32, GFLOPS_FP16
+    from ...ml_platform.mxnet.metadata import MetaInfo, FULL_HEADERS, OP_HYPER_PARAMETERS, BASE_HEADER_LEN
+    from ...ml_platform.mxnet.metadata import GFLOPS_FP32, GFLOPS_FP16
 elif args_.platform == "TENSORFLOW":
-    from ml_platform.tensorflow.metadata import MetaInfo, FULL_HEADERS, OP_HYPER_PARAMETERS, BASE_HEADER_LEN
-    from ml_platform.tensorflow.metadata import GFLOPS_FP32, GFLOPS_FP16
+    from ...ml_platform.tensorflow.metadata import MetaInfo, FULL_HEADERS, OP_HYPER_PARAMETERS, BASE_HEADER_LEN
+    from ...ml_platform.tensorflow.metadata import GFLOPS_FP32, GFLOPS_FP16
 else:
     raise NotImplementedError()
 

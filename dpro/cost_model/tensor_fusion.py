@@ -11,15 +11,15 @@ from tqdm import tqdm, trange
 from scipy.optimize import curve_fit
 import copy
 
-import arg_utils
 from .base import _BaseGraphPass
-from trace_utils import *
-from cost_model._xla.pk_graph import PKGraph
-from cost_model._tsfs.cost_model import predict_ps_inter_comm_time, predict_ps_intra_comm_time
+from ._xla.pk_graph import PKGraph
+from ._tsfs.cost_model import predict_ps_inter_comm_time, predict_ps_intra_comm_time
 
-from bps_helper.graph import PS_COMM_OPS, PS_COMP_OPS, PS_COMM_OPS_SETS, PS_COMP_OPS_SETS
+from ..arg_utils import SingleArg
+from ..trace_utils import *
+from ..bps_helper.graph import PS_COMM_OPS, PS_COMP_OPS, PS_COMM_OPS_SETS, PS_COMP_OPS_SETS
 
-args_ = arg_utils.SingleArg().args
+args_ = SingleArg().args
 
 FUSION_RATIO = 1
 TRAIN_PERCENT = 0.9

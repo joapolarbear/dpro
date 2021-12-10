@@ -12,15 +12,21 @@
 import os, sys
 import yaml
 from jinja2 import Environment, FileSystemLoader
-from base import bcolors, dpro_dir
+from dpro.base import bcolors, dpro_dir
 
-usage_prompt = "usage: dpro <option> <path> [<remaining_args>]"
+usage_prompt = "usage: dpro <option> <path> [<remaining_args>]\n\t or dpro -h/--help"
 dpro_entry = os.path.join(dpro_dir, "analyze.py")
 
 def DPRO_LOG(*args, **kwargs):
     print(bcolors.CGREEN, "[dPRO]" , bcolors.ENDC, *args, **kwargs)
 
 if __name__ == "__main__":
+    if sys.argv[1] == "-h" or sys.argv[1] == "--help":
+        command = "python3 {} --help".format(dpro_entry)
+        DPRO_LOG("Command: {}".format(command))
+        os.system(command)
+        exit(0)
+
     if len(sys.argv) < 3:
         DPRO_LOG("dpro: missing path")
         DPRO_LOG(usage_prompt)

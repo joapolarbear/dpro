@@ -11,22 +11,22 @@ import subprocess
 import re
 import time
 
-import arg_utils
-from trace_utils import painted_timeline, parse_cat_from_name, parse_pid_from_name, \
+from ..arg_utils import SingleArg
+from ..trace_utils import painted_timeline, parse_cat_from_name, parse_pid_from_name, \
     _map_tf_op2layer, parse_cat_fine_grained, _parse_tf_layer_names, \
     gen_long_name, parse_op_name, \
     SingleLogger, GAP_STR_OP2OP, GAP_STR_OP2COMM, CatName, FileName
-from base import bcolors
+from ..base import bcolors
 
-from cost_model.base import _BaseGraphPass, OptQueryCostModelError
-from cost_model._xla.utils import parse_xla_candidate_ops, IGNORE_OP_TYPES
-from cost_model._xla.pk_graph import PKGraph, contract_nodes_nx, \
+from .base import _BaseGraphPass, OptQueryCostModelError
+from ._xla.utils import parse_xla_candidate_ops, IGNORE_OP_TYPES
+from ._xla.pk_graph import PKGraph, contract_nodes_nx, \
     defuse_nodes_inplace_nx, postorder_contract_nx, \
     subgraph_partition_connected_nx_using_topo, get_concated_names, \
     contract_groups
-from cost_model._xla.xla_module_cost_model import XLAModuleCostModel
+from ._xla.xla_module_cost_model import XLAModuleCostModel
 
-args_ = arg_utils.SingleArg().args
+args_ = SingleArg().args
 FUSION_TIME_ESTIMATE_RATIO = 0.8
 FORCE_ESTIMATE_FUSION_TIME = False
 ENABLE_PRUNING = False

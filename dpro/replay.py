@@ -488,6 +488,7 @@ class Replayer:
         self.logger.info("Take %f s to replay one iteration" % ((time.time() - _ts)/float(self.step_num)))
         if _output:
             self.output_traces(verbose=verbose)
+        return self.step_end_time
         
     def replayAndDelay(self, delay_dict_, _output=False, _path=None, verbose=True):
         self.reset_replayer()
@@ -557,7 +558,6 @@ class Replayer:
                     cat = parse_cat_from_name(n)
                 device_id = gen_long_name(pid, cat)
             else:
-                assert self.comm_backend == "BYTEPS"
                 if "SEND" in n or "RECV" in n:
                     device_id = gen_long_name(pid, cat)
                 # if "SEND" in n:

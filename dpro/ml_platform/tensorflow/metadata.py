@@ -182,11 +182,18 @@ class MetaInfo:
         else:
             ### Not cached operators
             if len(outputs) > 1:
-                SingleLogger().debug("{} has multiple outputs: {}".format(op_name, outputs)) 
-            S_out = wei * np.prod(outputs[0]["shape"])
+                SingleLogger().debug("{} has multiple outputs: {}".format(op_name, outputs))
             SingleLogger().debug("{} has not been fine-defined input/weight: {}".format(op_name, inputs))
-            S_in = wei * np.prod(inputs[0]["shape"])
-            S_wei = wei * np.prod(inputs[1]["shape"]) if len(inputs) > 1 else 1
+            if len(outputs) == 0:
+                S_out = None
+            else:
+                S_out = wei * np.prod(outputs[0]["shape"])
+            if len(inputs) == 0:
+                S_in = None
+                S_wei = None
+            else:
+                S_in = wei * np.prod(inputs[0]["shape"])
+                S_wei = wei * np.prod(inputs[1]["shape"]) if len(inputs) > 1 else 1
             return 0, 0, S_in, S_out, S_wei
 
     def ret_rawmeta(self, op_name):
@@ -195,7 +202,7 @@ class MetaInfo:
             return []
         assert op_name in self.tf_meta, "shape info for {} is not in the meta data".format(
             op_name)
-        return self.cache_hyper_para[op_name]
+        return self.cache_hyper_para.get(op_name, None)
 
     def get_hyper_para(self):
         for op_name in self.tf_meta.keys():  
@@ -405,21 +412,49 @@ class MetaInfo:
         
         return self.local_dfg
     
-    def delete_node_from_dfg(self, old_node, dfg, edges_to_add=None, edges_to_rm=None, new_node=None):
+    def delete_node_from_dfg(self, old_node, dfg,
+            edges_to_add=None,
+            edges_to_rm=None,
+            nodes_to_rm = None,
+            new_node=None,
+            to_fitler_fn=None):
         ### Delete `old_node` from dfg, not inplace, only calculate edges to add or remove
         ### *NOTE*, if `new_node` is given, `new_node` will replace `old_node`
-        if edges_to_add is None:
-            edges_to_add = []
-        if edges_to_rm is None:
-            edges_to_rm = []
-        for pred in dfg.predecessors(old_node):
-            for succ in dfg.successors(old_node):
+        
+        nodes_to_rm.append(old_node)
+
+        pred_ops = set()
+        to_process = set(dfg.predecessors(old_node))
+        edges_to_rm += [(pred, old_node) for pred in to_process]
+        while len(to_process) > 0:
+            pred = to_process.pop()
+            if to_fitler_fn is None or not to_fitler_fn(pred):
+                pred_ops.add(pred)
+            else:
+                nodes_to_rm.append(pred)
+                for _pred in dfg.predecessors(pred):
+                    to_process.add(_pred)
+                    edges_to_rm.append((_pred, pred))
+        
+        succ_ops = set()
+        to_process = set(dfg.successors(old_node))
+        edges_to_rm += [(old_node, succ) for succ in to_process]
+        while len(to_process) > 0:
+            succ = to_process.pop()
+            if to_fitler_fn is None or not to_fitler_fn(succ):
+                succ_ops.add(succ)
+            else:
+                nodes_to_rm.append(succ)
+                for _succ in dfg.successors(succ):
+                    to_process.add(_succ)
+                    edges_to_rm.append((succ, _succ))
+
+        for pred in pred_ops:
+            for succ in succ_ops:
                 if new_node is None:
                     edges_to_add.append((pred, succ))
                 else:
                     edges_to_add += [(pred, new_node), (new_node, succ)]
-                edges_to_rm += [(pred, old_node), (old_node, succ)]
-        return edges_to_add, edges_to_rm
 
     def _wrap_read_dfg(self, gml_path):
         ''' Read the raw gml file, return local DFG
@@ -443,12 +478,15 @@ class MetaInfo:
             ### Mark comm operators
             edges_to_add = []
             edges_to_rm = []
+            nodes_to_rm = []
             FORCE_DELETE_VAR = True
             for op_or_var in dfg_with_var.nodes:
                 if not op_or_var.startswith("VAR."):
                     continue
+
                 if FORCE_DELETE_VAR:
-                    self.delete_node_from_dfg(op_or_var, dfg_with_var, edges_to_add, edges_to_rm)
+                    self.delete_node_from_dfg(op_or_var, dfg_with_var, edges_to_add, edges_to_rm, nodes_to_rm,
+                        to_fitler_fn=lambda x: x.startswith("VAR."))
                     continue
                 ### weights or activations
                 var_name = op_or_var.strip("VAR.")
@@ -463,17 +501,25 @@ class MetaInfo:
                         ### bw_op --> bw_op:0 --> update_op
                         comm_op = "Comm.{}".format(self.tensor_name_to_tensor_id(var_name))
                         self.delete_node_from_dfg(
-                            op_or_var, dfg_with_var, edges_to_add, edges_to_rm,
+                            op_or_var, dfg_with_var, edges_to_add, edges_to_rm, nodes_to_rm,
                             new_node=comm_op)
                     else:
                         ### bw_op --> bw_op:0 --> comm_op
-                        self.delete_node_from_dfg(op_or_var, dfg_with_var, edges_to_add, edges_to_rm)
+                        self.delete_node_from_dfg(op_or_var, dfg_with_var, edges_to_add, edges_to_rm, nodes_to_rm)
                 else:
                     ### Activations
-                    self.delete_node_from_dfg(op_or_var, dfg_with_var, edges_to_add, edges_to_rm)
+                    self.delete_node_from_dfg(op_or_var, dfg_with_var, edges_to_add, edges_to_rm, nodes_to_rm)
             mygraph.add_edges_from(edges_to_add)
             mygraph.remove_edges_from(edges_to_rm)
+            mygraph.remove_nodes_from(nodes_to_rm)
 
+            # for node in mygraph.nodes:
+            #     if node.startswith("VAR."):
+            #         print(node)
+            #         print(list(mygraph.predecessors(node)))
+            #         print(list(mygraph.successors(node)))
+            #         raise
+            
             SingleLogger().info(bcolors.CGREEN + 
                 "[TF Metadata] read DFG: {}".format(gml_path) + bcolors.ENDC)
 

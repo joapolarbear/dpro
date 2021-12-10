@@ -1,5 +1,3 @@
-import ml_platform
-
 from .node import Node
 
 
@@ -71,10 +69,15 @@ class Schedule:
                 break
 
     def _get_platform_memory_lists(self, platform):
-        module = getattr(ml_platform, platform.lower())
-        if hasattr(module, "memory_lists"):
-            self.lists = getattr(module, "memory_lists")
-        else:
+        try:
+            if platform.lower() == "tensorflow":
+                from ..ml_platform.tensorflow import memory_lists
+            elif platform.lower() == "mxnet":
+                from ..ml_platform.mxnet import memory_lists
+            else:
+                raise NotImplementedError()
+            self.lists = memory_lists
+        except:
             raise NotImplementedError(
                 "Memory Estimator Does Not Support %s" % platform)
 

@@ -5,20 +5,20 @@ import networkx as nx
 import sys
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 
-from .arg_utils import SingleArg
-from .logger_utils import SingleLogger
+from dpro.arg_utils import SingleArg
+from dpro.logger_utils import SingleLogger
 args = SingleArg().args
 logger = SingleLogger(args.path.split(',')[0], 
     args.option, args.logging_level, 
     is_clean=args.clean, 
     show_progress=args.progress)
 logger.info(args)
-from .trace_utils import *
-from .dag_utils import *
-from .collect import Collector
-from .replay import Replayer
-from .base import bcolors
-from .debug_utils import DebugRecorder
+from dpro.trace_utils import *
+from dpro.dag_utils import *
+from dpro.collect import Collector
+from dpro.replay import Replayer
+from dpro.base import bcolors
+from dpro.debug_utils import DebugRecorder
 
 QueueType("NCCL")
 DebugRecorder(is_enable=args.debug_traces)
@@ -181,7 +181,7 @@ if __name__ == '__main__':
             # replayer.dump_critical_path("critical_path.json", [n for (n, e) in critical_path])
             # nx.write_gml(replayer.exct_dag, 'exct.gml')
             SingleLogger().info(bcolors.CGREEN + "="*10 + " Daydream " + "="*10 + bcolors.ENDC)
-            replayer.daydream_dag(clct.para_dict, single=clct.single)
+            replayer.daydream_dag(clct.para_dict, single=(clct.comm_backend == "NONE"))
             replayer.replayAndDelay(None, verbose=True, _output=True, _path=os.path.join(clct.pm.path, "replay_daydream.json"))
         elif args.sub_option == "smlt_delay_cmp":
             ''' Replay with computation delays'''
@@ -255,7 +255,7 @@ if __name__ == '__main__':
             replayer.replayAndDelay(None, _output=True, _filename="./replay_daydream.json")
 
     if args.option == "collect":
-        if args.sub_option == "combine":
+        if args.sub_option is None or args.sub_option == "combine":
             pass
         elif args.sub_option == "xlsx":
             clct.traceM.export2xlsx(path_list[0])
@@ -372,13 +372,13 @@ if __name__ == '__main__':
             exit(0)
         
         if args.optimizer == "MCTS":
-            from optimizer.mcts import MCTSOptimizer
+            from dpro.optimizer.mcts import MCTSOptimizer
             opt = MCTSOptimizer(clct)
         elif args.optimizer == "MCMC":
-            from optimizer.mcmc import MCMCOptimizer
+            from dpro.optimizer.mcmc import MCMCOptimizer
             opt = MCMCOptimizer(clct)
         elif args.optimizer == "DP":
-            from optimizer.dp import DPOptimizer
+            from dpro.optimizer.dp import DPOptimizer
             opt = DPOptimizer(clct)
         else:
             raise ArgumentError("Unrecognized optimizer type {}.".format(args.optimizer))

@@ -1,35 +1,54 @@
 
-# Profiler
-### Horovod + Tensorflow
-```
-recorder = hvd.Recorder()
+This script introduces how to analyze the traces of a distributed trianing job using dPRO toolkit. 
+Suppose `DPRO_PATH` denotes the path where dpro is installed (check by entering `python3 -c "improt dpro; print(dpro.__path__)`), and `GLOBAL_TRACE_PATH` represents the path to store the final traces.
 
-@hvd.profile(recorder)
-@tf.function
-def benchmark_step(first_batch):
-    ...
-    with tf.GradientTape() as tape:
-        ...
-    tape = hvd.DistributedGradientTape(tape)
-    ...
+### Basic Usage
+You can check the help information using the following commands
 ```
+dpro_cli -h
+dpro_cli --help
+```
+
+It will output all arguments of `DPRO_PATH/analyze.py`.  So you can use dPRO as a python script.
+```
+python3 DPRO_PATH/analyze.py <arguments>
+```
+
+It's tedious to set so many arguments everytime we want to analyze the traces of a job, so dPRO provides a command line tool, namely `dpro_cli`, which automatically search for a configuration file in YAML format (file extension .yaml). 
+* The first argument `dpro_cli` must be `option`, which can be `collect`, `replay` or `optimize`. 
+* The second argument `path` can be set as `GLOBAL_TRACE_PATH`. 
+* Users can write a configuration file for each job. [sample_config.yaml](./sample_config.yaml) shows an example with three fields: 1) normal arguments; 2) `store_true` argument, which corresponds to the arguments set with `action=store_true`, see the help info for more details; 3) `env` field, which allow users set some environment variables of dPRO.
+* `dpro_cli` will automaticall substitute `{{path}}` in the config file with the second argument `path`.
+
+Writing a configuration file benefits when you want to fix some arguments for a job, e.g., platform (TENSORFLOW or MXNET), comm_backend (BYTEPS or NCCL), and so on. You can also add additional arguments for different analysis methods, e.g., sub_option, optimizer (DP or MCMC).
+
 
 # Statistic
+Users can statistic traces using the following commands.
 ```
 python3 /home/tiger/byteprofile-analysis/analyze.py \
-            --option statistic \
+            --option collect \
             --platform TENSORFLOW \
             --comm_backend NCCL --nccl_algo RING --pretty \
             --path $GLOBAL_TRACE_PATH
 ```
+or 
+```
+dpro_cli collect $GLOBAL_TRACE_PATH
+```
 
 # Replay
+Users can simulate a training job using the following commands.
 ```
 python3 /home/tiger/byteprofile-analysis/analyze.py \
             --option replay \
             --platform TENSORFLOW \
             --comm_backend NCCL --nccl_algo RING --pretty \
             --path $GLOBAL_TRACE_PATH
+```
+or
+```
+dpro_cli replay $GLOBAL_TRACE_PATH
 ```
 
 ---
@@ -41,15 +60,15 @@ Sample commands, put the XLA cost model in the path of  `./cost_model/_xla/.cost
 ```
 python3 analyze.py --option optimize --sub_option xla,^memory \
     --platform TENSORFLOW --comm_backend NCCL --nccl_algo RING --pretty \
-    --path path/to/traces --layer_by_layer --mcmc_beta 10 \
+    --path $GLOBAL_TRACE_PATH --layer_by_layer --mcmc_beta 10 \
     --xla_candidate_path data/xla_candidates_resnet.txt
 ```
 If you do not have a XLA cost model, run the following command to search with estimated fusion time:
 ```
 python3 analyze.py --option optimize --sub_option xla \
     --platform TENSORFLOW --comm_backend NCCL --nccl_algo RING --pretty --simulate \
-    --path path/to/traces \
-    --workspace path/to/traces \
+    --path $GLOBAL_TRACE_PATH \
+    --workspace $GLOBAL_TRACE_PATH \
     --xla_candidate_path data/xla_candidates_resnet.txt \
     --update_infi_para --layer_by_layer
 ```
@@ -70,8 +89,12 @@ Sample commands
 ```
 python3 analyze.py --option optimize --sub_option tensor_fusion \
     --platform TENSORFLOW --comm_backend NCCL --nccl_algo RING --pretty \
-    --path path/to/traces/ \
-    --workspace path/to/traces/
+    --path $GLOBAL_TRACE_PATH \
+    --workspace $GLOBAL_TRACE_PATH
+```
+or 
+```
+dpro_cli optimize $GLOBAL_TRACE_PATH --sub_option tsfs
 ```
 
 ## Combine Tensor Fusion and Operator Fusion
@@ -80,8 +103,8 @@ Sample commands
 ```
 python3 analyze.py --option optimize --sub_option tensor_fusion,xla \
     --platform TENSORFLOW --comm_backend NCCL --nccl_algo RING --pretty \
-    --path path/to/traces/ \
-    --workspace path/to/traces/ \
+    --path $GLOBAL_TRACE_PATH \
+    --workspace $GLOBAL_TRACE_PATH \
     --xla_candidate_path /root/byteprofile-analysis/data/xla_candidates_resnet.txt
 ```
 
@@ -90,7 +113,7 @@ Sample commands
 ```
 python3 analyze.py --option optimize --sub_option from_opfs2tsfs \
     --platform TENSORFLOW --comm_backend NCCL --nccl_algo RING --pretty \
-    --path path/to/traces/,<cluster_mapping_path>
+    --path $GLOBAL_TRACE_PATH,<cluster_mapping_path>
 ```
 where `<cluster_mapping_path>` denotes the path to the cluster_mapping.txt (operator fusion search result).
 
@@ -105,7 +128,7 @@ where `<cluster_mapping_path>` denotes the path to the cluster_mapping.txt (oper
 ## Cost Model for MultiGPU
 
 ```
-python3 mg_generate_dataset.py --option optimize --sub_option train_gpu --platform TENSORFLOW --comm_backend NCCL --nccl_algo RING --path /path/to/traces
+python3 mg_generate_dataset.py --option optimize --sub_option train_gpu --platform TENSORFLOW --comm_backend NCCL --nccl_algo RING --path $GLOBAL_TRACE_PATH
 ```
 `--path` specifies where traces are stored, organized by the GPU model name and ML model name
 
@@ -193,24 +216,3 @@ You can also configure to fuse tensors to multiple tensor groups, by
     ]
 }
 ```
-
-# 3rdparty version
-
-## Frameworks
-* [MXNet](https://github.com/joapolarbear/incubator-mxnet/tree/mlsys2022)
-* [TensorFlow](https://github.com/joapolarbear/tensorflow/tree/mlsys2022)
-* [BytePS](https://github.com/joapolarbear/byteps/tree/mlsys2022)
-* [pslite](https://github.com/joapolarbear/ps-lite/tree/mlsys2022)
-* [ZMQ](https://github.com/chenyu-jiang/libzmq/commit/5ed25589f000dc613e1a8575ba193eb78eb9b86e)
-* [Horovod](https://github.com/joapolarbear/horovod/tree/mlsys2022)
-* [NCCL](https://github.com/joapolarbear/nccl/tree/mlsys2022)
-
-
-## Benchmarks
-* [BERT]( https://github.com/joapolarbear/bert/tree/mlsys2022)
-* [gluon-nlp](https://github.com/joapolarbear/gluon-nlp/tree/mlsys2022)
-
-## Tools
-* [spdlog](https://github.com/gabime/spdlog/commit/6aafa89d20eef25ec75462ffb7eedc328f135638)
-* [nvprof2json](https://github.com/joapolarbear/nvprof2json): convert nvprof results to JSON format
-* [catapult](https://github.com/joapolarbear/catapult): convert JSON files to a HTML in the format of chrome://tracing.

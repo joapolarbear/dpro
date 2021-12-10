@@ -6,13 +6,13 @@ import numpy as np
 import ujson as json
 from tqdm import tqdm
 
-import arg_utils
+from ..arg_utils import SingleArg
+from ..trace_utils import *
+from ._xla.pk_graph import PKGraph
 from .base import _BaseGraphPass
-from trace_utils import *
-from cost_model._xla.pk_graph import PKGraph
 from ._mixed_precision.amp_pred import AMPPredictor
 
-args_ = arg_utils.SingleArg().args
+args_ = SingleArg().args
 
 class AMPGraphPass(_BaseGraphPass):
     def __init__(self, opt):
