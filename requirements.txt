@@ -10,7 +10,7 @@ scipy >= 1.5.4
 scikit-learn
 tqdm >= 4.54.1
 ujson >= 4.0.1
-h5py <= 2.10.0
+# h5py <= 2.10.0
 seaborn
 pydot
 pyyaml

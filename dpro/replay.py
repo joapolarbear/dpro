@@ -338,8 +338,12 @@ class PSCommDevice(Device):
 
 class Replayer:
     def __init__(self, 
-            dag, _step_num, leaf_dirs,
-            dump_path, comm_backend, byteps_graph, 
+            dag, 
+            _step_num=1,
+            leaf_dirs=None,
+            dump_path=".", 
+            comm_backend="default",
+            byteps_graph=None, 
             infi_para_update=False,
             show_queue=False,
             recd_topo_order=False,
@@ -356,6 +360,7 @@ class Replayer:
         self.byteps_graph = byteps_graph
 
         self.logger = SingleLogger()
+        self.logger.warn("'self.leaf_dirs' will be deprecated.")
         ### Delay information, the unit of 'delay' field should be ms
         self.delay_dict = None
         ### maintain node status

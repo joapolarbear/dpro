@@ -50,28 +50,39 @@ class DirLevel(Enum):
     TRIAL=2
 
 class FileName(Enum):
-    COMM="comm.json"
-    IO="io.json"
-    DAG="dag.gml"
-    GRAPHDEF = "final_graph.json"
+    # Overall profiling/analysis results
     TRACE="bps_trace_final.json"
+    STATISTIC="statistic.txt"
+    TRAIL_DAG="trail_dag.gml"
+    LOCAL_DFG="local_dfg.gml" # single-worker DFG
+
+    # Per rank
+    METADATA="metadata.json"
+    IO="io.json" # (Optional)
+    DAG="dag.gml"
     COMP = "trace.json.gz"
-    SYMBOL="symbol_debug_str.txt"
-    TENSOR_NAME="gradient_name_list.json"
+
+    ## Communication-related
+    COMM="comm.json"
     COMM_DETAIL="comm_detail.json"
-    INFO="info.json"
+    TENSOR_NAME="gradient_name_list.json"
+    
+    ### For All-Reduce
     NCCL_GRAPH="nccl_graph.txt"
     NCCL_RANK_GRAPH="nccl_rank_graph.json"
-    TRAIL_DAG="trail_dag.gml"
-    LOCAL_DFG="local_dfg.gml"
-    STATISTIC="statistic.txt"
+    
+    ### For BPS
     BPS_COMM_DETAIL="comm_timeline.json"
     BPS_SERVER_TRACE="server_timeline.json"
     IP_TO_RANK="ip_to_rank.txt"
     KEY_DICT="key_dict.txt"
     BYTEPS_CACHE="bps_cache.pickle"
     BPS_ALIGNED_TRACE="bps_comm_aligned.json"
-    METADATA="metadata.json"    
+    
+    ### Deperacated
+    GRAPHDEF = "final_graph.json"
+    SYMBOL="symbol_debug_str.txt"
+    INFO="info.json"  
 
 class CatName(Enum):
     OPERATOR="operator"
