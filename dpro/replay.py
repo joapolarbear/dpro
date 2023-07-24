@@ -101,7 +101,7 @@ class Device:
             i.e., all the dependent ops have been done
         '''
         ### for debug
-        DebugRecorder().debug_event_start()
+        # DebugRecorder().debug_event_start()
         if not self.infi_para:
             start_t = self.real_start_t(_last_end_time)
         else:
@@ -161,14 +161,14 @@ class Device:
             # for next_ in self.replayer.exct_dag.successors(name):
             # 	self.replayer.exct_dag.edges[name, next_]["weight"] = duration / 1000.0
             self.replayer.rst_traces.append(event)
-        DebugRecorder().debug_event_start()
+        # DebugRecorder().debug_event_start()
 
         self.mark_as_exct(name, start_t, start_t + duration)
-        DebugRecorder().debug_event_end(name, self.device_name, "mark_as_exct")
+        # DebugRecorder().debug_event_end(name, self.device_name, "mark_as_exct")
         pid = parse_pid_from_name(name)
         self.replayer.step_end_time[pid] = start_t + duration
         #! TODO: for debug
-        DebugRecorder().debug_event_end(name, self.device_name, "exct")
+        # DebugRecorder().debug_event_end(name, self.device_name, "exct")
     
     def _update_device_time(self, name, _end_time):
         ### Apply the gap between two nodes
@@ -202,10 +202,18 @@ class Device:
                 if self.comm_backend == "NCCL" and ("SEND" in name and "RECV" in _succ):
                     ### For Send->Recv edge, there exist some overlap
                     ### TODO (huhanpeng): how do decide the end time of the RECV event
+                    SingleLogger().warn("SEND and RECV should overlap to each other")
                     avg = self.replayer.dag.nodes[_succ]["avg"]
                     gap = 0
-                    _status["ready"] = (
-                        _end_time + gap) if _status["ready"] is None else max(_end_time + gap, _status["ready"])
+                    _status["ready"] = (_end_time + gap) if _status["ready"] is None \
+                        else max(_end_time + gap, _status["ready"])
+                elif self.comm_backend == "default" and ("SEND" in name and "RECV" in _succ):
+                    ### For Send->Recv edge, there exist some overlap
+                    ### TODO (huhanpeng): how do decide the end time of the RECV event
+                    avg = self.replayer.dag.nodes[_succ]["avg"]
+                    gap = 0
+                    _status["ready"] = (_start_t + gap) if _status["ready"] is None \
+                        else max(_start_t + gap, _status["ready"])
                 else:
                     ## For BYTEPS and Horovod, Only apply BW->Comm gaps
                     ## Other gaps should be considered with the device time.
@@ -447,7 +455,7 @@ class Replayer:
         while True:
             if self.pop_one_node_exec(step_idx) == 1:
                 break
-        DebugRecorder().dump_traces(".")
+        # DebugRecorder().dump_traces(".")
         
         self.replay_done = True
 
