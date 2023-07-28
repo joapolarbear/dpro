@@ -561,29 +561,31 @@ class TraceManager:
 
             ### statistic info
             unique_name = self.ret_unique_name(event)
+            dur_in_ms = event["dur"] / 1000.0
             if unique_name in self.name2sta:
                 if MAX_CNT is not None and self.name2sta[unique_name]["cnt"] >= MAX_CNT:
                     event["args"]["cnt"] = -1
                     continue
                 self.name2sta[unique_name]["cnt"] += 1
-                self.name2sta[unique_name]["time"].append(event["dur"] / 1000.0)
-                self.name2sta[unique_name]["min_t"] = min(self.name2sta[unique_name]["min_t"], event["dur"] / 1000.0)
-                self.name2sta[unique_name]["max_t"] = max(self.name2sta[unique_name]["max_t"], event["dur"] / 1000.0)
+                self.name2sta[unique_name]["time"].append(dur_in_ms)
+                self.name2sta[unique_name]["min_t"] = min(self.name2sta[unique_name]["min_t"], dur_in_ms)
+                self.name2sta[unique_name]["max_t"] = max(self.name2sta[unique_name]["max_t"], dur_in_ms)
             else:
                 self.name2sta[unique_name] = {
                     "cnt": 1, 
-                    "time": [event["dur"] / 1000.0], 
-                    "min_t": event["dur"] / 1000.0, 
-                    "max_t": event["dur"] / 1000.0,
+                    "time": [dur_in_ms], 
+                    "min_t": dur_in_ms, 
+                    "max_t": dur_in_ms,
                     "cat": cat,
                     "id": len(self.name2sta)
                     }
+            ### Stat the appearance of this unique op
             event["args"]["cnt"] = self.name2sta[unique_name]["cnt"] - 1
 
             pid_info = prefix_dict[prefix]
             if pid_info["time_base"] is None:
                 pid_info["time_base"] = event["ts"]
-            ### Add the `step` field
+            ### Add the `step` field to the `event`
             if "step" not in event["args"]:
                 ### TODO (huhanpeng): Can this adapt to MXNet
                 # if pid_info["time_cursor"] is None:
@@ -614,7 +616,7 @@ class TraceManager:
                                                         CatName.PS_SERVER_OPERATOR.value]:
                 if cat not in pid_info["cat_cnt"]:
                     pid_info["cat_cnt"][cat] = 0
-                pid_info["cat_cnt"][cat] += event["dur"] / 1000.0
+                pid_info["cat_cnt"][cat] += dur_in_ms
             self.max_step = max(event["args"]["step"], self.max_step)
 
             ### Calculate the iteration time
