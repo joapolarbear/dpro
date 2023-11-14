@@ -35,6 +35,19 @@ ITER_GAP_LOWER_BOUND_US = 5000
 ### based on the assumption that FW or IO is the start of a step
 AS_START_CAT = ["I/O", "operator.FW"]
 
+# Gap
+GAP_THRESHOLD_COMP = 1000
+GAP_THRESHOLD_COMM = 1000
+
+### Clock Sychronization mode
+#   -1: no sync
+#   0: based on sync op
+#   1: based on constraints, objective: mean square error
+#   2: based on constraints, objective: recv dur close to median
+#   3: based on constraints, objective: loop drift error
+SYNC_MODE = 0
+ALIGN_BASED_SYNC = True if SYNC_MODE == 0 else False
+
 
 @Singleton
 class QueueType:
@@ -1064,3 +1077,41 @@ def painted_timeline(traces, mapping, dump_path):
     with open(dump_path, 'w') as f:
         json.dump(rst, f)
 
+
+class RunningSpan:
+    def __init__(self):
+        self.reset_span()
+        self.disable = False
+        self.reset_span()
+
+    def init_start(self, s):
+        if self.start is None:
+            self.start = s
+        else:
+            self.start = min(self.start, s)
+
+    def init_end(self, e):
+        ### allow to override
+        self.end = max(self.end, e)
+
+    def if_start(self, t):
+        if self.disable:
+            return True
+
+        if self.start is not None and t < self.start:
+            return False
+        else:
+            return True
+
+    def if_end(self, t):
+        if self.disable:
+            return False
+
+        if self.end is not None and t >= self.end:
+            return True
+        else:
+            return False
+
+    def reset_span(self):
+        self.start = None
+        self.end = 0

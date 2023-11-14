@@ -10,7 +10,7 @@ from .dag_utils import QueueType
 from .trace_utils import *
 from .logger_utils import SingleLogger
 from .debug_utils import DebugRecorder
-from .bps_helper.graph import PS_COMP_OPS_SETS, PS_COMM_OPS_SETS
+from .data_para.bps_helper.graph import PS_COMP_OPS_SETS, PS_COMM_OPS_SETS
 
 FIXED_GAP_us = 5
 
@@ -19,12 +19,12 @@ def short_name(n):
 
 comm_op_types = []
 try:
-    from hvd.graph import *
+    from data_para.hvd.graph import *
 except:
     pass
 
 try:
-    from bps_helper.graph import *
+    from data_para.bps_helper.graph import *
     comm_op_types = [PS_COMM_OPS.PULL_RES, PS_COMP_OPS.COPY_MERGED, PS_COMP_OPS.SUM, PS_COMP_OPS.COPY_FIRST,
         PS_COMM_OPS.PULL_REQ, PS_COMM_OPS.PUSH_RES, PS_COMM_OPS.PUSH_REQ]
 except:

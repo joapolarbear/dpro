@@ -7,11 +7,11 @@ import matplotlib.pyplot as plt
 from .trace_utils import *
 
 try:
-    from hvd.graph import *
+    from data_para.hvd.graph import *
 except:
     pass
 try:
-    from bps_helper.graph import *
+    from data_para.bps_helper.graph import *
 except:
     pass
 

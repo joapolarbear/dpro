@@ -17,7 +17,7 @@ from ._tsfs.cost_model import predict_ps_inter_comm_time, predict_ps_intra_comm_
 
 from ..arg_utils import SingleArg
 from ..trace_utils import *
-from ..bps_helper.graph import PS_COMM_OPS, PS_COMP_OPS, PS_COMM_OPS_SETS, PS_COMP_OPS_SETS
+from ..data_para.bps_helper.graph import PS_COMM_OPS, PS_COMP_OPS, PS_COMM_OPS_SETS, PS_COMP_OPS_SETS
 
 args_ = SingleArg().args
 
